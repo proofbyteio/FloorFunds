@@ -166,7 +166,7 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 
 ---
 
-## 12:47 PM PT · SSE2 · final run, test matrix, commit
+## 12:19 PM PT · SSE2 · final run, test matrix, commit
 
 - **What:**
   - Ran `tools/run-checks.sh standin` (run 4, 12:17 PM PT).
@@ -196,7 +196,7 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - **Commit checks:**
   - `git ls-files --with-tree` shows no `bin/` or `obj/`.
   - There is no remote.
-  - Contract head is still `6e8a106` at 12:45 PM PT.
+  - Contract head is still `6e8a106` at 12:19 PM PT.
 - **Not done (outside SSE2 write paths):** `code/README.md` (contract OQ-27 assigns it to SSE2, but `code/` root is not in my paths). This needs a TL decision.
 - **Noted, not touched:** top-level `.v*` backup files in `/workspace/cachd-ones/`:
   - `login-service-proposal.v1a`…`v1u`
@@ -206,3 +206,4 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
   - `hardware-integration-proposal.v1`…`v5`
 
   There are none under `code/`. SSE2 reference copies are in `/tmp/sse2-snap/<md5>.md`.
+- **Correction (12:20 PM PT):** this entry and the test matrix first carried a wrong time ("12:47 / 12:45 PM PT") in commit `0f752e2`. The box clock read 12:19 PM PT, so the times are fixed above. Follow-up commit on `sse2/tests-docs` has parent `0f752e2`.
