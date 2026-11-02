@@ -6,7 +6,7 @@ Labels and source snapshots: see `README.md`.
 
 - Toward OAuth clients: **standard OAuth 2.0 / OIDC error codes only**. [SRC: PLAN §3.1 L137; LD §16.17.2 L1302]
 - Internal reason codes (`locked`, `mfa_missing`, `tenant_mismatch`, `stale_auth_time`, `remote_session`,
-  `no_role`, `attestation_invalid`, …) go **only** to audit and to our own pages, never to clients.
+  `no_role`, `attestation_invalid`, `notfromhub`, …) go **only** to audit and to our own pages, never to clients.
   [SRC: PLAN L146; LD §8 L423]
 - `error_description` is never sent, so no internal reason can leak through it. [ASSUME A-20 → OQ-17]
 - `error_uri` is never sent. [ASSUME A-20 → OQ-17]
@@ -32,10 +32,10 @@ Redirect errors carry `error` and the client's `state` (and `iss`, RFC 9207). `i
 
 | Situation | What happens | Label |
 |---|---|---|
-| Hand-off rule 1-6 fails | Sign-in page again (re-prompt) | [SRC: PLAN L134; LD L1301] |
-| Hand-off refused, `attestation_invalid` | Password + MFA sign-in; cage actions blocked; screen 8 variant B | [SRC: LD L1180; PLAN S1 4a, 4b] |
-| Hand-off refused, `remote_session` | Screen 8 (remote-session variant); `access_denied` to the client only if the user cancels | [SRC: LD L1179; PLAN L134] |
-| Plain sign-in, agent reports remote session | Screen 8 "Try again after the remote session ends" | [SRC: LD §16.18.5 L1366] |
+| Hand-off rule 1-6 fails (rule 4 also writes `auth.app_access.denied reason=notfromhub`: `hub_launch` missing, expired, used or bound to another session or client, contract 5.7) | Sign-in page again (re-prompt) | [SRC: PLAN L134; LD L1301] |
+| Hand-off refused, `attestation_invalid` (`device_attestation` missing or failing any 6.7 check) | Password + MFA sign-in; cage actions blocked; screen 8 (Session), variant B "security software not responding" | [SRC: LD L1180; PLAN S1 4a, 4b] |
+| Hand-off refused, `remote_session` | Screen 8 (Session), variant A "remote session"; `access_denied` to the client only if the user cancels | [SRC: LD L1179; PLAN L134] |
+| Plain sign-in, agent reports remote session | Screen 8 (Session), variant A "remote session": "Try again after the remote session ends" | [SRC: LD §16.18.5 L1366] |
 | Wrong password, locked account, MFA failure | Our sign-in page messages (UX screens), no redirect to the client | [SRC: PLAN L146 ("our own pages")]; wording owned by UX |
 | `redirect_uri` or `client_id` invalid | Error page on our host; never redirect | [ASSUME A-6 → OQ-5] |
 | API (resource server) token problems: wrong `aud`, bad signature, expired, stand-in token in Production | HTTP 401 with `WWW-Authenticate: Bearer error="invalid_token"` | 401 [SRC: PLAN S1 checks 8, 11]; header [ASSUME A-25 → OQ-17] (RFC 6750 §3.1) |

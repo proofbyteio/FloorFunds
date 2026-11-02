@@ -16,6 +16,7 @@ in this folder (plan §3.1). The stand-in and the real OpenIddict service implem
 | `claims.schema.json` | JSON Schema for access-token and ID-token payloads (and the JOSE header) |
 | `errors.md` | Error codes clients see, per endpoint; internal reason codes; allowlist 403 |
 | `audit-events.schema.json` | JSON Schema for the audit events contract tests may assert |
+| `device-attestation.schema.json` | JSON Schema for the device agent's attestation JWS (header and claims), sent as `device_attestation` |
 | `OPEN-QUESTIONS.md` | Every point the sources don't state (OQ-n), for the Tech Lead to answer or relay |
 | `SSE-BUILD-LOG-PENDING.md` | SSE's step log. SSE2 creates `code/docs/BUILD-LOG.md` and `code/README.md` and copies these entries over; SSE never writes in `docs/` (TL Decision 2026-11-02, OQ-27) |
 

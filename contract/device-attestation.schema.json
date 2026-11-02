@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:cachd:login:contract:v1:device-attestation",
+  "title": "Device agent attestation (compact JWS), contract v1 (DRAFT v1-d2)",
+  "description": "Sent by the page as device_attestation (contract-v1.md 6.4-6.8). Format [TL Decision 2026-11-02, OQ-8/OQ-9; SRC: LD §16.18.5 L1381-1386]. Lifetime, single use, nonce and device binding [SRC: LD §16.18.5 L1365, L1371; PLAN §1.2 L51]. Checks a schema can't express (signature, kid in the enrolled device key registry, exp - iat <= 60 s, nonce unconsumed) are server checks, 6.7.",
+  "type": "object",
+  "properties": {
+    "header": { "$ref": "#/$defs/header" },
+    "claims": { "$ref": "#/$defs/claims" }
+  },
+  "required": ["header", "claims"],
+  "$defs": {
+    "device_id": {
+      "description": "Enrolled device id. Real: format not stated [SSE Proposal -> OQ-35: UUID string]. Stand-in: starts standin- [SSE Proposal -> OQ-33].",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "header": {
+      "type": "object",
+      "required": ["alg", "kid"],
+      "properties": {
+        "alg": { "description": "ES256 only [TL Decision 2026-11-02]. Never none or HS*.", "const": "ES256" },
+        "kid": { "description": "= enrolled device id [TL Decision 2026-11-02].", "$ref": "#/$defs/device_id" },
+        "typ": { "description": "Value not stated [SSE Proposal -> OQ-35].", "const": "cachd-attestation+jwt" }
+      },
+      "not": { "anyOf": [{ "required": ["jku"] }, { "required": ["jwk"] }, { "required": ["x5u"] }, { "required": ["x5c"] }] },
+      "$comment": "The key comes only from the enrolled device key registry by kid; embedded or remote key references are refused [SSE Proposal -> OQ-35]."
+    },
+    "claims": {
+      "type": "object",
+      "required": ["nonce", "device_id", "remote_session", "iat", "exp"],
+      "properties": {
+        "nonce": { "description": "The login service's transaction nonce, echoed [TL Decision 2026-11-02].", "type": "string", "minLength": 16 },
+        "device_id": { "description": "Must equal header kid [TL Decision 2026-11-02 (kid = device id)].", "$ref": "#/$defs/device_id" },
+        "remote_session": { "description": "true -> reason=remote_session (screen 8 (Session), variant A).", "type": "boolean" },
+        "iat": { "type": "integer" },
+        "exp": { "description": "exp - iat <= 60 [SRC: LD L1365 (<=60 s)]; checked by the server.", "type": "integer" }
+      },
+      "additionalProperties": false,
+      "$comment": "additionalProperties false: only the five TL-listed claims [TL Decision 2026-11-02]; jti/aud not used, single use comes from consuming the nonce [SSE Proposal -> OQ-35]."
+    }
+  }
+}
