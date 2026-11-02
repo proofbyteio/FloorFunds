@@ -1,36 +1,57 @@
-# Open questions on contract v1 (DRAFT v1-d1)
+# Open questions on contract v1 (DRAFT v1-d2)
 
 For the Tech Lead to answer or relay. "Who" = who I think owns the answer; the TL decides routing.
-Every [ASSUME A-n] in the contract points here. Nothing below is decided.
+Every [ASSUME A-n], [SSE Proposal → OQ-n] and [DOC SILENT → OQ-n] in the contract points here.
+Status: **Resolved** = TL Decision 2026-11-02 (relayed by the parent at 11:37 AM PT); **Open + SSE Proposal** = my proposed answer, not decided.
+LD line numbers refer to md5 `88878681` (rev 11:41).
 
-| OQ | Question | Draft for now (assumption) | Who | Refs |
+## Resolved
+
+| OQ | Question (short) | Decision | Where applied |
+|---|---|---|---|
+| OQ-1 | Discovery and JWKS: front or 8084 only? | **Resolved, TL Decision 2026-11-02:** front listener (public, read-only, cacheable); token, revoke, introspect and other back-channel calls stay on 8084. Follow-ups OQ-30..32 | contract §1.3-1.4, §2.2, §2.8-2.10 |
+| OQ-2 | Which source revisions? | **Resolved, TL Decision 2026-11-02:** always the newest; snapshot each with its md5 in the file name. Used LD `88878681` (TL expected `5c68265c`; the SA revised again at 11:41), PLAN `ae18d664` | README sources |
+| OQ-7 | How does the hub's proof reach authorize (rule 4)? | **Resolved, TL Decision 2026-11-02:** `hub_launch`, issued by the hub / login service; single use, ≤60 s, server-stored, bound to login session id + target `client_id`; client passes it to authorize; checked and consumed; missing / invalid → `notfromhub`. Now also in LD §16.18.5 L1388-1391. Follow-ups OQ-36, OQ-41 | contract §5.7, errors |
+| OQ-8 | How does the attestation reach the login service; who creates the nonce? | **Resolved, TL Decision 2026-11-02:** login service creates the nonce (server-stored, single use, ≤60 s, bound to the transaction); page calls the agent on loopback (managed Edge policy); page sends `device_attestation` (form or authorize parameter); server verifies against the enrolled device key registry; fails closed. LD §16.18.5 L1381-1386. Follow-up OQ-34 | contract §5.8, §6.4-6.7 |
+| OQ-9 | Attestation wire format; stand-in PC id | **Resolved, TL Decision 2026-11-02:** compact JWS, ES256, TPM key, `kid` = enrolled device id; claims `nonce`, `device_id`, `remote_session`, `iat`, `exp`. Stand-in fakes the modes per PC id. Follow-ups OQ-33, OQ-35 | `device-attestation.schema.json`, §6.8 |
+| OQ-23 | Audit envelope naming | **Partly resolved, TL Decision 2026-11-02:** the Cachd client field is `cachd_client_id` (as B-LS5). **Still open with the SA:** flat `partner_id` / `location_id` (AUD §7A.4) vs `scope.*` (LD §8 L421); `category` literal; `outcome` values. SSE Proposal: flat names, since the envelope is shared by every service; `category=event`; `success` / `failure` / `denied`. Follow-up OQ-37 | audit schema |
+| OQ-26 | Extra LD §8 events in v1? | **Resolved, TL Decision 2026-11-02:** defined in the v1 schema, marked "Defined, not emitted in S1" (password reset, provider change, identity link/unlink, bootstrap, MFA policy exclusion). Follow-up OQ-38 | audit schema |
+| OQ-27 | Who creates `code/README.md`? | **Resolved, TL Decision 2026-11-02:** SSE2 creates `code/README.md` and `docs/BUILD-LOG.md`; my log stays in `contract/SSE-BUILD-LOG-PENDING.md` | README |
+| OQ-29 | Screen 8 not built yet | **Resolved, TL Decision 2026-11-02:** refer to it by name, "screen 8 (Session)", with variant A "remote session" and variant B "security software not responding"; UX is building it (`login-hub-mockups/08-session.html`, 11:38) | contract §5.4-5.5, §6.1, errors |
+
+## Open
+
+| OQ | Question | SSE Proposal (not decided) | Who | Refs |
 |---|---|---|---|---|
-| OQ-1 | Discovery and JWKS: front listener (PLAN L106-107, LD §16.17.2 L1295) or internal-only on 8084 (LD §4.5 L202/L205, TL decision rev 12:22)? | 8084 only; front 404 | TL | contract §2.2 |
-| OQ-2 | Source drift: the brief pinned PLAN `8c42fbdd` and LD rev 11:23 `6c489506`. PLAN changed at 11:27:56 (now `ae18d664`, adds 4b); LD `6c489506` no longer exists on the box. OK to use PLAN `ae18d664` + LD `bd70f29a`? | Used them | TL | README |
-| OQ-3 | In discovery, are `token_endpoint` / `revocation_endpoint` / `jwks_uri` the internal 8084 URLs, or public URLs that clients override with the back-channel base URL? | Internal URLs (A-1) | TL | §2.3 |
-| OQ-4 | Extra discovery fields: `subject_types_supported=["public"]` (A-2); `introspection_endpoint` not published (A-3); no `scopes_supported` etc. (A-4); JWKS `use=sig` (A-5); token response shape (A-13); introspect response shape (A-17). Must the stand-in publish exactly this set? | As stated | TL | §2-3, §7, §10 |
-| OQ-5 | Bad `redirect_uri` or `client_id`: error page on our host, never a redirect? | Yes (A-6) | TL | §4.8 |
-| OQ-6 | Scope names, `aud` values and client ids for S1 (Cash Advance API, `backoffice_stub`); is `offline_access` needed for refresh? | `openid` + one API scope per API; `offline_access` (A-7) | TL / SA | §4.9 |
-| OQ-7 | Hand-off rule 4 says "a `state` the hub issued", but `state` is created by the client (BFF). How does the hub's proof reach authorize? | Hub link carries `hub_launch` (single use, ≤5 min, bound to login session + client); BFF forwards it as an authorize parameter (A-8). This is a client-visible parameter | TL / SA | §5.7 |
-| OQ-8 | How does the agent attestation reach the login service during the hand-off (LD §16.18.5 covers only the sign-in page)? Who creates the "transaction nonce" for it? | Login-service interstitial creates the nonce; Edge fetches from the agent; page posts it back. Not a client parameter (A-9) | TL / SA / Device Agent | §5.8 |
-| OQ-9 | Attestation wire format (JWS? claims `nonce`, `device_id`, `iat`, `exp`, `jti`, `remote_session`) and how the stand-in identifies the fake PC id (PLAN L199) | Not drafted (A-10) | Device Agent / TL | §5.9 |
-| OQ-10 | Audit for a hand-off re-prompt (rules 1-6 fail)? Is `auth.session.revoked` written once per endsession? | Not drafted / yes (A-19) | SA / TL | §5.10, §11.3 |
-| OQ-11 | Plain sign-in with an attestation that is present but invalid: go ahead (best effort) or refuse? | Not drafted | TL | §6.2 |
-| OQ-12 | Refresh after the role is removed or the user is disabled: `invalid_grant`? Does revoking a refresh token revoke its chain? | Yes / yes (A-11, A-16) | TL | §7.3, §9.2 |
-| OQ-13 | Absolute session cap (LS-OQ-13, open with Mohanraj): value for the stand-in? | 12 h, config (A-12) | Mohanraj via PM | §7.4 |
-| OQ-14 | Access-token header `typ=at+jwt` (RFC 9068)? `at_hash` allowed in ID tokens? | Yes / yes (A-14, A-29) | TL | §8.9 |
-| OQ-15 | Claim types (`sub` and org ids UUID strings? `perm_version` integer?); `aud` string vs array; ID-token lifetime; allowed clock skew; must `location_id` be present for partner-level users? | UUID, integer, 5 min, skew not set; required (A-15) | TL / SA | §8.10 |
-| OQ-16 | Endsession parameters and the redirect target when the user has several locations | RP-Initiated Logout params; login-session location (A-18) | TL | §11.2 |
-| OQ-17 | Never send `error_description` / `error_uri`? Send `iss` on authorize errors (RFC 9207)? API 401 with `WWW-Authenticate: Bearer error="invalid_token"`? | Yes to all (A-20, A-24, A-25) | TL | errors §1-3 |
-| OQ-18 | Which cases give `interaction_required` vs `login_required` with `prompt=none`? | errors.md table (A-22) | TL | errors §2 |
-| OQ-19 | `temporarily_unavailable` at the token endpoint isn't an RFC 6749 §5.2 code: HTTP 503 JSON OK? | Yes (A-23) | TL | errors §2 |
-| OQ-20 | 8084 internal-list block: same minimal 403, or connection refused? | Not drafted (A-26) | TL | errors §4 |
-| OQ-21 | `private_key_jwt` signing alg; revocation auth methods | RS256; same as token (A-27) | TL | discovery schema |
-| OQ-22 | `amr` values for DB sign-in (password + TOTP) and for Entra (pass through?) | `["pwd","otp","mfa"]`; Entra pass-through (A-28) | TL / SA | claims schema |
-| OQ-23 | Envelope: AUD §7A.4 uses flat `partner_id` / `client_id` / `location_id`; LD §8 L419 uses `scope.partner_id` / `scope.client_id` / `scope.location_ids`, plus `actor.session_id`, `target`, `action`. Which wins? Also `category` literal, `outcome` values, and AUD `client_id` (Cachd client) clashing with OAuth `client_id` | AUD flat names + LD extras; `event`; success/failure/denied (A-30, A-32) | SA | audit schema |
-| OQ-24 | Full `auth.login.failed` reason list; field name for the HMAC'd username; `actor.user_id` null on failed sign-in; MFA `method` values; `auth.session.revoked` reasons | Partial lists (A-31, A-34-A-37) | SA | audit schema |
-| OQ-25 | Fields for `auth.refresh.reuse_detected`, `auth.break_glass.used`, `auth.session.location_switched`; should stand-in events carry `x_standin`? | Envelope only; yes (A-33) | SA / TL | audit schema |
-| OQ-26 | PLAN §3.1 audit list omits LD §8 events (`auth.password.reset_requested` / `reset_completed`, `auth.provider.changed`, `auth.identity.linked` / `unlinked`, `auth.bootstrap.completed`, `auth.mfa.policy_exclusion_detected`). In v1 or later? | Out of v1 | TL | audit schema |
-| OQ-27 | `code/README.md` is in the plan tree (§5.1) but SSE may write only `contract/`, `src/`, `ui/`. Who creates it? | Not created; rules in `contract/README.md` | TL | - |
-| OQ-28 | Where the code lives (PQ-201, left blank by Mohanraj on the 11:02 card) | Box only, local git | Mohanraj via PM | - |
-| OQ-29 | Screen 8 (both variants) is not built by UX yet; the contract refers to it | - | UX / TL | §5.4-5.5 |
+| OQ-3 | Discovery `token_endpoint` / `revocation_endpoint`: internal 8084 URLs or public URLs? | **SSE Proposal:** all URLs under the public issuer; server-side clients set a back-channel base URL (8084) in config | TL | §2.3 |
+| OQ-4 | Exact discovery and JWKS field set (A-2..A-5, A-13, A-17) | **SSE Proposal:** exactly the set in the schema; contract tests assert the exact key set | TL | §2-3, §7, §10 |
+| OQ-5 | Bad `redirect_uri` or `client_id`: error page, never a redirect? | **SSE Proposal:** yes, error page on our host (RFC 6749 §4.1.2.1) | TL | §4.8 |
+| OQ-6 | S1 scope names, `aud` values, client ids; `offline_access` for refresh? | **SSE Proposal:** scopes `openid`, `cash_advance_api`, `backoffice_api`; `aud` `cash-advance-api`, `backoffice-api`; clients `cash_advance_bff`, `backoffice_stub`, `hub`; `offline_access` required for a refresh token | TL / SA | §4.9 |
+| OQ-10 | Audit for a hand-off re-prompt; `auth.session.revoked` per endsession? | **SSE Proposal:** rules 1-3, 5, 6 write no extra event (rule 4 writes `notfromhub`, LD L1170); one `auth.session.revoked` per login session ended | SA / TL | §5.10, §11.3 |
+| OQ-11 | Plain sign-in with a present-but-invalid attestation | **SSE Proposal:** go ahead (best effort), no extra event; hand-off and cage actions still fail closed | TL | §6.2 |
+| OQ-12 | Refresh after role removal / user disabled; revoke the chain? | **SSE Proposal:** `invalid_grant` both; revoking a refresh token revokes its whole family | TL | §7.3, §9.2 |
+| OQ-13 | Absolute session cap value (LS-OQ-13) | **POC assumption, TL Decision 2026-11-02:** 12 h for the stand-in, tied to this OQ; value open with Mohanraj via PM | Mohanraj via PM | §7.4 |
+| OQ-14 | Access-token `typ=at+jwt`; `at_hash` in ID tokens? | **SSE Proposal:** yes `at+jwt` (RFC 9068); `at_hash` allowed, not required | TL | §8.9 |
+| OQ-15 | Claim types, `aud` shape, ID-token lifetime, clock skew, `location_id` for partner-level users | **SSE Proposal:** ids UUID strings; `perm_version` integer; `aud` a single string; ID token 5 min; skew 30 s (as the refresh leeway); `location_id` always present (every sign-in picks a location) | TL / SA | §8.10 |
+| OQ-16 | Endsession parameters; redirect with several locations | **SSE Proposal:** RP-Initiated Logout 1.0 (`id_token_hint`, `post_logout_redirect_uri`, `state`, `client_id`); back to `/l/{slug}` of the login session's location | TL | §11.2 |
+| OQ-17 | No `error_description` / `error_uri`; `iss` on authorize errors; API 401 header | **SSE Proposal:** yes to all three | TL | errors §1-3 |
+| OQ-18 | `interaction_required` vs `login_required` with `prompt=none` | **SSE Proposal:** `login_required` when there is no usable session; `interaction_required` when a session exists but needs a user step (MFA, location pick, hand-off) | TL | errors §2 |
+| OQ-19 | `temporarily_unavailable` at the token endpoint | **SSE Proposal:** HTTP 503, JSON `{"error":"temporarily_unavailable"}`, `Retry-After` | TL | errors §2 |
+| OQ-20 | 8084 internal-list block | **SSE Proposal:** the same minimal 403 as the front (ALW README L30-50), not a refused connection, so ops can tell a block from an outage | TL | errors §4 |
+| OQ-21 | `private_key_jwt` alg; revocation auth methods | **SSE Proposal:** RS256; revocation uses the same methods as token | TL | discovery schema |
+| OQ-22 | `amr` for DB sign-in and Entra | **SSE Proposal:** `["pwd","otp","mfa"]`; Entra values passed through, must contain `mfa` | TL / SA | claims schema |
+| OQ-24 | Reason lists and field names | **SSE Proposal:** `auth.login.failed` reasons `bad_credentials`, `locked`, `user_disabled`, `mfa_failed`, `mfa_missing`, `tenant_mismatch`, `stale_auth_time`, `location_not_allowed`, `remote_session`, `outbox_unavailable`; `username_hmac` lowercase hex; `actor.user_id` null when unknown; MFA `method` `totp` / `recovery_code` / `entra`; revoked reasons `sign_out`, `admin_revoke`, `idle_timeout`, `absolute_cap`, `refresh_reuse`, `user_disabled`; reset `channel` `email` / `admin` | SA | audit schema |
+| OQ-25 | Fields for reuse_detected, break_glass.used, location_switched (and the not-emitted identity / bootstrap / policy events); `x_standin`? | **SSE Proposal:** envelope only until the SA states fields; stand-in events carry `x_standin=true` | SA / TL | audit schema |
+| OQ-28 | Where the code lives (PQ-201) | **Box only, local git** until answered | Mohanraj via PM | - |
+| OQ-30 | Cache headers on front discovery / JWKS (doc silent) | **SSE Proposal:** `Cache-Control: public, max-age=3600`; key rotation publishes the new key ≥1 h before use | TL | §2.8 |
+| OQ-31 | Also serve discovery / JWKS on 8084 (LD §4.5 L208 maps them there)? | **SSE Proposal:** yes, an identical copy for server-side clients | TL / SA | §2.9 |
+| OQ-32 | Does the IP allowlist apply to front discovery / JWKS? | **SSE Proposal:** yes like every front path; server-side clients use the 8084 copy | TL | §2.10 |
+| OQ-33 | Stand-in fake agent: how the PC id is chosen, keys, kid | **SSE Proposal:** loopback fake agent in the stand-in; PC id from a dev-only cookie set on a stand-in page; in-memory ES256 keys, device ids and `kid` prefixed `standin-`; modes valid / missing / bad signature / expired / replayed / unknown device / remote session | TL | §6.8 |
+| OQ-34 | On a hand-off, which page calls the agent; must clients forward `device_attestation`? | **SSE Proposal:** a short login-host page answers the hand-off authorize, gets the nonce, calls the agent and re-submits authorize by POST with `device_attestation`; clients forward only `hub_launch` | TL / SA / Device Agent | §5.8 |
+| OQ-35 | Attestation details not stated: `typ`, `jti` / `aud`, max `exp - iat`, skew, `device_id` format, embedded keys | **SSE Proposal:** `typ=cachd-attestation+jwt`; no `jti` / `aud` (single use and binding come from the nonce); `exp - iat` ≤60 s; skew 5 s; device id a UUID; `jwk` / `jku` / `x5c` / `x5u` refused | TL / SA / Device Agent | §6.7, attestation schema |
+| OQ-36 | `hub_launch` details: link format, other clients, consume on failure | **SSE Proposal:** hub tile links to the client's start URL with `?hub_launch=<opaque 128-bit value>`; clients without the hand-off ignore it; consumed on the first check even if another rule fails | TL / SA | §5.7 |
+| OQ-37 | AUD §7A.4 (shared envelope) still says `client_id` for the Cachd client | **SSE Proposal:** the SA renames it in AUD so every service uses `cachd_client_id` | SA | audit schema |
+| OQ-38 | `iam.permission.change_requested` (LD §8 L424) breaks the `auth.*` pattern | **SSE Proposal:** allow exactly that one `iam.*` name; or the SA renames it `auth.provider.change_requested` | SA | audit schema |
+| OQ-41 | `notfromhub` (added by the SA, flagged): LD L1170 / L1391 say "refuse", §16.16.1 says rule failures show the sign-in page. Which does the user see? | **SSE Proposal:** sign-in page (re-prompt) plus the `notfromhub` event | TL / SA | §5.7, errors |
+
+Note (not an OQ): `08-session.html` shows `local_agent.action_blocked reason=remote_session`. That is a device-agent event (LD L1238, L1408), not a login-service event, so it stays out of this contract.
