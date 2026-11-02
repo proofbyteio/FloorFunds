@@ -28,6 +28,7 @@ in this folder (plan §3.1). The stand-in and the real OpenIddict service implem
 - **[CONFLICT → OQ-n]**: two sources disagree. The draft picks one side and says which.
 - **[TL Decision 2026-11-02, OQ-n]**: answered by the Tech Lead on Nov 2 (v1-d2); the source doc may not say it yet.
 - **[SSE Proposal → OQ-n]**: SSE's proposed answer, for the TL to rule on at freeze.
+- **[Mohanraj Decision 2026-11-02 (t43u), OQ-n]**: decided by Mohanraj in his own message t43u, Nov 2 12:00 PM PT, verbatim: "In GitHub and 12 hr is fine but if we can have it configurable then it will be better".
 - **[DOC SILENT → OQ-n]**: a TL answer or source leaves this open; the draft states what it does meanwhile.
 
 ## Sources (read only; md5 at read time)

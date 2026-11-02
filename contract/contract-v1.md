@@ -87,7 +87,7 @@ Labels and source snapshots: see `README.md`. PLAN = build plan md5 ae18d664; LD
 | 7.1 | Grants `authorization_code` (with `code_verifier`) and `refresh_token`; client auth `client_secret_basic` or `private_key_jwt` | [SRC: PLAN L106, L109; LD L209] |
 | 7.2 | Rolling refresh; reuse after ≤30 s leeway → `invalid_grant`, chain revoked, `auth.refresh.reuse_detected` | [SRC: PLAN L109, S1 check 8; LD §5 L226] |
 | 7.3 | Refresh re-checks user status and role; no role → `invalid_grant` | re-check [SRC: PLAN L109]; error code [ASSUME A-11 → OQ-12] |
-| 7.4 | Refresh lifetime = absolute session cap (LS-OQ-13, open). Stand-in default 12 h | [SRC: LD L226]; value [ASSUME A-12 → OQ-13] |
+| 7.4 | Absolute session cap: default **12 h**, configurable. Setting `LoginService:Session:AbsoluteLifetime` (TimeSpan, e.g. `12:00:00`; env `LoginService__Session__AbsoluteLifetime`). The login session and its refresh-token family end at sign-in time + cap, never later; refresh lifetime = the cap. Bounds and validation: 1 h ≤ value ≤ 24 h, checked at startup, invalid → the service does not start (no silent clamp); the value in force is logged at startup; a change applies to new sessions only | rule [SRC: LD L226, L229]; 12 h + configurable [Mohanraj Decision 2026-11-02 (t43u), OQ-13]; setting name, bounds, validation [SSE Proposal → OQ-40] |
 | 7.5 | Response: `access_token`, `token_type=Bearer`, `expires_in=300`, `id_token` (code grant), `refresh_token` (when granted), `scope` | [ASSUME A-13 → OQ-4] (RFC 6749 §5.1 shape) |
 
 ## 8. Tokens and claims (schema: `claims.schema.json`)
