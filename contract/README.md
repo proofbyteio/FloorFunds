@@ -25,6 +25,9 @@ in this folder (plan §3.1). The stand-in and the real OpenIddict service implem
 - **[ASSUME A-n → OQ-n]**: not stated in any source. A POC assumption made so the draft is complete;
   it must be confirmed or changed by the person named in `OPEN-QUESTIONS.md` before freeze.
 - **[CONFLICT → OQ-n]**: two sources disagree. The draft picks one side and says which.
+- **[TL Decision 2026-11-02, OQ-n]**: answered by the Tech Lead on Nov 2 (v1-d2); the source doc may not say it yet.
+- **[SSE Proposal → OQ-n]**: SSE's proposed answer, for the TL to rule on at freeze.
+- **[DOC SILENT → OQ-n]**: a TL answer or source leaves this open; the draft states what it does meanwhile.
 
 ## Sources (read only; md5 at read time)
 

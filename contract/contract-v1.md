@@ -9,25 +9,28 @@ Labels and source snapshots: see `README.md`. PLAN = build plan md5 ae18d664; LD
 |---|---|---|
 | 1.1 | Real issuer is `https://login.<domain>/`, set explicitly (never derived from the request host), so tokens issued on 8084 still carry the public `iss` | [SRC: LD §4.5 L210] |
 | 1.2 | Stand-in issuer path always contains `/standin`, e.g. `http://localhost:5080/standin` | [SRC: PLAN §3.5 table; LD §16.17.5 L1315] |
-| 1.3 | Front listener: browser-facing (authorize, endsession, `/l/{slug}`, `/apps`, `/admin`). Stand-in example port 5080 | [SRC: PLAN §3.1 L104-113, §3.3] |
-| 1.4 | Back listener **8084**: maps only `/connect/token`, `/connect/revoke`, `/connect/introspect` and discovery/JWKS; everything else 404. On the front listener those back-channel paths return 404 | [SRC: LD §4.5 L206-208] |
+| 1.3 | Front listener: browser-facing (discovery, JWKS, authorize, endsession, `/l/{slug}`, `/apps`, `/admin`). Stand-in example port 5080 | [SRC: PLAN §3.1 L104-113, §3.3]; discovery/JWKS on front [TL Decision 2026-11-02, OQ-1] |
+| 1.4 | Back listener **8084**: maps only `/connect/token`, `/connect/revoke`, `/connect/introspect` (and, per LD, discovery/JWKS: see 2.9); everything else 404. On the front listener token/revoke/introspect return 404 | [SRC: LD §4.5 L206-208; TL Decision 2026-11-02, OQ-1] |
 | 1.5 | Stand-in control API `/_standin/*` only on a separate 127.0.0.1 listener; never part of the client contract; tests using it are tagged `standin-only` | [SRC: PLAN §3.2, §3.3] |
 | 1.6 | Clients read only `Auth:Authority`, `Auth:ClientId`, secret or key, and the back-channel base URL from config; they never hard-code a path, port, `kid` or stand-in claim | [SRC: PLAN §3.4] |
 | 1.7 | Allowlist runs first on every front request; a blocked caller gets the POC's minimal 403 (errors.md §4), not an OAuth error | [SRC: PLAN L108, L146; ALW L30-50] |
 
-## 2. Discovery: `GET /.well-known/openid-configuration`
+## 2. Discovery: `GET /.well-known/openid-configuration` (front)
 
 | # | Item | Label |
 |---|---|---|
 | 2.1 | Fields: `issuer`, `authorization_endpoint`, `token_endpoint`, `revocation_endpoint`, `end_session_endpoint`, `jwks_uri`, `response_types_supported=["code"]`, `grant_types_supported=["authorization_code","refresh_token"]`, `code_challenge_methods_supported=["S256"]`, `token_endpoint_auth_methods_supported=["client_secret_basic","private_key_jwt"]`, `id_token_signing_alg_values_supported=["RS256"]`. Schema: `openid-configuration.schema.json` | [SRC: PLAN §3.1 L106] |
-| 2.2 | **Which listener.** PLAN L106-107 and LD §16.17.2 L1297 say "front"; LD §4.5 L203/L206 (TL decision rev 12:22) says discovery/JWKS are internal-only on 8084. **Draft follows LD §4.5: served on 8084; front returns 404.** | [CONFLICT → OQ-1] |
-| 2.3 | URLs in the document: `authorization_endpoint` and `end_session_endpoint` are front URLs. `token_endpoint`, `revocation_endpoint`, `jwks_uri` are written as the internal 8084 URLs; clients replace nothing | [ASSUME A-1 → OQ-3] |
+| 2.2 | **Served on the front listener**: public (no secrets), read-only, cacheable; browsers and clients need the front issuer. Resolves the PLAN L106-107 / LD §16.17.2 L1297 ("front") vs LD §4.5 L203/L206 (8084 only) conflict in favour of front. LD §4.5 still to be aligned by the SA | [TL Decision 2026-11-02, OQ-1]; [SRC: PLAN L106-107; LD L1297] |
+| 2.3 | URLs in the document: every endpoint URL is under the public issuer (`https://login.<domain>/...`), including `token_endpoint` and `revocation_endpoint`, which answer 404 on the front; server-side clients send token/revoke/introspect to their configured back-channel base URL (8084). No internal host name is published | [SSE Proposal → OQ-3] (was A-1: internal URLs); back-channel base URL [SRC: PLAN §3.4] |
 | 2.4 | `subject_types_supported=["public"]` (required by OIDC Discovery 1.0, not in PLAN) | [ASSUME A-2 → OQ-4] |
 | 2.5 | `introspection_endpoint` is **not** published (PLAN lists the endpoint but not the field; it is "optional for clients") | [ASSUME A-3 → OQ-4] |
 | 2.6 | `scopes_supported`, `claims_supported`, `prompt_values_supported` not published in v1 | [ASSUME A-4 → OQ-4] |
 | 2.7 | No `userinfo_endpoint`; no `frontchannel_logout_*` / `backchannel_logout_*` | [SRC: PLAN L123, §1.3 L60] |
+| 2.8 | Caching: "cacheable" is decided, the header value is not. Draft: `Cache-Control: public, max-age=3600` on discovery and JWKS (a new key is published ≥24 h before it signs, 3.2) | cacheable [TL Decision 2026-11-02, OQ-1]; value [SSE Proposal → OQ-30] |
+| 2.9 | LD §4.5 L206 also maps discovery/JWKS on 8084; the TL answer is silent on keeping that copy. Draft: 8084 serves the same documents too, so the BFF and API (not on the casino allowlist) can fetch them | [DOC SILENT → OQ-31] |
+| 2.10 | Does the allowlist (1.7) apply to front discovery/JWKS? "Public" (TL) vs "allowlist first on every front request". Draft: yes, no exception; servers use the 8084 copy (2.9) | [DOC SILENT → OQ-32] |
 
-## 3. JWKS: `GET /.well-known/jwks`
+## 3. JWKS: `GET /.well-known/jwks` (front; see 2.2, 2.8-2.10)
 
 | # | Item | Label |
 |---|---|---|

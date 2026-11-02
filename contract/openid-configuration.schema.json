@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:openid-configuration",
   "title": "Login service discovery document, contract v1 (DRAFT v1-d2)",
-  "description": "GET /.well-known/openid-configuration. Labels per contract/README.md. Fields and fixed values: [SRC: PLAN §3.1 L106]. Listener: [CONFLICT -> OQ-1].",
+  "description": "GET /.well-known/openid-configuration. Labels per contract/README.md. Fields and fixed values: [SRC: PLAN §3.1 L106]. Listener: front [TL Decision 2026-11-02, OQ-1]; also on 8084 [DOC SILENT -> OQ-31].",
   "type": "object",
   "required": [
     "issuer",
@@ -26,11 +26,11 @@
       "pattern": "^https?://"
     },
     "authorization_endpoint": { "description": "Front listener [SRC: PLAN L108].", "type": "string", "format": "uri" },
-    "token_endpoint": { "description": "Back channel 8084 [SRC: PLAN L109]. Written as the internal URL [ASSUME A-1 -> OQ-3].", "type": "string", "format": "uri" },
-    "revocation_endpoint": { "description": "Back channel 8084 [SRC: PLAN L110].", "type": "string", "format": "uri" },
+    "token_endpoint": { "description": "Served on back channel 8084 [SRC: PLAN L109]. URL written under the public issuer; clients call their configured back-channel base URL [SSE Proposal -> OQ-3].", "type": "string", "format": "uri" },
+    "revocation_endpoint": { "description": "Served on back channel 8084 [SRC: PLAN L110]. URL under the public issuer [SSE Proposal -> OQ-3].", "type": "string", "format": "uri" },
     "end_session_endpoint": { "description": "Front listener [SRC: PLAN L112].", "type": "string", "format": "uri" },
     "jwks_uri": {
-      "description": "Path /.well-known/jwks [SRC: PLAN L107].",
+      "description": "Path /.well-known/jwks on the front listener [SRC: PLAN L107; TL Decision 2026-11-02, OQ-1].",
       "type": "string",
       "format": "uri",
       "pattern": "/\\.well-known/jwks$"
