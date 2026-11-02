@@ -1,13 +1,13 @@
-# Errors toward clients: contract v1 (DRAFT v1-d1)
+# Errors toward clients: contract v1 (DRAFT v1-d2)
 
 Labels and source snapshots: see `README.md`.
 
 ## 1. Rule
 
-- Toward OAuth clients: **standard OAuth 2.0 / OIDC error codes only**. [SRC: PLAN §3.1 L137; LD §16.17.2 L1296]
+- Toward OAuth clients: **standard OAuth 2.0 / OIDC error codes only**. [SRC: PLAN §3.1 L137; LD §16.17.2 L1300]
 - Internal reason codes (`locked`, `mfa_missing`, `tenant_mismatch`, `stale_auth_time`, `remote_session`,
   `no_role`, `attestation_invalid`, …) go **only** to audit and to our own pages, never to clients.
-  [SRC: PLAN L146; LD §8 L420]
+  [SRC: PLAN L146; LD §8 L422]
 - `error_description` is never sent, so no internal reason can leak through it. [ASSUME A-20 → OQ-17]
 - `error_uri` is never sent. [ASSUME A-20 → OQ-17]
 
@@ -24,7 +24,7 @@ Labels and source snapshots: see `README.md`.
 | `access_denied` | No role in the client's `app_code` (audit `reason=no_role`); user cancels on the remote-session block (screen 8) | authorize: redirect | [SRC: PLAN L143, L134; S1 checks 1, 4] |
 | `login_required` | `prompt=none` and no login session | authorize: redirect | [SRC: PLAN L144] |
 | `interaction_required` | `prompt=none` and a session exists but interaction is needed (`max_age` exceeded, hand-off rules not met, `cage_consumed`) | authorize: redirect | code [SRC: PLAN L144]; cases [ASSUME A-22 → OQ-18] |
-| `temporarily_unavailable` | Outbox write failed (fail closed: no session, no code); issuer dependency down | authorize: redirect. Token endpoint: HTTP 503 JSON `{"error":"temporarily_unavailable"}` (not an RFC 6749 §5.2 token code) | code and cases [SRC: PLAN L145, S1 check 9; LD §8 L423]; token transport [ASSUME A-23 → OQ-19] |
+| `temporarily_unavailable` | Outbox write failed (fail closed: no session, no code); issuer dependency down | authorize: redirect. Token endpoint: HTTP 503 JSON `{"error":"temporarily_unavailable"}` (not an RFC 6749 §5.2 token code) | code and cases [SRC: PLAN L145, S1 check 9; LD §8 L425]; token transport [ASSUME A-23 → OQ-19] |
 
 Redirect errors carry `error` and the client's `state` (and `iss`, RFC 9207). `iss` [ASSUME A-24 → OQ-17].
 
@@ -32,10 +32,10 @@ Redirect errors carry `error` and the client's `state` (and `iss`, RFC 9207). `i
 
 | Situation | What happens | Label |
 |---|---|---|
-| Hand-off rule 1-6 fails | Sign-in page again (re-prompt) | [SRC: PLAN L134; LD L1295] |
-| Hand-off refused, `attestation_invalid` | Password + MFA sign-in; cage actions blocked; screen 8 variant B | [SRC: LD L1174; PLAN S1 4a, 4b] |
-| Hand-off refused, `remote_session` | Screen 8 (remote-session variant); `access_denied` to the client only if the user cancels | [SRC: LD L1173; PLAN L134] |
-| Plain sign-in, agent reports remote session | Screen 8 "Try again after the remote session ends" | [SRC: LD §16.18.5 L1359] |
+| Hand-off rule 1-6 fails | Sign-in page again (re-prompt) | [SRC: PLAN L134; LD L1299] |
+| Hand-off refused, `attestation_invalid` | Password + MFA sign-in; cage actions blocked; screen 8 variant B | [SRC: LD L1178; PLAN S1 4a, 4b] |
+| Hand-off refused, `remote_session` | Screen 8 (remote-session variant); `access_denied` to the client only if the user cancels | [SRC: LD L1177; PLAN L134] |
+| Plain sign-in, agent reports remote session | Screen 8 "Try again after the remote session ends" | [SRC: LD §16.18.5 L1364] |
 | Wrong password, locked account, MFA failure | Our sign-in page messages (UX screens), no redirect to the client | [SRC: PLAN L146 ("our own pages")]; wording owned by UX |
 | `redirect_uri` or `client_id` invalid | Error page on our host; never redirect | [ASSUME A-6 → OQ-5] |
 | API (resource server) token problems: wrong `aud`, bad signature, expired, stand-in token in Production | HTTP 401 with `WWW-Authenticate: Bearer error="invalid_token"` | 401 [SRC: PLAN S1 checks 8, 11]; header [ASSUME A-25 → OQ-17] (RFC 6750 §3.1) |
@@ -55,6 +55,6 @@ Connection: close
 ```
 
 Body exactly `403 Forbidden: access denied\n` (empty for HEAD); no HTML, redirect, cookie or app name,
-`Server: server`, plus `Date` and `X-Request-ID`. Allowlist 403s are not on the outbox (LD §8 L425).
-On 8084 the check uses the internal source list (LD §4.5 L205); what an unlisted caller gets there
+`Server: server`, plus `Date` and `X-Request-ID`. Allowlist 403s are not on the outbox (LD §8 L427).
+On 8084 the check uses the internal source list (LD §4.5 L207); what an unlisted caller gets there
 (same 403, or no connection) [ASSUME A-26 → OQ-20].

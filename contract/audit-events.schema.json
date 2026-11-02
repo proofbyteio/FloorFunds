@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:audit-events",
-  "title": "Audit events the contract tests may assert, contract v1 (DRAFT v1-d1)",
-  "description": "Event list [SRC: PLAN §3.1 L148-161; LD §8 L411-421]. Envelope names [SRC: AUD §7A.4]; login-specific mapping [SRC: LD §8 L418]. The two differ (flat partner_id/client_id/location_id in AUD vs scope.* in LD) [CONFLICT -> OQ-23]; draft uses AUD flat names plus LD's actor.session_id, target, action. Only fields the login service writes are listed; relay-assigned fields (received_at, sequence, prev_hash, hash) are not asserted.",
+  "title": "Audit events the contract tests may assert, contract v1 (DRAFT v1-d2)",
+  "description": "Event list [SRC: PLAN §3.1 L148-161; LD §8 L413-423]. Envelope names [SRC: AUD §7A.4]; login-specific mapping [SRC: LD §8 L420]. The two differ (flat partner_id/client_id/location_id in AUD vs scope.* in LD) [CONFLICT -> OQ-23]; draft uses AUD flat names plus LD's actor.session_id, target, action. Only fields the login service writes are listed; relay-assigned fields (received_at, sequence, prev_hash, hash) are not asserted.",
   "type": "object",
   "allOf": [{ "$ref": "#/$defs/envelope" }],
   "oneOf": [
@@ -26,20 +26,20 @@
         "event_id": { "description": "UUIDv7, idempotency key [SRC: AUD §7A.4].", "$ref": "#/$defs/id" },
         "schema": { "const": "cachd.log" },
         "schema_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
-        "category": { "description": "Events category [SRC: LD §8 L407]. Literal value [ASSUME A-30 -> OQ-23].", "const": "event" },
+        "category": { "description": "Events category [SRC: LD §8 L409]. Literal value [ASSUME A-30 -> OQ-23].", "const": "event" },
         "event_type": { "type": "string", "pattern": "^auth\\.[a-z_]+\\.[a-z_]+$" },
         "occurred_at": { "type": "string", "format": "date-time" },
         "location_tz": { "type": "string" },
         "partner_id": { "$ref": "#/$defs/id" },
         "client_id": { "description": "AUD name for the Cachd client (not the OAuth client) [SRC: AUD §7A.4]; see OQ-23.", "$ref": "#/$defs/id" },
         "location_id": { "$ref": "#/$defs/id" },
-        "workstation_id": { "description": "If known [SRC: LD L418].", "type": "string" },
+        "workstation_id": { "description": "If known [SRC: LD L420].", "type": "string" },
         "actor": {
           "type": "object",
           "required": ["user_id"],
           "properties": {
             "user_id": { "description": "= sub; null when the user is unknown (failed sign-in) [ASSUME A-31 -> OQ-24].", "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
-            "session_id": { "description": "= login_session_id [SRC: LD L418].", "type": "string" },
+            "session_id": { "description": "= login_session_id [SRC: LD L420].", "type": "string" },
             "roles": { "type": "array", "items": { "type": "string" } },
             "channel": { "type": "string" }
           }
@@ -50,7 +50,7 @@
         },
         "action": { "type": "string" },
         "source": {
-          "description": "service, versions [SRC: AUD §7A.4]; ip, user_agent [SRC: LD L411, L418].",
+          "description": "service, versions [SRC: AUD §7A.4]; ip, user_agent [SRC: LD L413, L420].",
           "type": "object",
           "required": ["service"],
           "properties": {
@@ -61,7 +61,7 @@
             "user_agent": { "type": "string" }
           }
         },
-        "outcome": { "description": "Values [ASSUME A-32 -> OQ-23]; success and denied appear in LD L418, L420.", "enum": ["success", "failure", "denied"] },
+        "outcome": { "description": "Values [ASSUME A-32 -> OQ-23]; success and denied appear in LD L420, L422.", "enum": ["success", "failure", "denied"] },
         "correlation_id": { "type": "string" },
         "trace_id": { "type": "string" },
         "producer_seq": { "type": "integer" },
@@ -73,7 +73,7 @@
     },
     "provider_kind": { "enum": ["database", "entra"] },
     "auth.login.succeeded": {
-      "description": "[SRC: LD §8 L411].",
+      "description": "[SRC: LD §8 L413].",
       "properties": {
         "event_type": { "const": "auth.login.succeeded" },
         "outcome": { "const": "success" },
@@ -88,16 +88,16 @@
       }
     },
     "auth.login.failed": {
-      "description": "[SRC: LD §8 L412; PLAN L150]. Never the password.",
+      "description": "[SRC: LD §8 L414; PLAN L150]. Never the password.",
       "properties": {
         "event_type": { "const": "auth.login.failed" },
         "outcome": { "const": "failure" },
         "details": {
           "required": ["username_hmac", "reason", "provider_kind"],
           "properties": {
-            "username_hmac": { "description": "HMAC-SHA256 with a secret key, hex [SRC: LD L412]; field name and encoding [ASSUME A-34 -> OQ-24]. Stand-in key is test-only.", "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "username_hmac": { "description": "HMAC-SHA256 with a secret key, hex [SRC: LD L414]; field name and encoding [ASSUME A-34 -> OQ-24]. Stand-in key is test-only.", "type": "string", "pattern": "^[0-9a-f]{64}$" },
             "reason": {
-              "description": "Known codes: remote_session [SRC: LD L412]; locked, mfa_missing, tenant_mismatch, stale_auth_time [SRC: PLAN L146]; bad_credentials, outbox_unavailable [ASSUME A-35 -> OQ-24]. The full list is open.",
+              "description": "Known codes: remote_session [SRC: LD L414]; locked, mfa_missing, tenant_mismatch, stale_auth_time [SRC: PLAN L146]; bad_credentials, outbox_unavailable [ASSUME A-35 -> OQ-24]. The full list is open.",
               "type": "string",
               "pattern": "^[a-z_]+$",
               "examples": ["bad_credentials", "locked", "mfa_missing", "tenant_mismatch", "stale_auth_time", "remote_session"]
@@ -109,14 +109,14 @@
       }
     },
     "auth.account.locked": {
-      "description": "[SRC: LD §8 L413]; 10 tries / 30 min [SRC: PLAN L34].",
+      "description": "[SRC: LD §8 L415]; 10 tries / 30 min [SRC: PLAN L34].",
       "properties": {
         "event_type": { "const": "auth.account.locked" },
         "details": { "required": ["lock_until"], "properties": { "lock_until": { "type": "string", "format": "date-time" } } }
       }
     },
     "auth.account.unlocked": {
-      "description": "Who unlocked, user unlocked, identity check used [SRC: LD §8 L413].",
+      "description": "Who unlocked, user unlocked, identity check used [SRC: LD §8 L415].",
       "properties": {
         "event_type": { "const": "auth.account.unlocked" },
         "target": { "required": ["type", "id"], "properties": { "type": { "const": "user" } } },
@@ -124,28 +124,28 @@
       }
     },
     "auth.mfa": {
-      "description": "[SRC: LD §8 L414].",
+      "description": "[SRC: LD §8 L416].",
       "properties": {
         "event_type": { "enum": ["auth.mfa.enrolled", "auth.mfa.succeeded", "auth.mfa.failed", "auth.mfa.reset"] },
         "details": { "required": ["method"], "properties": { "method": { "description": "totp | recovery_code | entra [ASSUME A-36 -> OQ-24].", "type": "string" } } }
       }
     },
     "auth.password.changed": {
-      "description": "[SRC: LD §8 L415].",
+      "description": "[SRC: LD §8 L417].",
       "properties": {
         "event_type": { "const": "auth.password.changed" },
         "details": { "required": ["channel"], "properties": { "channel": { "type": "string" } } }
       }
     },
     "auth.session.revoked": {
-      "description": "reason, actor [SRC: LD §8 L417]. Reason values [ASSUME A-37 -> OQ-24].",
+      "description": "reason, actor [SRC: LD §8 L419]. Reason values [ASSUME A-37 -> OQ-24].",
       "properties": {
         "event_type": { "const": "auth.session.revoked" },
         "details": { "required": ["reason"], "properties": { "reason": { "type": "string", "examples": ["sign_out", "admin_revoke", "idle_timeout", "refresh_reuse"] } } }
       }
     },
     "auth.app.signed_in": {
-      "description": "[SRC: LD §8 L418; PLAN L156, S1 check 2]. One per code issued.",
+      "description": "[SRC: LD §8 L420; PLAN L156, S1 check 2]. One per code issued.",
       "properties": {
         "event_type": { "const": "auth.app.signed_in" },
         "outcome": { "const": "success" },
@@ -166,7 +166,7 @@
       "required": ["target", "action"]
     },
     "auth.app_access.denied": {
-      "description": "[SRC: LD §8 L420; PLAN §1.2 L51, L157, S1 checks 1, 4, 4a].",
+      "description": "[SRC: LD §8 L422; PLAN §1.2 L51, L157, S1 checks 1, 4, 4a].",
       "properties": {
         "event_type": { "const": "auth.app_access.denied" },
         "outcome": { "const": "denied" },
@@ -179,7 +179,7 @@
       "required": ["target"]
     },
     "fields_not_stated": {
-      "description": "In the list [SRC: PLAN L158-160; LD §8 L421] but no fields are stated anywhere [OQ-25]. Envelope only until answered.",
+      "description": "In the list [SRC: PLAN L158-160; LD §8 L423] but no fields are stated anywhere [OQ-25]. Envelope only until answered.",
       "properties": {
         "event_type": { "enum": ["auth.refresh.reuse_detected", "auth.break_glass.used", "auth.session.location_switched"] }
       }

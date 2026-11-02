@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:openid-configuration",
-  "title": "Login service discovery document, contract v1 (DRAFT v1-d1)",
+  "title": "Login service discovery document, contract v1 (DRAFT v1-d2)",
   "description": "GET /.well-known/openid-configuration. Labels per contract/README.md. Fields and fixed values: [SRC: PLAN §3.1 L106]. Listener: [CONFLICT -> OQ-1].",
   "type": "object",
   "required": [
@@ -20,7 +20,7 @@
   ],
   "properties": {
     "issuer": {
-      "description": "Real: https://login.<domain>/ [SRC: LD §4.5 L208]. Stand-in: path contains /standin [SRC: PLAN §3.5].",
+      "description": "Real: https://login.<domain>/ [SRC: LD §4.5 L210]. Stand-in: path contains /standin [SRC: PLAN §3.5].",
       "type": "string",
       "format": "uri",
       "pattern": "^https?://"
