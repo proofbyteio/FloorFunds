@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/e2e/">
+    <Project Path="e2e/Login.E2E.csproj" />
+  </Folder>
+  <Project Path="Login.ContractTests/Login.ContractTests.csproj" />
+  <Project Path="Login.SecurityTests/Login.SecurityTests.csproj" />
+  <Project Path="Login.TestKit/Login.TestKit.csproj" />
+</Solution>
