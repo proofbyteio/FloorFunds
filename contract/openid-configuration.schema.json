@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:cachd:login:contract:v1:openid-configuration",
+  "title": "Login service discovery document, contract v1 (DRAFT v1-d1)",
+  "description": "GET /.well-known/openid-configuration. Labels per contract/README.md. Fields and fixed values: [SRC: PLAN §3.1 L106]. Listener: [CONFLICT -> OQ-1].",
+  "type": "object",
+  "required": [
+    "issuer",
+    "authorization_endpoint",
+    "token_endpoint",
+    "revocation_endpoint",
+    "end_session_endpoint",
+    "jwks_uri",
+    "response_types_supported",
+    "grant_types_supported",
+    "code_challenge_methods_supported",
+    "token_endpoint_auth_methods_supported",
+    "id_token_signing_alg_values_supported",
+    "subject_types_supported"
+  ],
+  "properties": {
+    "issuer": {
+      "description": "Real: https://login.<domain>/ [SRC: LD §4.5 L208]. Stand-in: path contains /standin [SRC: PLAN §3.5].",
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https?://"
+    },
+    "authorization_endpoint": { "description": "Front listener [SRC: PLAN L108].", "type": "string", "format": "uri" },
+    "token_endpoint": { "description": "Back channel 8084 [SRC: PLAN L109]. Written as the internal URL [ASSUME A-1 -> OQ-3].", "type": "string", "format": "uri" },
+    "revocation_endpoint": { "description": "Back channel 8084 [SRC: PLAN L110].", "type": "string", "format": "uri" },
+    "end_session_endpoint": { "description": "Front listener [SRC: PLAN L112].", "type": "string", "format": "uri" },
+    "jwks_uri": {
+      "description": "Path /.well-known/jwks [SRC: PLAN L107].",
+      "type": "string",
+      "format": "uri",
+      "pattern": "/\\.well-known/jwks$"
+    },
+    "response_types_supported": { "const": ["code"] },
+    "grant_types_supported": { "const": ["authorization_code", "refresh_token"] },
+    "code_challenge_methods_supported": { "const": ["S256"] },
+    "token_endpoint_auth_methods_supported": { "const": ["client_secret_basic", "private_key_jwt"] },
+    "id_token_signing_alg_values_supported": { "const": ["RS256"] },
+    "subject_types_supported": {
+      "description": "Required by OIDC Discovery 1.0 §3; not in PLAN [ASSUME A-2 -> OQ-4].",
+      "const": ["public"]
+    },
+    "token_endpoint_auth_signing_alg_values_supported": {
+      "description": "For private_key_jwt. Value not stated anywhere [ASSUME A-27 -> OQ-21].",
+      "const": ["RS256"]
+    },
+    "revocation_endpoint_auth_methods_supported": {
+      "description": "Same as the token endpoint [ASSUME A-27 -> OQ-21].",
+      "const": ["client_secret_basic", "private_key_jwt"]
+    }
+  },
+  "not": {
+    "description": "Not in v1: userinfo [SRC: PLAN L123]; front/back-channel logout [SRC: PLAN §1.3 L60]; introspection not published [ASSUME A-3 -> OQ-4].",
+    "anyOf": [
+      { "required": ["userinfo_endpoint"] },
+      { "required": ["introspection_endpoint"] },
+      { "required": ["frontchannel_logout_supported"] },
+      { "required": ["backchannel_logout_supported"] },
+      { "required": ["check_session_iframe"] }
+    ]
+  },
+  "additionalProperties": true,
+  "$comment": "additionalProperties stays true so the real OpenIddict service can publish extra standard fields; clients may rely only on the fields named above (PLAN §3.1 L100). Whether the stand-in must publish exactly this set: OQ-4."
+}
