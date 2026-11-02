@@ -5,7 +5,7 @@ Every [ASSUME A-n] in the contract points here. Nothing below is decided.
 
 | OQ | Question | Draft for now (assumption) | Who | Refs |
 |---|---|---|---|---|
-| OQ-1 | Discovery and JWKS: front listener (PLAN L106-107, LD §16.17.2 L1293) or internal-only on 8084 (LD §4.5 L201/L204, TL decision rev 12:22)? | 8084 only; front 404 | TL | contract §2.2 |
+| OQ-1 | Discovery and JWKS: front listener (PLAN L106-107, LD §16.17.2 L1295) or internal-only on 8084 (LD §4.5 L202/L205, TL decision rev 12:22)? | 8084 only; front 404 | TL | contract §2.2 |
 | OQ-2 | Source drift: the brief pinned PLAN `8c42fbdd` and LD rev 11:23 `6c489506`. PLAN changed at 11:27:56 (now `ae18d664`, adds 4b); LD `6c489506` no longer exists on the box. OK to use PLAN `ae18d664` + LD `bd70f29a`? | Used them | TL | README |
 | OQ-3 | In discovery, are `token_endpoint` / `revocation_endpoint` / `jwks_uri` the internal 8084 URLs, or public URLs that clients override with the back-channel base URL? | Internal URLs (A-1) | TL | §2.3 |
 | OQ-4 | Extra discovery fields: `subject_types_supported=["public"]` (A-2); `introspection_endpoint` not published (A-3); no `scopes_supported` etc. (A-4); JWKS `use=sig` (A-5); token response shape (A-13); introspect response shape (A-17). Must the stand-in publish exactly this set? | As stated | TL | §2-3, §7, §10 |
@@ -27,7 +27,7 @@ Every [ASSUME A-n] in the contract points here. Nothing below is decided.
 | OQ-20 | 8084 internal-list block: same minimal 403, or connection refused? | Not drafted (A-26) | TL | errors §4 |
 | OQ-21 | `private_key_jwt` signing alg; revocation auth methods | RS256; same as token (A-27) | TL | discovery schema |
 | OQ-22 | `amr` values for DB sign-in (password + TOTP) and for Entra (pass through?) | `["pwd","otp","mfa"]`; Entra pass-through (A-28) | TL / SA | claims schema |
-| OQ-23 | Envelope: AUD §7A.4 uses flat `partner_id` / `client_id` / `location_id`; LD §8 L418 uses `scope.partner_id` / `scope.client_id` / `scope.location_ids`, plus `actor.session_id`, `target`, `action`. Which wins? Also `category` literal, `outcome` values, and AUD `client_id` (Cachd client) clashing with OAuth `client_id` | AUD flat names + LD extras; `event`; success/failure/denied (A-30, A-32) | SA | audit schema |
+| OQ-23 | Envelope: AUD §7A.4 uses flat `partner_id` / `client_id` / `location_id`; LD §8 L419 uses `scope.partner_id` / `scope.client_id` / `scope.location_ids`, plus `actor.session_id`, `target`, `action`. Which wins? Also `category` literal, `outcome` values, and AUD `client_id` (Cachd client) clashing with OAuth `client_id` | AUD flat names + LD extras; `event`; success/failure/denied (A-30, A-32) | SA | audit schema |
 | OQ-24 | Full `auth.login.failed` reason list; field name for the HMAC'd username; `actor.user_id` null on failed sign-in; MFA `method` values; `auth.session.revoked` reasons | Partial lists (A-31, A-34-A-37) | SA | audit schema |
 | OQ-25 | Fields for `auth.refresh.reuse_detected`, `auth.break_glass.used`, `auth.session.location_switched`; should stand-in events carry `x_standin`? | Envelope only; yes (A-33) | SA / TL | audit schema |
 | OQ-26 | PLAN §3.1 audit list omits LD §8 events (`auth.password.reset_requested` / `reset_completed`, `auth.provider.changed`, `auth.identity.linked` / `unlinked`, `auth.bootstrap.completed`, `auth.mfa.policy_exclusion_detected`). In v1 or later? | Out of v1 | TL | audit schema |

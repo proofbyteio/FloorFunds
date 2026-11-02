@@ -20,7 +20,7 @@
   ],
   "properties": {
     "issuer": {
-      "description": "Real: https://login.<domain>/ [SRC: LD §4.5 L210]. Stand-in: path contains /standin [SRC: PLAN §3.5].",
+      "description": "Real: https://login.<domain>/ [SRC: LD §4.5 L211]. Stand-in: path contains /standin [SRC: PLAN §3.5].",
       "type": "string",
       "format": "uri",
       "pattern": "^https?://"
