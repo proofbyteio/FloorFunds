@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:audit-events",
   "title": "Audit events the contract tests may assert, contract v1 (DRAFT v1-d2)",
-  "description": "Event list [SRC: PLAN §3.1 L148-161; LD §8 L414-424]. Envelope names [SRC: AUD §7A.4]; login-specific mapping [SRC: LD §8 L421]. The two differ (flat partner_id/client_id/location_id in AUD vs scope.* in LD) [CONFLICT -> OQ-23]; draft uses AUD flat names plus LD's actor.session_id, target, action. Only fields the login service writes are listed; relay-assigned fields (received_at, sequence, prev_hash, hash) are not asserted.",
+  "description": "Event list [SRC: PLAN §3.1 L148-161; LD §8 L414-424]. Envelope names [SRC: AUD §7A.4]; login-specific mapping [SRC: LD §8 L421]. The Cachd client field is cachd_client_id [TL Decision 2026-11-02, OQ-23; consistent with B-LS5 and claims.schema.json]; AUD §7A.4 still says client_id [-> OQ-37]; partner_id/location_id flat (AUD) vs scope.* (LD) stays open with the SA [OQ-23]. Events marked 'Defined, not emitted in S1' are in the v1 schema so later slices keep the shape [TL Decision 2026-11-02, OQ-26]; draft uses AUD flat names plus LD's actor.session_id, target, action. Only fields the login service writes are listed; relay-assigned fields (received_at, sequence, prev_hash, hash) are not asserted.",
   "type": "object",
   "allOf": [{ "$ref": "#/$defs/envelope" }],
   "oneOf": [
@@ -15,7 +15,10 @@
     { "$ref": "#/$defs/auth.session.revoked" },
     { "$ref": "#/$defs/auth.app.signed_in" },
     { "$ref": "#/$defs/auth.app_access.denied" },
-    { "$ref": "#/$defs/fields_not_stated" }
+    { "$ref": "#/$defs/fields_not_stated" },
+    { "$ref": "#/$defs/auth.password.reset" },
+    { "$ref": "#/$defs/auth.provider.changed" },
+    { "$ref": "#/$defs/not_emitted_fields_not_stated" }
   ],
   "$defs": {
     "id": { "type": "string", "format": "uuid" },
@@ -27,11 +30,11 @@
         "schema": { "const": "cachd.log" },
         "schema_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
         "category": { "description": "Events category [SRC: LD §8 L410]. Literal value [ASSUME A-30 -> OQ-23].", "const": "event" },
-        "event_type": { "type": "string", "pattern": "^auth\\.[a-z_]+\\.[a-z_]+$" },
+        "event_type": { "description": "auth.* ; iam.permission.change_requested is the one iam.* event the login service writes [SRC: LD §8 L424] [SSE Proposal -> OQ-38].", "type": "string", "pattern": "^(auth\\.[a-z_]+\\.[a-z_]+|iam\\.permission\\.change_requested)$" },
         "occurred_at": { "type": "string", "format": "date-time" },
         "location_tz": { "type": "string" },
         "partner_id": { "$ref": "#/$defs/id" },
-        "client_id": { "description": "AUD name for the Cachd client (not the OAuth client) [SRC: AUD §7A.4]; see OQ-23.", "$ref": "#/$defs/id" },
+        "cachd_client_id": { "description": "The Cachd client (casino operator), not the OAuth client [TL Decision 2026-11-02, OQ-23]. AUD §7A.4 names it client_id [-> OQ-37]. Absent for partner-level users.", "$ref": "#/$defs/id" },
         "location_id": { "$ref": "#/$defs/id" },
         "workstation_id": { "description": "If known [SRC: LD L421].", "type": "string" },
         "actor": {
@@ -173,10 +176,38 @@
         "target": { "required": ["type", "id"], "properties": { "type": { "const": "app" } } },
         "details": {
           "required": ["reason"],
-          "properties": { "reason": { "enum": ["no_role", "remote_session", "attestation_invalid"] } }
+          "properties": { "reason": { "description": "notfromhub: rule 4, hub_launch missing or used [SRC: LD L423, L1170; TL Decision 2026-11-02, OQ-7].", "enum": ["no_role", "remote_session", "attestation_invalid", "notfromhub"] } }
         }
       },
       "required": ["target"]
+    },
+    "auth.password.reset": {
+      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. [SRC: LD §8 L418]. Channel values not stated [SSE Proposal -> OQ-24: email | admin].",
+      "properties": {
+        "event_type": { "enum": ["auth.password.reset_requested", "auth.password.reset_completed"] },
+        "details": { "required": ["channel"], "properties": { "channel": { "type": "string" } } }
+      }
+    },
+    "auth.provider.changed": {
+      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. [SRC: LD §8 L419]. before/after never hold secrets.",
+      "properties": {
+        "event_type": { "const": "auth.provider.changed" },
+        "details": {
+          "required": ["location_id", "before", "after", "approval_id"],
+          "properties": {
+            "location_id": { "$ref": "#/$defs/id" },
+            "before": { "type": "object" },
+            "after": { "type": "object" },
+            "approval_id": { "type": "string" }
+          }
+        }
+      }
+    },
+    "not_emitted_fields_not_stated": {
+      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. In LD §8 L424 with no fields stated (envelope only) [-> OQ-25]. Partner Admin method change = iam.permission.change_requested [-> OQ-38].",
+      "properties": {
+        "event_type": { "enum": ["auth.identity.linked", "auth.identity.unlinked", "auth.bootstrap.completed", "auth.mfa.policy_exclusion_detected", "iam.permission.change_requested"] }
+      }
     },
     "fields_not_stated": {
       "description": "In the list [SRC: PLAN L158-160; LD §8 L424] but no fields are stated anywhere [OQ-25]. Envelope only until answered.",
