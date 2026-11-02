@@ -50,3 +50,8 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - **OQ-13 resolved:** the absolute session cap defaults to 12 h and is configurable. Contract §7.4 names the setting `LoginService:Session:AbsoluteLifetime` (TimeSpan `12:00:00`). Bounds and validation are an SSE Proposal (OQ-40): 1 h to 24 h, startup fails on a bad value, logged at startup, new sessions only.
 - **OQ-28 / PQ-201 resolved:** the code lives in GitHub. Org, repo name, visibility and setup are open for the TL (OQ-39). No remote, push or GitHub action taken; local git only until the TL says otherwise.
 - **Also fixed:** OQ-31 cite (LD L207, not L208) and the OQ-30 wording (LD L231 already publishes a new key ≥24 h ahead).
+
+### [SSE] TL correction on the session cap (TL 12:01 PM; applied 12:09 PM)
+- **What:** withdrew my 1 h-24 h bounds proposal (and the other validation extras) in contract §7.4 and OQ-40. Now OPEN for Mohanraj with no values proposed: (a) who can change the cap; (b) the allowed range. Question sent to Mohanraj Nov 2, 12:01 PM PT: "Who should be able to change the 12-hour sign-in limit, and what's the shortest and longest it can be set to?"
+- **Kept:** 12 h default (Mohanraj t43u). Technical check, not policy: cap > 15-minute idle timeout or startup fails. Setting `LoginService:Session:AbsoluteLifetime` in deployment config only, no admin screen (POC assumption → OQ-40).
+- **Idle timeout verified** in LD `88878681` (unchanged since 11:41:20, re-checked 12:08 PM): L229 "Idle timeout 15 min (PCI 8.2.8 [S9]) at the BFF"; L934 login-service cookie "15-minute sliding idle plus the absolute cap"; L321 PCI 8.2.8 row. No conflict.
