@@ -48,14 +48,16 @@ public class ContractArtifactTests
      "end_session_endpoint":"http://localhost:5080/standin/connect/endsession","jwks_uri":"http://localhost:5080/standin/.well-known/jwks",
      "response_types_supported":["code"],"grant_types_supported":["authorization_code","refresh_token"],
      "code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["client_secret_basic","private_key_jwt"],
-     "id_token_signing_alg_values_supported":["RS256"],"subject_types_supported":["public"]}
-    """;
+     "id_token_signing_alg_values_supported":["RS256"],"subject_types_supported":["public"],
+     "token_endpoint_auth_signing_alg_values_supported":["RS256"],"revocation_endpoint_auth_methods_supported":["client_secret_basic","private_key_jwt"],
+     "authorization_response_iss_parameter_supported":true}
+    """; // plan §3.1 L106 + TL Decision OQ-21 (auth algs/methods) and OQ-17 (RFC 9207 iss)
 
     [Fact, Trait("check", "7")]
     public void CS02_discovery_schema_accepts_the_plan_document()
     {
         NeedContract("openid-configuration.schema.json");
-        Assert.True(Valid(Schema("openid-configuration.schema.json"), GoodDiscovery), "schema rejects a discovery doc built from plan §3.1 L106");
+        Assert.True(Valid(Schema("openid-configuration.schema.json"), GoodDiscovery), "schema rejects a discovery doc built from plan §3.1 L106 + TL OQ-17/OQ-21");
     }
 
     [Theory, Trait("check", "7")]
@@ -109,7 +111,7 @@ public class ContractArtifactTests
     public void CS08_id_token_valid_and_closed()
     {
         NeedContract("claims.schema.json");
-        var s = Def("claims.schema.json", "id_token");
+        var s = TryDef("claims.schema.json", "id_token_code") ?? Def("claims.schema.json", "id_token"); // CR-03 split at v1-d4
         var good = $$"""{"iss":"http://localhost:5080/standin","sub":"{{U1}}","aud":"cash_advance_bff","azp":"cash_advance_bff","exp":1700000300,"iat":1700000000,"nonce":"n-1","auth_time":1700000000,"amr":["pwd","otp","mfa"]}""";
         Assert.True(Valid(s, good));
         Assert.False(Valid(s, With(good, ("roles", "[\"cashier\"]"))));
@@ -117,11 +119,138 @@ public class ContractArtifactTests
         Assert.False(Valid(s, With(good, ("sub", "\"not-a-uuid\""))), "format uuid not enforced");
     }
 
-    [Fact(Skip = "PENDING OQ-SSE2-35 (CR-03): claims.schema requires nonce on every ID token, but OIDC Core §12.2 says an ID token from a refresh grant SHOULD NOT carry nonce. Contract must say whether refresh returns an ID token and its shape."), Trait("check", "7")]
-    public void CS09_refresh_issued_id_token_shape() { }
+    // ---- TL Addendum 2 (rulings md5 5bcaedc9) "Change" gates. Each FAILS until SSE applies the ruling on feat/contract-v1. ----
+    static string Row(string file, string id)
+    {
+        var line = Read(file).Split('\n').FirstOrDefault(l => l.StartsWith($"| {id} |"));
+        Assert.True(line is not null, $"contract row | {id} | not found in {file}");
+        return line!;
+    }
+    static readonly string Code = $$"""{"iss":"http://localhost:5080/standin","sub":"{{U1}}","aud":"cash_advance_bff","azp":"cash_advance_bff","exp":1700000300,"iat":1700000000,"auth_time":1700000000,"amr":["pwd","otp","mfa"]}""";
+    static JsonSchema? TryDef(string file, string def)
+        => JsonNode.Parse(Read(file))!["$defs"]?[def] is null ? null : Def(file, def);
 
-    [Fact(Skip = "PENDING SSE OQ-22 (CR-02): amr enum is RFC 8176 only, but Entra pass-through (A-28) would carry e.g. 'wiaormfa', 'ngcmfa', 'rsa'. Needs a mapping rule."), Trait("check", "7")]
-    public void CS10_entra_amr_values_fit_schema() { }
+    [Fact, Trait("check", "7"), Trait("ruling", "CR-03")]
+    public void CS09_id_token_split_code_requires_nonce_refresh_forbids_it()
+    {
+        NeedContract("claims.schema.json");
+        var code = TryDef("claims.schema.json", "id_token_code"); var refresh = TryDef("claims.schema.json", "id_token_refresh");
+        Assert.True(code is not null && refresh is not null, "CR-03 not applied: $defs.id_token_code / $defs.id_token_refresh absent");
+        Assert.True(Valid(code!, With(Code, ("nonce", "\"n-1\""))));
+        Assert.False(Valid(code!, Code), "code-grant ID token without nonce accepted");
+        Assert.True(Valid(refresh!, Code));
+        Assert.False(Valid(refresh!, With(Code, ("nonce", "\"n-1\""))), "refresh-issued ID token with nonce accepted");
+    }
+
+    /// CR-02: tokens carry RFC 8176 values only; Entra ngcmfa maps to mfa, wiaormfa never; nothing passes through.
+    [Fact, Trait("check", "7"), Trait("ruling", "CR-02")]
+    public void CS10_amr_enum_is_closed_rfc8176_subset()
+    {
+        NeedContract("claims.schema.json");
+        string[] rfc8176 = { "face", "fpt", "geo", "hwk", "iris", "kba", "mca", "mfa", "otp", "pin", "pwd", "rba", "retina", "sc", "sms", "swk", "tel", "user", "vbm", "wia" };
+        var e = JsonNode.Parse(Read("claims.schema.json"))!["$defs"]!["amr"]!["items"]!["enum"]!.AsArray().Select(x => (string)x!).ToArray();
+        Assert.All(e, v => Assert.Contains(v, rfc8176));
+        Assert.DoesNotContain("ngcmfa", e); Assert.DoesNotContain("wiaormfa", e);
+    }
+
+    /// CR-01: $defs.id has a UUID pattern so a validator with format assertion OFF still rejects a non-UUID; README states the rule.
+    [Fact, Trait("check", "7"), Trait("ruling", "CR-01")]
+    public void CS11_id_rejects_non_uuid_even_without_format_assertion()
+    {
+        NeedContract("claims.schema.json");
+        var s = Def("claims.schema.json", "id"); var off = new EvaluationOptions();
+        Assert.True(s.Evaluate(E(JsonValue.Create(U1)!), off).IsValid);
+        Assert.False(s.Evaluate(E(JsonValue.Create("not-a-uuid")!), off).IsValid, "CR-01 not applied: $defs.id has no uuid pattern");
+    }
+
+    [Fact, Trait("check", "7"), Trait("ruling", "CR-01")]
+    public void CS11b_readme_states_validators_run_with_format_assertion()
+    {
+        NeedContract("README.md");
+        Assert.Matches("(?i)RequireFormatValidation|format assertion", Read("README.md"));
+    }
+
+    [Fact, Trait("check", "8"), Trait("ruling", "CR-04")]
+    public void CS12_errors_md_has_unsupported_response_and_grant_type()
+    {
+        NeedContract("errors.md");
+        var t = Read("errors.md");
+        Assert.Contains("unsupported_response_type", t); Assert.Contains("unsupported_grant_type", t);
+        var ir = t.Split('\n').First(l => l.StartsWith("| `invalid_request`"));
+        // A pointer "(`response_type` ≠ `code` moved to `unsupported_response_type` ...)" is allowed; a live case is not.
+        Assert.DoesNotMatch(@"`response_type` ≠ `code`(?! moved)", ir);
+    }
+
+    [Fact, Trait("check", "10"), Trait("ruling", "CR-13")]
+    public void CS13_lockout_is_per_partner_preset_with_pci_and_nevada()
+    {
+        NeedContract("contract-v1.md");
+        var r = Row("contract-v1.md", "6.3");
+        Assert.Matches("(?i)preset", r); Assert.Matches("(?i)nevada", r); Assert.Matches("(?i)pci", r);
+    }
+
+    [Fact, Trait("check", "4b"), Trait("ruling", "CR-12")]
+    public void CS14_contract_has_6_9_cage_action_enforced_at_cash_advance()
+    {
+        NeedContract("contract-v1.md");
+        var r = Row("contract-v1.md", "6.9");
+        Assert.Contains("cage_action", r); Assert.Matches("(?i)cash advance", r);
+    }
+
+    [Fact, Trait("check", "4a"), Trait("ruling", "CR-25")]
+    public void CS15_nonce_fetched_at_submit_via_attest_nonce()
+    {
+        NeedContract("contract-v1.md");
+        Assert.Contains("attest-nonce", Read("contract-v1.md"));
+    }
+
+    [Fact, Trait("check", "4a"), Trait("ruling", "CR-22")]
+    public void CS16_registry_check_covers_revoked_disabled_unenrolled_and_location()
+    {
+        NeedContract("contract-v1.md");
+        var r = Row("contract-v1.md", "6.7");
+        foreach (var w in new[] { "revoked", "disabled", "location" }) Assert.Matches("(?i)" + w, r);
+    }
+
+    [Fact, Trait("check", "4a"), Trait("ruling", "CR-23")]
+    public void CS17_time_checks_include_exp_after_iat()
+    {
+        NeedContract("contract-v1.md");
+        var r = Row("contract-v1.md", "6.7");
+        Assert.Contains("30 s", r); Assert.Contains("60 s", r);
+        Assert.Matches(@"exp`?\s*>\s*`?iat", r);
+    }
+
+    [Fact, Trait("check", "4a"), Trait("ruling", "CR-23b")]
+    public void CS18_nonce_taken_at_start_of_every_check()
+    {
+        NeedContract("contract-v1.md");
+        Assert.Matches(@"(?i)(at the \*{0,2}start|first|before any other check)[^|]{0,160}(compare-and-delete|nonce)", Row("contract-v1.md", "6.7"));
+    }
+
+    [Theory, Trait("check", "contract-gate"), Trait("ruling", "CR-05")]
+    [InlineData("standin-control.md")] [InlineData("ui-driver.md")]
+    public void CS19_cr05_contract_files_published(string f)
+    {
+        NeedContract();
+        Assert.True(File.Exists(Path.Combine(Paths.Contract, f)), $"CR-05 not applied: contract/{f} absent");
+    }
+
+    [Fact, Trait("check", "8"), Trait("ruling", "CR-14")]
+    public void CS20_clients_override_token_endpoint_never_call_front()
+    {
+        NeedContract("contract-v1.md");
+        Assert.Contains("/connect/token", Row("contract-v1.md", "1.6"));
+    }
+
+    /// CR-12: no "attested" claim in any token (enforcement is per action at Cash Advance).
+    [Theory, Trait("check", "4b"), Trait("ruling", "CR-12")]
+    [InlineData("attested")] [InlineData("device_id")] [InlineData("attestation")]
+    public void CS21_access_token_has_no_attestation_claim(string claim)
+    {
+        NeedContract("claims.schema.json");
+        Assert.False(Valid(Def("claims.schema.json", "access_token_cachd"), With(AtBase, ("perm_version", "3"), Org("partner_id", U2), Org("location_id", U3), (claim, "true"))), $"access token accepts '{claim}'");
+    }
 
     [Fact, Trait("check", "8")]
     public void CS05_errors_md_lists_only_standard_codes_and_all_plan_codes()

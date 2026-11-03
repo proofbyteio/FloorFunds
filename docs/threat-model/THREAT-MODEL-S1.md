@@ -36,7 +36,7 @@
 | S-2 | Spoofing: hand-off without the user re-authenticating, from a non-cage PC | B1/B3 | Rules 1-6 + valid attestation, fail closed (§5.1-5.5) | Purpose binding (CR-20); device revoked or at another location (CR-22) | SEC10-13, 4a |
 | S-3 | Spoofing: forged hub proof | B1 | `hub_launch` server-stored, bound to session + client, single use (§5.7) | Resolved (CR-09) | CT/SEC pending control API |
 | S-4 | Spoofing: forged attestation (alg `none`, HS256 with the public key, embedded `jwk`/`jku`) | B3 | `alg` const ES256; embedded keys refused | Verifier must pin ES256; `crit`/header allowlist (CR-21) | AT02, AT03 (run), SEC11 |
-| S-5 | Spoofing: session fixation | B1 | Not stated: login-session id rotated on sign-in? | OQ-SSE2-40 | SEC24 (pending) |
+| S-5 | Spoofing: session fixation | B1 | Session cookie/id reissued after the password step and again when MFA completes; pre-sign-in id never promoted (contract §4.11, TL OQ-SSE2-40, ASVS V3.2.1) | none (ruled) | SEC24, SEC24b (pending: stand-in) |
 | S-6 | Spoofing: authorization-code interception | B1 | PKCE S256 mandatory, codes ≤60 s single use, exact `redirect_uri` | — | CT, check 3/8 |
 | T-1 | **Tampering**: open redirect through `redirect_uri` / `post_logout_redirect_uri` | B1 | Exact match; bad value → error page (OQ-5) | — | SEC, check 6 |
 | T-2 | Tampering: `remote_session` flag flipped by a local process | B3 | JWS signed by the TPM key | **Accepted residual risk (LD §16.18.5):** a vendor admin can use the TPM key; a local process can reach the agent port | documented, not testable in S1 |
@@ -53,7 +53,7 @@
 | E-1 | **Elevation of privilege**: SSO from a weak session into Cash Advance | B1 | `prompt=login` dropped only under rules 1-6; `cage_consumed` | — | check 2/4 |
 | E-2 | EoP: refresh after role removal | B2 | Refresh re-checks role → `invalid_grant` (OQ-12) | — | check 7 |
 | E-3 | EoP: stand-in artifacts in a real build (fake agent, `standin-` kids, control API, `x_standin` tokens) | B5 | Check 11 | Real must refuse `standin-` kids; `x_standin` must be required/forbidden (CR-06) | TOOL0x, SEC40, `tools/check-no-standin.sh` |
-| E-4 | EoP: remote session gets through plain sign-in | B1/B3 | `remote_session=true` → refused (§6.1) | **CR-25 blocker:** expired attestation → "go ahead" after 60 s | SEC15/16 pending |
+| E-4 | EoP: remote session gets through plain sign-in | B1/B3 | Verified `remote_session=true` → refused, 8A (§6.1); nonce fetched at submit via `/l/{slug}/attest-nonce`; an invalid attestation is never trusted, sign-in proceeds as `attestation=invalid`, unattested, next hand-off fails closed (§6.2, CR-25) | Residual (accepted by ruling): a remote user with an invalid JWS still gets a plain, unattested session; hand-off and cage actions stay closed | SEC15, SEC16, SEC17, SEC19 (pending) |
 | E-5 | EoP: after `attestation_invalid` fallback, cage actions still allowed | Cash Advance | 4b: refused until re-attest | Component and scope unstated (CR-12, OQ-SSE2-34) | SEC50-54 |
 
 ## Attestation: what it does and does not prove (LD §16.18.5 L1360-1395)

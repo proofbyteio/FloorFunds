@@ -21,9 +21,9 @@ public class FlowTests
     [Fact(Skip = Pending.ControlApi), Trait("check", "2"), Trait("target", "standin-only")]
     public void CT12_handoff_opens_cash_advance_without_password() { /* sign-in pwd+TOTP -> hub tile -> authorize returns code w/o login page; audit auth.app.signed_in method=hub_handoff, original auth_time, login session id */ }
 
-    // Check 3: re-prompt cases.
+    // Check 3 (PLAN 10fa9853): re-prompt when there is no valid single-use hub_launch (contract §5.7; plan L130 rule 4 superseded).
     [Theory(Skip = Pending.ControlApi), Trait("check", "3"), Trait("target", "standin-only")]
-    [InlineData("second_launch")] [InlineData("over_5_min")] [InlineData("not_from_hub")] [InlineData("after_signout")] [InlineData("forged_state")]
+    [InlineData("second_launch")] [InlineData("over_5_min")] [InlineData("no_hub_launch")] [InlineData("hub_launch_already_used")] [InlineData("hub_launch_of_other_session")] [InlineData("after_signout")]
     public void CT13_handoff_reprompts_for_password(string case_) { /* expect the sign-in page again, NOT an OAuth error redirect (plan §3.1) */ _ = case_; }
 
     // Check 4: remote session refused.
@@ -59,8 +59,15 @@ public class FlowTests
     [Fact(Skip = Pending.ControlApi), Trait("check", "9"), Trait("target", "standin-only")]
     public void CT22_outbox_fault_gives_temporarily_unavailable_and_no_session() { /* fault outbox -> sign-in -> error temporarily_unavailable, no login cookie set, hub not reachable */ }
 
+    [Theory(Skip = Pending.ControlApi), Trait("check", "3"), Trait("target", "standin-only")]
+    [InlineData("super")] [InlineData("partner")]
+    public void CT28_admin_session_never_gets_cash_advance_handoff(string adminType) { _ = adminType; /* [Confirmed DEC-084] contract 5.12: /admin session (admin_type super|partner) asks for the Cash Advance hand-off with an otherwise valid fresh hub_launch -> refused BEFORE rules 1-6, client error access_denied (no reason), audit auth.app_access.denied reason=not_location_user with envelope admin_type; no code issued; hub_launch outcome not stated -> assert only no code */ }
     [Fact(Skip = Pending.LockoutPreset), Trait("check", "10"), Trait("target", "standin-only")]
-    public void CT23_ten_wrong_passwords_lock_for_30_minutes() { /* 10 wrong -> correct pwd refused with the SAME generic message; advance 30 min -> works; audit auth.account.locked */ }
+    public void CT23_pci_fixture_ten_wrong_passwords_lock_for_30_minutes() { /* partner pci (CR-13): 9 wrong -> 10th correct works after reset; 10 wrong -> correct refused with the SAME generic message; advance 29:59 still locked, 30:00 works; audit auth.account.locked */ }
+    [Fact(Skip = Pending.LockoutPreset), Trait("check", "10"), Trait("target", "standin-only")]
+    public void CT26_nevada_fixture_three_failed_tries_lock_for_30_minutes() { /* partner nevada (CR-13): 2 wrong -> correct works; 3 wrong -> refused, same generic message; advance 30 min -> works; POST /_standin/reset clears it (admin unlock not in S1) */ }
+    [Fact(Skip = Pending.LockoutPreset), Trait("check", "10"), Trait("target", "standin-only")]
+    public void CT27_lockout_count_is_per_partner_preset_not_global() { /* 3 wrong at nevada location does not lock a pci-partner user; 3 wrong at pci does not lock */ }
 
     [Fact(Skip = Pending.ProductionRun), Trait("check", "11"), Trait("target", "standin-only")]
     public void CT24_api_stub_in_production_rejects_x_standin_token() { }

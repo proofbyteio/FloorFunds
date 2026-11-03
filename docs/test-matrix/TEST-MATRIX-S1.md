@@ -29,7 +29,7 @@
 |---|---|---|---|---|
 | 1 | cashier lands on hub with role tiles; `no_role_user` → `access_denied` + `reason=no_role` | E2E07 (hub tiles in mockup 06) | CT10/11: OQ-SSE2-04 control API, OQ-SSE2-05 sign-in driver | PARTIAL |
 | 2 | First launch ≤5 min → no password; `method=hub_handoff`, original `auth_time` | E2E06 (02→03 TOTP→06 hub), E2E08 | CT12: OQ-SSE2-04 (`hub_launch` mint/expire) | PARTIAL |
-| 3 | 2nd launch / >5 min / not from hub / after sign-out → password again | E2E09, E2E11 | CT13, SEC32: OQ-SSE2-04. Plan text still says "no hub `state`"; contract now uses `hub_launch` (§5.7) | PARTIAL |
+| 3 | 2nd launch / >5 min / **no valid single-use `hub_launch` (contract §5.7; supersedes plan L130 rule 4, TL Addendum 2)** / after sign-out → password again | E2E09, E2E11 | CT13 cases second_launch, over_5_min, no_hub_launch, hub_launch_already_used, hub_launch_of_other_session, after_signout; SEC32. Pending: no stand-in in code/src/ | PARTIAL |
 | 4 | Remote session → refused, screen 8 variant A, `reason=remote_session` | E2E05, E2E10, E2E16 (08 remote) | CT14: OQ-SSE2-04 | PARTIAL |
 | **4a** | Fail closed on missing / bad sig / expired / replayed / unknown device; valid passes | AT01-AT08 (attestation schema: alg allowlist incl. `none`/HS256, no embedded keys, required claims, no extras); CS06; E2E12×2 (07 invalid → agentdown, also with remote=yes) | SEC10-SEC17 (SEC11 = 17 edge cases: nonce of another transaction / consumed / >60 s / burnt on failure / sign-in-for-hand-off, `device_id≠kid`, unknown / revoked / other-location kid, exp, `exp−iat` 61 s, future `iat`, alg none / HS256, embedded jwk, wrong key same kid, registry down): OQ-SSE2-04/OQ-33, OQ-SSE2-07/SSE OQ-11. AT09 (CR-21), AT10 (CR-20) | PARTIAL |
 | **4b** | After `attestation_invalid` fallback: payment, ID scan, print refused until re-attest; screen 8 variant B text | E2E14 (08 agentdown banner + form → 07 agentdown), E2E15 (07 agentdown: Take payment / Scan ID / Print `aria-disabled=true` "Blocked"; Look up customer not blocked) | SEC50 (OQ-SSE2-04), SEC51/52 ×3 actions, SEC53, SEC54 (PC vs session scope): OQ-SSE2-34; contract finding CR-12 | PARTIAL |
@@ -96,3 +96,39 @@
 
 OQ-SSE2-01..03, 06, 08-10, 14, 16, 18, 21, 23-28 were raised in SSE2's 11:4x report. They are either answered by contract v1-d2 (06, 18 → `hub_launch` and attestation format) or no longer drive a test.
 **Mohanraj:** OQ-40 (cap: who changes it, the range).
+
+
+## Revision Mon Nov 2, 8:26 PM PT (SSE2): TL Addendum 2 (rulings md5 5bcaedc9) at feat/contract-v1 38ad62e
+
+Run: `tools/run-checks.sh standin` at 8:24:36-8:25:12 PM PT, contract working tree byte-identical to 38ad62e before and after.
+Added 8:32 PM PT for [Confirmed DEC-084] (contract e0f946a, 5.12/6.9): **CT28** ×2 (check 3, /admin super|partner never gets the Cash Advance hand-off, `access_denied`, audit `not_location_user`; pending ControlApi) and **SEC56** ×2 (check 4b, /admin cage action → 403 `access_denied`; pending CageAction). **E2E07** admin row changed to Back office + Reports (mockup 06 rev 8:29 PM PT follows DEC-084). Not yet covered: [Confirmed DEC-085] `recovery_reenroll` sessions (99f2b7d), next pass.
+
+**TOTAL 291 tests: 200 pass, 0 fail, 91 skip (pending), 0 xfail** (run 8:32:16 PM PT, tree = 99f2b7d at start; a snapshot run of 99f2b7d's contract gave the same apart from TOOL08, which needs a git repo). Not green: no stand-in exists, so every server-behaviour test is pending.
+
+| New / changed ID | Check | Ruling | Status at 38ad62e |
+|---|---|---|---|
+| CS09 id_token_code needs nonce / id_token_refresh forbids it | 7 | CR-03 | PASS |
+| CS10 amr enum closed RFC 8176 subset (no ngcmfa / wiaormfa) | 7 | CR-02 | PASS |
+| CS11 $defs.id rejects non-UUID with format assertion OFF; CS11b README states format-assertion rule | 7 | CR-01 | PASS |
+| CS12 errors.md has unsupported_response_type / unsupported_grant_type; invalid_request row has no live response_type case | 8 | CR-04 | PASS |
+| CS13 §6.3 per-partner preset, pci + nevada | 10 | CR-13 | PASS |
+| CS14 §6.9 cage_action at Cash Advance | 4b | CR-12 | PASS |
+| CS15 attest-nonce in contract | 4a | CR-25 | PASS |
+| CS16 §6.7 revoked/disabled/location | 4a | CR-22 | PASS |
+| CS17 §6.7 ±30 s, ≤60 s, exp > iat | 4a | CR-23 | PASS |
+| CS18 §6.7 nonce taken at start | 4a | CR-23b | PASS |
+| CS19 ×2 standin-control.md / ui-driver.md exist | contract-gate | CR-05 | PASS |
+| CS20 §1.6 token endpoint override | 8 | CR-14 | PASS |
+| CS21 ×3 no attested / device_id / attestation claim in access token | 4b | CR-12 | PASS |
+| AT01-AT11 rewritten (aud, purpose, typ; AT09 closed header) | 4a | CR-20/21 | PASS |
+| SEC10 + revoked_device, other_location | 4a | CR-22 | pending (stand-in) |
+| SEC11 cases rewritten: skew ±30 s, nonce burnt on every outcome, parallel submit, kid unenrolled/revoked/disabled/other location, exp > iat, crit, unknown header | 4a | CR-21/22/23/23b | pending |
+| SEC15 verified remote_session refuses (8A); SEC16 ×6 invalid attestation proceeds, attestation=invalid, no 8A, next hand-off attestation_invalid; SEC17 attest-nonce invalidates earlier; SEC18 ×4 cross-purpose; SEC19 slow typing | 4a | CR-25/CR-20 | pending |
+| SEC51/52 ×3 actions, SEC54 one attestation one action, SEC55 ×4 | 4b | CR-12 | pending (BFF stub not built) |
+| SEC24 reissue after password; SEC24b again after MFA | (none) | OQ-SSE2-40 | pending |
+| CT23 pci 10/30; CT26 nevada 3/30; CT27 per-partner | 10 | CR-13 | pending |
+| CTL01-CTL13 (control API), CTL14 doc violation ids (runs, PASS), UID01-UID05 (UI driver) | ctl | CR-05 | pending except CTL14 |
+| PW24-PW28 new cases; PW00 now uses Rune length after NFKC + username rule; PW32/PW33 oracle self-tests | pw-class | OQ-SSE2-31/32 | PASS (server PW30/31/34 pending) |
+| SEC63 deferred to S2; SEC64 ruled (cap from original sign-in) | session-cap | OQ-SSE2-36/37 | deferred / pending |
+
+Also fixed: CS02 sample discovery document lacked the three keys added by TL Decisions OQ-17/OQ-21 (my stale fixture, not a contract fault).

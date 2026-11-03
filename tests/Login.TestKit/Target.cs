@@ -11,7 +11,7 @@ public static class Target
     public const string EnvTarget = "LOGIN_CONTRACT_TARGET";
     public const string EnvFront = "LOGIN_FRONT_URL";     // e.g. http://localhost:5080 (plan §3.3 "e.g. 5080")
     public const string EnvBack = "LOGIN_BACK_URL";       // e.g. http://127.0.0.1:8084 (plan §3.3)
-    public const string EnvControl = "LOGIN_CONTROL_URL"; // stand-in only, separate loopback listener (plan §3.4); port unstated
+    public const string EnvControl = "LOGIN_STANDIN_CONTROL_URL"; // stand-in only, 127.0.0.1 control listener (contract standin-control.md 1.1, CR-05)
 
     public static string? Name => Environment.GetEnvironmentVariable(EnvTarget)?.Trim().ToLowerInvariant();
     public static bool IsStandIn => Name == "standin";

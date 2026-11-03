@@ -99,7 +99,7 @@ public class MockupFlowTests(MockupFixture fx)
     [Theory, Trait("check", "1")]
     [InlineData("cashier", new[] { "Cash Advance" })]
     [InlineData("office", new[] { "Back office", "Reports" })]
-    [InlineData("admin", new[] { "Cash Advance", "Back office", "Reports" })]
+    [InlineData("admin", new[] { "Back office", "Reports" })] // [Confirmed DEC-084] Cash Advance only for location users (contract e0f946a, not_location_user); mockup 06 rev 8:29 PM PT
     [InlineData("noaccess", new string[0])]
     public async Task E2E07_hub_shows_only_tiles_for_roles(string state, string[] expected)
     {

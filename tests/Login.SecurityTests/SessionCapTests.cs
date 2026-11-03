@@ -13,7 +13,7 @@ public class SessionCapTests
 {
     const string Setting = "LoginService__Session__AbsoluteLifetime"; // env form of LoginService:Session:AbsoluteLifetime (contract §7.4)
 
-    [Fact(Skip = "PENDING OQ-SSE2-04/15: needs the control-API clock (advance time to sign-in + 12 h) to see the login session and refresh family end; not specified."),
+    [Fact(Skip = Pending.ControlApi),
      Trait("target", "standin-only")]
     public void SEC60_default_cap_is_12h_session_and_refresh_family_end_at_signin_plus_12h() { }
 
@@ -49,11 +49,11 @@ public class SessionCapTests
      Trait("target", "both")]
     public void SEC62_cap_range_bounds() { }
 
-    [Fact(Skip = "PENDING OQ-SSE2-36: real target: how a test starts the real service with a bad cap is unstated (deployment config only, contract §7.4)."),
+    [Fact(Skip = "DEFERRED S2 (OQ-SSE2-36 ruled): real service started with env LoginService__Session__AbsoluteLifetime=00:15:00 must exit non-zero and log a line; runs in S2, not S1."),
      Trait("target", "real")]
     public void SEC63_real_service_rejects_cap_le_15min() { }
 
-    [Fact(Skip = "PENDING OQ-SSE2-37: after a hub hand-off (same login session, original auth_time, contract 5.6) the cap still counts from the ORIGINAL sign-in; not stated for refresh families of the second client."),
+    [Fact(Skip = Pending.ControlApi + " Ruled OQ-SSE2-37: a hand-off client's refresh family ends at ORIGINAL sign-in + cap."),
      Trait("target", "both")]
     public void SEC64_handoff_does_not_extend_cap() { }
 }

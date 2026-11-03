@@ -20,7 +20,9 @@ public class EnumerationAndSessionTests
     public void SEC23_rate_limit_10_per_ip_5_per_username_no_detail() { }
 
     [Fact(Skip = Pending.SignInDriver), Trait("target", "both"), Trait("threat", "S-3")]
-    public void SEC24_login_cookie_rotated_on_signin_no_fixation() { }
+    public void SEC24_login_session_id_reissued_after_password_step_no_fixation() { /* OQ-SSE2-40 TL Decision (ASVS V3.2.1): pre-sign-in cookie value never promoted */ }
+    [Fact(Skip = Pending.SignInDriver), Trait("target", "both"), Trait("threat", "S-5")]
+    public void SEC24b_login_session_id_reissued_again_when_mfa_completes() { }
 
     [Fact(Skip = Pending.SignInDriver), Trait("target", "both"), Trait("threat", "T-2")]
     public void SEC25_signin_post_without_antiforgery_rejected() { }

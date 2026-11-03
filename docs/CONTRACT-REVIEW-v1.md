@@ -210,3 +210,50 @@ Either the page gets nonce + attestation **at submit** (state it in 6.5), or an 
 | CR-33 | minor | Hand-off and remaining cap |
 | CR-23b | major (part of CR-23) | Nonce not burnt on a failed check |
 | CR-07, skews, cap-change timing | nit | |
+
+## Addendum: verification of TL Addendum 2 at feat/contract-v1 38ad62e (SSE2, Mon Nov 2, 8:26 PM PT)
+
+Authority: `reviews/contract-v1-tl-rulings.md` "## Addendum 2", md5 5bcaedc9fc1c748743243a7dfd1a3a38 (verified).
+Read-only: `git log feat/contract-v1`. First checked at 003f519 (8:11 PM PT); SSE then committed 32c4cf7 → 38ad62e (8:16–8:24 PM PT), so the table below is at **38ad62e** (8:24 PM PT).
+Evidence = the gate test that runs now against the contract text/schemas (all PASS in the 8:24:36 PM PT run, tree byte-identical to 38ad62e), plus reading the row.
+
+| CR | Ruling (short) | At 003f519 | At 38ad62e | Evidence |
+|---|---|---|---|---|
+| CR-05 | standin-control.md + ui-driver.md | not yet | **verified** | CS19 ×2; files read; CTL/UID tests aligned (pending: no stand-in) |
+| CR-25 | fresh nonce at submit, invalid never valid, proceeds `attestation=invalid` | partial | **verified** | CS15; §6.1, §6.2, ui-driver 1.3 |
+| CR-26 | cap > idle only; SEC62 pending OQ-40 | verified | verified | §7.4 |
+| CR-01 | uuid pattern + format-assertion rule | not yet | **verified** | CS11, CS11b (README; schema text cites CR-21 for the rule: cite nit) |
+| CR-02 | RFC 8176 only; mfa/ngcmfa → mfa; wiaormfa never; recovery → [pwd] | not yet | **verified** (dd497e1 briefly put `ngcmfa` in the enum; fixed in ce23ded) | CS10; amr description |
+| CR-03 | id_token_code / id_token_refresh | not yet | **verified** | CS09; §8.6 |
+| CR-04 | unsupported_response_type / unsupported_grant_type | not yet | **verified** | CS12 |
+| CR-12 | §6.9 per-action at Cash Advance; no attested claim | not yet | **verified (contract)**; BFF stub endpoint specified, **not built** (SI1 held) | CS14, CS21 ×3 |
+| CR-13 | per-partner preset, pci 10/30, nevada 3/30 | not yet | **verified** | CS13; §6.3; standin-control §4 |
+| CR-14 | clients override token/revocation endpoints | verified | verified | CS20 |
+| CR-15 | = OQ-4 | needed check | **verified** | discovery schema `not` userinfo/frontchannel; §2.7 |
+| CR-20 | aud + purpose; cross-purpose replay | verified | verified | AT10, AT11; §6.5 |
+| CR-21 | header closed | partial | **verified** | AT09 (cty, x-extra, b64, zip refused); §6.7 (2) |
+| CR-22 | unenrolled/revoked/disabled/location → invalid | not yet | **verified**; real-device location source still OPEN | CS16; §6.7 (3)(4) |
+| CR-23 | ±30 s, exp > iat, exp−iat ≤ 60, nonce ≤ 60 s no skew | partial | **verified** | CS17; §6.7 (6) |
+| CR-23b | compare-and-delete at start; every outcome burns | partial | **verified** | CS18; §6.7 (1) |
+| OQ-SSE2-40 | reissue after password and after MFA | not in contract | **verified** | §4.11 |
+
+Regressed: **none** at 38ad62e (dd497e1's `ngcmfa` slip was fixed 1 minute later).
+
+**Freeze-readiness verdict: READY TO FREEZE from SSE2's side for the Addendum 2 Changes**, with these caveats the TL should accept explicitly at freeze:
+(1) SSE proposals still to be frozen by the TL: data-testids, `GET /_standin/clock` shape, violation ids, `totp_code` field name; fixture slugs/passwords/ids are unruled.
+(2) Still OPEN and not blockers for the contract text: OQ-SSE2-30 (PCI Unicode classes; LS-OQ-52), OQ-40 (cap range, Mohanraj), CR-22 location source, LS-OQ-52 Nevada production preset, OQ-39.
+(3) Not ruled in Addendum 2: CR-06–11, CR-24, CR-27–33; OQ-SSE2-11, 12, 15, 17, 19/20, 22.
+(4) Contract cites LD 560cb6ab (SA rev 8:25 PM PT); the rulings cite LD b7385794; the plan on disk is now 444ddba4, not the brief's 10fa9853 (changed 8:25 PM PT). Recorded, not resolved by SSE2.
+(5) An uncommitted `contract/standin-ui.schema.json` appeared in the working tree after 38ad62e; not reviewed.
+"Ready" covers the contract text only. Nothing is green: no stand-in exists in code/src/, so 89 tests stay pending.
+
+### Addendum, continued: re-check at 99f2b7d (8:33 PM PT)
+
+SSE kept committing while this was being written (cb4e637 → 78a792c, 8:27–8:32 PM PT): TL Decisions 8:26/8:29/8:31 PM and [Confirmed DEC-084], [Confirmed DEC-085]. Every contract gate test (CS*, AT*, contract-gate, check 12) passes against an exact `git archive` of 99f2b7d. Nothing in the table above regressed.
+Changes to the caveats above:
+- (1) is **resolved**: TL Decision 8:26 PM accepted the SSE proposals (testids, `totp_code`, clock shape, rule ids, stub paths; `standin-ui.schema.json`). Fixture slugs/passwords: not re-checked.
+- CR-12: §6.9 stub is now "built as part of SI1" (TL 8:26 PM); still not built. Production design still OPEN.
+- (4) plan md5: the contract now cites PLAN 444ddba4 (TL 8:26 PM), matching the file on disk. The brief's 10fa9853 is superseded. LD cites: the contract's 560cb6ab govern (TL 8:26 PM).
+- (5) `standin-ui.schema.json` is committed (cb4e637); gate tests for it are not written yet.
+- New since 38ad62e and not yet reviewed in depth: admin `admin_type` super/partner tokens, §8.11 location mapping, DEC-084 (tests CT28/SEC56 added, pending), DEC-085 `recovery_reenroll` (no tests yet).
+Verdict unchanged: **ready to freeze from SSE2's side** for Addendum 2, while SSE is still adding TL Decisions to v1-d4. Freeze a named commit, not a moving head. Not S1 sign-off: no stand-in.
