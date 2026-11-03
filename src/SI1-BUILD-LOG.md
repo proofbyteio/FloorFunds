@@ -267,3 +267,37 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
 - At 9:24 PM, ports 18080-18082 were held by another stand-in: pid 628112, started 9:18 PM, `/tmp/sse2-si1/bin/Login.StandIn.dll` (SSE2). It isn't mine, so I didn't kill it.
 - My first driver run went to that instance by mistake before I noticed. It sent control calls (reset, clock advance, PUT users, pcs) to SSE2's in-memory state. That needs reporting.
 - The drive.py handoff/pkjwt scenarios are written (`/tmp/sse-d0/e2e/handoff.py`) but haven't run against this build.
+
+## TL rulings 9:26 PM applied (2026-11-02, logged 9:31 PM PT)
+1. **PORTS (TL Decision).** `STANDIN_PORT_BASE` (default 18080): front = base, back = base+1, control = base+2, loopback only, StartupGuard unchanged (Listeners.Read; the old per-port config keys are gone). We keep 18080-18082; SSE2 uses 18090-18092. Per-instance state dir `/tmp/sse-d0/standin-{base}/` holds fixture-client-keys/, si1.log, si1.pid (from run-si1.sh) and server.pid (written by the process). STANDIN_CLIENT_KEY_DIR still overrides the key dir.
+   - run-si1.sh refuses to start (exit 3) if any of the 3 ports is listening, and after start kills its child and exits 4 unless the `ss -ltnp` owner of all 3 ports is the pid it started.
+   - drive.py takes `--base` / STANDIN_PORT_BASE and aborts before sending any request unless the ss owner of all 3 ports equals the pid in the base-keyed pid file. I chose the ss-owner comparison over a new control route, so standin-control (frozen contract) is unchanged.
+   - Proven: base 18090 (SSE2, pid 639792): run-si1.sh refused with "STOP: port 18090 already held"; drive.py aborted with "no pid file". With a fake pid file it aborted with "owner 639792 is not our pid 999999; no traffic sent". No traffic went to SSE2.
+2. **H1 revised.** The hub client is openid-only: fixture `aud` null, so the token endpoint returns `{id_token, scope}` and no access_token, token_type or refresh_token. The id_token aud = "hub" (client_id). An API scope request returns invalid_scope. aud=hub is removed from the access-token path (TokenIssuer.Access throws for a null-aud client). v1.1 (a), the claims-schema aud conflict, is **closed with no schema change**. [ASSUMPTION A43] Omitting access_token departs from RFC 6749 §5.1 (REQUIRED); it is done by the TL ruling and noted for v1.1.
+3. **(b) Rule 2 negative paths.** New FIXTURE users cashier_pwd and cashier_wia have a per-user `fixture_amr` override ([pwd] or [wiaormfa]) that is applied when the location session is created and carried into auth.login.succeeded amr. Live, both get the hub tile, and the hand-off is refused with a re-prompt, no code and no event (5.10). The positive ngcmfa path is pending until there is an Entra provider.
+4. **(c)** v1.1 item: the fixture secrets check; SSE2 will wire it (scripts/check-fixture-secrets.sh stays local).
+5. **A32 TL ruling.** Interactive = now − auth_time ≤ 300 s AND the session's last authentication was a real credential entry (password + MFA) made for this authorize. auth_time is set only by credential entry. Cash Advance counts as interactive only when ViaReturn, no code has been issued from the session yet (credential entry not spent), and prompt≠none. The old 60 s / ViaReturn heuristic is replaced for the hand-off client; the 60 s method label for other clients is unchanged.
+   - [ASSUMPTION A42] Ages are compared in whole elapsed seconds (truncated, like the integer auth_time claim), because the test clock runs on from real time. This applies to rule 1, A32 and the 60 s hub_launch.
+   - Tested live: 300 s gives interactive and 301 s is refused; SSO reuse gives notfromhub; prompt=none gives interaction_required; after a refresh grant the session is not interactive; hand-off rule 1 passes at exactly 300 s.
+6. **A35 and A40 accepted.**
+7. **DEC-094** (build log + v1.1): the 403 shows only the message, with no help text; the body is unchanged. **DEC-095** (v1.1): device-enrolment work, where a Super or Partner Admin issues cage-PC codes and a Partner Admin only for its own partner.
+- [ASSUMPTION A41] Only the hand-off target client reads hub_launch; another client ignores it, so the launch stays usable for Cash Advance. This replaces the placeholder "wrong client" check.
+- Fixes found by the first live run of handoff.py:
+  - The interstitial was missing its CSP. It now has frame-ancestors 'none' and connect-src for the agent port.
+  - The rule-5 test used a slug that does not exist and no password (the PUT returned 400).
+  - The id_token schema def is id_token_code.
+  - The "recovery code single use" placeholder is now real: a second use gives no hub and no new login.succeeded.
+
+### Evidence status: DONE (supersedes BLOCKED above)
+- Live run 2026-11-02 on base 18080, own pid 643647 (guard ok): **TOTAL 143 / 143**, 85 earlier checks + 58 hand-off/pkjwt/H1/(b)/A32. Then the guard negatives.
+- Evidence: /tmp/sse-d0/e2e/si1-item1-evidence.txt, md5 **276d88d001535ac6eac2723dbe0bb5d1**.
+- Server stopped; 18080-18082 are free afterwards. allowlist.db md5 is unchanged (e5384097dd60ee5df568577ec9126071).
+
+### v1.1 list additions
+- (a) claims-schema aud conflict: CLOSED, no schema change (H1 revised).
+- (c) fixture secrets check: SSE2 wires it.
+- RFC 6749 §5.1 access_token omission for the openid-only hub (A43).
+- DEC-093 (§7.8 re-enrolment redirect by session kind; build in step 3).
+- DEC-094 (403 message only, no help text, body unchanged).
+- DEC-095 (device-enrolment codes: Super/Partner Admin, Partner Admin only for its own partner).
+- Positive ngcmfa rule-2 path (needs an Entra provider).

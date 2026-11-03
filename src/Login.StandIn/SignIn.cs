@@ -242,10 +242,11 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
                 }
                 // 4.11: a brand-new session id after MFA; any session id the browser had is never promoted.
                 var s = new LoginSession { Sid = Guid.NewGuid().ToString(), UserId = user.UserId, Username = user.Username, Slug = slug,
-                    LocationId = loc.LocationId, AuthTime = now, LastSeen = now, ViaReturn = tx.ReturnTo is not null };
+                    LocationId = loc.LocationId, AuthTime = now, LastSeen = now, ViaReturn = tx.ReturnTo is not null,
+                    Amr = user.FixtureAmr ?? new[] { "pwd", "otp", "mfa" } };
                 var ev1 = Audit.Build(now, "auth.mfa.succeeded", "success", user.UserId, new JsonObject { ["method"] = "totp" }, Scope(loc), Ip(c), Ua(c), s.Sid);
                 var ev2 = Audit.Build(now, "auth.login.succeeded", "success", user.UserId, new JsonObject
-                { ["provider_kind"] = "database", ["amr"] = new JsonArray("pwd", "otp", "mfa"), ["auth_time"] = now.ToUnixTimeSeconds(), ["attestation"] = tx.Attestation },
+                { ["provider_kind"] = "database", ["amr"] = new JsonArray(s.Amr.Select(a => (JsonNode)a!).ToArray()), ["auth_time"] = now.ToUnixTimeSeconds(), ["attestation"] = tx.Attestation },
                     Scope(loc), Ip(c), Ua(c), s.Sid);
                 ev1["session_kind"] = "normal"; ev2["session_kind"] = "normal";
                 // [ASSUMPTION A25] if the outbox is down no session is created (fail closed); the user sees the generic error.

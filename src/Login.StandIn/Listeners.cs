@@ -11,8 +11,11 @@ public static class Listeners
     static readonly string[] BackOnly = { "/connect/token", "/connect/revoke", "/connect/introspect" };
     static readonly string[] BackAlso = { "/.well-known/openid-configuration", "/.well-known/jwks" };
 
-    public static StandInPorts Read(IConfiguration c) => new(
-        c.GetValue("StandIn:FrontPort", 18080), c.GetValue("StandIn:BackPort", 18081), c.GetValue("StandIn:ControlPort", 18082));
+    // [TL Decision 9:26 PM, ports] STANDIN_PORT_BASE (default 18080): front = base, back = base+1, control = base+2; loopback only.
+    public static int Base(IConfiguration c) => int.TryParse(Environment.GetEnvironmentVariable("STANDIN_PORT_BASE"), out var b) && b is > 1024 and < 65533 ? b : c.GetValue("StandIn:PortBase", 18080);
+    public static StandInPorts Read(IConfiguration c) { var b = Base(c); return new(b, b + 1, b + 2); }
+    // Each instance has its own /tmp state dir keyed by the base (client keys, pid).
+    public static string StateDir(StandInPorts p) => $"/tmp/sse-d0/standin-{p.Front}";
 
     // Every listener binds 127.0.0.1 only. ASPNETCORE_URLS is ignored because Kestrel is configured explicitly.
     public static void Bind(WebApplicationBuilder b, StandInPorts p)

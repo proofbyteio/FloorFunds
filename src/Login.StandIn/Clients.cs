@@ -6,9 +6,9 @@ using Microsoft.IdentityModel.Tokens;
 namespace Login.StandIn;
 
 // contract 4.9 clients, 7.6 client auth. Loaded from the FIXTURE "clients" array.
-// AppCode/ApiScope are null for the hub: [TL Decision 9:16 PM, H1 interim, PLACEHOLDER] the hub is not an app_code, carries no roles,
-// and its access-token aud is its own client_id.
-public sealed record OAuthClient(string ClientId, string? AppCode, string? ApiScope, string Aud, bool Cachd, bool OrgClaims, bool Refresh,
+// AppCode/ApiScope/Aud are null for the hub: [TL Decision 9:26 PM, H1 revised] the hub is openid-only and gets NO access token;
+// its id_token aud = client_id. It is not an app_code and carries no roles.
+public sealed record OAuthClient(string ClientId, string? AppCode, string? ApiScope, string? Aud, bool Cachd, bool OrgClaims, bool Refresh,
     string[] RedirectUris, string[] PostLogoutRedirectUris, byte[] SecretHash, string? StartUrl, bool Handoff, RSA PublicKey, string KeyKid);
 
 public static class Clients
@@ -33,7 +33,7 @@ public static class Clients
             File.WriteAllText(path, "# FIXTURE client key for the local stand-in only; kid " + kid + "\n" + rsa.ExportPkcs8PrivateKeyPem() + "\n");
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             var pub = RSA.Create(); pub.ImportRSAPublicKey(rsa.ExportRSAPublicKey(), out _); rsa.Dispose();
-            d[id] = new OAuthClient(id, (string?)c["app_code"], (string?)c["api_scope"], (string)c["aud"]!, (bool)c["cachd"]!, (bool)c["org_claims"]!, (bool)c["refresh"]!,
+            d[id] = new OAuthClient(id, (string?)c["app_code"], (string?)c["api_scope"], (string?)c["aud"], (bool)c["cachd"]!, (bool)c["org_claims"]!, (bool)c["refresh"]!,
                 c["redirect_uris"]!.AsArray().Select(x => (string)x!).ToArray(),
                 c["post_logout_redirect_uris"]!.AsArray().Select(x => (string)x!).ToArray(),
                 SHA256.HashData(Encoding.UTF8.GetBytes((string)c["secret"]!)), (string?)c["start_url"], (bool?)c["handoff"] ?? false, pub, kid);

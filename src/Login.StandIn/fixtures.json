@@ -116,6 +116,58 @@
       ],
       "perm_version": 1,
       "_label": "FIXTURE"
+    },
+    {
+      "username": "cashier_pwd",
+      "user_id": "5f0c3e1a-0003-4000-8000-000000000c05",
+      "password": "Cashier-Pwd-Standin-2026",
+      "status": "active",
+      "location_slugs": [
+        "pci-main"
+      ],
+      "roles": [
+        {
+          "app_code": "cash_advance",
+          "role": "cashier",
+          "_label": "FIXTURE"
+        },
+        {
+          "app_code": "back_office",
+          "role": "clerk",
+          "_label": "FIXTURE"
+        }
+      ],
+      "_label": "FIXTURE: session amr forced for rule-2 negative tests",
+      "perm_version": 1,
+      "fixture_amr": [
+        "pwd"
+      ]
+    },
+    {
+      "username": "cashier_wia",
+      "user_id": "5f0c3e1a-0003-4000-8000-000000000c06",
+      "password": "Cashier-Wia-Standin-2026",
+      "status": "active",
+      "location_slugs": [
+        "pci-main"
+      ],
+      "roles": [
+        {
+          "app_code": "cash_advance",
+          "role": "cashier",
+          "_label": "FIXTURE"
+        },
+        {
+          "app_code": "back_office",
+          "role": "clerk",
+          "_label": "FIXTURE"
+        }
+      ],
+      "_label": "FIXTURE: session amr forced for rule-2 negative tests",
+      "perm_version": 1,
+      "fixture_amr": [
+        "wiaormfa"
+      ]
     }
   ],
   "lockout_minutes": 30,
@@ -160,10 +212,10 @@
     {
       "client_id": "hub",
       "_label": "FIXTURE",
-      "_comment": "[TL Decision 9:16 PM, H1 interim, v1.1 for SA ratification] PLACEHOLDER: the hub access-token aud is its own client_id; the hub is not an app_code and carries no roles.",
+      "_comment": "[TL Decision 9:26 PM, H1 revised] FIXTURE openid-only client: no access token; id_token aud = client_id. Not an app_code, no roles.",
       "app_code": null,
       "api_scope": null,
-      "aud": "hub",
+      "aud": null,
       "cachd": false,
       "org_claims": false,
       "refresh": false,

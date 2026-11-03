@@ -47,6 +47,7 @@ public sealed class LoginSession
     public string? PartnerId { get; init; }
     public bool Interactive { get; init; } = true;  // rule 1: every stand-in session comes from an interactive sign-in
     public bool ViaReturn { get; init; }            // created by a sign-in that returns to authorize (re-prompt, 5.3)
+    public bool InteractiveUsed { get; set; }       // A32 ruling: the credential entry has been spent on one interactive code
     public bool HandoffUsed { get; set; }           // rule 3 cash_advance_handoff_used
     public bool CageConsumed { get; set; }          // rule 6: not SSO-eligible for anything
 }

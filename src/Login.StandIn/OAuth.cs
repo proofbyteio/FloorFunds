@@ -96,8 +96,10 @@ public static class OAuth
                 }
 
                 bool fresh = s is not null && s.CodeIssued == false && (now - s.AuthTime).TotalSeconds <= 60;
-                // [ASSUMPTION A32] for the hand-off client only a session made by a sign-in that returned to authorize counts as interactive.
-                if (isHandoffClient) fresh = fresh && s!.ViaReturn;
+                // [TL Decision 9:26 PM, A32] interactive = now - auth_time <= 300 s AND the session's last authentication was a real
+                // credential entry (password + MFA) made for this authorize (ViaReturn), not SSO reuse, a refresh, or prompt=none.
+                // auth_time is set only by credential entry (never by SSO or refresh), and the entry is spent by the first interactive code.
+                if (isHandoffClient) fresh = s is not null && s.ViaReturn && !s.CodeIssued && !s.InteractiveUsed && prompt != "none" && Handoff.Age(now, s.AuthTime) <= Handoff.AuthAgeSeconds;
                 bool needLogin = s is null || (prompt == "login" && !fresh) || (maxAge is { } mx && (now - s.AuthTime).TotalSeconds > mx);
                 if (needLogin)
                 {
@@ -111,7 +113,7 @@ public static class OAuth
                 if (isHandoffClient && !fresh)
                 {
                     // 5.1 rule 4 (5.7): missing, expired (60 s, no skew), used, or wrong sid/client -> notfromhub, then the sign-in page.
-                    bool r4 = hl is not null && hlFresh && (now - hl.IssuedAt).TotalSeconds <= Handoff.LaunchSeconds && hl.Sid == s.Sid && hl.ClientId == client.ClientId;
+                    bool r4 = hl is not null && hlFresh && Handoff.Age(now, hl.IssuedAt) <= Handoff.LaunchSeconds && hl.Sid == s.Sid && hl.ClientId == client.ClientId;
                     if (!r4)
                     {
                         var e = Audit.Build(now, "auth.app_access.denied", "denied", s.UserId, new JsonObject { ["reason"] = "notfromhub" }, SignIn.Scope(loc), Ip(c), null, s.Sid);
@@ -164,6 +166,7 @@ public static class OAuth
             ev["action"] = "login"; ev["target"] = new JsonObject { ["type"] = "app", ["id"] = client.AppCode ?? client.ClientId }; ev["session_kind"] = s.Kind;
             if (!SignIn.TryEmit(st, ev)) return Back(redirectUri, issuer, state, ("error", "temporarily_unavailable"));
             if (method == "hub_handoff") { s.HandoffUsed = true; s.CageConsumed = true; } // rules 3 and 6
+            if (method == "interactive" && client.Handoff) s.InteractiveUsed = true;
             var code = TokenIssuer.NewHandle();
             st.Auth.Codes[AuthStore.H(code)] = new CodeGrant(client.ClientId, redirectUri, challenge, nonce, string.Join(' ', scopes), s.Sid, now);
             s.CodeIssued = true;
@@ -279,11 +282,17 @@ public static class OAuth
 
                 var u2 = st.Users.Values.First(u => u.UserId == s.UserId);
                 var l2 = SignIn.Location(st.Fixtures, s.Slug)!;
-                var (at, jti, _) = tokens.Access(s, client, scope, now, u2, new JsonLookup(l2.PartnerId, l2.CachdClientId));
-                st.Auth.Access[jti] = new AccessRec(jti, client.ClientId, s.Sid, fam.Id);
                 var idt = tokens.Id(s, client, now, nonce);
                 st.Auth.IdTokenSid[AuthStore.H(idt)] = s.Sid;
-                var body = new JsonObject { ["access_token"] = at, ["token_type"] = "Bearer", ["expires_in"] = TokenIssuer.AccessLifetime, ["id_token"] = idt, ["scope"] = scope };
+                JsonObject body;
+                // [TL Decision 9:26 PM, H1 revised] an openid-only client (the hub, Aud null) gets an id_token and no access token.
+                if (client.Aud is null) body = new JsonObject { ["id_token"] = idt, ["scope"] = scope };
+                else
+                {
+                    var (at, jti, _) = tokens.Access(s, client, scope, now, u2, new JsonLookup(l2.PartnerId, l2.CachdClientId));
+                    st.Auth.Access[jti] = new AccessRec(jti, client.ClientId, s.Sid, fam.Id);
+                    body = new JsonObject { ["access_token"] = at, ["token_type"] = "Bearer", ["expires_in"] = TokenIssuer.AccessLifetime, ["id_token"] = idt, ["scope"] = scope };
+                }
                 if (scope.Split(' ').Contains("offline_access"))
                 {
                     var rt = TokenIssuer.NewHandle();

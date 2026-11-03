@@ -11,6 +11,9 @@ if (refusal is not null)
     return 2;
 }
 var ports = Listeners.Read(cfg);
+StandInState.StateDir = Listeners.StateDir(ports);
+Directory.CreateDirectory(StandInState.StateDir);
+File.WriteAllText(Path.Combine(StandInState.StateDir, "server.pid"), Environment.ProcessId.ToString());
 Listeners.Bind(builder, ports);
 // contract 1.2: the issuer path always contains /standin.
 var issuer = (cfg["StandIn:Issuer"] ?? $"http://localhost:{ports.Front}/standin").TrimEnd('/');

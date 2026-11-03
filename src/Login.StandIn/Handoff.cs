@@ -12,6 +12,8 @@ public static class Handoff
 {
     public const string TxCookie = "standin_hx";
     public const int LaunchSeconds = 60, AuthAgeSeconds = 300;
+    // [ASSUMPTION A42] ages are compared in whole elapsed seconds (truncated), like the integer auth_time claim: 300 s passes, 301 s fails.
+    public static long Age(DateTimeOffset now, DateTimeOffset t) => (long)Math.Floor((now - t).TotalSeconds);
 
     static string E(string s) => WebUtility.HtmlEncode(s);
 
@@ -22,7 +24,8 @@ public static class Handoff
     // Rules 1, 2, 3, 5, 6 of 5.1 (rule 4 is checked by the caller). Returns the failed rule, or null.
     public static string? RuleFailure(StandInState st, LoginSession s, StandInUser user, OAuthClient client, DateTimeOffset now)
     {
-        if (!s.Interactive || (now - s.AuthTime).TotalSeconds > AuthAgeSeconds) return "rule1";
+        // [TL 9:26 PM, A32] auth_time is set only by a real credential entry (password + MFA), never by SSO reuse or refresh.
+        if (!s.Interactive || Age(now, s.AuthTime) > AuthAgeSeconds) return "rule1";
         if (!s.Amr.Contains("mfa")) return "rule2"; // Entra mfa/ngcmfa map to mfa at sign-in; recovery [pwd] never counts
         if (s.HandoffUsed) return "rule3";
         // Rule 5: the user still holds the session's location and is active. The IP allowlist is enforced on every front request (Allowlist.cs).
@@ -49,6 +52,7 @@ public static class Handoff
 
     public static IResult Interstitial(HttpContext c, IAntiforgery af, SignInTx tx, string issuerPath, int agentPort)
     {
+        c.Response.Headers.ContentSecurityPolicy = $"default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:{agentPort}; frame-ancestors 'none'";
         c.Response.Cookies.Append(TxCookie, tx.Id, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Lax, Path = issuerPath, Secure = c.Request.IsHttps });
         var t = af.GetAndStoreTokens(c).RequestToken!;
         // [ASSUMPTION A38] ui-driver has no id for this page; the form id is "handoff" and the page has no screen testid (v1.1 UI item).

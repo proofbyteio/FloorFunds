@@ -33,7 +33,7 @@ public sealed class TokenIssuer
         var jti = NewHandle();
         var cl = new Dictionary<string, object>
         {
-            ["iss"] = _issuer, ["sub"] = s.UserId, ["aud"] = c.Aud, ["exp"] = exp, ["iat"] = iat, ["jti"] = jti, ["scope"] = scope,
+            ["iss"] = _issuer, ["sub"] = s.UserId, ["aud"] = c.Aud ?? throw new InvalidOperationException("openid-only client has no access token"), ["exp"] = exp, ["iat"] = iat, ["jti"] = jti, ["scope"] = scope,
             ["client_id"] = c.ClientId, ["login_provider"] = "database", ["amr"] = s.Amr, ["auth_time"] = s.AuthTime.ToUnixTimeSeconds(),
             ["x_standin"] = true, ["session_kind"] = s.Kind,
         };

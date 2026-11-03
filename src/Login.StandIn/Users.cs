@@ -60,6 +60,8 @@ public sealed class StandInUser
     public int FailedPasswords { get; set; }
     public DateTimeOffset? LockedUntil { get; set; }
     // /admin users (contract 5.12, 8.10): admin_type super|partner, no location. FIXTURE recovery codes are kept as SHA-256 hashes only.
+    // [TL Decision 9:26 PM, (b)] FIXTURE-only: the amr a test user's location session carries ([pwd], [wiaormfa]) to prove rule 2 refusals.
+    public string[]? FixtureAmr { get; init; }
     public string? AdminType { get; init; }
     public string? PartnerId { get; init; }
     public HashSet<string> RecoveryCodeHashes { get; } = new(StringComparer.Ordinal);
