@@ -128,3 +128,27 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
 - Evidence (live): all 9 modes return 200 with the cookie body. These each return 400: pc_id without the `standin-` prefix, an unknown mode, an unknown location_slug, and a missing location_slug.
 - Assumption A16: pc_id is `standin-` followed by 1-64 characters from [A-Za-z0-9._-] (cookie-safe).
 - Not yet built: the front reading `standin_pc` and the fake agent behaviour per mode (2.4). Those need the sign-in and nonce flow.
+
+## SI1-10 Front network allowlist, the first middleware on the front listener (9:03 PM PT)
+- What:
+  - The allowlist middleware is registered before the listener rules and routing, and applies to front requests only.
+  - It matches the TCP peer address against active IPv4 and IPv6 CIDRs.
+  - A blocked caller gets the errors.md 403: text/plain; charset=utf-8, Content-Length 29, body `403 Forbidden: access denied\n`, Cache-Control no-store, Connection close, Server: server, Date and X-Request-ID. HEAD gets no body.
+  - A blocked caller emits no audit event (errors.md: allowlist 403s are not on the outbox).
+- Data:
+  - /tmp/sse-d0/export-allowlist.py opens /tmp/sse-d0/allowlist-copy.db with `mode=ro` and writes the active rows to /tmp/sse-d0/allowlist-active.json (2 rows: 127.0.0.2/32 and 203.0.113.10/32).
+  - The path is set by config `StandIn:AllowlistJson`.
+  - The real data/allowlist.db is never opened.
+- Evidence (live):
+  - From 127.0.0.1 and 127.0.0.4 (inactive): 403 with the exact headers, and a body of 29 bytes ending in \n (od).
+  - HEAD: 403 with no body. A POST to an unknown path from .4: 403 (the gate runs before the 404).
+  - From 127.0.0.2: 200 discovery.
+  - X-Forwarded-For: 127.0.0.2 sent from 127.0.0.1: 403.
+  - The control (18082) and back (18081) listeners are unaffected (200).
+  - With the JSON missing: loaded=False, and .2 gets 403 (fail closed).
+- Assumptions:
+  - A13: .NET has no SQLite package, so the active rows are exported to JSON with the Python stdlib. The stand-in reads that snapshot at startup; a DB change needs a re-export and a restart.
+  - A14: there are no trusted proxies, and XFF is ignored.
+  - A15: a missing or unreadable list means fail closed.
+- Note: the 127.0.0.1 tester is now blocked on the front. Earlier front tests (SI1-4) must use `--interface 127.0.0.2`.
+- Not built: the back-listener internal source list (errors.md, LD §4.5).
