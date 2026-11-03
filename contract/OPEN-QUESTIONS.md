@@ -96,7 +96,15 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 |---|---|---|
 | SSE proposals (CR-05) | Accepted: `data-testid` values, `totp_code`, fake-agent timeout 3 s, password rule ids, clock `GET` `{"now":…}`, S1 BFF stub paths and shapes | ui-driver §1.2, §2; standin-control §2.2, §3; contract §6.5, §6.9; `standin-ui.schema.json` |
 | §6.9 stub build | Specified for the v1 freeze; built as part of SI1 | contract §6.9 |
-| Admin token `partner_id` | Optional for Super Admin, required for Partner Admin. Tokens carry no role claim, so the schema cannot tell the two apart from the token alone: a test picks `access_token_admin_super` or `access_token_admin_partner` by its fixture user (`access_token_admin` = either). **For TL to confirm** this split | `claims.schema.json` |
+| Admin token `partner_id` | Superseded [TL Decision 2026-11-02 8:29 PM]: required claim `admin_type` super/partner discriminates; partner → `partner_id` required, super → absent; `_super`/`_partner` defs retired | contract §8.12; `claims.schema.json` |
 | Location mapping | Token/session: single `location_id`; audit: array `scope.location_ids` (AUD §7A.4 L266) | contract §8.11; claims and audit schemas |
 | Cite precedence | Where the contract and the rulings file differ, the contract's LD `560cb6ab` cites govern | README |
+
+## TL Decision 2026-11-02 8:29 PM
+
+| Item | Decision | Where applied |
+|---|---|---|
+| `admin_type` claim | Required on `/admin` tokens, `super` \| `partner`; schema discriminator (if/then) | contract §8.12; claims schema |
+| Empty `location_ids` | `[]` only when the envelope has `admin_type` (an `/admin` event); otherwise ≥1. Keyed on `admin_type`, because no event class is `/admin`-only. **Ambiguity:** `admin_type` is a new envelope field, not named in AUD §7A.4; `location_ids` absent (OQ-15) stays allowed, so a location event with no `location_ids` at all still passes | contract §8.13; audit schema |
+| `admin_type` vs no-roles rule | Treated as sign-in kind, not a role. **For TL to confirm** it does not breach PLAN L121 / LD L912 | contract §8.12 |
 

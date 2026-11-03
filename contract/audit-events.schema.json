@@ -80,7 +80,7 @@
         },
         "details": { "type": "object" },
         "scope": {
-          "description": "Tenant scope [SRC: AUD §7A.4] [TL Decision 2026-11-02, OQ-37]. cachd_client_id absent for partner-level users; location_ids absent for /admin [TL Decision 2026-11-02, OQ-15].",
+          "description": "Tenant scope [SRC: AUD §7A.4] [TL Decision 2026-11-02, OQ-37]. cachd_client_id absent for partner-level users; location_ids absent for /admin [TL Decision 2026-11-02, OQ-15], or [] for an /admin event where no location applies; any other event needs ≥1 item [TL Decision 2026-11-02 8:29 PM].",
           "type": "object",
           "properties": {
             "partner_id": { "$ref": "#/$defs/id" },
@@ -91,14 +91,24 @@
             "location_ids": {
               "type": "array",
               "items": { "$ref": "#/$defs/id" },
-              "minItems": 1,
               "description": "Array: one event can cover several locations (AUD §7A.4 L266, multi-location for admin actions); a session/token carries the single location_id; for a one-session event = [location_id] (contract 8.11) [TL Decision 2026-11-02 8:26 PM]."
             }
           },
           "not": { "anyOf": [{ "required": ["client_id"]}, { "required": ["location_id"]}]},
           "additionalProperties": false
+        },
+        "admin_type": {
+          "description": "Present only on events from an /admin session; copied from the token's admin_type. Its presence is the switch that allows scope.location_ids: [] [TL Decision 2026-11-02 8:29 PM].",
+          "enum": ["super", "partner"]
         }
-      }
+      },
+      "allOf": [
+        {
+          "description": "location_ids: [] only with admin_type [TL Decision 2026-11-02 8:29 PM].",
+          "if": { "not": { "required": ["admin_type"]}},
+          "then": { "properties": { "scope": { "properties": { "location_ids": { "minItems": 1}}}}}
+        }
+      ]
     },
     "provider_kind": { "enum": ["database", "entra"]},
     "auth.login.succeeded": {

@@ -100,7 +100,7 @@ exp("cachd partner_id not uuid (format OFF)", noform(c,dict(cachd,partner_id="p1
 exp("amr raw ngcmfa (must be mapped to mfa, CR-02)", val(c,dict(cachd,amr=["pwd","ngcmfa"]),"#/$defs/access_token_cachd"), True)
 exp("amr recovery-code [pwd] ok", val(c,dict(cachd,amr=["pwd"]),"#/$defs/access_token_cachd"), False)
 exp("amr wiaormfa err", val(c,dict(cachd,amr=["pwd","wiaormfa"]),"#/$defs/access_token_cachd"), True)
-adm=dict(base,aud="backoffice-api",scope="backoffice_api",client_id="backoffice_bff",partner_id=u())
+adm=dict(base,aud="backoffice-api",scope="backoffice_api",client_id="backoffice_bff",partner_id=u(),admin_type="partner")
 exp("admin token good (no location_id)", val(c,adm,"#/$defs/access_token_admin"), False)
 exp("admin token with location_id", val(c,dict(adm,location_id=u()),"#/$defs/access_token_admin"), True)
 exp("admin token aud cash-advance-api", val(c,dict(adm,aud="cash-advance-api"),"#/$defs/access_token_admin"), True)
@@ -119,12 +119,16 @@ exp("audit scope.client_id (old name)", val(a,env("auth.login.succeeded","succes
 exp("audit event_id not uuid (format OFF)", sorted(e.message for e in V(a).iter_errors(dict(env("auth.refresh.reuse_detected","failure",{}),event_id="e1"))), True)
 # [TL Decision 2026-11-02 8:26 PM] accepted proposals, admin super/partner, location mapping
 su=s["standin-ui.schema.json"]
-SUP,PAR="#/$defs/access_token_admin_super","#/$defs/access_token_admin_partner"
+# [TL Decision 2026-11-02 8:29 PM] admin_type discriminator
 nop={k:v for k,v in adm.items() if k!="partner_id"}
-exp("super admin without partner_id ok", val(c,nop,SUP), False)
-exp("super admin with location_id", val(c,dict(nop,location_id=u()),SUP), True)
-exp("partner admin with partner_id ok", val(c,adm,PAR), False)
-exp("partner admin without partner_id", val(c,nop,PAR), True)
+sup=dict(nop,admin_type="super")
+exp("super admin (no partner_id) ok", val(c,sup,"#/$defs/access_token_admin"), False)
+exp("partner admin with partner_id ok", val(c,adm,"#/$defs/access_token_admin"), False)
+exp("partner admin without partner_id", val(c,nop,"#/$defs/access_token_admin"), True)
+exp("super admin with partner_id", val(c,dict(sup,partner_id=u()),"#/$defs/access_token_admin"), True)
+exp("admin_type missing", val(c,{k:v for k,v in adm.items() if k!="admin_type"},"#/$defs/access_token_admin"), True)
+exp("admin_type other value", val(c,dict(sup,admin_type="location"),"#/$defs/access_token_admin"), True)
+exp("super admin with location_id", val(c,dict(sup,location_id=u()),"#/$defs/access_token_admin"), True)
 exp("token location_id as array", val(c,dict(cachd,location_id=[u()]),"#/$defs/access_token_cachd"), True)
 exp("audit scope singular location_id", val(a,env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]},scope={"partner_id":u(),"location_id":u()})), True)
 exp("audit scope location_ids two locations ok", val(a,env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]},scope={"partner_id":u(),"location_ids":[u(),u()]})), False)
@@ -143,5 +147,8 @@ for nm,ref,good_i,bad_i in [
     exp(nm+" good", val(su,good_i,"#/$defs/"+ref), False)
     exp(nm+" bad", val(su,bad_i,"#/$defs/"+ref), True)
 assert su["$defs"]["agent_timeout_config"]["properties"]["AgentTimeout"]["default"]=="00:00:03"
+LI=lambda **kw: env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]},**kw)
+exp("admin event location_ids [] ok", val(a,dict(LI(scope={"partner_id":u(),"location_ids":[]}),admin_type="super")), False)
+exp("location event location_ids []", val(a,LI(scope={"partner_id":u(),"location_ids":[]})), True)
 print("v1-d4 checks:", "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:claims",
   "title": "Token payloads and headers, contract v1 (DRAFT v1-d4)",
-  "description": "Pick the $defs entry for the client under test: access_token_cachd, access_token_other (org_claims off), access_token_other_org_claims (org_claims on), id_token_code, id_token_refresh, access_token_admin_super, access_token_admin_partner, jose_header_*. Claim lists [SRC: PLAN §3.1 L116-123; LD §5 L230, §16.5 L910-912]. Value types [TL Decision 2026-11-02, OQ-15]. Time checks use ±30 s skew (G1) [TL Decision 2026-11-02, G1].",
+  "description": "Pick the $defs entry for the client under test: access_token_cachd, access_token_other (org_claims off), access_token_other_org_claims (org_claims on), id_token_code, id_token_refresh, access_token_admin (discriminated by admin_type), jose_header_*. Claim lists [SRC: PLAN §3.1 L116-123; LD §5 L230, §16.5 L910-912]. Value types [TL Decision 2026-11-02, OQ-15]. Time checks use ±30 s skew (G1) [TL Decision 2026-11-02, G1].",
   "$defs": {
     "id": {
       "description": "Opaque id, UUID string [TL Decision 2026-11-02, OQ-15]. Pattern enforces UUID even if a validator has format assertion off [TL Decision 2026-11-02, CR-01]; validators MUST still run with format assertion on [TL Decision 2026-11-02, CR-21].",
@@ -150,34 +150,23 @@
       "not": { "required": ["nonce"]},
       "unevaluatedProperties": false
     },
-    "access_token_admin_super": {
-      "allOf": [{"$ref": "#/$defs/access_token_base"}],
-      "properties": {
-        "aud": { "const": "backoffice-api" },
-        "partner_id": { "$ref": "#/$defs/id" },
-        "cachd_client_id": { "$ref": "#/$defs/id" },
-        "perm_version": { "type": "integer", "minimum": 0}
-      },
-      "not": { "required": ["location_id"]},
-      "unevaluatedProperties": false,
-      "description": "/admin, Super Admin: no location_id (absent) [TL Decision 2026-11-02, OQ-15] (LD L1430); partner_id optional [TL Decision 2026-11-02 8:26 PM]."
-    },
-    "access_token_admin_partner": {
-      "allOf": [{"$ref": "#/$defs/access_token_base"}],
-      "properties": {
-        "aud": { "const": "backoffice-api" },
-        "partner_id": { "$ref": "#/$defs/id" },
-        "cachd_client_id": { "$ref": "#/$defs/id" },
-        "perm_version": { "type": "integer", "minimum": 0}
-      },
-      "not": { "required": ["location_id"]},
-      "unevaluatedProperties": false,
-      "required": ["partner_id"],
-      "description": "/admin, Partner Admin: no location_id (absent) [TL Decision 2026-11-02, OQ-15] (LD L1430); partner_id required [TL Decision 2026-11-02 8:26 PM]."
-    },
     "access_token_admin": {
-      "description": "Either /admin shape. Tokens carry no role claim, so a test picks _super or _partner by the fixture user it signed in as [TL Decision 2026-11-02 8:26 PM].",
-      "anyOf": [{"$ref": "#/$defs/access_token_admin_super"}, {"$ref": "#/$defs/access_token_admin_partner"}]
+      "description": "/admin sign-in to backoffice-api: no location_id (absent) [TL Decision 2026-11-02, OQ-15] (LD L1430). admin_type is the required discriminator: partner → partner_id required; super → partner_id absent [TL Decision 2026-11-02 8:29 PM]. admin_type names the /admin sign-in kind, not an app role or permission (no_roles_or_permissions still applies).",
+      "allOf": [
+        { "$ref": "#/$defs/access_token_base" },
+        { "if": { "properties": { "admin_type": { "const": "partner" }}, "required": ["admin_type"]}, "then": { "required": ["partner_id"]}},
+        { "if": { "properties": { "admin_type": { "const": "super" }}, "required": ["admin_type"]}, "then": { "not": { "required": ["partner_id"]}}}
+      ],
+      "required": ["admin_type"],
+      "properties": {
+        "aud": { "const": "backoffice-api" },
+        "admin_type": { "enum": ["super", "partner"]},
+        "partner_id": { "$ref": "#/$defs/id" },
+        "cachd_client_id": { "$ref": "#/$defs/id" },
+        "perm_version": { "type": "integer", "minimum": 0}
+      },
+      "not": { "required": ["location_id"]},
+      "unevaluatedProperties": false
     }
   }
 }
