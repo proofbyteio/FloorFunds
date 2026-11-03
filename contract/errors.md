@@ -17,7 +17,9 @@ Labels and source snapshots: see `README.md`.
 
 | Code | When (v1) | Endpoint and transport | Label |
 |---|---|---|---|
-| `invalid_request` | Missing / duplicated / malformed parameter; no PKCE; `code_challenge_method` ≠ `S256`; `response_type` ≠ `code` | authorize: redirect; token/revoke/introspect: HTTP 400 JSON | code [SRC: PLAN L138]; PKCE cases [SRC: PLAN L108]; transport [TL Decision 2026-11-02, OQ-17] (Accept: RFC 6749 §4.1.2.1 / §5.2) |
+| `invalid_request` | Missing / duplicated / malformed parameter; no PKCE; `code_challenge_method` ≠ `S256` (`response_type` ≠ `code` moved to `unsupported_response_type` [TL Decision 2026-11-02, CR-04]) | authorize: redirect; token/revoke/introspect: HTTP 400 JSON | code [SRC: PLAN L138]; PKCE cases [SRC: PLAN L108]; transport [TL Decision 2026-11-02, OQ-17] (Accept: RFC 6749 §4.1.2.1 / §5.2) |
+| `unsupported_response_type` | `response_type` ≠ `code` | authorize: redirect when `redirect_uri` is valid; otherwise the §3 error page | [TL Decision 2026-11-02, CR-04] (RFC 6749 §4.1.2.1) |
+| `unsupported_grant_type` | Unknown `grant_type` at the token endpoint | token: HTTP 400 JSON | [TL Decision 2026-11-02, CR-04] (RFC 6749 §5.2) |
 | `invalid_client` | Client authentication failed at token / revoke / introspect | HTTP 401 JSON, with `WWW-Authenticate: Basic` for `client_secret_basic` | code [SRC: PLAN L139]; transport [TL Decision 2026-11-02, OQ-17] (RFC 6749 §5.2) |
 | `invalid_grant` | Code replay, expired code (>60 s), `code_verifier` mismatch, `redirect_uri` mismatch, refresh reuse after leeway, revoked chain | token: HTTP 400 JSON | [SRC: PLAN L140, S1 check 8]; verifier / redirect cases [TL Decision 2026-11-02, OQ-17] |
 | `invalid_grant` | Refresh after the user lost the role in the client's `app_code` (that client's family revoked only), or the user is disabled / locked (family revoked, `auth.session.revoked reason=user_disabled`) | token: HTTP 400 JSON | [TL Decision 2026-11-02, OQ-12] |
@@ -37,7 +39,10 @@ Redirect errors carry `error` and the client's `state` and `iss` (RFC 9207), on 
 | Hand-off rule 1-6 fails (rule 4 also writes `auth.app_access.denied reason=notfromhub`: `hub_launch` missing, expired, used or bound to another session or client, contract 5.7) | Sign-in page again (re-prompt) | [SRC: PLAN L134; LD L1313] |
 | Hand-off refused, `attestation_invalid` (`device_attestation` missing or failing any 6.7 check) | Password + MFA sign-in; cage actions blocked; screen 8 (Session), variant B "security software not responding" | [SRC: LD L1192; PLAN S1 4a, 4b] |
 | Hand-off refused, `remote_session` | Screen 8 (Session), variant A "remote session"; `access_denied` to the client only if the user cancels | [SRC: LD L1191; PLAN L134] |
-| Plain sign-in, agent reports remote session | Screen 8 (Session), variant A "remote session": "Try again after the remote session ends" | [SRC: LD §16.18.5 L1378] |
+| Plain sign-in, **verified** attestation reports remote session | Screen 8 (Session), variant A "remote session": "Try again after the remote session ends" | [SRC: LD §16.18.5 L1378] |
+| Plain sign-in, attestation invalid (expired, bad signature, replayed, wrong `aud`/`purpose`, unknown/revoked/other-location device) | Sign-in goes ahead; its `remote_session` is ignored (no screen 8A); audit `auth.login.succeeded attestation=invalid`; the user sees no difference (G2) | [TL Decision 2026-11-02, CR-25, OQ-11] |
+| Cage action without a valid fresh `cage_action` attestation (Cash Advance server, contract 6.9) | Action refused, screen 8 (Session) variant B | [TL Decision 2026-11-02, CR-12] |
+| `/_standin/*` on the front listener | 404 | [TL Decision 2026-11-02, CR-05] |
 | Wrong password, locked account, MFA failure | Our sign-in page messages (UX screens), no redirect to the client | [SRC: PLAN L146 ("our own pages")]; wording owned by UX |
 | `redirect_uri` or `client_id` invalid | Error page on our host; never redirect; generic text ("This sign-in link isn't valid"); echoes no parameter; `Cache-Control: no-store`; `frame-ancestors 'none'`; no audit event | [TL Decision 2026-11-02, OQ-5] |
 | API (resource server) token problems: wrong `aud`, bad signature, expired, stand-in token in Production | HTTP 401 with only `WWW-Authenticate: Bearer error="invalid_token"`, no description; also an ID token sent as a bearer (`ValidTypes=["at+jwt"]`) and a token 31 s past `exp` (G1) | 401 [SRC: PLAN S1 checks 8, 11]; header [TL Decision 2026-11-02, OQ-17]; ID token [TL Decision 2026-11-02, OQ-14] (RFC 6750 §3.1) |
