@@ -14,7 +14,7 @@ print("disc good", val(s["openid-configuration.schema.json"], disc))
 print("disc +userinfo (expect err)", val(s["openid-configuration.schema.json"], dict(disc, userinfo_endpoint="x")))
 print("disc plain (expect err)", val(s["openid-configuration.schema.json"], dict(disc, code_challenge_methods_supported=["plain","S256"])))
 u=lambda: str(uuid.uuid4())
-base={"iss":"http://localhost:5080/standin","sub":u(),"aud":"cash-advance-api","exp":1300,"iat":1000,"jti":"j"*20,"scope":"cash_advance_api","client_id":"cash_advance_bff","login_provider":"database","amr":["pwd","otp","mfa"],"auth_time":990,"x_standin":True}
+base={"session_kind":"normal","iss":"http://localhost:5080/standin","sub":u(),"aud":"cash-advance-api","exp":1300,"iat":1000,"jti":"j"*20,"scope":"cash_advance_api","client_id":"cash_advance_bff","login_provider":"database","amr":["pwd","otp","mfa"],"auth_time":990,"x_standin":True}
 c=s["claims.schema.json"]
 cachd=dict(base,perm_version=3,partner_id=u(),cachd_client_id=u(),location_id=u())
 print("cachd good", val(c,cachd,"#/$defs/access_token_cachd"))
@@ -25,11 +25,11 @@ print("other + perm_version (expect err)", val(c,dict(base,perm_version=1),"#/$d
 print("other + org (expect err)", val(c,dict(base,partner_id=u(),location_id=u()),"#/$defs/access_token_other"))
 print("other org on good", val(c,dict(base,partner_id=u(),location_id=u()),"#/$defs/access_token_other_org_claims"))
 print("other org on + perm_version (expect err)", val(c,dict(base,partner_id=u(),location_id=u(),perm_version=1),"#/$defs/access_token_other_org_claims"))
-idt={"iss":"i","sub":u(),"aud":"cash_advance_bff","azp":"cash_advance_bff","exp":2,"iat":1,"nonce":"n","auth_time":1,"amr":["pwd","otp","mfa"]}
+idt={"session_kind":"normal","iss":"i","sub":u(),"aud":"cash_advance_bff","azp":"cash_advance_bff","exp":2,"iat":1,"nonce":"n","auth_time":1,"amr":["pwd","otp","mfa"]}
 print("id good", val(c,idt,"#/$defs/id_token_code"))
 print("id + sid (expect err)", val(c,dict(idt,sid="s"),"#/$defs/id_token_code"))
 a=s["audit-events.schema.json"]
-env=lambda t,o,det,**kw: dict({"event_id":u(),"schema":"cachd.log","schema_version":"1.0.0","category":"event","event_type":t,"occurred_at":"2026-11-02T19:40:00Z","outcome":o,"is_audit":True,"actor":{"user_id":u(),"session_id":"ls1"},"source":{"service":"login-standin"},"details":det,"scope":{"partner_id":u(),"location_ids":[u()]}},**kw)
+env=lambda t,o,det,**kw: dict({"event_id":u(),"schema":"cachd.log","schema_version":"1.0.0","category":"event","event_type":t,"occurred_at":"2026-11-02T19:40:00Z","outcome":o,"is_audit":True,"actor":{"user_id":u(),"session_id":"ls1"},"source":{"service":"login-standin"},"details":det,"session_kind":"normal","scope":{"partner_id":u(),"location_ids":[u()]}},**kw)
 print("denied attestation_invalid", val(a,env("auth.app_access.denied","denied",{"reason":"attestation_invalid"},target={"type":"app","id":"cash_advance"})))
 print("denied bogus reason (expect err)", bool(val(a,env("auth.app_access.denied","denied",{"reason":"tenant_mismatch"},target={"type":"app","id":"cash_advance"}))))
 print("signed_in hub_handoff", val(a,env("auth.app.signed_in","success",{"method":"hub_handoff","auth_time":990,"amr":["mfa"]},target={"type":"app","id":"cash_advance"},action="login")))
@@ -98,7 +98,7 @@ exp("sub not uuid (format OFF, pattern catches)", noform(c,dict(idt,sub="user-1"
 exp("sub uuid upper-case ok (format OFF)", noform(c,dict(idt,sub=u().upper()),"#/$defs/id_token_code"), False)
 exp("cachd partner_id not uuid (format OFF)", noform(c,dict(cachd,partner_id="p1"),"#/$defs/access_token_cachd"), True)
 exp("amr raw ngcmfa (must be mapped to mfa, CR-02)", val(c,dict(cachd,amr=["pwd","ngcmfa"]),"#/$defs/access_token_cachd"), True)
-exp("amr recovery-code [pwd] gets no token (DEC-085)", val(c,dict(cachd,amr=["pwd"]),"#/$defs/access_token_cachd"), True)
+exp("amr recovery-code [pwd] ok", val(c,dict(cachd,amr=["pwd"]),"#/$defs/access_token_cachd"), False)
 exp("amr wiaormfa err", val(c,dict(cachd,amr=["pwd","wiaormfa"]),"#/$defs/access_token_cachd"), True)
 adm=dict(base,aud="backoffice-api",scope="backoffice_api",client_id="backoffice_bff",partner_id=u(),admin_type="partner")
 exp("admin token good (no location_id)", val(c,adm,"#/$defs/access_token_admin"), False)
@@ -168,12 +168,12 @@ exp("location event location_ids missing", val(a,LI(scope={"partner_id":u()})), 
 exp("location event scope missing", val(a,{k:v for k,v in LI().items() if k!="scope"}), True)
 exp("admin event without location_ids ok", val(a,dict(LI(scope={"partner_id":u()}),admin_type="partner")), False)
 # [Confirmed DEC-085] recovery_reenroll sessions
-exp("recovery_session denied ok", val(a,env("auth.app_access.denied","denied",{"reason":"recovery_session"},target={"type":"app","id":"cash_advance"})), False)
-exp("hand-off from recovery session", val(a,HO(details={"method":"hub_handoff","auth_time":1,"amr":["pwd"]})), True)
-exp("app launch from recovery session", val(a,dict(HO(),details={"method":"interactive","auth_time":1,"amr":["pwd"]})), True)
+exp("recovery_session denied ok", val(a,env("auth.app_access.denied","denied",{"reason":"recovery_session"},target={"type":"app","id":"cash_advance"},session_kind="recovery_reenroll")), False)
+exp("hand-off from recovery session", val(a,HO(session_kind="recovery_reenroll")), True)
+exp("app launch from recovery session", val(a,dict(HO(),session_kind="recovery_reenroll",details={"method":"interactive","auth_time":1,"amr":["pwd"]})), True)
 exp("app sign-in pwd+otp+mfa ok", val(a,dict(HO(),details={"method":"interactive","auth_time":1,"amr":["pwd","otp","mfa"]})), False)
-exp("id token amr [pwd]", val(c,dict(idt,amr=["pwd"]),"#/$defs/id_token_code"), True)
-exp("admin token amr [pwd]", val(c,dict(sup,amr=["pwd"]),"#/$defs/access_token_admin"), True)
+exp("id token amr [pwd] normal session ok", val(c,dict(idt,amr=["pwd"]),"#/$defs/id_token_code"), False)
+exp("admin token amr [pwd] normal session ok", val(c,dict(sup,amr=["pwd"]),"#/$defs/access_token_admin"), False)
 exp("audit reason unknown recovery", val(a,env("auth.app_access.denied","denied",{"reason":"recovery"},target={"type":"app","id":"x"})), True)
 exp("mfa recovery_code login ok", True and val(a,env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]})), False)
 # [TL Decision 2026-11-02 8:31 PM] re-sign-in and admin sign-in ids; provisional app_codes stay data
@@ -181,5 +181,17 @@ for t in ["page-resign-in","field-resign-in-username","error-resign-in","page-ad
     exp("testid "+t+" ok", val(su,t,"#/$defs/testid"), False)
 for t in ["page-resign_in","field-admin-user","page-05","hub-tile-back-office","error-resign-in-x"]:
     exp("testid "+t, val(su,t,"#/$defs/testid"), True)
+# [TL Decision 2026-11-02 8:35 PM] session_kind
+R="recovery_reenroll"
+exp("cachd token session_kind recovery_reenroll", val(c,dict(cachd,session_kind=R),"#/$defs/access_token_cachd"), True)
+exp("admin token session_kind recovery_reenroll", val(c,dict(sup,session_kind=R),"#/$defs/access_token_admin"), True)
+exp("id token session_kind recovery_reenroll", val(c,dict(idt,session_kind=R),"#/$defs/id_token_code"), True)
+exp("token session_kind missing", val(c,{k:v for k,v in cachd.items() if k!="session_kind"},"#/$defs/access_token_cachd"), True)
+exp("token session_kind other value", val(c,dict(cachd,session_kind="recovery"),"#/$defs/access_token_cachd"), True)
+exp("app sign-in normal amr [pwd] ok", val(a,dict(HO(),details={"method":"interactive","auth_time":1,"amr":["pwd"]})), False)
+exp("app sign-in session_kind missing", val(a,{k:v for k,v in HO().items() if k!="session_kind"}), True)
+exp("recovery_session reason with normal session", val(a,env("auth.app_access.denied","denied",{"reason":"recovery_session"},target={"type":"app","id":"cash_advance"})), True)
+exp("audit envelope session_kind other value", val(a,dict(LI(),session_kind="recovery")), True)
+exp("audit login event without session_kind ok", val(a,{k:v for k,v in LI().items() if k!="session_kind"}), False)
 print("v1-d4 checks:", "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)

@@ -100,6 +100,10 @@
         "admin_type": {
           "description": "Present only on events from an /admin session; copied from the token's admin_type. Its presence is the switch that allows scope.location_ids: [] [TL Decision 2026-11-02 8:29 PM]. Not yet in AUD §7A.4: open item AUD v0.8 [TL Decision 2026-11-02 8:31 PM].",
           "enum": ["super", "partner"]
+        },
+        "session_kind": {
+          "description": "Present when the event belongs to a login session; copied from the session (contract 7.8). Not yet in AUD §7A.4: open item AUD v0.8 [TL Decision 2026-11-02 8:35 PM].",
+          "enum": ["normal", "recovery_reenroll"]
         }
       },
       "allOf": [
@@ -237,8 +241,9 @@
           "then": { "properties": { "details": { "properties": { "method": { "not": { "const": "hub_handoff" }}}}}}
         },
         {
-          "description": "No app sign-in from a recovery_reenroll session (amr exactly [pwd]) [Confirmed DEC-085].",
-          "not": { "properties": { "details": { "properties": { "amr": { "const": ["pwd"]}}, "required": ["amr"]}}}
+          "description": "No app sign-in from a recovery_reenroll session [TL Decision 2026-11-02 8:35 PM].",
+          "required": ["session_kind"],
+          "properties": { "session_kind": { "const": "normal" }}
         }
       ]
     },
@@ -259,7 +264,14 @@
         }
       },
       "required": ["target"],
-      "allOf": [{"if": {"properties": {"details": {"properties": {"reason": {"const": "not_location_user"}}}}}, "then": {"required": ["admin_type"]}}]
+      "allOf": [
+        { "if": { "properties": { "details": { "properties": { "reason": { "const": "not_location_user" }}}}}, "then": { "required": ["admin_type"]}},
+        {
+          "description": "reason recovery_session only for a recovery_reenroll session [TL Decision 2026-11-02 8:35 PM].",
+          "if": { "properties": { "details": { "properties": { "reason": { "const": "recovery_session" }}}}},
+          "then": { "required": ["session_kind"], "properties": { "session_kind": { "const": "recovery_reenroll" }}}
+        }
+      ]
     },
     "auth.password.reset": {
       "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. [SRC: LD §8 L421]. Channel values email | admin [TL Decision 2026-11-02, OQ-24].",

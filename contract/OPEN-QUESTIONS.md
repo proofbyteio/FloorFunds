@@ -127,12 +127,21 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 |---|---|---|---|
 | Recovery sessions | **Decided** [Confirmed DEC-085]: `recovery_reenroll` session reaches only MFA re-enrolment and sign-out; hand-off, `hub_launch`, app launch, cage refused with `recovery_session` (audit only), client `access_denied` | - | contract 5.13, 6.9, 7.8; errors.md; audit schema; standin-control 2.10 |
 | DEC-085 follow-up | **Open, TO CONFIRM with Mohanraj:** is cage work allowed in the same session after re-enrolling? **Interim safe default (not decided):** the session stays restricted; the user signs in again with the new MFA | Mohanraj | contract 7.8 |
-| Re-enrolment endpoints | **Open:** paths and audit events for MFA re-enrolment not in the contract yet | SA / TL | contract 7.8 |
+| Re-enrolment endpoints | Paths now proposed in contract 7.8 [TL Decision 2026-11-02 8:35 PM]; see row below | SA / TL | contract 7.8 |
 
 ## TL Decision 2026-11-02 8:31 PM (ui-driver pages) and provisional app_codes
 
 | Item | State | Who | Where |
 |---|---|---|---|
-| Re-sign-in / admin sign-in test ids | SSE-proposed [TL Decision 2026-11-02 8:31 PM]; UX D-67 has none for these forms. UX to add them to `05-admin.html` / `07-handoff.html` | UX | ui-driver §2a; `standin-ui.schema.json` |
+| Re-sign-in / admin sign-in test ids | **Resolved** [TL Decision 2026-11-02 8:35 PM]: confirmed by TL; UX is adding them to `05-admin.html` / `07-handoff.html` | UX | ui-driver §2a; `standin-ui.schema.json` |
 | Placeholder `app_code`s `cash_advance`, `back_office`, `reports` | **Open, provisional** [TL Decision 2026-11-02, provisional, pending Mohanraj via PM]: Mohanraj to confirm (via PM). Data in `auth.app` and stand-in fixtures, not a schema enum | Mohanraj via PM | ui-driver §2 |
+
+## TL Decision 2026-11-02 8:35 PM
+
+| Item | State | Who | Where |
+|---|---|---|---|
+| `session_kind` | **Decided:** `normal` \| `recovery_reenroll` in the session model, required token claim, audit envelope (when a session exists). Replaces the DEC-085 `amr==["pwd"]` rule | - | contract 7.8; claims and audit schemas |
+| AUD v0.8 (`session_kind`) | **Open:** AUD owner to add `session_kind` to §7A.4 (with `admin_type`, item above) | AUD owner via SA | audit schema envelope |
+| MFA re-enrolment paths | **Open, Proposal:** `GET /mfa/reenrol`, `POST /mfa/reenrol`, `GET /mfa/reenrol/recovery-codes`; SA to ratify in LD. Audit events for re-enrolment not defined yet | SA | contract 7.8 |
+| Apps fixture | **Provisional (pending Mohanraj):** `cash_advance`, `back_office`, `reports` | Mohanraj via PM | standin-control §4 |
 

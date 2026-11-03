@@ -27,7 +27,7 @@ Labels as in `README.md`. Values SSE proposed (clock `GET` shape, rule ids) are 
 | 2.7 | `GET /_standin/audit?since=<seq>` → `{"events":[…],"next":<seq>}` | In emit order; each event validates against `audit-events.schema.json` | [TL Decision 2026-11-02, CR-05] |
 | 2.8 | (none) | **No** `hub_launch` or nonce mint/expire route. Tests get `hub_launch` from the hub tile and expire it by advancing the clock | [TL Decision 2026-11-02, CR-05] |
 | 2.9 | Location users only | The stand-in front refuses the Cash Advance hand-off for an `/admin` session (`access_denied`, audit `auth.app_access.denied reason=not_location_user` with `admin_type`), and the BFF stub refuses cage nonce and cage actions for it (403 `{"error":"access_denied"}`), same as the real service (contract 5.12, 6.9) | [Confirmed DEC-084] |
-| 2.10 | Recovery sessions | A recovery-code sign-in on the stand-in creates a `recovery_reenroll` session: only MFA re-enrolment and sign-out work; hand-off, `hub_launch`, app launch, cage nonce and cage actions are refused (`access_denied` / 403), audit `auth.app_access.denied reason=recovery_session`, same as the real service (contract 7.8) | [Confirmed DEC-085] |
+| 2.10 | Recovery sessions | A recovery-code sign-in on the stand-in creates a `session_kind=recovery_reenroll` session (only the 7.8 re-enrolment paths and sign-out): only MFA re-enrolment and sign-out work; hand-off, `hub_launch`, app launch, cage nonce and cage actions are refused (`access_denied` / 403), audit `auth.app_access.denied reason=recovery_session`, same as the real service (contract 7.8) | [Confirmed DEC-085] |
 
 ## 3. Password policy rule ids (returned in `violations`)
 
@@ -47,6 +47,7 @@ The ids are accepted [TL Decision 2026-11-02 8:26 PM] (closed list, `password_vi
 | Fixture | Content | Source |
 |---|---|---|
 | Users | `cashier_db`, `no_role_user` (PLAN check 1) | [TL Decision 2026-11-02, CR-05]; [SRC: PLAN check 1] |
+| Apps (`auth.app`) | `cash_advance`, `back_office`, `reports`, one hub tile each (`hub-tile-{app_code}`). **Provisional, pending Mohanraj** | [TL Decision 2026-11-02, provisional, pending Mohanraj via PM]; [TL Decision 2026-11-02 8:35 PM] |
 | Partners | `pci` (PCI baseline preset) and `nevada` (Nevada MICS #7 preset), one location each; check 10 uses `pci` | [TL Decision 2026-11-02, CR-13, OQ-SSE2-13] |
 | Lockout duration | config value, fixture 30 min | [TL Decision 2026-11-02, CR-13] |
 | Location slugs, fixture user passwords, partner/location ids | **not ruled**: SSE2 reads them from the stand-in fixture file; not frozen in v1 | [OPEN → TL at freeze] |

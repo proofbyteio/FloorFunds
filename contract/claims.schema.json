@@ -12,7 +12,7 @@
     },
     "numeric_date": { "type": "integer", "minimum": 0},
     "amr": {
-      "description": "Array [SRC: PLAN L118]. Closed enum, RFC 8176 values only; nothing passes through from Entra [TL Decision 2026-11-02, CR-02, OQ-22] (LD §16.19.3, row 119 L706). DB sign-in password+TOTP = [pwd, otp, mfa]; recovery-code sign-in = [pwd] (never MFA); Entra amr containing mfa or ngcmfa -> mfa; wiaormfa never -> mfa. Hand-off needs mfa [SRC: LD L1184; TL Decision 2026-11-02, CR-02] A recovery-code session ([pwd]) gets no app token at all [Confirmed DEC-085].",
+      "description": "Array [SRC: PLAN L118]. Closed enum, RFC 8176 values only; nothing passes through from Entra [TL Decision 2026-11-02, CR-02, OQ-22] (LD §16.19.3, row 119 L706). DB sign-in password+TOTP = [pwd, otp, mfa]; recovery-code sign-in = [pwd] (never MFA); Entra amr containing mfa or ngcmfa -> mfa; wiaormfa never -> mfa. Hand-off needs mfa [SRC: LD L1184; TL Decision 2026-11-02, CR-02]",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
@@ -41,11 +41,12 @@
       "allOf": [
         { "$ref": "#/$defs/no_roles_or_permissions" },
         {
-          "description": "No app token from a recovery_reenroll session (amr exactly [pwd]) [Confirmed DEC-085].",
-          "not": { "properties": { "amr": { "const": ["pwd"]}}, "required": ["amr"]}
+          "description": "A recovery_reenroll session gets no token for any app aud (every access/ID token aud is an app, so such a token is always invalid) [TL Decision 2026-11-02 8:35 PM]; replaces the DEC-085 amr==[pwd] rule.",
+          "if": { "properties": { "session_kind": { "const": "recovery_reenroll" }}, "required": ["session_kind"]},
+          "then": { "properties": { "aud": false}}
         }
       ],
-      "required": ["iss", "sub", "aud", "exp", "iat", "jti", "scope", "client_id", "login_provider", "amr", "auth_time"],
+      "required": ["iss", "sub", "aud", "exp", "iat", "jti", "scope", "client_id", "login_provider", "amr", "auth_time", "session_kind"],
       "properties": {
         "iss": { "type": "string", "format": "uri" },
         "sub": { "$ref": "#/$defs/id" },
@@ -66,7 +67,8 @@
         "login_provider": { "enum": ["database", "entra"]},
         "amr": { "$ref": "#/$defs/amr" },
         "auth_time": { "$ref": "#/$defs/numeric_date" },
-        "x_standin": { "$ref": "#/$defs/standin_marker" }
+        "x_standin": { "$ref": "#/$defs/standin_marker" },
+        "session_kind": { "$ref": "#/$defs/session_kind" }
       },
       "$comment": "Lifetime 5 min: tests assert exp - iat == 300 [SRC: PLAN L116]."
     },
@@ -131,11 +133,12 @@
       "allOf": [
         { "$ref": "#/$defs/no_roles_or_permissions" },
         {
-          "description": "No app token from a recovery_reenroll session [Confirmed DEC-085].",
-          "not": { "properties": { "amr": { "const": ["pwd"]}}, "required": ["amr"]}
+          "description": "A recovery_reenroll session gets no token for any app aud (every access/ID token aud is an app, so such a token is always invalid) [TL Decision 2026-11-02 8:35 PM]; replaces the DEC-085 amr==[pwd] rule.",
+          "if": { "properties": { "session_kind": { "const": "recovery_reenroll" }}, "required": ["session_kind"]},
+          "then": { "properties": { "aud": false}}
         }
       ],
-      "required": ["iss", "sub", "aud", "azp", "exp", "iat", "auth_time", "amr"],
+      "required": ["iss", "sub", "aud", "azp", "exp", "iat", "auth_time", "amr", "session_kind"],
       "properties": {
         "iss": { "type": "string", "format": "uri" },
         "sub": { "$ref": "#/$defs/id" },
@@ -147,7 +150,8 @@
         "auth_time": { "$ref": "#/$defs/numeric_date" },
         "amr": { "$ref": "#/$defs/amr" },
         "at_hash": { "description": "Allowed, not required [TL Decision 2026-11-02, OQ-14].", "type": "string" },
-        "x_standin": { "$ref": "#/$defs/standin_marker" }
+        "x_standin": { "$ref": "#/$defs/standin_marker" },
+        "session_kind": { "$ref": "#/$defs/session_kind" }
       }
     },
     "id_token_code": {
@@ -179,6 +183,10 @@
       },
       "not": { "required": ["location_id"]},
       "unevaluatedProperties": false
+    },
+    "session_kind": {
+      "description": "Session kind: normal | recovery_reenroll (contract 7.8) [TL Decision 2026-11-02 8:35 PM].",
+      "enum": ["normal", "recovery_reenroll"]
     }
   }
 }

@@ -29,7 +29,7 @@ Screen numbers: contract screen 6 (TOTP) = UX `03-totp.html`, contract screen 7 
 
 ## 2a. Re-sign-in and admin sign-in pages [TL Decision 2026-11-02 8:31 PM]
 
-**SSE-proposed ids:** UX D-67 (DECISIONS.md md5 b6fa0d1f) lists no ids for these forms ("07 re-sign-in form u2/p2 and 05 admin form carry no ids"); names below follow the UX form fields and the `page-` / `field-` / `error-` prefixes; UX to add them to the mockups.
+**Ids confirmed by the TL** [TL Decision 2026-11-02 8:35 PM]. UX D-67 (DECISIONS.md md5 b6fa0d1f) had none for these forms; UX is adding them to `05-admin.html` and `07-handoff.html`.
 
 | Page / element | `data-testid` | UX element |
 |---|---|---|
