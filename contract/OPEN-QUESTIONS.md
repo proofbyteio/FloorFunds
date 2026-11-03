@@ -143,7 +143,7 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 | `session_kind` | **Decided:** `normal` \| `recovery_reenroll` in the session model, required token claim, audit envelope (when a session exists). Replaces the DEC-085 `amr==["pwd"]` rule | - | contract 7.8; claims and audit schemas |
 | `session_kind` split | **Resolved** [TL Decision 2026-11-02 8:37 PM]: required in tokens; in audit required only on app sign-in and `recovery_session` refusals (and on `auth.mfa.reenrolled`) | - | contract 7.8 |
 | AUD v0.8 (`session_kind`) | **Open:** AUD owner to add `session_kind` to §7A.4 (with `admin_type`, item above) | AUD owner via SA | audit schema envelope |
-| MFA re-enrolment paths | **Open, Proposal:** `GET /mfa/reenrol`, `POST /mfa/reenrol`, `GET /mfa/reenrol/recovery-codes`; SA to ratify in LD. Revoke-all-at-once and show-codes-once **accepted** [TL Decision 2026-11-02 8:37 PM]; audit events defined (contract 8.14); paths still Proposal | SA | contract 7.8 |
+| MFA re-enrolment paths | **Open, Proposal:** `GET /mfa/reenroll`, `POST /mfa/reenroll`, `GET /mfa/reenroll/recovery-codes`; SA to ratify in LD. Revoke-all-at-once and show-codes-once **accepted** [TL Decision 2026-11-02 8:37 PM]; audit events defined (contract 8.14); paths still Proposal | SA | contract 7.8 |
 | Apps fixture | **PLACEHOLDER** [Confirmed DEC-088] [Confirmed DEC-089]: `cash_advance`, `back_office`, `reports` (two separate apps for back office and reports) | - | standin-control §4 |
 
 ## TL Decision 2026-11-02 8:37 PM
@@ -167,4 +167,12 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 | Item | State | Who | Where |
 |---|---|---|---|
 | Cash Advance `app_code` owner | **Open, TO CONFIRM with Mohanraj:** who picks Cash Advance's code (DEC-088 covers "the team member building them"; Cash Advance's builder not stated). No answer assumed; `cash_advance` stays a PLACEHOLDER | Mohanraj | ui-driver §2; standin-control §4 |
+
+## [TL Decision 2026-11-02 8:41 PM, SA ratification]
+
+| Item | State | Who | Where |
+|---|---|---|---|
+| Re-enrolment paths | Renamed `/mfa/reenroll`, `/mfa/reenroll/recovery-codes` (GET, POST `/mfa/reenroll`); still Proposal until the SA records them in LD | SA | contract 7.8 |
+| `recovery_codes_issued` `session_kind` | Now **required** (`recovery_reenroll`) [TL Decision 2026-11-02 8:41 PM, SA ratification]; supersedes follow-up 1 (8:39 PM) | - | contract 8.14 |
+| TOTP rate limit on POST `/mfa/reenroll` | **Open:** the contract states no TOTP rate-limit value (6.3 is the password lockout preset); "existing TOTP rate limit" is referenced, not defined. TL / SA to point to the source value | TL / SA | contract 7.8 |
 

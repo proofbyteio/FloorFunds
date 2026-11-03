@@ -188,9 +188,25 @@
         "event_type": { "enum": ["auth.mfa.enrolled", "auth.mfa.succeeded", "auth.mfa.failed", "auth.mfa.reset"]},
         "details": {
           "required": ["method"],
-          "properties": { "method": { "description": "totp | recovery_code | entra [TL Decision 2026-11-02, OQ-24].", "type": "string" }}
+          "properties": {
+            "method": { "description": "totp | recovery_code | entra [TL Decision 2026-11-02, OQ-24].", "type": "string" },
+            "step": {
+              "description": "reenroll: wrong totp_code on POST /mfa/reenroll [TL Decision 2026-11-02 8:41 PM, SA ratification]. Absent for sign-in MFA.",
+              "enum": ["reenroll"]
+            }
+          }
         }
-      }
+      },
+      "allOf": [
+        {
+          "description": "A re-enrolment failure carries session_kind=recovery_reenroll [TL Decision 2026-11-02 8:41 PM, SA ratification].",
+          "if": { "properties": { "details": { "properties": { "step": { "const": "reenroll" }}, "required": ["step"]}}, "required": ["details"]},
+          "then": {
+            "required": ["session_kind"],
+            "properties": { "session_kind": { "const": "recovery_reenroll" }, "event_type": { "const": "auth.mfa.failed" }}
+          }
+        }
+      ]
     },
     "auth.password.changed": {
       "description": "[SRC: LD §8 L421].",
@@ -340,13 +356,14 @@
       }
     },
     "auth.mfa.recovery_codes_issued": {
-      "description": "New recovery codes issued (contract 7.8) [TL Decision 2026-11-02 8:37 PM]. Count only; the codes are never logged (details allows only count).",
-      "required": ["target"],
+      "description": "New recovery codes issued (contract 7.8) [TL Decision 2026-11-02 8:37 PM]. Count only; the codes are never logged (details allows only count). Emitted with auth.mfa.reenrolled on a successful POST /mfa/reenroll; session_kind=recovery_reenroll required [TL Decision 2026-11-02 8:41 PM, SA ratification].",
+      "required": ["target", "session_kind"],
       "properties": {
         "event_type": { "const": "auth.mfa.recovery_codes_issued" },
         "outcome": { "const": "success" },
         "target": { "required": ["type", "id"], "properties": { "type": { "const": "user" }}},
-        "details": { "required": ["count"], "additionalProperties": false, "properties": { "count": { "type": "integer", "minimum": 1}}}
+        "details": { "required": ["count"], "additionalProperties": false, "properties": { "count": { "type": "integer", "minimum": 1}}},
+        "session_kind": { "const": "recovery_reenroll" }
       }
     },
     "auth.config.session_cap_changed": {

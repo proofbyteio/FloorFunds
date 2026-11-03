@@ -197,7 +197,7 @@ exp("audit login event without session_kind ok", val(a,{k:v for k,v in LI().item
 U={"type":"user","id":u()}
 RD={"method":"totp","old_factor_revoked":True,"old_recovery_codes_revoked":True}
 RE=lambda **kw: env("auth.mfa.reenrolled","success",dict(RD),target=U,session_kind="recovery_reenroll",**kw)
-CI=lambda det={"count":10},**kw: env("auth.mfa.recovery_codes_issued","success",det,target=U,**kw)
+CI=lambda det={"count":10},**kw: env("auth.mfa.recovery_codes_issued","success",det,target=U,**dict({"session_kind":"recovery_reenroll"},**kw))
 exp("reenrolled ok", val(a,RE()), False)
 exp("reenrolled session_kind normal", val(a,dict(RE(),session_kind="normal")), True)
 exp("reenrolled session_kind missing", val(a,{k:v for k,v in RE().items() if k!="session_kind"}), True)
@@ -234,5 +234,14 @@ exp("config change denied missing reason", val(a,CD({})), True)
 exp("config change denied other reason", val(a,CD({"reason":"nope"})), True)
 exp("config change denied missing actor", val(a,{k:v for k,v in CD().items() if k!="actor"}), True)
 exp("config change denied missing setting", val(a,dict(CD(),target={"type":"config"})), True)
+# [TL Decision 2026-11-02 8:41 PM, SA ratification] re-enrolment events carry session_kind
+MF=lambda det={"method":"totp","step":"reenroll"},**kw: env("auth.mfa.failed","failure",det,target=U,**kw)
+exp("codes_issued session_kind missing", val(a,{k:v for k,v in CI().items() if k!="session_kind"}), True)
+exp("codes_issued session_kind normal", val(a,CI(session_kind="normal")), True)
+exp("reenroll mfa.failed ok", val(a,MF(session_kind="recovery_reenroll")), False)
+exp("reenroll mfa.failed session_kind missing", val(a,MF()), True)
+exp("reenroll mfa.failed session_kind normal", val(a,MF(session_kind="normal")), True)
+exp("reenroll step on mfa.succeeded", val(a,env("auth.mfa.succeeded","success",{"method":"totp","step":"reenroll"},target=U,session_kind="recovery_reenroll")), True)
+exp("sign-in mfa.failed without step ok", val(a,MF({"method":"totp"})), False)
 print("v1-d4 checks:", "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)

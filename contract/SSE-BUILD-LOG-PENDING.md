@@ -135,3 +135,10 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - Verified 7bc9c7a contains DEC-087, auth.config.change_denied and follow-ups 1/2/5 TL-accepted; nothing missing.
 - DEC-088/089 (Mohanraj 8:37 PM PT): cash_advance, back_office, reports marked PLACEHOLDER (standin-ui testid description, ui-driver §2, standin-control §4, OPEN-QUESTIONS); back_office and reports two separate app_codes. New open item: who picks Cash Advance's code (TO CONFIRM).
 - check_schemas.py unchanged: 140 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097.
+
+## v1-d4 follow-up 10: [TL Decision 2026-11-02 8:41 PM, SA ratification] (written 8:42 PM PT; same commit, hash/time in git log)
+- Paths renamed /mfa/reenrol* → /mfa/reenroll* (contract 7.8, OPEN-QUESTIONS; no other file had them). Note: earlier entries in this log keep the old "reenrol" spelling (append-only).
+- 7.8 has no "Interim": after codes shown once, session ends like sign-out, redirect to sign-in; recovery_reenroll never becomes normal (DEC-087).
+- Successful POST: auth.mfa.reenrolled + auth.mfa.recovery_codes_issued (count only); wrong totp_code: auth.mfa.failed step=reenroll. All three require session_kind=recovery_reenroll.
+- Second GET recovery-codes → 404; codes never logged. Failed POST: 200 re-render, generic error (error-area), no echo, no-store; existing TOTP rate limit applies (value not in contract: OPEN item).
+- check_schemas.py: 147 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097.
