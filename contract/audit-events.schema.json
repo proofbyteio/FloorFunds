@@ -98,15 +98,15 @@
           "additionalProperties": false
         },
         "admin_type": {
-          "description": "Present only on events from an /admin session; copied from the token's admin_type. Its presence is the switch that allows scope.location_ids: [] [TL Decision 2026-11-02 8:29 PM].",
+          "description": "Present only on events from an /admin session; copied from the token's admin_type. Its presence is the switch that allows scope.location_ids: [] [TL Decision 2026-11-02 8:29 PM]. Not yet in AUD §7A.4: open item AUD v0.8 [TL Decision 2026-11-02 8:31 PM].",
           "enum": ["super", "partner"]
         }
       },
       "allOf": [
         {
-          "description": "location_ids: [] only with admin_type [TL Decision 2026-11-02 8:29 PM].",
+          "description": "Without admin_type: scope.location_ids required, ≥1 item [TL Decision 2026-11-02 8:29 PM; TL Decision 2026-11-02 8:31 PM]",
           "if": { "not": { "required": ["admin_type"]}},
-          "then": { "properties": { "scope": { "properties": { "location_ids": { "minItems": 1}}}}}
+          "then": { "required": ["scope"], "properties": { "scope": { "required": ["location_ids"], "properties": { "location_ids": { "minItems": 1}}}}}
         }
       ]
     },

@@ -29,7 +29,7 @@ idt={"iss":"i","sub":u(),"aud":"cash_advance_bff","azp":"cash_advance_bff","exp"
 print("id good", val(c,idt,"#/$defs/id_token_code"))
 print("id + sid (expect err)", val(c,dict(idt,sid="s"),"#/$defs/id_token_code"))
 a=s["audit-events.schema.json"]
-env=lambda t,o,det,**kw: dict({"event_id":u(),"schema":"cachd.log","schema_version":"1.0.0","category":"event","event_type":t,"occurred_at":"2026-11-02T19:40:00Z","outcome":o,"is_audit":True,"actor":{"user_id":u(),"session_id":"ls1"},"source":{"service":"login-standin"},"details":det},**kw)
+env=lambda t,o,det,**kw: dict({"event_id":u(),"schema":"cachd.log","schema_version":"1.0.0","category":"event","event_type":t,"occurred_at":"2026-11-02T19:40:00Z","outcome":o,"is_audit":True,"actor":{"user_id":u(),"session_id":"ls1"},"source":{"service":"login-standin"},"details":det,"scope":{"partner_id":u(),"location_ids":[u()]}},**kw)
 print("denied attestation_invalid", val(a,env("auth.app_access.denied","denied",{"reason":"attestation_invalid"},target={"type":"app","id":"cash_advance"})))
 print("denied bogus reason (expect err)", bool(val(a,env("auth.app_access.denied","denied",{"reason":"tenant_mismatch"},target={"type":"app","id":"cash_advance"}))))
 print("signed_in hub_handoff", val(a,env("auth.app.signed_in","success",{"method":"hub_handoff","auth_time":990,"amr":["mfa"]},target={"type":"app","id":"cash_advance"},action="login")))
@@ -163,5 +163,9 @@ for at in ["super","partner"]:
 exp("not_location_user without admin_type", val(a,{k:v for k,v in DEN("super").items() if k!="admin_type"}), True)
 exp("cage refused body ok", val(su,{"error":"access_denied"},"#/$defs/cage_action_refused"), False)
 exp("cage refused body leaks reason", val(su,{"error":"not_location_user"},"#/$defs/cage_action_refused"), True)
+# [TL Decision 2026-11-02 8:31 PM] location_ids required without admin_type
+exp("location event location_ids missing", val(a,LI(scope={"partner_id":u()})), True)
+exp("location event scope missing", val(a,{k:v for k,v in LI().items() if k!="scope"}), True)
+exp("admin event without location_ids ok", val(a,dict(LI(scope={"partner_id":u()}),admin_type="partner")), False)
 print("v1-d4 checks:", "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)

@@ -105,13 +105,19 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 | Item | Decision | Where applied |
 |---|---|---|
 | `admin_type` claim | Required on `/admin` tokens, `super` \| `partner`; schema discriminator (if/then) | contract §8.12; claims schema |
-| Empty `location_ids` | `[]` only when the envelope has `admin_type` (an `/admin` event); otherwise ≥1. Keyed on `admin_type`, because no event class is `/admin`-only. **Ambiguity:** `admin_type` is a new envelope field, not named in AUD §7A.4; `location_ids` absent (OQ-15) stays allowed, so a location event with no `location_ids` at all still passes | contract §8.13; audit schema |
-| `admin_type` vs no-roles rule | Treated as sign-in kind, not a role. **For TL to confirm** it does not breach PLAN L121 / LD L912 | contract §8.12 |
+| Empty `location_ids` | `[]` only when the envelope has `admin_type` (an `/admin` event); otherwise ≥1. Keyed on `admin_type`, because no event class is `/admin`-only. Kept in the envelope; AUD naming is open item AUD v0.8 below. `location_ids` now required (≥1) without `admin_type` [TL Decision 2026-11-02 8:31 PM] | contract §8.13; audit schema |
+| `admin_type` vs no-roles rule | Treated as sign-in kind, not a role. Resolved [TL Decision 2026-11-02 8:31 PM]: kind of sign-in, not a role; no-roles rule holds (contract 8.5) | contract §8.12 |
 
 ## Confirmed DEC-084 (Mohanraj 8:27 PM PT (t110s414): "No, cage work is only for location users")
 
 | Item | Decision | Where applied |
 |---|---|---|
 | Cage work for admins | `/admin` sessions (super and partner) never get the Cash Advance hand-off or a cage action; refused with `not_location_user` (audit only) | contract 5.12, 6.9; errors.md; audit schema; standin-control 2.9 |
-| **Ambiguity** | (a) Client-visible code for the hand-off refusal: `access_denied` chosen (matches `no_role`). (b) The cage 403 body `{"error":"access_denied"}` and who audits it (Cash Advance server, not the login audit schema) are SSE choices; for TL to confirm | errors.md; `standin-ui.schema.json` |
+| (a)/(b) resolved [TL Decision 2026-11-02 8:31 PM] | `access_denied` confirmed as the client code for both refusals (hand-off and cage 403 body); the CA server audits a refused cage action with `not_location_user`, outside this contract | errors.md; `standin-ui.schema.json` |
+
+## TL Decision 2026-11-02 8:31 PM
+
+| Item | State | Who | Where |
+|---|---|---|---|
+| AUD v0.8 | **Open:** AUD owner to add `admin_type` to §7A.4 (TL asking the SA) | AUD owner via SA | audit schema envelope `admin_type`; contract 8.13 |
 

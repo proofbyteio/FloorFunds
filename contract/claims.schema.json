@@ -23,7 +23,7 @@
       "const": true
     },
     "no_roles_or_permissions": {
-      "description": "No roles or permissions in any token [SRC: PLAN L121; LD L912]. Names listed are the common ones; tests also assert no other unknown claim via unevaluatedProperties.",
+      "description": "No roles or permissions in any token [SRC: PLAN L121; LD L912]. admin_type is the kind of sign-in, not a role, so the no-roles rule still holds [TL Decision 2026-11-02 8:31 PM]. Names listed are the common ones; tests also assert no other unknown claim via unevaluatedProperties.",
       "not": {
         "anyOf": [
           { "required": ["role"]},
