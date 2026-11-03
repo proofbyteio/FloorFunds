@@ -26,7 +26,7 @@
       "additionalProperties": false
     },
     "testid": {
-      "description": "ui-driver.md §2; hub tiles hub-tile-{app_code}.",
+      "description": "ui-driver.md §2; hub tiles hub-tile-{app_code}. Re-sign-in (UX 07) and admin sign-in (UX 05) ids added [TL Decision 2026-11-02 8:31 PM] (SSE-proposed; not in UX D-67). Placeholder app_codes cash_advance, back_office, reports are data, not an enum [TL Decision 2026-11-02, provisional, pending Mohanraj via PM].",
       "type": "string",
       "anyOf": [
         {
@@ -41,7 +41,23 @@
             "screen-hub",
             "screen-8a",
             "screen-8b",
-            "error-area"
+            "error-area",
+            "page-resign-in",
+            "field-resign-in-username",
+            "field-resign-in-password",
+            "resign-in-submit",
+            "error-resign-in",
+            "page-admin-sign-in",
+            "field-admin-username",
+            "field-admin-password",
+            "admin-signin-submit",
+            "field-admin-totp",
+            "admin-totp-submit",
+            "field-admin-recovery-code",
+            "admin-recovery-submit",
+            "error-admin-sign-in",
+            "error-admin-username",
+            "error-admin-password"
           ]
         },
         { "pattern": "^hub-tile-[a-z0-9_]+$" }

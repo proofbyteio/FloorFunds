@@ -23,6 +23,26 @@ What browser tests may rely on. Source for every rule: [TL Decision 2026-11-02, 
 | Screen 8 (Session) variant A, remote session | `screen-8a` |
 | Screen 8 (Session) variant B, security software not responding | `screen-8b` |
 | Error area (any screen) | `error-area` |
+| Hub tiles, placeholder `app_code`s | `hub-tile-cash_advance`, `hub-tile-back_office`, `hub-tile-reports` **provisional** [TL Decision 2026-11-02, provisional, pending Mohanraj via PM]. The `app_code`s are data (`auth.app`, stand-in fixtures), not a schema enum; the schema keeps the generic `hub-tile-{app_code}` pattern |
+
+Screen numbers: contract screen 6 (TOTP) = UX `03-totp.html`, contract screen 7 (hub) = UX `06-hub.html` (UX D-67, matched by meaning) [TL Decision 2026-11-02 8:31 PM].
+
+## 2a. Re-sign-in and admin sign-in pages [TL Decision 2026-11-02 8:31 PM]
+
+**SSE-proposed ids:** UX D-67 (DECISIONS.md md5 b6fa0d1f) lists no ids for these forms ("07 re-sign-in form u2/p2 and 05 admin form carry no ids"); names below follow the UX form fields and the `page-` / `field-` / `error-` prefixes; UX to add them to the mockups.
+
+| Page / element | `data-testid` | UX element |
+|---|---|---|
+| Re-sign-in page (UX screen 07, hand-off re-prompt, contract 5.3) | `page-resign-in` | `07-handoff.html` re-sign-in form |
+| Username / password | `field-resign-in-username`, `field-resign-in-password` | `#u2`, `#p2` |
+| Submit | `resign-in-submit` | form submit |
+| Error banner | `error-resign-in` | error banner (also `error-area`) |
+| Admin sign-in page (UX screen 05, `/admin`) | `page-admin-sign-in` | `05-admin.html` |
+| Username / password / submit | `field-admin-username`, `field-admin-password`, `admin-signin-submit` | `#username`, `#password` |
+| TOTP step field / submit | `field-admin-totp`, `admin-totp-submit` | `#totp` |
+| Recovery-code field / submit | `field-admin-recovery-code`, `admin-recovery-submit` | `#rcode` |
+| Error banner; field errors | `error-admin-sign-in`; `error-admin-username`, `error-admin-password` | banner (also `error-area`); `#username-err`, `#password-err` |
+
 
 ## 3. Visible strings tests may assert (only these)
 

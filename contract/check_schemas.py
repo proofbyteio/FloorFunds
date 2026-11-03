@@ -176,5 +176,10 @@ exp("id token amr [pwd]", val(c,dict(idt,amr=["pwd"]),"#/$defs/id_token_code"), 
 exp("admin token amr [pwd]", val(c,dict(sup,amr=["pwd"]),"#/$defs/access_token_admin"), True)
 exp("audit reason unknown recovery", val(a,env("auth.app_access.denied","denied",{"reason":"recovery"},target={"type":"app","id":"x"})), True)
 exp("mfa recovery_code login ok", True and val(a,env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]})), False)
+# [TL Decision 2026-11-02 8:31 PM] re-sign-in and admin sign-in ids; provisional app_codes stay data
+for t in ["page-resign-in","field-resign-in-username","error-resign-in","page-admin-sign-in","field-admin-recovery-code","error-admin-password","hub-tile-back_office","hub-tile-reports","hub-tile-some_future_app"]:
+    exp("testid "+t+" ok", val(su,t,"#/$defs/testid"), False)
+for t in ["page-resign_in","field-admin-user","page-05","hub-tile-back-office","error-resign-in-x"]:
+    exp("testid "+t, val(su,t,"#/$defs/testid"), True)
 print("v1-d4 checks:", "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)
