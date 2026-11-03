@@ -12,11 +12,11 @@
     },
     "numeric_date": { "type": "integer", "minimum": 0},
     "amr": {
-      "description": "Array [SRC: PLAN L118]. Closed enum: RFC 8176 values plus ngcmfa [TL Decision 2026-11-02, OQ-22] (LD §16.19 row 119 L705). DB sign-in password+TOTP = [pwd, otp, mfa]; recovery-code sign-in = [pwd] and never counts as MFA; Entra: mfa or ngcmfa counts, wiaormfa never counts and is not copied [TL Decision 2026-11-02, OQ-22]. Hand-off needs mfa or ngcmfa [SRC: LD L1180; LD row 119].",
+      "description": "Array [SRC: PLAN L118]. Closed enum, RFC 8176 values only; nothing passes through from Entra [TL Decision 2026-11-02, CR-02, OQ-22] (LD §16.19.3, row 119 L705). DB sign-in password+TOTP = [pwd, otp, mfa]; recovery-code sign-in = [pwd] (never MFA); Entra amr containing mfa or ngcmfa -> mfa; wiaormfa never -> mfa. Hand-off needs mfa [SRC: LD L1180; TL Decision 2026-11-02, CR-02]",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": { "type": "string", "enum": ["pwd", "otp", "mfa", "hwk", "swk", "pin", "fpt", "face", "rba", "wia", "sms", "user", "kba", "mca", "ngcmfa"]}
+      "items": { "type": "string", "enum": ["pwd", "otp", "mfa", "hwk", "swk", "pin", "fpt", "face", "rba", "wia", "sms", "user", "kba", "mca"]}
     },
     "standin_marker": {
       "description": "Present (true) only on stand-in tokens [SRC: PLAN §3.5]. Rejected outside Development [SRC: PLAN S1 check 11].",
