@@ -37,6 +37,9 @@ public static class Reenroll
             e["session_kind"] = s.Kind; if (s.AdminType is not null) e["admin_type"] = s.AdminType;
             return e;
         }
+        // UX 03 D-92: admin states show "Admin sign-in" (no partner/location names); location states a location line.
+        // [ASSUMPTION A58] fixtures carry no location display name, so the line shows the slug.
+        string Sub(LoginSession s) => s.AdminType is not null ? "Admin sign-in" : "Location: " + s.Slug;
         JsonObject Target(LoginSession s) => new() { ["type"] = "user", ["id"] = s.UserId };
         IResult Page(HttpContext c, LoginSession s, string? error, int status = 200)
         {
@@ -44,8 +47,8 @@ public static class Reenroll
             var uri = $"otpauth://totp/Login:{Uri.EscapeDataString(s.Username)}?secret={key}&issuer=Login&digits=6&period=30";
             var t = af.GetAndStoreTokens(c).RequestToken!;
             // [GAP A51] no QR image: a QR encoder needs a package (TL ruling) or a hand-written encoder; manual key + otpauth link only.
-            return Ui.Page("Set up your authenticator again", Ui.Render("reenroll", ("error", Ui.Error(error)), ("key", key), ("uri", uri),
-                ("action", P), ("af", t), ("signout", issuerPath + "/connect/endsession")), null, status);
+            return Ui.Page("Set up your code app again", Ui.Render("reenroll", ("error", Ui.Error(error)), ("key", key), ("uri", uri),
+                ("action", P), ("af", t), ("signout", issuerPath + "/connect/endsession"), ("sub", Sub(s))), null, status);
         }
 
         app.MapGet(P, (HttpContext c) =>
@@ -120,7 +123,7 @@ public static class Reenroll
                 // DEC-093: back to sign-in of the same kind. [ASSUMPTION A52] the redirect is the page's Continue link, since a 302 would hide the codes.
                 var next = s.AdminType is not null ? issuerPath + "/admin" : issuerPath + "/l/" + s.Slug;
                 var li = string.Concat(codes.Select(x => $"<li><code>{WebUtility.HtmlEncode(x)}</code></li>"));
-                return Ui.Page("Save your new recovery codes", Ui.Render("recovery-codes", ("codes", li), ("next", next)));
+                return Ui.Page("Your authenticator is set up", Ui.Render("recovery-codes", ("codes", li), ("next", next), ("sub", Sub(s))));
             }
         });
     }

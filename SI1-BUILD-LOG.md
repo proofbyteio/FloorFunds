@@ -78,3 +78,19 @@ Source: /tmp/sse-d0/park-step3/ (step3.patch, Reenroll.cs, reenroll.html, recove
   - DEC-093 admin + new secret at /admin.
   - All events are schema-valid. HO17 now also covers the new recovery codes.
 - Live run: base 18080, own pid 764442 (port guard ok), **TOTAL 210 / 210**. Evidence /tmp/sse-d0/evidence-step3.txt, md5 **f63d596691fdc37a5460512af79e105f**. Server stopped. allowlist.db is untouched.
+
+## TL 9:58 PM fixes (own commit, before step 4)
+- **A55 WARN list narrowed** to exactly the 7 commits that hold the dead values (1ee0939, df0b5d6, ed0ecc1, 9a14163, 8aab98a, f630a8d, c4da996). Re-tested: branch run OK, warn=1, hits only in those 7; throwaway repo (GIT_INDEX_FILE unset) with c4da996's fixtures.json re-committed under a new SHA: FAIL "not in the A55 list", rc=1.
+- **A56**: FIXTURE super_admin's TOTP secret is generated per run (StandInUser.TotpSecret random for every user; not in fixtures.json). Live tests: super password + TOTP -> /admin hub (auth.login.succeeded admin_type super, no scope.partner_id, schema-valid); TOTP lockout: 2 wrong not locked, 3rd -> auth.account.locked admin_type super, then the right password + code refused.
+  - Observation (not changed): the admin MFA step emits no auth.mfa.succeeded, only auth.login.succeeded (same as the partner admin path). Flag for TL if 8.x needs it.
+- **UX screen 03 re-enrol alignment** (D-87, D-92). Snapshot (read-only copy, not edited) /tmp/sse-d0/ux-snap-2158: 03-totp.html md5 5f9032b052811c5376abaeb6ea00b8ff, 05-admin.html 7d89d64831e6b82a83efaad6bac1cd3a, DECISIONS.md e9ffdf2d875502e9d606ae71762291f4 (location /workspace/cachd-ones/login-hub-mockups, found by ls, no recursive grep).
+  - Matched: h1 "Set up your code app again" / "Your authenticator is set up"; info banner copy; button "Finish setup"; done banner "Sign in again to continue"; done button "Sign in" (location -> /standin/l/{slug}, admin -> /standin/admin, DEC-093); subtitle: location states "Location: <slug>", admin states "Admin sign-in" with no location line (D-92). New testid reenroll-subtitle.
+  - Differences (logged, not changed):
+    1. UX uses one root testid screen-totp for all screen-03 states; we keep screen-reenroll / screen-recovery-codes (separate server pages; the UI-driver contract lists no re-enrol testids). Existing testids unchanged.
+    2. UX reenrol shows a QR ("Scan this code"); we show manual key + otpauth link (A51).
+    3. UX reenrol-done shows no new recovery codes; we list them on the done page because 7.8 issues new codes (auth.mfa.recovery_codes_issued). Open for UX.
+    4. [ASSUMPTION A58] fixtures have no location display name, so the line shows the slug (UX example "Example Casino, Cage 1").
+    5. UX field id reenrolcode / reenrolcodeadmin: we use id reenrolcode, name totp_code, testid totp-code for both kinds.
+- **Decisions logged**: A47, A49, A50, A52 ACCEPTED (TL 9:58). A51 ACCEPTED for the stand-in; production needs a QR code -> **v1.1 item, package ruling to come; no package added**.
+- Flake noted: handoff.py "B2 7.6 iat +31 s in future refused" failed once (driver samples t, a 1 s tick makes it 30 s ahead at the server). Driver-timing race, not a server change; passed on rerun.
+- Live: 214/214, evidence /tmp/sse-d0/evidence-958.txt md5 e9e4dd12c02e85ab8ac200f1549c3ef3.

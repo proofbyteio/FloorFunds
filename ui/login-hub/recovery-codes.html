@@ -1,6 +1,8 @@
 <section class="card card--auth" data-testid="screen-recovery-codes">
-<div class="card__header"><div><h1>Save your new recovery codes</h1></div></div>
-<p>These codes are shown once. Your old codes no longer work. You have been signed out; sign in again with your new authenticator.</p>
+<div class="card__header"><div><h1>Your authenticator is set up</h1><p class="card__subtitle" data-testid="reenroll-subtitle">{{sub}}</p></div></div>
+<div class="banner banner--success" role="status"><span class="banner__icon" aria-hidden="true">✓</span><div><span class="banner__title">Your authenticator is set up.</span> Sign in again to continue.</div></div>
+<p>Save your new recovery codes. They are shown once; your old codes no longer work.</p>
 <ul data-testid="recovery-codes-list">{{{codes}}}</ul>
-<a class="button button--primary button--block" data-testid="reenroll-continue" href="{{next}}">Continue to sign-in</a>
+<p class="action-row"><a class="button button--primary button--block" data-testid="reenroll-continue" href="{{next}}">Sign in</a></p>
+<p class="field__hint form-note">This session has ended.</p>
 </section>

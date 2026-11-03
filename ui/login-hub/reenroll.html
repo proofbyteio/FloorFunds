@@ -1,13 +1,17 @@
 <section class="card card--auth" data-testid="screen-reenroll">
-<div class="card__header"><div><h1>Set up your authenticator again</h1></div></div>
+<div class="card__header"><div><h1>Set up your code app again</h1><p class="card__subtitle" data-testid="reenroll-subtitle">{{sub}}</p></div></div>
 {{{error}}}
-<p>Add this account to your authenticator app, then enter the 6-digit code it shows.</p>
+<div class="banner banner--info" role="status"><span class="banner__icon" aria-hidden="true">i</span><div><span class="banner__title">You signed in with a recovery code.</span> To keep your account safe, set up your code app again now. Nothing else is available until you do.</div></div>
+<ol class="rule-list">
+<li>Open an authenticator app on your phone</li>
+<li>Add this account with the key below:</li>
+</ol>
 <div class="field"><span class="field__label">Manual key</span><code id="manual-key" data-testid="reenroll-manual-key">{{key}}</code></div>
 <div class="field"><span class="field__label">Setup link</span><code id="otpauth" data-testid="reenroll-otpauth">{{uri}}</code></div>
 <form novalidate method="post" action="{{action}}">
 <input type="hidden" name="__RequestVerificationToken" value="{{af}}">
-<div class="field"><label class="field__label" for="totp">6-digit code</label><input class="field__input" id="totp" name="totp_code" data-testid="totp-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></div>
-<button class="button button--primary button--block" type="submit" data-testid="reenroll-submit">Confirm</button>
+<div class="field"><label class="field__label" for="reenrolcode">6-digit code from the app</label><input class="field__input" id="reenrolcode" name="totp_code" data-testid="totp-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required></div>
+<button class="button button--primary button--block" type="submit" data-testid="reenroll-submit">Finish setup</button>
 </form>
 <a href="{{signout}}">Sign out</a>
 </section>
