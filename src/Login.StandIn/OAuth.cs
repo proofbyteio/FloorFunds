@@ -17,7 +17,7 @@ public static class OAuth
         // 4.8: our own error page, never a redirect, never an echo.
         c.Response.Headers.CacheControl = "no-store";
         c.Response.Headers.ContentSecurityPolicy = "frame-ancestors 'none'";
-        return Ui.Page("Sign-in link not valid", Ui.Render("bad-link"), "", 400);
+        return Ui.Page("Sign-in link not valid", Ui.Render("bad-link"), null, 400);
     }
 
     static IResult Back(string redirectUri, string issuer, string? state, params (string K, string V)[] kv)

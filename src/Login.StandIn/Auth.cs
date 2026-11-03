@@ -15,6 +15,9 @@ public sealed class SignInTx
     public DateTimeOffset NonceAt { get; set; }
     public string? PcId { get; set; }
     public string Stage { get; set; } = "password"; // password | totp
+    // A44 (TL 9:38): the re-prompt variant shown at GET is kept on the tx so a failed retry re-shows it (8B message included).
+    public bool Resign { get; set; } // re-prompt (5.3): page-resign-in ids
+    public bool AgentDown { get; set; }
     public string? Username { get; set; }
     public string Attestation { get; set; } = "missing"; // 6.2 valid | missing | invalid
     public string? ReturnTo { get; set; }
@@ -24,7 +27,6 @@ public sealed class SignInTx
     public string? ClientId { get; init; }
     public string? LaunchHash { get; init; }
     public Dictionary<string, string?>? Authorize { get; init; }
-    public bool Resign { get; init; } // re-prompt (5.3): page-resign-in ids
 }
 
 public sealed record HubLaunch(string Sid, string ClientId, DateTimeOffset IssuedAt) { public bool Used { get; set; } }

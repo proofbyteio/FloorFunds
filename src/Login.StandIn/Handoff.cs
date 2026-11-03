@@ -66,23 +66,8 @@ public static class Handoff
         c.Response.Cookies.Append(TxCookie, tx.Id, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Lax, Path = issuerPath, Secure = c.Request.IsHttps });
         var t = af.GetAndStoreTokens(c).RequestToken!;
         // [ASSUMPTION A38] ui-driver has no id for this page; the form id is "handoff" and the page has no screen testid (v1.1 UI item).
-        var js = $$"""
-<script>
-(async function () {
-  const f = document.getElementById('handoff');
-  try {
-    const fd = new FormData(); fd.append('__RequestVerificationToken', f.__RequestVerificationToken.value);
-    const n = await (await fetch('{{issuerPath}}/connect/authorize/handoff-nonce', { method: 'POST', body: fd, credentials: 'same-origin' })).json();
-    const ctl = new AbortController(); setTimeout(() => ctl.abort(), 3000);
-    const r = await fetch('http://localhost:{{agentPort}}/_standin/agent/attest', { method: 'POST', signal: ctl.signal,
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nonce: n.nonce }) });
-    if (r.ok) f.device_attestation.value = (await r.json()).device_attestation;
-  } catch (e) { }
-  f.submit();
-})();
-</script>
-""";
-        return Ui.Page("Opening Cash Advance", Ui.Render("handoff", ("action", issuerPath + "/connect/authorize"), ("af", t)), js);
+
+        return Ui.Page("Opening Cash Advance", Ui.Render("handoff", ("action", issuerPath + "/connect/authorize"), ("agent", $"http://localhost:{agentPort}/_standin/agent/attest"), ("af", t)), "handoff");
     }
 
     public static void Map(WebApplication app, StandInState st, string issuerPath, string issuer, StandInPorts ports)

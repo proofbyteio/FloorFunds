@@ -13,3 +13,12 @@ Step (2):
 - [A45] the allowlist 403 body is unchanged (DEC-094, D-88); only the CSP header is added by the global fallback.
 - Evidence: /tmp/sse-d0/evidence-step2.txt, 158/158 live on base 18080 (guard: all 3 ports owned by our pid).
 - Evidence md5: 7edafa2569cf9c8681b810b21db2f56a
+
+## TL 9:38 PM rulings (step 2 accepted)
+
+- CSP: every inline script moved to same-origin files (ui/login-hub/js/signin.js, handoff.js); page CSP is now `script-src 'self'; style-src 'self'`, no 'unsafe-inline' anywhere. Driver fails if any response's CSP has 'unsafe-inline' (script-src or anywhere) and if the sign-in page has an inline <script> or style=.
+- A44 fix: the re-prompt variant (resign / 8B) is held on the SignInTx; every failed password retry re-renders it, so the 8B message stays. Tests: failed retry from 8B -> screen-8b + 8B string + generic error; failed retry from plain re-prompt -> page-resign-in, no 8B. [GAP] a wrong TOTP after an 8B retry shows plain screen-totp (no 8B banner); not asked for.
+- v1.1: change the contract/ui-driver.md header to 'FROZEN v1 @ e363090' (text only; contract/ frozen, not edited here).
+- A46 accepted: pages are server-rendered (Razor in production). Angular later needs a TL package ruling first: npm registry only, exact pins, a lock file and integrity hashes.
+- signout-confirm and interstitial testids accepted for v1.1.
+- Evidence: /tmp/sse-d0/evidence-csp.txt, 165/165 live on base 18080 (guard ok, pid 660610), md5 c92e44a1b444f647d6cfa76b272ac736.

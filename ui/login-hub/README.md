@@ -18,5 +18,7 @@ Ported from the UX mockups (read only), snapshot /tmp/sse-d0/ux-snap-2132:
 | theme.css (verbatim copy) | theme.css | 80ea155d58e4e8685dbf2bdc11a502ba |
 | fonts/ (Poppins, OFL.txt, verbatim) | login-hub-mockups/fonts | see /tmp/sse-d0/ux-snap-2132/MD5SUMS |
 
-Every page: CSP `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' http://localhost:{control}; base-uri 'none'; object-src 'none'; frame-ancestors 'none'`.
+Every page: CSP `default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' http://localhost:{control}; base-uri 'none'; object-src 'none'; frame-ancestors 'none'`.
 Every other stand-in response: `default-src 'none'; frame-ancestors 'none'`.
+
+Scripts: ui/login-hub/js/signin.js, js/handoff.js (served at {issuer}/ui/js/); config via data-nonce-url / data-agent-url on the form. No inline script or style (TL 9:38).

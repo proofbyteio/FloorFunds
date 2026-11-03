@@ -39,7 +39,7 @@ public static class SignIn
     static string E(string s) => WebUtility.HtmlEncode(s);
     // Generic ui/ card (hub, admin, sign-out confirm): layout.html + card.html.
     public static IResult Html(string testid, string body, int status = 200) =>
-        Ui.Page("Sign in", Ui.Render("card", ("testid", testid), ("body", body)), "", status);
+        Ui.Page("Sign in", Ui.Render("card", ("testid", testid), ("body", body)), null, status);
 
     static void SetCookie(HttpContext c, string name, string value, string path) =>
         c.Response.Cookies.Append(name, value, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Lax, Path = path, Secure = c.Request.IsHttps });
@@ -47,29 +47,14 @@ public static class SignIn
     static IResult PasswordPage(HttpContext c, IAntiforgery af, string slugBase, string? error, int agentPort, int status = 200, bool resign = false, bool agentDown = false)
     {
         var t = af.GetAndStoreTokens(c).RequestToken!;
-        // The page fetches a fresh nonce at submit (6.5), asks the agent with a 3 s timeout, then posts the form.
-        var js = $$"""
-<script>
-document.getElementById('f').addEventListener('submit', async function (ev) {
-  if (this.dataset.ready) return; ev.preventDefault(); const f = this;
-  try {
-    const fd = new FormData(); fd.append('__RequestVerificationToken', f.__RequestVerificationToken.value);
-    const n = await (await fetch('{{slugBase}}/attest-nonce', { method: 'POST', body: fd, credentials: 'same-origin' })).json();
-    const ctl = new AbortController(); setTimeout(() => ctl.abort(), 3000);
-    const r = await fetch('http://localhost:{{agentPort}}/_standin/agent/attest', { method: 'POST', signal: ctl.signal,
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nonce: n.nonce }) });
-    if (r.ok) f.device_attestation.value = (await r.json()).device_attestation;
-  } catch (e) { }
-  f.dataset.ready = '1'; f.submit();
-});
-</script>
-""";
+        // The page fetches a fresh nonce at submit (6.5), asks the agent with a 3 s timeout, then posts the form (ui/login-hub/js/signin.js).
+        var agent = $"http://localhost:{agentPort}/_standin/agent/attest";
         if (resign) // 5.3 re-prompt (UX 07 #u2/#p2). [ASSUMPTION A44] after attestation_invalid (5.5) it is wrapped in screen 8B (UX 08 agentdown).
         {
-            var r = Ui.Render("resign-in", ("action", slugBase), ("af", t), ("error", error is null ? "" : Ui.Error(error)));
-            return Ui.Page("Sign in to Cash Advance", agentDown ? Ui.Render("screen-8b", ("resign", r)) : r, js, status);
+            var r = Ui.Render("resign-in", ("action", slugBase), ("agent", agent), ("af", t), ("error", error is null ? "" : Ui.Error(error)));
+            return Ui.Page("Sign in to Cash Advance", agentDown ? Ui.Render("screen-8b", ("resign", r)) : r, "signin", status);
         }
-        return Ui.Page("Sign in", Ui.Render("signin", ("action", slugBase), ("af", t), ("error", Ui.Error(error))), js, status);
+        return Ui.Page("Sign in", Ui.Render("signin", ("action", slugBase), ("agent", agent), ("af", t), ("error", Ui.Error(error))), "signin", status);
     }
 
     static IResult TotpPage(HttpContext c, IAntiforgery af, string slugBase, string? error)
@@ -120,7 +105,7 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
                     ReturnTo = ret is not null && ret.StartsWith(issuerPath + "/connect/authorize?", StringComparison.Ordinal) ? ret : null };
                 st.Auth.Tx[tx.Id] = tx;
                 SetCookie(c, TxCookie, tx.Id, issuerPath);
-                return PasswordPage(c, af, Base(slug), null, ports.Control, resign: resign == "1" && tx.ReturnTo is not null, agentDown: agent == "down" && resign == "1" && tx.ReturnTo is not null);
+                return PasswordPage(c, af, Base(slug), null, ports.Control, resign: tx.Resign = resign == "1" && tx.ReturnTo is not null, agentDown: tx.AgentDown = agent == "down" && tx.Resign);
             }
         });
 
@@ -149,7 +134,7 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
             {
                 var tx = GetTx(st, c, slug);
                 var loc = Location(st.Fixtures, slug);
-                if (tx is null || loc is null || tx.Stage != "password") return PasswordPage(c, af, Base(slug), Generic, ports.Control);
+                if (tx is null || loc is null || tx.Stage != "password") return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
                 var now = st.Clock.Now;
                 // 6.7 step 1 consumes the nonce before anything else, whatever happens next.
                 var (ok, remote) = Attestation.Check(st, tx, jws, issuer, "signin", now);
@@ -160,7 +145,7 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
                 {
                     st.Emit(Audit.Build(now, "auth.login.failed", "failure", uid, new JsonObject
                     { ["username_hmac"] = Audit.UsernameHmac(username), ["reason"] = reason, ["provider_kind"] = "database" }, Scope(loc), Ip(c), Ua(c)));
-                    return PasswordPage(c, af, Base(slug), Generic, ports.Control);
+                    return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
                 }
                 // 6.3 lockout: a locked account is refused without checking the password.
                 if (user is not null && user.LockedUntil is { } lu && lu > now) return Fail("locked", user.UserId);
@@ -209,7 +194,7 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
                 var tx = GetTx(st, c, slug);
                 var loc = Location(st.Fixtures, slug);
                 if (tx is null || loc is null || tx.Stage != "totp" || !st.Users.TryGetValue(tx.Username!, out var user))
-                    return PasswordPage(c, af, Base(slug), Generic, ports.Control);
+                    return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
                 var now = st.Clock.Now;
                 // G1 +-30 s: one 30 s step either side.
                 bool ok = code.Length == 6 && new[] { -30, 0, 30 }.Any(d => Totp.Code(user.TotpSecret, now.AddSeconds(d)) == code);
@@ -230,7 +215,7 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
                     Scope(loc), Ip(c), Ua(c), s.Sid);
                 ev1["session_kind"] = "normal"; ev2["session_kind"] = "normal";
                 // [ASSUMPTION A25] if the outbox is down no session is created (fail closed); the user sees the generic error.
-                if (st.OutboxFault == "fail") return PasswordPage(c, af, Base(slug), Generic, ports.Control);
+                if (st.OutboxFault == "fail") return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
                 st.Emit(ev1); st.Emit(ev2);
                 st.Auth.Tx.Remove(tx.Id);
                 st.Auth.Sessions[s.Sid] = s;

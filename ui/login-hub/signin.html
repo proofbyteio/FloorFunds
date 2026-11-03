@@ -1,7 +1,7 @@
 <section class="card card--auth" data-testid="screen-signin">
 <div class="card__header"><div><h1>Sign in</h1></div></div>
 {{{error}}}
-<form id="f" novalidate method="post" action="{{action}}">
+<form id="f" novalidate method="post" action="{{action}}" data-nonce-url="{{action}}/attest-nonce" data-agent-url="{{agent}}">
 <input type="hidden" name="__RequestVerificationToken" value="{{af}}">
 <input type="hidden" name="device_attestation" value="">
 <div class="field"><label class="field__label" for="username">Username</label><input class="field__input" id="username" name="username" data-testid="signin-username" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" required></div>

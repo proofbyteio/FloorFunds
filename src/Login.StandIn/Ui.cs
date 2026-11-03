@@ -14,9 +14,9 @@ public static class Ui
     public static string IssuerPath = "/standin";
     public static int AgentPort;
 
-    // Every ui/ page: CSP with frame-ancestors 'none' (TL 9:32). Inline scripts are the stand-in's own.
+    // Every ui/ page: CSP with frame-ancestors 'none' (TL 9:32); no inline script or style, scripts are ui/login-hub/js files (TL 9:38).
     public static string Csp(int agentPort) =>
-        $"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' http://localhost:{agentPort}; base-uri 'none'; object-src 'none'; frame-ancestors 'none'";
+        $"default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' http://localhost:{agentPort}; base-uri 'none'; object-src 'none'; frame-ancestors 'none'";
     // Fallback for every other stand-in response (JSON, 403, redirects, control/back listeners).
     public const string DefaultCsp = "default-src 'none'; frame-ancestors 'none'";
 
@@ -43,8 +43,10 @@ public static class Ui
     public static string Error(string? msg) =>
         Render("error-banner", ("message", msg ?? ""), ("hidden", msg is null ? " hidden" : ""));
 
-    public static IResult Page(string title, string content, string script = "", int status = 200) => new PageResult(
-        Render("layout", ("title", title), ("base", IssuerPath), ("content", content), ("script", script)), status);
+    // js: name of a ui/login-hub/js file (no inline script, so the CSP needs no 'unsafe-inline' or nonce).
+    public static IResult Page(string title, string content, string? js = null, int status = 200) => new PageResult(
+        Render("layout", ("title", title), ("base", IssuerPath), ("content", content),
+            ("scripts", js is null ? "" : $"<script src=\"{WebUtility.HtmlEncode(IssuerPath)}/ui/js/{js}.js\"></script>")), status);
 
     sealed class PageResult(string html, int status) : IResult
     {
@@ -61,6 +63,8 @@ public static class Ui
     public static void MapAssets(WebApplication app)
     {
         app.MapGet(IssuerPath + "/ui/theme.css", (HttpContext c) => Asset(c, "theme.css", "text/css; charset=utf-8"));
+        app.MapGet(IssuerPath + "/ui/js/{name}", (string name, HttpContext c) =>
+            name is "signin.js" or "handoff.js" ? Asset(c, "js/" + name, "text/javascript; charset=utf-8") : Results.NotFound());
         app.MapGet(IssuerPath + "/ui/fonts/{name}", (string name, HttpContext c) =>
             name is "Poppins-Regular.ttf" or "Poppins-Medium.ttf" or "Poppins-SemiBold.ttf" ? Asset(c, "fonts/" + name, "font/ttf") : Results.NotFound());
     }
