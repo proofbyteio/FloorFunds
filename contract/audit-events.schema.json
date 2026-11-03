@@ -229,7 +229,14 @@
           }
         }
       },
-      "required": ["target", "action"]
+      "required": ["target", "action"],
+      "allOf": [
+        {
+          "description": "No hand-off for /admin sessions [Confirmed DEC-084].",
+          "if": { "required": ["admin_type"]},
+          "then": { "properties": { "details": { "properties": { "method": { "not": { "const": "hub_handoff" }}}}}}
+        }
+      ]
     },
     "auth.app_access.denied": {
       "description": "[SRC: LD §8 L426; PLAN §1.2 L51, L157, S1 checks 1, 4, 4a].",
@@ -241,13 +248,14 @@
           "required": ["reason"],
           "properties": {
             "reason": {
-              "description": "notfromhub: rule 4, hub_launch missing or used [SRC: LD L426, L1186; TL Decision 2026-11-02, OQ-7].",
-              "enum": ["no_role", "remote_session", "attestation_invalid", "notfromhub"]
+              "description": "notfromhub: rule 4, hub_launch missing or used [SRC: LD L426, L1186; TL Decision 2026-11-02, OQ-7]. not_location_user: an /admin session (admin_type super or partner) asked for the Cash Advance hand-off [Confirmed DEC-084].",
+              "enum": ["no_role", "remote_session", "attestation_invalid", "notfromhub", "not_location_user"]
             }
           }
         }
       },
-      "required": ["target"]
+      "required": ["target"],
+      "allOf": [{"if": {"properties": {"details": {"properties": {"reason": {"const": "not_location_user"}}}}}, "then": {"required": ["admin_type"]}}]
     },
     "auth.password.reset": {
       "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. [SRC: LD §8 L421]. Channel values email | admin [TL Decision 2026-11-02, OQ-24].",

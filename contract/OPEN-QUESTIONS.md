@@ -108,3 +108,10 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 | Empty `location_ids` | `[]` only when the envelope has `admin_type` (an `/admin` event); otherwise ≥1. Keyed on `admin_type`, because no event class is `/admin`-only. **Ambiguity:** `admin_type` is a new envelope field, not named in AUD §7A.4; `location_ids` absent (OQ-15) stays allowed, so a location event with no `location_ids` at all still passes | contract §8.13; audit schema |
 | `admin_type` vs no-roles rule | Treated as sign-in kind, not a role. **For TL to confirm** it does not breach PLAN L121 / LD L912 | contract §8.12 |
 
+## Confirmed DEC-084 (Mohanraj 8:27 PM PT (t110s414): "No, cage work is only for location users")
+
+| Item | Decision | Where applied |
+|---|---|---|
+| Cage work for admins | `/admin` sessions (super and partner) never get the Cash Advance hand-off or a cage action; refused with `not_location_user` (audit only) | contract 5.12, 6.9; errors.md; audit schema; standin-control 2.9 |
+| **Ambiguity** | (a) Client-visible code for the hand-off refusal: `access_denied` chosen (matches `no_role`). (b) The cage 403 body `{"error":"access_denied"}` and who audits it (Cash Advance server, not the login audit schema) are SSE choices; for TL to confirm | errors.md; `standin-ui.schema.json` |
+

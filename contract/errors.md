@@ -6,7 +6,7 @@ Labels and source snapshots: see `README.md`.
 
 - Toward OAuth clients: **standard OAuth 2.0 / OIDC error codes only**. [SRC: PLAN §3.1 L137; LD §16.17.2 L1318]
 - Internal reason codes (`locked`, `mfa_missing`, `tenant_mismatch`, `stale_auth_time`, `remote_session`,
-  `no_role`, `attestation_invalid`, `notfromhub`, …) go **only** to audit and to our own pages, never to clients.
+  `no_role`, `attestation_invalid`, `notfromhub`, `not_location_user` [Confirmed DEC-084], …) go **only** to audit and to our own pages, never to clients.
   [SRC: PLAN L146; LD §8 L426]
 - `error_description` is never sent, so no internal reason can leak through it. OpenIddict sends it by default, so the real service MUST strip `error_description` and `error_uri` in a response handler; a contract test asserts no `error_description` on every endpoint. [TL Decision 2026-11-02, OQ-17]
 - `error_uri` is never sent. [TL Decision 2026-11-02, OQ-17]
@@ -25,7 +25,7 @@ Labels and source snapshots: see `README.md`.
 | `invalid_grant` | Refresh after the user lost the role in the client's `app_code` (that client's family revoked only), or the user is disabled / locked (family revoked, `auth.session.revoked reason=user_disabled`) | token: HTTP 400 JSON | [TL Decision 2026-11-02, OQ-12] |
 | `invalid_scope` | Scopes for more than one audience in one request; unknown scope; `offline_access` from a client not registered for `refresh_token` | authorize: redirect | [SRC: PLAN L141]; unknown scope, `offline_access` [TL Decision 2026-11-02, OQ-6] |
 | `unauthorized_client` | Client not allowed this grant type (e.g. refresh for a client without it) | authorize: redirect; token: HTTP 400 JSON | [SRC: PLAN L142]; cases [TL Decision 2026-11-02, OQ-17] |
-| `access_denied` | No role in the client's `app_code` (audit `reason=no_role`); user cancels on the remote-session block (screen 8) | authorize: redirect | [SRC: PLAN L143, L134; S1 checks 1, 4] |
+| `access_denied` | No role in the client's `app_code` (audit `reason=no_role`); `/admin` session (super or partner) asks for the Cash Advance hand-off (audit `reason=not_location_user`, contract 5.12) [Confirmed DEC-084]; user cancels on the remote-session block (screen 8) | authorize: redirect | [SRC: PLAN L143, L134; S1 checks 1, 4] |
 | `login_required` | `prompt=none` and no login session | authorize: redirect | [SRC: PLAN L144] |
 | `interaction_required` | `prompt=none` and a session exists but interaction is needed (`max_age` exceeded, hand-off rules not met, `cage_consumed`) | authorize: redirect | code [SRC: PLAN L144]; cases [TL Decision 2026-11-02, OQ-18] (Accept; also MFA and location steps) |
 | `temporarily_unavailable` | Outbox write failed (fail closed: no session, no code); issuer dependency down | authorize: redirect. Token endpoint: HTTP 503 JSON `{"error":"temporarily_unavailable"}` (not an RFC 6749 §5.2 token code), `Retry-After: <integer seconds>`, `Cache-Control: no-store`, no description, no partial grant; the presented refresh token is not consumed | code and cases [SRC: PLAN L145, S1 check 9; LD §8 L429]; token transport [TL Decision 2026-11-02, OQ-19] |
@@ -42,6 +42,7 @@ Redirect errors carry `error` and the client's `state` and `iss` (RFC 9207), on 
 | Plain sign-in, **verified** attestation reports remote session | Screen 8 (Session), variant A "remote session": "Try again after the remote session ends" | [SRC: LD §16.18.5 L1382] |
 | Plain sign-in, attestation invalid (expired, bad signature, replayed, wrong `aud`/`purpose`, unknown/revoked/other-location device) | Sign-in goes ahead; its `remote_session` is ignored (no screen 8A); audit `auth.login.succeeded attestation=invalid`; the user sees no difference (G2) | [TL Decision 2026-11-02, CR-25, OQ-11] |
 | Cage action without a valid fresh `cage_action` attestation (Cash Advance server, contract 6.9) | Action refused, screen 8 (Session) variant B | [TL Decision 2026-11-02, CR-12] |
+| Cage action or cage nonce from an `/admin` session or `admin_type` token | 403 `{"error":"access_denied"}`; reason `not_location_user` in audit only | [Confirmed DEC-084]; contract 6.9 |
 | `/_standin/*` on the front listener | 404 | [TL Decision 2026-11-02, CR-05] |
 | Wrong password, locked account, MFA failure | Our sign-in page messages (UX screens), no redirect to the client | [SRC: PLAN L146 ("our own pages")]; wording owned by UX |
 | `redirect_uri` or `client_id` invalid | Error page on our host; never redirect; generic text ("This sign-in link isn't valid"); echoes no parameter; `Cache-Control: no-store`; `frame-ancestors 'none'`; no audit event | [TL Decision 2026-11-02, OQ-5] |

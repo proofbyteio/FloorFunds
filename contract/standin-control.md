@@ -26,6 +26,7 @@ Labels as in `README.md`. Values SSE proposed (clock `GET` shape, rule ids) are 
 | 2.6 | `PUT /_standin/faults` `{"outbox":"ok\|fail","device_registry":"ok\|unavailable"}` | Fault injection (PLAN check 9, CR-24) | [TL Decision 2026-11-02, CR-05] |
 | 2.7 | `GET /_standin/audit?since=<seq>` → `{"events":[…],"next":<seq>}` | In emit order; each event validates against `audit-events.schema.json` | [TL Decision 2026-11-02, CR-05] |
 | 2.8 | (none) | **No** `hub_launch` or nonce mint/expire route. Tests get `hub_launch` from the hub tile and expire it by advancing the clock | [TL Decision 2026-11-02, CR-05] |
+| 2.9 | Location users only | The stand-in front refuses the Cash Advance hand-off for an `/admin` session (`access_denied`, audit `auth.app_access.denied reason=not_location_user` with `admin_type`), and the BFF stub refuses cage nonce and cage actions for it (403 `{"error":"access_denied"}`), same as the real service (contract 5.12, 6.9) | [Confirmed DEC-084] |
 
 ## 3. Password policy rule ids (returned in `violations`)
 

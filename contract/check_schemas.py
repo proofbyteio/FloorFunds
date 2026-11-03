@@ -150,5 +150,18 @@ assert su["$defs"]["agent_timeout_config"]["properties"]["AgentTimeout"]["defaul
 LI=lambda **kw: env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]},**kw)
 exp("admin event location_ids [] ok", val(a,dict(LI(scope={"partner_id":u(),"location_ids":[]}),admin_type="super")), False)
 exp("location event location_ids []", val(a,LI(scope={"partner_id":u(),"location_ids":[]})), True)
+# [Confirmed DEC-084] cage work only for location users
+DEN=lambda at: dict(env("auth.app_access.denied","denied",{"reason":"not_location_user"},target={"type":"app","id":"cash_advance"}),admin_type=at)
+HO=lambda **kw: dict(env("auth.app.signed_in","success",{"method":"hub_handoff","auth_time":1,"amr":["pwd","mfa"]},target={"type":"app","id":"cash_advance"},action="login"),**kw)
+exp("hand-off signed_in location user ok", val(a,HO()), False)
+for at in ["super","partner"]:
+    exp("not_location_user denied "+at+" ok", val(a,DEN(at)), False)
+    exp("hand-off signed_in with admin_type "+at, val(a,HO(admin_type=at)), True)
+    tok=dict(adm,admin_type=at) if at=="partner" else dict(sup)
+    exp("cash advance token with admin_type "+at, val(c,dict(cachd,admin_type=at),"#/$defs/access_token_cachd"), True)
+    exp("admin token as cash-advance aud "+at, val(c,dict(tok,aud="cash-advance-api"),"#/$defs/access_token_admin"), True)
+exp("not_location_user without admin_type", val(a,{k:v for k,v in DEN("super").items() if k!="admin_type"}), True)
+exp("cage refused body ok", val(su,{"error":"access_denied"},"#/$defs/cage_action_refused"), False)
+exp("cage refused body leaks reason", val(su,{"error":"not_location_user"},"#/$defs/cage_action_refused"), True)
 print("v1-d4 checks:", "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)
