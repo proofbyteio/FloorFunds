@@ -152,3 +152,20 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
   - A15: a missing or unreadable list means fail closed.
 - Note: the 127.0.0.1 tester is now blocked on the front. Earlier front tests (SI1-4) must use `--interface 127.0.0.2`.
 - Not built: the back-listener internal source list (errors.md, LD §4.5).
+
+## SI1-11 Audit emission into the control feed (9:04 PM PT)
+- What:
+  - `Audit.Build` creates the audit-events.schema.json envelope: a UUIDv7 event_id (Guid.CreateVersion7 at the test clock), schema cachd.log, category event, is_audit true, plus actor, source, details and an optional scope.
+  - `Audit.UsernameHmac` is HMAC-SHA256 hex over the trimmed, NFKC-normalized, lowercased username.
+  - `StandInState.Emit` appends to the feed that GET /_standin/audit serves; reset clears it. Emit itself was added to Control.cs in SI1-9.
+  - No endpoint emits yet: the sign-in, app and admin flows are not built, and the allowlist 403s are not on the outbox per errors.md.
+- Evidence (harness /tmp/sse-d0/auditchk, outside the repo; it compiles the repo sources and drives StandInState.Emit and AuditSince):
+  - auth.login.failed and auth.login.succeeded are each VALID under Draft 2020-12 with FormatChecker, and their event_ids are UUID v7.
+  - The negative case (no scope, and carrying `username`) is INVALID, as expected.
+  - The feed gives next=3; after a reset, next=0.
+- Also added: src/Login.StandIn/scripts/export-allowlist.py (the read-only export used by SI1-10).
+- Assumptions:
+  - A17: schema_version is 1.0.0.
+  - A18: source.service is login-standin.
+  - A19: the test HMAC key is fixed.
+  - A20: the server does not validate events against the schema at runtime (there is no JSON Schema package). Validity comes from how Build constructs them and from harness checks.
