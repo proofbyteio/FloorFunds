@@ -257,3 +257,37 @@ Changes to the caveats above:
 - (5) `standin-ui.schema.json` is committed (cb4e637); gate tests for it are not written yet.
 - New since 38ad62e and not yet reviewed in depth: admin `admin_type` super/partner tokens, §8.11 location mapping, DEC-084 (tests CT28/SEC56 added, pending), DEC-085 `recovery_reenroll` (no tests yet).
 Verdict unchanged: **ready to freeze from SSE2's side** for Addendum 2, while SSE is still adding TL Decisions to v1-d4. Freeze a named commit, not a moving head. Not S1 sign-off: no stand-in.
+
+## Addendum: final pre-freeze verdict at feat/contract-v1 e363090 (SSE2, Mon Nov 2, 8:55 PM PT)
+
+**FREEZE-OK at e363090.** All three fix-before-freeze items from the TL's 8:47 PM rulings are in.
+
+How this was checked:
+- An exact export, with SSE's `check_schemas.py` pointed at the export: 166 checks, ALL PASS. SSE claimed 165; a 1-count difference.
+- The full suite: export 333/1 (TOOL08, an export artifact), working tree 334/0.
+
+1. **Re-enrol POST rate limit (7.8).** 7.8 now states:
+   - Default 5 failed tries per 15 min per user, configurable as `LoginService:Mfa:ReenrollRateLimit`.
+   - When it trips: 429, the same generic message, no-store, and `auth.mfa.failed step=reenroll reason=rate_limited session_kind=recovery_reenroll`.
+   - The schema confines rate_limited to auth.mfa.failed with step=reenroll.
+   - It is labelled a TL Decision ("the SA may revise").
+2. **change_denied.**
+   - Details are closed. setting, attempted_value and reason are required. The reason enum is exactly not_admin, wrong_partner and out_of_range.
+   - attempted_value is restricted to TimeSpan text, so no secret or free text fits.
+   - admin_type is required for wrong_partner and out_of_range and forbidden for not_admin. A partner admin requires scope.partner_id.
+   - Everything the TL asked for at 8:37 PM is now covered.
+3. **OQ-48.** auth.mfa.failed step=reenroll details are closed (method, step, reason), so an echoed code is rejected.
+
+No regressions in anything confirmed at d0f75b3: session_kind, admin_type, location_ids, DEC-084/085/086/087/088/089, codes_issued normal or recovery_reenroll, reenrolled recovery_reenroll only, the /mfa/reenroll spelling, and the second codes GET returning 404.
+
+Post-freeze, not blockers (OQ-SSE2-42/43/44/47/49 in the test matrix):
+- Duplicate location_ids are accepted.
+- The cap endpoint is unspecified.
+- admin_type on location events can't be blocked by the schema.
+- cap_changed for a partner admin doesn't carry the partner.
+- The generic message is not an LD string.
+- The §7.8 paths are still a "Proposal".
+- DEC-086 is cited as "Confirmed OQ-40 partial", not by id.
+- check_schemas.py hardcodes the working-tree path.
+- The cited LD md5 (560cb6ab) differs from the LD on disk (190c62e9).
+- TL items 4/6/7/8.

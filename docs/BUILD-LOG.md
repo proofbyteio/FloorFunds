@@ -378,3 +378,86 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - Run 8:32 PM PT: 291 tests, 200 pass, 0 fail, 91 pending, 0 xfail. **Not green: no stand-in.**
 - docs/CONTRACT-REVIEW-v1.md addendum: all Addendum 2 CRs verified, none regressed; ready to freeze from SSE2's side. THREAT-MODEL S-5/E-4 updated; TEST-MATRIX revision; code/README.md created.
 - Not yet covered: DEC-085 recovery_reenroll; standin-ui.schema.json gate tests.
+
+<!-- sse-import sha256=c9d94ebbac1eaa59ba16b06ed6d59d2db2678633f35f66ad810b059694e70cac first-seen=40a410c imported-from=e363090 head="v1-d4 follow-up 6: TL Decision 8:35 PM (commit 6e55557 8:34:48 PM PT; written 8:34 PM PT)" -->
+> **Imported verbatim from SSE**: `contract/SSE-BUILD-LOG-PENDING.md`, first seen in `40a410c`, imported from `e363090`.
+
+## v1-d4 follow-up 6: TL Decision 8:35 PM (commit 6e55557 8:34:48 PM PT; written 8:34 PM PT)
+- 05/07 test ids confirmed by TL; proposal label removed; UX adding them.
+- session_kind (normal | recovery_reenroll): contract 7.8; required token claim (access + ID); optional audit envelope field (present when the event has a session), required = normal on auth.app.signed_in, = recovery_reenroll on reason recovery_session. Token with recovery_reenroll and any app aud rejected. DEC-085 amr==[pwd] rule reverted; "amr recovery-code [pwd] ok" restored. AUD v0.8 item for session_kind.
+- Proposal (SA to ratify in LD): GET /mfa/reenrol, POST /mfa/reenrol, GET /mfa/reenrol/recovery-codes.
+- standin-control §4 apps fixture cash_advance, back_office, reports (provisional, pending Mohanraj).
+- check_schemas.py: 110 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097 unchanged.
+<!-- /sse-import -->
+
+<!-- sse-import sha256=26629ed3495a58ec605bdec5cfb0f24dba90f55e83920a08f89c2ebcbe311185 first-seen=bb8a3a6 imported-from=e363090 head="v1-d4 follow-up 7 (final freeze commit): TL Decision 8:37 PM + Confirmed OQ-40 partial (written 8:36 PM PT; same commit as the changes, so its hash/time is in git log)" -->
+> **Imported verbatim from SSE**: `contract/SSE-BUILD-LOG-PENDING.md`, first seen in `bb8a3a6`, imported from `e363090`.
+
+## v1-d4 follow-up 7 (final freeze commit): TL Decision 8:37 PM + Confirmed OQ-40 partial (written 8:36 PM PT; same commit as the changes, so its hash/time is in git log)
+- session_kind split confirmed and resolved in OPEN-QUESTIONS.
+- New audit events auth.mfa.reenrolled (session_kind=recovery_reenroll, old factor + old codes revoked) and auth.mfa.recovery_codes_issued (count only; details allow nothing else). Contract 7.8, 8.14.
+- Revoke-all-at-once and show-codes-once accepted; paths still Proposal (SA, LD).
+- OQ-40 partial (Mohanraj 8:35 PM PT, "super admin or Partner Admin"): only admin_type super|partner may change AbsoluteLifetime; auth.config.session_cap_changed with old/new/actor required. Interim partner-own-locations scope NOT decided. Range open; cap > idle check kept. Contract 7.4, 8.15.
+- ui-driver error-admin-sign-in wrapper note deferred post-freeze.
+- check_schemas.py: 130 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097.
+<!-- /sse-import -->
+
+<!-- sse-import sha256=395ad64a373a1236712580f5ff0d65f1119c7efbbb98887e997cdc406ac8cf89 first-seen=7bc9c7a imported-from=e363090 head="v1-d4 follow-up 8: [Confirmed DEC-087] + [TL Decision 2026-11-02 8:39 PM] (written 8:38 PM PT; same commit, hash/time in git log)" -->
+> **Imported verbatim from SSE**: `contract/SSE-BUILD-LOG-PENDING.md`, first seen in `7bc9c7a`, imported from `e363090`.
+
+## v1-d4 follow-up 8: [Confirmed DEC-087] + [TL Decision 2026-11-02 8:39 PM] (written 8:38 PM PT; same commit, hash/time in git log)
+- DEC-087 (Mohanraj 8:36 PM PT): after re-enrolment the recovery_reenroll session ends and is revoked; auth.mfa.reenrolled then auth.session.revoked reason=reenrolled (reason must have session_kind=recovery_reenroll); fresh normal sign-in needed for hand-off/cage. Contract 7.8, standin-control rule; interim OPEN-QUESTIONS item resolved.
+- 8:39 PM: auth.config.change_denied (actor, setting, reason not_admin required); contract 7.4, 8.15. Follow-ups 1, 2, 5 TL-accepted.
+- check_schemas.py: 140 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097.
+<!-- /sse-import -->
+
+<!-- sse-import sha256=a1a439ee810984d90a5ceeac8c5602f1d77c1a7b4cabbde35151fade6d2857be first-seen=d4f3ede imported-from=e363090 head="v1-d4 follow-up 9: [Confirmed DEC-088] [Confirmed DEC-089] (written 8:38 PM PT; same commit, hash/time in git log)" -->
+> **Imported verbatim from SSE**: `contract/SSE-BUILD-LOG-PENDING.md`, first seen in `d4f3ede`, imported from `e363090`.
+
+## v1-d4 follow-up 9: [Confirmed DEC-088] [Confirmed DEC-089] (written 8:38 PM PT; same commit, hash/time in git log)
+- Verified 7bc9c7a contains DEC-087, auth.config.change_denied and follow-ups 1/2/5 TL-accepted; nothing missing.
+- DEC-088/089 (Mohanraj 8:37 PM PT): cash_advance, back_office, reports marked PLACEHOLDER (standin-ui testid description, ui-driver §2, standin-control §4, OPEN-QUESTIONS); back_office and reports two separate app_codes. New open item: who picks Cash Advance's code (TO CONFIRM).
+- check_schemas.py unchanged: 140 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097.
+<!-- /sse-import -->
+
+<!-- sse-import sha256=6943239e0ba0844aa0955cf6788a23c28c19f318c1a5659ab93dcdefca5c188c first-seen=a628742 imported-from=e363090 head="v1-d4 follow-up 10: [TL Decision 2026-11-02 8:41 PM, SA ratification] (written 8:42 PM PT; same commit, hash/time in git log)" -->
+> **Imported verbatim from SSE**: `contract/SSE-BUILD-LOG-PENDING.md`, first seen in `a628742`, imported from `e363090`.
+
+## v1-d4 follow-up 10: [TL Decision 2026-11-02 8:41 PM, SA ratification] (written 8:42 PM PT; same commit, hash/time in git log)
+- Paths renamed /mfa/reenrol* → /mfa/reenroll* (contract 7.8, OPEN-QUESTIONS; no other file had them). Note: earlier entries in this log keep the old "reenrol" spelling (append-only).
+- 7.8 has no "Interim": after codes shown once, session ends like sign-out, redirect to sign-in; recovery_reenroll never becomes normal (DEC-087).
+- Successful POST: auth.mfa.reenrolled + auth.mfa.recovery_codes_issued (count only); wrong totp_code: auth.mfa.failed step=reenroll. All three require session_kind=recovery_reenroll.
+- Second GET recovery-codes → 404; codes never logged. Failed POST: 200 re-render, generic error (error-area), no echo, no-store; existing TOTP rate limit applies (value not in contract: OPEN item).
+- check_schemas.py: 147 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097.
+<!-- /sse-import -->
+
+<!-- sse-import sha256=280a22215c11cc8cdfb70c63c2704b773047e3a9ea48afcb55cee0f40cbcb0bf first-seen=d0f75b3 imported-from=e363090 head="v1-d4 follow-up 11: [TL Decision 2026-11-02 8:42 PM] pre-freeze blocker (written 8:43 PM PT; same commit, hash/time in git log)" -->
+> **Imported verbatim from SSE**: `contract/SSE-BUILD-LOG-PENDING.md`, first seen in `d0f75b3`, imported from `e363090`.
+
+## v1-d4 follow-up 11: [TL Decision 2026-11-02 8:42 PM] pre-freeze blocker (written 8:43 PM PT; same commit, hash/time in git log)
+- auth.mfa.recovery_codes_issued session_kind: const recovery_reenroll → enum [normal, recovery_reenroll], still required (normal at first enrolment). Contract 7.8, 8.14, OPEN-QUESTIONS updated.
+- Cases: normal (first enrolment) now positive; missing still negative; new negative for another value.
+- Post-freeze OPEN-QUESTIONS items: TOTP rate-limit value/source → SA (server must still limit POST /mfa/reenroll); ui-driver re-enrolment screen → v1.1.
+- check_schemas.py: 148 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097.
+<!-- /sse-import -->
+
+<!-- sse-import sha256=0b67c68f43762634fc040ba2021a52d960baf528a42b78cddd99cc4568790efa first-seen=e363090 imported-from=e363090 head="v1-d4 follow-up 12: [TL Decision 2026-11-02 8:48 PM] (written 8:48 PM PT; same commit, hash/time in git log)" -->
+> **Imported verbatim from SSE**: `contract/SSE-BUILD-LOG-PENDING.md`, first seen in `e363090`, imported from `e363090`.
+
+## v1-d4 follow-up 12: [TL Decision 2026-11-02 8:48 PM] (written 8:48 PM PT; same commit, hash/time in git log)
+- 7.8 re-enrol POST rate limit (TL Decision, not Confirmed; SA may revise): 5 failed tries / 15 min / user, LoginService:Mfa:ReenrollRateLimit; trip → 429, generic message, no-store, auth.mfa.failed step=reenroll reason=rate_limited (session_kind required). Open TOTP-limit row points here.
+- auth.config.change_denied details closed: setting, attempted_value (TimeSpan), reason not_admin|wrong_partner|out_of_range; admin_type required for admin reasons, absent for not_admin; scope.partner_id for partner. CAP04 (password in details) rejected.
+- auth.mfa.failed step=reenroll details closed (no totp_code echo).
+- check_schemas.py: 165 PASS, 0 FAIL, exit 0 (SSE2's export count of 149 differs). Hardcoded path not changed (post-freeze). allowlist.db md5 e5384097.
+<!-- /sse-import -->
+
+## SSE2, Mon Nov 2, 8:55 PM PT: pre-freeze pass, final at e363090
+- Imported SSE log entries up to e363090 (7 new).
+- Verified candidates d4f3ede, a628742 and d0f75b3, each on an exact export.
+  - a628742 had a blocker: codes_issued was pinned to recovery_reenroll.
+  - d0f75b3 had two blocker candidates, both ruled fix-before-freeze by the TL at 8:47 PM: the re-enrol rate limit was undefined, and the change_denied details were open. OQ-48 was added to the fix.
+- Final: e363090 is FREEZE-OK. Suite: export 428/333/1 (TOOL08 export artifact)/94; working tree 428/334/0/94.
+- Added PreFreezeSchemaTests (SK/AD/LOC/CAP/PH) and the session_kind baselines in ContractArtifactTests.
+- Not done, post-freeze:
+  - Server pending tests SEC70-86 and standin-ui UI01-05.
+  - The fixture-secrets tool. There is no slug/password fixture file yet to check.

@@ -132,3 +132,40 @@ Added 8:32 PM PT for [Confirmed DEC-084] (contract e0f946a, 5.12/6.9): **CT28** 
 | SEC63 deferred to S2; SEC64 ruled (cap from original sign-in) | session-cap | OQ-SSE2-36/37 | deferred / pending |
 
 Also fixed: CS02 sample discovery document lacked the three keys added by TL Decisions OQ-17/OQ-21 (my stale fixture, not a contract fault).
+
+## Revision Mon Nov 2, 8:55 PM PT (SSE2): freeze candidate feat/contract-v1 e363090
+
+Totals at e363090 (`tools/run-checks.sh`): working tree 428 tests / 334 pass / 0 fail / 94 pending. On an exact export (`git archive e363090 contract`): 428 / 333 / 1 / 94. The one failure is TOOL08, which can't pass on an export because it isn't a git repo; the TL ruled at 8:47 PM that this is not a blocker.
+
+New tests in `tests/Login.ContractTests/PreFreezeSchemaTests.cs` (check 7). Every baseline is built explicitly, with no builder defaults.
+- **SK01-SK13 (`session_kind`, 7.8, DEC-085/087).** Required in every token; every bad value is rejected. A `recovery_reenroll` token is rejected for every app. A normal pwd-only token is accepted (the amr revert). Covers the audit `session_kind` rules, reenrolled (`recovery_reenroll` only) and codes_issued (`normal` or `recovery_reenroll`, required). Also: the 7.8 text, the `/mfa/reenroll` spelling, and auth.mfa.failed step=reenroll.
+- **SK14 (TL Decision 8:47/8:48 PM).** The 7.8 text has 5 tries per 15 min per user, configurable (`LoginService:Mfa:ReenrollRateLimit`), 429, the same generic message, and `auth.mfa.failed reason=rate_limited`. The server version is PENDING until the stand-in exists.
+- **SK15 (OQ-SSE2-48).** auth.mfa.failed step=reenroll details are closed, so a totp_code or code echo is rejected.
+- **SK16.** `reason=rate_limited` is valid only with step=reenroll, a recovery_reenroll session and auth.mfa.failed.
+- **AD01-AD04 (`admin_type`, 8.12).**
+- **LOC01-LOC02 (8.11/8.13).** LOC03 (duplicates, OQ-SSE2-42) and LOC04 (OQ-SSE2-44) are pending.
+- **CAP01-CAP04 (7.4/8.15).**
+  - cap_changed is closed.
+  - change_denied: `actor.user_id` null is allowed. Details are closed and require `setting`, `attempted_value` (TimeSpan only, so no free text and no secret) and `reason`.
+  - The reasons are exactly `not_admin`, `wrong_partner` and `out_of_range`.
+  - `admin_type` is required for wrong_partner and out_of_range, and forbidden for not_admin. A partner admin requires `scope.partner_id`.
+- **PH01 (DEC-088/089).** The placeholder app codes are marked PLACEHOLDER, and back_office and reports are separate.
+
+### Safe defaults for open questions (the test runs this default until ruled)
+| OQ | Safe default used by tests |
+|---|---|
+| OQ-SSE2-11 | "Same timing" for enumeration: the median over 50 tries differs by under 50 ms, and no case is consistently slower. Pending until ruled. |
+| OQ-SSE2-12 | Password sign-in rate limit: the shared generic message, with no 429 that would show the limit was hit. The re-enrol POST is the exception: 429 + the generic message, per the TL 8:47 PM ruling. |
+| OQ-SSE2-15 | The BFF stub's idle clock follows the stand-in's test clock (`/standin/control` time advance). No wall-clock sleeps. |
+| OQ-SSE2-17 | A refused start exits non-zero (≠0) and logs one line naming the missing guard. Tests assert only the non-zero exit and that nothing is listening on the port. |
+| OQ-SSE2-19/20 | Pending. No assertion until ruled. |
+| OQ-SSE2-22 | Non-allowlisted source IP is presented through the stand-in control (a test-only override). The test never uses X-Forwarded-For, never uses ports 8080/8081 and never touches `ip-allowlist-poc/data/allowlist.db`. |
+| OQ-SSE2-30 | PCI letter = Unicode L* (all categories); number = Nd only. Lt/Lm/Lo and non-ASCII Nd are pending. |
+| OQ-SSE2-42 | Duplicate `location_ids` are treated as invalid at the server. Pending, because the schema has no uniqueItems. |
+| OQ-SSE2-43 | Cap-change endpoint not specified. Server tests SEC80-86 stay pending. |
+| OQ-SSE2-44 | The stand-in never writes `admin_type` on a `/l/{slug}` session event. Pending at the server. |
+| OQ-SSE2-45 | **Ruled (TL 8:47 PM).** 5 per 15 min per user, configurable, 429, the generic message, auth.mfa.failed reason=rate_limited. |
+| OQ-SSE2-46 | **Ruled (TL 8:47 PM).** Fixed in e363090. |
+| OQ-SSE2-47 | cap_changed for a partner admin doesn't require `scope.partner_id`. Post-freeze. |
+| OQ-SSE2-48 | **Ruled (TL 8:47 PM).** Fixed in e363090. |
+| OQ-SSE2-49 | The re-enrol "generic message" is not named. The only error-area string is "Sign-in didn't work.", which comes from a TL ruling (CR-05), not the LD. Tests assert only `error-area` plus 429, never the text. Post-freeze. |

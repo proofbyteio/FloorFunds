@@ -57,7 +57,8 @@ public class PreFreezeSchemaTests
     static JsonObject Revoked => Ev("auth.session.revoked", "success", """{"reason":"reenrolled"}""", Scope1 + ""","session_kind":"recovery_reenroll" """);
     const string Cfg = ""","target":{"type":"config","id":"LoginService:Session:AbsoluteLifetime"}""";
     static JsonObject CapChanged => Ev("auth.config.session_cap_changed", "success", """{"old_value":"12:00:00","new_value":"08:00:00"}""", Cfg + $$""","admin_type":"partner","scope":{"partner_id":"{{P}}","location_ids":[]}""");
-    static JsonObject ChangeDenied => Ev("auth.config.change_denied", "denied", """{"reason":"not_admin"}""", Cfg + Scope1);
+    static JsonObject ChangeDenied => Ev("auth.config.change_denied", "denied", """{"setting":"LoginService:Session:AbsoluteLifetime","attempted_value":"08:00:00","reason":"not_admin"}""", Cfg + Scope1);
+    static JsonObject ChangeDeniedPartner(string reason) => Set(Set(ChangeDenied, "details.reason", $"\"{reason}\""), "admin_type", "\"partner\"");
 
     static readonly (string id, string file, string? def, Func<JsonObject> doc, bool valid)[] All =
     {
@@ -167,6 +168,30 @@ public class PreFreezeSchemaTests
         ("CAP03 change_denied scope null", A, null, () => Set(ChangeDenied, "scope", "null"), false),
         // TL 8:37 PM asked: change_denied details closed, no secrets. FAILS at d0f75b3 (details has no additionalProperties:false).
         ("CAP04 change_denied details closed (no password field)", A, null, () => Set(ChangeDenied, "details.password", "\"hunter2\""), false),
+        ("CAP04 change_denied details closed (no arbitrary field)", A, null, () => Set(ChangeDenied, "details.note", "\"x\""), false),
+        ("CAP04 change_denied wrong_partner partner admin", A, null, () => ChangeDeniedPartner("wrong_partner"), true),
+        ("CAP04 change_denied out_of_range partner admin", A, null, () => ChangeDeniedPartner("out_of_range"), true),
+        ("CAP04 change_denied out_of_range super admin", A, null, () => Set(Set(Set(ChangeDenied, "details.reason", "\"out_of_range\""), "admin_type", "\"super\""), "scope", "{\"location_ids\":[]}"), true),
+        ("CAP04 change_denied wrong_partner without admin_type", A, null, () => Set(ChangeDenied, "details.reason", "\"wrong_partner\""), false),
+        ("CAP04 change_denied not_admin with admin_type", A, null, () => Set(ChangeDenied, "admin_type", "\"partner\""), false),
+        ("CAP04 change_denied partner without scope.partner_id", A, null, () => Set(ChangeDeniedPartner("wrong_partner"), "scope.partner_id", null), false),
+        ("CAP04 change_denied reason not_location_admin", A, null, () => Set(ChangeDenied, "details.reason", "\"not_location_admin\""), false),
+        ("CAP04 change_denied no setting", A, null, () => Set(ChangeDenied, "details.setting", null), false),
+        ("CAP04 change_denied no attempted_value", A, null, () => Set(ChangeDenied, "details.attempted_value", null), false),
+        ("CAP04 change_denied attempted_value secret text", A, null, () => Set(ChangeDenied, "details.attempted_value", "\"hunter2\""), false),
+        ("CAP04 change_denied attempted_value 8h", A, null, () => Set(ChangeDenied, "details.attempted_value", "\"8h\""), false),
+        ("CAP04 change_denied attempted_value TimeSpan with days", A, null, () => Set(ChangeDenied, "details.attempted_value", "\"1.00:00:00\""), true),
+        ("SK16 mfa.failed reenroll rate_limited", A, null, () => Set(MfaFail, "details.reason", "\"rate_limited\""), true),
+        ("SK16 rate_limited without step", A, null, () => Set(Set(MfaFail, "details.reason", "\"rate_limited\""), "details.step", null), false),
+        ("SK16 rate_limited with normal session", A, null, () => Set(Set(MfaFail, "details.reason", "\"rate_limited\""), "session_kind", "\"normal\""), false),
+        ("SK16 rate_limited on mfa.succeeded", A, null, () => Set(Set(Set(MfaFail, "details.reason", "\"rate_limited\""), "event_type", "\"auth.mfa.succeeded\""), "outcome", "\"success\""), false),
+        ("SK16 mfa.failed reenroll reason bogus", A, null, () => Set(MfaFail, "details.reason", "\"locked\""), false),
+        ("CAP04 change_denied reason Not_Admin", A, null, () => Set(ChangeDenied, "details.reason", "\"Not_Admin\""), false),
+        ("CAP04 change_denied reason empty", A, null, () => Set(ChangeDenied, "details.reason", "\"\""), false),
+        // TL 8:47 PM OQ-SSE2-48: auth.mfa.failed step=reenroll details closed, no code echo.
+        ("SK15 mfa.failed reenroll echoes totp_code", A, null, () => Set(MfaFail, "details.totp_code", "\"123456\""), false),
+        ("SK15 mfa.failed reenroll echoes code", A, null, () => Set(MfaFail, "details.code", "\"123456\""), false),
+        ("SK15 mfa.failed reenroll extra field", A, null, () => Set(MfaFail, "details.note", "\"x\""), false),
     };
 
     public static TheoryData<string> Cases { get { var d = new TheoryData<string>(); foreach (var c in All) d.Add(c.id); return d; } }
@@ -219,8 +244,18 @@ public class PreFreezeSchemaTests
         Assert.Equal(0, Regex.Matches(all, "/mfa/reenrol(?!l)").Count);
     }
 
-    [Fact(Skip = "PENDING OQ-SSE2-45: 7.8 says 'the existing TOTP rate limit applies' to POST /mfa/reenroll, but no TOTP rate limit (limit, window, response, audit) is defined anywhere in contract v1 (SSE's own OPEN-QUESTIONS row agrees). TL to decide blocker/major.")]
-    public void SK14_reenroll_post_rate_limit_specified() { }
+    /// <summary>TL Decision 8:47 PM PT (OQ-SSE2-45): POST /mfa/reenroll: 5 tries per 15 min per user, configurable; then 429 + generic message; audited auth.mfa.failed reason=rate_limited.</summary>
+    [Fact]
+    public void SK14_reenroll_rate_limit_text_in_7_8()
+    {
+        Need("contract-v1.md");
+        var r = Row("7.8");
+        foreach (var rx in new[] { @"\b5\b", @"15 ?min", @"per user", @"configurable", @"429", @"same generic message", @"ReenrollRateLimit", @"rate_limited", @"auth\.mfa\.failed" })
+            Assert.True(Regex.IsMatch(r, rx, RegexOptions.IgnoreCase), $"7.8 rate limit lacks /{rx}/ (TL 8:47 PM)");
+    }
+
+    [Fact(Skip = "PENDING server (stand-in not built): 6th POST /mfa/reenroll within 15 min for one user -> 429, generic message, no-store, no code echo; one auth.mfa.failed step=reenroll reason=rate_limited session_kind=recovery_reenroll; limit read from config (TL 8:47 PM, OQ-SSE2-45).")]
+    public void SK14_server_reenroll_rate_limit_5_per_15_min() { }
 
     [Fact]
     public void CAP02_7_4_admin_only_cap_change_audited_idle_check_interim_partner()
