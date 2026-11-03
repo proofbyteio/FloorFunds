@@ -33,10 +33,10 @@ app.Use((c, next) => { c.Response.OnStarting(() => { if (!c.Response.Headers.Con
 Allowlist.Use(app, ports, allow);
 Listeners.UseListenerRules(app, ports, issuerPath);
 using var keys = new SigningKeys();
-var (disco, discoBack, jwks) = Discovery.Build(issuer, $"http://localhost:{ports.Back}{issuerPath}", keys);
+var (disco, jwks) = Discovery.Build(issuer, keys);
 Ui.IssuerPath = issuerPath; Ui.AgentPort = ports.Control; Ui.Load(Environment.GetEnvironmentVariable("STANDIN_UI_DIR"));
 Ui.MapAssets(app); Handoff.SelfTest();
-Discovery.Map(app, issuerPath, disco, discoBack, jwks, ports);
+Discovery.Map(app, issuerPath, disco, jwks);
 var state = new StandInState(cfg["StandIn:Fixtures"] ?? Path.Combine(AppContext.BaseDirectory, "fixtures.json"));
 Control.Map(app, state);
 // SI1-13..16: tokens, sign-in, authorize, token/revoke/introspect/endsession.

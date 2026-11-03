@@ -14,14 +14,9 @@ public sealed class SigningKeys : IDisposable
 
 public static class Discovery
 {
-    // TL 9:42 (F12, CR-14 option (a)): each copy lists only endpoints that answer on its own listener. The front copy has no
-    // token/revocation endpoints (they 404 there); the back copy (8084 role) gives them at the back listener. This supersedes the
-    // "identical copies" wording of contract 2.9 for the stand-in [v1.1 item]. Built once per listener.
-    public static (byte[] Front, byte[] Back, byte[] Jwks) Build(string issuer, string backIssuer, SigningKeys keys)
-    {
-        var (f, j) = Build1(issuer, null, keys); var (b, _) = Build1(issuer, backIssuer, keys); return (f, b, j);
-    }
-    static (byte[] Disco, byte[] Jwks) Build1(string issuer, string? backIssuer, SigningKeys keys)
+    // The bytes are built once, so the front and 8084 copies are identical (contract 2.1/2.9; TL 9:50 PM reverted the per-listener split).
+    // [v1.1 for SA] SSE2 F12: token/revocation URLs listed here 404 on the front listener; how URLs map front <-> back is open.
+    public static (byte[] Disco, byte[] Jwks) Build(string issuer, SigningKeys keys)
     {
         // contract 2.1 + 2.4: exactly this key set. 2.3: every URL is under the public issuer.
         var disco = new Dictionary<string, object>
@@ -42,20 +37,17 @@ public static class Discovery
             ["revocation_endpoint_auth_methods_supported"] = new[] { "client_secret_basic", "private_key_jwt" },
             ["authorization_response_iss_parameter_supported"] = true,
         };
-        if (backIssuer is null) foreach (var k in new[] { "token_endpoint", "revocation_endpoint", "token_endpoint_auth_methods_supported",
-            "token_endpoint_auth_signing_alg_values_supported", "revocation_endpoint_auth_methods_supported" }) disco.Remove(k);
-        else { disco["token_endpoint"] = backIssuer + "/connect/token"; disco["revocation_endpoint"] = backIssuer + "/connect/revoke"; }
         var p = keys.Rsa.ExportParameters(false);
         var jwks = new { keys = new[] { new { kty = "RSA", use = "sig", alg = "RS256", kid = keys.Kid,
             n = WebEncoders.Base64UrlEncode(p.Modulus!), e = WebEncoders.Base64UrlEncode(p.Exponent!) } } };
         return (JsonSerializer.SerializeToUtf8Bytes(disco), JsonSerializer.SerializeToUtf8Bytes(jwks));
     }
 
-    public static void Map(WebApplication app, string issuerPath, byte[] front, byte[] back, byte[] jwks, StandInPorts ports)
+    public static void Map(WebApplication app, string issuerPath, byte[] disco, byte[] jwks)
     {
         // contract 2.8, 3.4: cache headers.
         app.MapGet(issuerPath + "/.well-known/openid-configuration", (HttpContext c) =>
-        { c.Response.Headers.CacheControl = "public, max-age=3600"; return Results.Bytes(Listeners.Kind(c, ports) == "back" ? back : front, "application/json"); });
+        { c.Response.Headers.CacheControl = "public, max-age=3600"; return Results.Bytes(disco, "application/json"); });
         app.MapGet(issuerPath + "/.well-known/jwks", (HttpContext c) =>
         { c.Response.Headers.CacheControl = "public, max-age=300"; return Results.Bytes(jwks, "application/json"); });
     }

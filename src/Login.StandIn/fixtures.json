@@ -115,6 +115,17 @@
       "_label": "FIXTURE"
     },
     {
+      "username": "super_admin",
+      "user_id": "5f0c3e1a-0003-4000-8000-000000000c0a",
+      "password": "GENERATED",
+      "status": "active",
+      "admin_type": "super",
+      "location_slugs": [],
+      "roles": [],
+      "perm_version": 1,
+      "_label": "FIXTURE"
+    },
+    {
       "username": "cashier_pwd",
       "user_id": "5f0c3e1a-0003-4000-8000-000000000c05",
       "password": "Cashier-Pwd-Standin-2026",

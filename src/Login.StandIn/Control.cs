@@ -56,7 +56,11 @@ public sealed class StandInState
             foreach (var u in fx["users"]!.AsArray())
                 if ((int?)u!["recovery_codes_count"] is int k and > 0)
                     rc[(string)u["username"]!] = new JsonArray(Enumerable.Range(0, k).Select(_ => (JsonNode)("FIXTURE-RC-" + Convert.ToHexStringLower(System.Security.Cryptography.RandomNumberGenerator.GetBytes(5)))).ToArray());
-            _secrets = new JsonObject { ["_label"] = "FIXTURE secrets, generated at start; never commit", ["clients"] = cl, ["recovery_codes"] = rc };
+            // TL 9:50 PM: a fixture password "GENERATED" (super_admin) is generated too.
+            var pw = new JsonObject();
+            foreach (var u in fx["users"]!.AsArray())
+                if ((string?)u!["password"] == "GENERATED") pw[(string)u["username"]!] = "Fx-" + R(18) + "-9a";
+            _secrets = new JsonObject { ["_label"] = "FIXTURE secrets, generated at start; never commit", ["clients"] = cl, ["recovery_codes"] = rc, ["passwords"] = pw };
             var path = Path.Combine(StateDir, "fixture-secrets.json");
             File.WriteAllText(path, "");
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
@@ -64,7 +68,10 @@ public sealed class StandInState
         }
         foreach (var c in fx["clients"]!.AsArray()) c!["secret"] = (string)_secrets["clients"]![(string)c["client_id"]!]!;
         foreach (var u in fx["users"]!.AsArray())
+        {
             if (_secrets["recovery_codes"]![(string)u!["username"]!] is JsonArray a) u["recovery_codes"] = a.DeepClone();
+            if (_secrets["passwords"]![(string)u["username"]!] is JsonValue p) u["password"] = (string)p!;
+        }
     }
 
     public StandInState(string fixturePath) { _fixturePath = fixturePath; Reset(); }

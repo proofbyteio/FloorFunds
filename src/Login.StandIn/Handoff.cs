@@ -29,9 +29,12 @@ public static class Handoff
     static string E(string s) => WebUtility.HtmlEncode(s);
 
     // Audit scope for any session: an /admin session has no location (location_ids: [] is allowed only with admin_type).
-    static JsonObject AdminScope(StandInUser u) => new() { ["partner_id"] = u.PartnerId, ["location_ids"] = new JsonArray() };
+    // TL 9:50 PM (A54): a super admin has no partner, so scope.partner_id is ABSENT (never null).
+    static JsonObject AdminScope(string? partnerId)
+    { var o = new JsonObject(); if (partnerId is not null) o["partner_id"] = partnerId; o["location_ids"] = new JsonArray(); return o; }
+    static JsonObject AdminScope(StandInUser u) => AdminScope(u.PartnerId);
     public static JsonObject SessionScope(StandInState st, LoginSession s) =>
-        s.AdminType is not null ? new JsonObject { ["partner_id"] = s.PartnerId, ["location_ids"] = new JsonArray() } : SignIn.Scope(SignIn.Location(st.Fixtures, s.Slug)!);
+        s.AdminType is not null ? AdminScope(s.PartnerId) : SignIn.Scope(SignIn.Location(st.Fixtures, s.Slug)!);
 
     // Rules 1, 2, 3, 5, 6 of 5.1 (rule 4 is checked by the caller). Returns the failed rule, or null.
     public static string? RuleFailure(StandInState st, LoginSession s, StandInUser user, OAuthClient client, DateTimeOffset now)

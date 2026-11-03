@@ -56,7 +56,7 @@ public static class SignIn
     {
         string? preset = slug is { Length: > 0 } ? Location(st.Fixtures, slug)?.Preset
             : st.Fixtures["partners"]!.AsArray().FirstOrDefault(p => (string?)p!["partner_id"] == u.PartnerId)?["preset"]?.GetValue<string>();
-        // [ASSUMPTION A54] /admin: the partner's preset; a super admin (no partner) gets the stricter limit, 3.
+        // A54 [TL Decision 9:50 PM, interim]: /admin uses the partner's preset; a super admin (no partner) gets 3.
         return preset == PasswordPolicy.Pci ? 10 : 3;
     }
     public static void CountFailure(StandInState st, StandInUser u, int limit, DateTimeOffset now, JsonObject scope, string? ip, string? ua)
