@@ -1,6 +1,6 @@
 # Login contract v1: DRAFT (not frozen)
 
-Owner: SSE. Status: **DRAFT v1-d3** (not frozen), written Mon Nov 2, 2026, 11:30-11:40 AM PT (v1-d1); revised from 11:37 AM PT with the TL's answers (v1-d2); revised ~7:55-8:20 PM PT with the TL rulings, Addendum and G1/G2 (v1-d3).
+Owner: SSE. Status: **DRAFT v1-d4** (NOT frozen; awaiting SSE2 check and TL freeze), written Mon Nov 2, 2026, 11:30-11:40 AM PT (v1-d1); revised from 11:37 AM PT with the TL's answers (v1-d2); revised ~7:55-8:20 PM PT with the TL rulings, Addendum and G1/G2 (v1-d3); revised 8:16-8:50 PM PT with the TL's 8:12 PM / 8:14 PM replies, LD §16.19 rows 110-119 and Addendum 2 (v1-d4).
 It is not frozen. Per build plan §3.1 "Versioning" (TL Decision), v1 freezes only after SSE2's
 adversarial pass and TL review. No stand-in code (SI1) is written until then.
 
@@ -17,6 +17,9 @@ in this folder (plan §3.1). The stand-in and the real OpenIddict service implem
 | `errors.md` | Error codes clients see, per endpoint; internal reason codes; allowlist 403 |
 | `audit-events.schema.json` | JSON Schema for the audit events contract tests may assert |
 | `device-attestation.schema.json` | JSON Schema for the device agent's attestation JWS (header and claims), sent as `device_attestation` |
+| `standin-control.md` | Stand-in control API on the separate control listener (reset, clock, PCs, fake agent, users/TOTP, faults, audit) and fixtures [TL Decision 2026-11-02, CR-05] |
+| `ui-driver.md` | How tests drive the stand-in sign-in UI: form fields, test ids, assertable strings [TL Decision 2026-11-02, CR-05] |
+| `check_schemas.py` | Schema self-check with positive and negative samples (run: `/tmp/sse-d0/venv/bin/python contract/check_schemas.py`; exit 0 = all pass) |
 | `OPEN-QUESTIONS.md` | Every point the sources don't state (OQ-n), for the Tech Lead to answer or relay |
 | `SSE-BUILD-LOG-PENDING.md` | SSE's step log. SSE2 creates `code/docs/BUILD-LOG.md` and `code/README.md` and copies these entries over; SSE never writes in `docs/` (TL Decision 2026-11-02, OQ-27) |
 
@@ -39,6 +42,9 @@ in this folder (plan §3.1). The stand-in and the real OpenIddict service implem
 | LD (prev) | `login-service-proposal.md` (SA) | `88878681a39e23b82e30d6ad0c505647` (rev 11:41 PT, file time 11:41:20) | Newest at v1-d2 (re-checked 12:03 PT). TL expected `5c68265c` (rev 11:32); the SA revised again at 11:41, so per OQ-2 the newest is used. 11:41 adds the TL attestation path and `hub_launch` (§16.18.5 L1381-1391), the rule 4 pointer (§16.16.1 L1170), `notfromhub` in §8 (L423) and decision row 109 (L693); line shift +1 from L7, +2 from L692, +14 from L1378, all cites re-mapped. Earlier: `5c68265c` (rev 11:32, Nevada password-class rule only), `bd70f29a` (v1-d1). Snapshots: `/tmp/sse-d0/login-doc-88878681.md`, `login-doc-5c68265c.md`, `login-doc-bd70f29a.md` |
 | LD | `login-service-proposal.md` (SA) | `b73857941e426bbb796d2e44a92d2f43` (rev 8:15 PM PT, file time 20:10:07) | Newest at v1-d3 (re-checked 8:11 PM PT; PLAN, AUD, ALW unchanged). Changed from `88878681` during this pass: adds rev note L6, §16.19 (L1412-1445, SA proposals on OQ-15/22/23/24 + `t43u`), rows 110-118 (L695-703), §17 items 6-7, OQ-38 rename, OQ-11 `attestation`, L1401 OQ-41 wording. Shift: +1 from old L6, +10 from old L694, +44 from old L1402, +46 from old L1409; all LD cites re-mapped by `/tmp/sse-d0/wip/remap_ld.py` and spot-checked. Snapshot: `/tmp/sse-d0/login-doc-b7385794.md` |
 | TLR | `reviews/contract-v1-tl-rulings.md` (TL) incl. Addendum and G1/G2 | `9012597c8e0b145988d95a2e034d20e0` | Applied at v1-d3. Snapshot: `/tmp/sse-d0/tl-rulings-9012597c.md` |
+| PLAN (now) | `plans/login-hub-build-plan.md` (TL) | `10fa9853877c6e966a5de232f08d3e1a` | Newest at v1-d4. Only L240 (S1 check 3: "no valid single-use `hub_launch`") changed; no line shift. L130 rule 4 is stale; TL fixes it next revision, C §5.7 governs [TL Decision 2026-11-02, Addendum 2 (b)]. Snapshot: `/tmp/sse-d0/plan-10fa9853.md` |
+| LD (now) | `login-service-proposal.md` (SA) | `c2b7e689e900e6e6d5d6ad7988aa3d05` (rev 8:20 PM PT, file time 20:11:45) | Newest at v1-d4. From `b7385794`: +1 line from L6, +2 from old L704 (rows 117-119 rewritten). All LD cites re-mapped (commit e312124). The rulings cite `b7385794` line numbers; the contract cites `c2b7e689`. Snapshot: `/tmp/sse-d0/login-doc-c2b7e689.md` |
+| TLR (now) | `reviews/contract-v1-tl-rulings.md` (TL) incl. Addendum 8:12 PM, Correction 8:14 PM, Addendum 2 | `5bcaedc9fc1c748743243a7dfd1a3a38` (file time 20:14:13) | Applied at v1-d4. Snapshot: `/tmp/sse-d0/tl-rulings-5bcaedc9.md` |
 | AUD | `audit-log-proposal.md` §7A.4 envelope | `d835c3575874c5c2f2b8ae6f17c551fd` | Envelope field names. Snapshot: `/tmp/sse-d0/aud-d835c357.md` |
 | ALW | `ip-allowlist-poc/README.md` L30-50 | `eb7cbf130e8d49fcdc041e79a4fac270` | Exact minimal 403 (read only, not edited). Snapshot: `/tmp/sse-d0/alw-readme-eb7cbf13.md` |
 | UX | `login-hub-mockups/` README, DECISIONS D-37, `07-handoff.html` notes | (read only) | Screens 2, 6, 7 built; screen 8 (two variants) being built by UX (TL, 2026-11-02) |
@@ -50,5 +56,6 @@ Rule (TL Decision 2026-11-02, OQ-2): always cite the newest source; snapshot eac
 - Code and contract live only under `/workspace/cachd-ones/code/`, local git only: no remote, no push
   (pre-push hook always fails), no credentials. Branch `feat/contract-v1` (plan §5.1).
 - SSE writes only `contract/`, `src/`, `ui/`. `tests/`, `docs/`, `tools/` belong to SSE2.
+- Contract-test validators MUST run with format assertion on (e.g. JsonSchema.Net `RequireFormatValidation`); the UUID `pattern` is a backstop, not a substitute [TL Decision 2026-11-02, CR-21].
 - Contract docs are Tier 0. Changes after freeze go to `v1.1` with the reason and a contract-test
   change in the same change set (plan §3.1). The SA folds the frozen contract into LD §16.17.6.
