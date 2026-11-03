@@ -2,7 +2,7 @@
 
 Extends contract-v1.md §1.5. **Never part of the client contract.** Every test that uses it is tagged `standin-only`.
 Source for every rule here: [TL Decision 2026-11-02, CR-05] (rulings md5 5bcaedc9, Addendum 2, §A), unless another tag is shown.
-Labels as in `README.md`. "SSE proposal" = SSE's proposed value, for the TL to freeze with v1.
+Labels as in `README.md`. Values SSE proposed (clock `GET` shape, rule ids) are accepted [TL Decision 2026-11-02 8:26 PM]; JSON shapes in `standin-ui.schema.json`.
 
 ## 1. Listener
 
@@ -19,7 +19,7 @@ Labels as in `README.md`. "SSE proposal" = SSE's proposed value, for the TL to f
 | # | Route | Behaviour | Source |
 |---|---|---|---|
 | 2.1 | `POST /_standin/reset` | Puts everything back to fixtures: users, sessions, nonces, `hub_launch`, lockouts, audit, faults and clock | [TL Decision 2026-11-02, CR-05] |
-| 2.2 | `GET /_standin/clock`; `POST /_standin/clock/advance` `{"seconds":n}` | `n` ≥ 0 (time never goes back; `n` < 0 → 400). **Every** server time check uses this clock: code, nonce, `hub_launch`, idle, cap, lockout, token `exp`. Response shape of `GET` (SSE proposal): `{"now":"<RFC 3339 UTC>"}` | rule [TL Decision 2026-11-02, CR-05]; response shape [SSE proposal → TL at freeze] |
+| 2.2 | `GET /_standin/clock`; `POST /_standin/clock/advance` `{"seconds":n}` | `n` ≥ 0 (time never goes back; `n` < 0 → 400). **Every** server time check uses this clock: code, nonce, `hub_launch`, idle, cap, lockout, token `exp`. Response shape of `GET`: `{"now":"<RFC 3339 UTC>"}` (`clock_get`) | rule [TL Decision 2026-11-02, CR-05]; response shape [TL Decision 2026-11-02 8:26 PM] |
 | 2.3 | `PUT /_standin/pcs/{pc_id}` `{"mode":…, "location_slug":…}` | `pc_id` = the fake `device_id` / `kid`, must start `standin-`. Modes: `valid`, `missing`, `bad_signature`, `expired`, `replayed`, `unknown_device`, `remote_session` (contract §6.8) plus `revoked_device` and `other_location` ([TL Decision 2026-11-02, CR-22]). Returns `{"cookie":{"name":"standin_pc","value":"<pc_id>"}}`; the test driver installs that cookie for the front origin. The control listener does **not** rely on `Set-Cookie` (browsers don't separate cookies by port). The front listener only **reads** `standin_pc`, never sets it; the real service never reads it | [TL Decision 2026-11-02, CR-05, refines OQ-33]; modes [TL Decision 2026-11-02, CR-22] |
 | 2.4 | Fake agent | A loopback listener inside the stand-in process; the page calls it exactly like the real agent (contract §6.5). It finds the PC from the nonce's sign-in or hand-off transaction: the front records `standin_pc` on the transaction when it mints the nonce. No cross-origin cookie is needed | [TL Decision 2026-11-02, CR-05] |
 | 2.5 | `PUT /_standin/users/{username}` `{password, roles:[{app_code, role}], location_slugs, status}` → `{user_id}`; `GET /_standin/users/{username}/totp` → `{"code":"######"}` at the test clock | A password set here runs **the same policy validator** as the real path; a violation → **422** `{"violations":[rule ids]}` (ids in §3). S1 has no user-facing set-password route (OQ-SSE2-29) | [TL Decision 2026-11-02, CR-05, OQ-SSE2-29] |
@@ -29,7 +29,7 @@ Labels as in `README.md`. "SSE proposal" = SSE's proposed value, for the TL to f
 
 ## 3. Password policy rule ids (returned in `violations`)
 
-The ids are an **SSE proposal** (the TL ruled that SSE lists them, CR-05 / OQ-SSE2-29); the rules themselves are LD §7 (L327-L343) and Addendum 2 OQ-SSE2-31/32.
+The ids are accepted [TL Decision 2026-11-02 8:26 PM] (closed list, `password_violations`; the TL ruled that SSE lists them, CR-05 / OQ-SSE2-29); the rules themselves are LD §7 (L327-L343) and Addendum 2 OQ-SSE2-31/32.
 
 | id | Rule | Preset | Source |
 |---|---|---|---|

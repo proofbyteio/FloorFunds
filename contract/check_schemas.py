@@ -2,7 +2,7 @@ import json, sys, uuid
 from jsonschema import Draft202012Validator as V
 from referencing import Registry, Resource
 d = "/workspace/cachd-ones/code/contract/"
-s = {n: json.load(open(d+n)) for n in ["openid-configuration.schema.json","claims.schema.json","audit-events.schema.json","device-attestation.schema.json"]}
+s = {n: json.load(open(d+n)) for n in ["openid-configuration.schema.json","claims.schema.json","audit-events.schema.json","device-attestation.schema.json","standin-ui.schema.json"]}
 for n,x in s.items(): V.check_schema(x); print("schema ok", n)
 fc = V.FORMAT_CHECKER
 def val(schema, inst, ref=None):
@@ -117,5 +117,31 @@ exp("audit old iam.permission.change_requested", val(a,env("iam.permission.chang
 exp("audit scope with location_ids", val(a,env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]},scope={"partner_id":u(),"cachd_client_id":u(),"location_ids":[u()]})), False)
 exp("audit scope.client_id (old name)", val(a,env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]},scope={"client_id":u()})), True)
 exp("audit event_id not uuid (format OFF)", sorted(e.message for e in V(a).iter_errors(dict(env("auth.refresh.reuse_detected","failure",{}),event_id="e1"))), True)
+# [TL Decision 2026-11-02 8:26 PM] accepted proposals, admin super/partner, location mapping
+su=s["standin-ui.schema.json"]
+SUP,PAR="#/$defs/access_token_admin_super","#/$defs/access_token_admin_partner"
+nop={k:v for k,v in adm.items() if k!="partner_id"}
+exp("super admin without partner_id ok", val(c,nop,SUP), False)
+exp("super admin with location_id", val(c,dict(nop,location_id=u()),SUP), True)
+exp("partner admin with partner_id ok", val(c,adm,PAR), False)
+exp("partner admin without partner_id", val(c,nop,PAR), True)
+exp("token location_id as array", val(c,dict(cachd,location_id=[u()]),"#/$defs/access_token_cachd"), True)
+exp("audit scope singular location_id", val(a,env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]},scope={"partner_id":u(),"location_id":u()})), True)
+exp("audit scope location_ids two locations ok", val(a,env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]},scope={"partner_id":u(),"location_ids":[u(),u()]})), False)
+for nm,ref,good_i,bad_i in [
+ ("clock GET",'clock_get',{"now":"2026-11-02T12:00:00Z"},{"time":"2026-11-02T12:00:00Z"}),
+ ("password violations",'password_violations',{"violations":["min_length","reused"]},{"violations":["too_short"]}),
+ ("testid",'testid',"totp-code","totp_code"),
+ ("testid hub tile",'testid',"hub-tile-cash_advance","hub-tile-"),
+ ("totp form",'totp_form',{"totp_code":"123456","__RequestVerificationToken":"t"},{"code":"123456","__RequestVerificationToken":"t"}),
+ ("agent timeout 3 s",'agent_timeout_config',{"AgentTimeout":"00:00:03"},{"AgentTimeout":3}),
+ ("cage action path",'cage_action_path',"/cage/actions/id_scan","/cage/actions/refund"),
+ ("cage nonce",'cage_nonce_response',{"nonce":"A"*22},{"nonce":"A"*21+"="}),
+ ("cage action request",'cage_action_request',{"device_attestation":"a.b.c"},{"attestation":"a.b.c"}),
+ ("cage action ok",'cage_action_ok',{"ok":True},{"ok":False}),
+ ("cage action denied",'cage_action_denied',{"error":"attestation_invalid"},{"error":"forbidden"})]:
+    exp(nm+" good", val(su,good_i,"#/$defs/"+ref), False)
+    exp(nm+" bad", val(su,bad_i,"#/$defs/"+ref), True)
+assert su["$defs"]["agent_timeout_config"]["properties"]["AgentTimeout"]["default"]=="00:00:03"
 print("v1-d4 checks:", "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:claims",
   "title": "Token payloads and headers, contract v1 (DRAFT v1-d4)",
-  "description": "Pick the $defs entry for the client under test: access_token_cachd, access_token_other (org_claims off), access_token_other_org_claims (org_claims on), id_token_code, id_token_refresh, access_token_admin, jose_header_*. Claim lists [SRC: PLAN §3.1 L116-123; LD §5 L230, §16.5 L910-912]. Value types [TL Decision 2026-11-02, OQ-15]. Time checks use ±30 s skew (G1) [TL Decision 2026-11-02, G1].",
+  "description": "Pick the $defs entry for the client under test: access_token_cachd, access_token_other (org_claims off), access_token_other_org_claims (org_claims on), id_token_code, id_token_refresh, access_token_admin_super, access_token_admin_partner, jose_header_*. Claim lists [SRC: PLAN §3.1 L116-123; LD §5 L230, §16.5 L910-912]. Value types [TL Decision 2026-11-02, OQ-15]. Time checks use ±30 s skew (G1) [TL Decision 2026-11-02, G1].",
   "$defs": {
     "id": {
       "description": "Opaque id, UUID string [TL Decision 2026-11-02, OQ-15]. Pattern enforces UUID even if a validator has format assertion off [TL Decision 2026-11-02, CR-01]; validators MUST still run with format assertion on [TL Decision 2026-11-02, CR-21].",
@@ -69,7 +69,7 @@
         "partner_id": { "$ref": "#/$defs/id" },
         "cachd_client_id": { "description": "Absent for partner-level users [SRC: PLAN L120; LD L910].", "$ref": "#/$defs/id" },
         "location_id": {
-          "description": "The location picked at sign-in [SRC: LD L911]. Required for location sign-ins (/l/{slug}); absent (not null) for /admin tokens, see access_token_admin [TL Decision 2026-11-02, OQ-15] (LD §16.19.2 L1430).",
+          "description": "The location picked at sign-in [SRC: LD L911]. Required for location sign-ins (/l/{slug}); absent (not null) for /admin tokens, see access_token_admin [TL Decision 2026-11-02, OQ-15] (LD §16.19.2 L1430). Single value in tokens; audit uses the array scope.location_ids (contract 8.11) [TL Decision 2026-11-02 8:26 PM].",
           "$ref": "#/$defs/id"
         }
       },
@@ -119,18 +119,6 @@
         "typ": { "const": "JWT", "description": "ID tokens typ=JWT [TL Decision 2026-11-02, OQ-14]." }
       }
     },
-    "access_token_admin": {
-      "description": "/admin sign-in (Super Admin, Partner Admin) to backoffice-api: no location_id (absent, not null) [TL Decision 2026-11-02, OQ-15] (LD L1430). partner_id / cachd_client_id optional: whether a Super Admin token carries partner_id is not stated [SSE proposal; flagged for TL].",
-      "allOf": [{"$ref": "#/$defs/access_token_base"}],
-      "properties": {
-        "aud": { "const": "backoffice-api" },
-        "partner_id": { "$ref": "#/$defs/id" },
-        "cachd_client_id": { "$ref": "#/$defs/id" },
-        "perm_version": { "type": "integer", "minimum": 0}
-      },
-      "not": { "required": ["location_id"]},
-      "unevaluatedProperties": false
-    },
     "id_token_base": {
       "description": "Shared ID token shape [SRC: PLAN L122-123]. Lifetime 5 min [TL Decision 2026-11-02, OQ-15]. Use id_token_code or id_token_refresh [TL Decision 2026-11-02, CR-03].",
       "type": "object",
@@ -161,6 +149,35 @@
       "allOf": [{"$ref": "#/$defs/id_token_base"}],
       "not": { "required": ["nonce"]},
       "unevaluatedProperties": false
+    },
+    "access_token_admin_super": {
+      "allOf": [{"$ref": "#/$defs/access_token_base"}],
+      "properties": {
+        "aud": { "const": "backoffice-api" },
+        "partner_id": { "$ref": "#/$defs/id" },
+        "cachd_client_id": { "$ref": "#/$defs/id" },
+        "perm_version": { "type": "integer", "minimum": 0}
+      },
+      "not": { "required": ["location_id"]},
+      "unevaluatedProperties": false,
+      "description": "/admin, Super Admin: no location_id (absent) [TL Decision 2026-11-02, OQ-15] (LD L1430); partner_id optional [TL Decision 2026-11-02 8:26 PM]."
+    },
+    "access_token_admin_partner": {
+      "allOf": [{"$ref": "#/$defs/access_token_base"}],
+      "properties": {
+        "aud": { "const": "backoffice-api" },
+        "partner_id": { "$ref": "#/$defs/id" },
+        "cachd_client_id": { "$ref": "#/$defs/id" },
+        "perm_version": { "type": "integer", "minimum": 0}
+      },
+      "not": { "required": ["location_id"]},
+      "unevaluatedProperties": false,
+      "required": ["partner_id"],
+      "description": "/admin, Partner Admin: no location_id (absent) [TL Decision 2026-11-02, OQ-15] (LD L1430); partner_id required [TL Decision 2026-11-02 8:26 PM]."
+    },
+    "access_token_admin": {
+      "description": "Either /admin shape. Tokens carry no role claim, so a test picks _super or _partner by the fixture user it signed in as [TL Decision 2026-11-02 8:26 PM].",
+      "anyOf": [{"$ref": "#/$defs/access_token_admin_super"}, {"$ref": "#/$defs/access_token_admin_partner"}]
     }
   }
 }

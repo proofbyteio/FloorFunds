@@ -55,7 +55,7 @@ LD line numbers refer to md5 `560cb6ab` (rev 8:25 PM PT, file time 20:17:36); re
 |---|---|---|---|---|
 | OQ-35 (part) | Enrolled device id format | 1-128 char string, exact-match registry lookup; UUID recommended, not required [TL Decision 2026-11-02, OQ-35, 8:12 PM reply] | Device Agent / hardware owner | §6.7, attestation schema |
 | CR-22 (part) | Does a device's enrolment record its location or partner; may one device serve several locations? (LD §16.20.3 / row 122: Proposal (SA) one location or a set under one partner+client; OPEN, Device Agent owner) | Revoked / unenrolled / disabled device → `attestation_invalid` (decided). Location binding: §6.7 check runs only if the registry records one [safe default] | Device Agent owner + SA | §6.7 |
-| CR-12 (part) | Production cage-action challenge design (LD §16.20.2 / row 121: Proposal (SA), Device Agent parts OPEN) | S1: stand-in BFF stub as specified in §6.9 [SSE proposal; flagged for TL; not built, SI1 held] | SA + Device Agent owner | §6.9 |
+| CR-12 (part) | Production cage-action challenge design (LD §16.20.2 / row 121: Proposal (SA), Device Agent parts OPEN) | S1: stand-in BFF stub as specified in §6.9; paths and shapes accepted, built as part of SI1 [TL Decision 2026-11-02 8:26 PM]; production design still OPEN | SA + Device Agent owner | §6.9 |
 | OQ-SSE2-30 | PCI "letter" / "number" for `Lt`, `Lm`, `Lo`, non-ASCII `Nd` (LD §16.20.1 / row 120: Proposal (SA) letter = `L*`, number = `Nd` after NFKC; OPEN, compliance owner) | ASCII cases testable now; Unicode PCI cases PENDING. TL Rec for the SA: same method as Nevada (after NFKC; letter = any `L*`, number = `Nd`) | SA → compliance owner (LS-OQ-52) | standin-control §3 |
 | LS-OQ-52 | PCI compliance owner sign-off on password classes | follows OQ-SSE2-30 | Compliance owner | standin-control §3 |
 | OQ-39 | GitHub account, repo, visibility, setup (OQ-28) | Local git only, no remote, no push, no credentials. The earlier "company org" proposal is withdrawn [TL Decision 2026-11-02, Addendum 2 §D] | Mohanraj (card t44s0) | - |
@@ -87,4 +87,16 @@ Change requests (CR-n) and SSE2 questions (OQ-SSE2-n) are tracked in the rulings
 | OQ-SSE2-36, 37 | Answered | §7.4 |
 | OQ-SSE2-39 | Answered / partly Open (= CR-22) | §6.7 |
 | OQ-SSE2-40 | TL Decision | §4.11 |
+
+## TL Decision 2026-11-02 8:26 PM
+
+All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one positive and one negative each).
+
+| Item | Decision | Where applied |
+|---|---|---|
+| SSE proposals (CR-05) | Accepted: `data-testid` values, `totp_code`, fake-agent timeout 3 s, password rule ids, clock `GET` `{"now":…}`, S1 BFF stub paths and shapes | ui-driver §1.2, §2; standin-control §2.2, §3; contract §6.5, §6.9; `standin-ui.schema.json` |
+| §6.9 stub build | Specified for the v1 freeze; built as part of SI1 | contract §6.9 |
+| Admin token `partner_id` | Optional for Super Admin, required for Partner Admin. Tokens carry no role claim, so the schema cannot tell the two apart from the token alone: a test picks `access_token_admin_super` or `access_token_admin_partner` by its fixture user (`access_token_admin` = either). **For TL to confirm** this split | `claims.schema.json` |
+| Location mapping | Token/session: single `location_id`; audit: array `scope.location_ids` (AUD §7A.4 L266) | contract §8.11; claims and audit schemas |
+| Cite precedence | Where the contract and the rulings file differ, the contract's LD `560cb6ab` cites govern | README |
 

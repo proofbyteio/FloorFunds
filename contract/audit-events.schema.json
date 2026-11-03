@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:audit-events",
   "title": "Audit events the contract tests may assert, contract v1 (DRAFT v1-d4)",
-  "description": "Event list [SRC: PLAN §3.1 L148-161; LD §8 L417-427]. Envelope names [SRC: AUD §7A.4]; login-specific mapping [SRC: LD §8 L424]. Tenant fields are in the nested scope.* envelope (scope.partner_id, scope.cachd_client_id, scope.location_ids) per AUD §7A.4 L264-266, with scope.client_id renamed scope.cachd_client_id [TL Decision 2026-11-02, OQ-23, OQ-37] (LD §16.19 row 114 L701, §16.19.4 L1443). Tokens stay flat (claims.schema.json).",
+  "description": "Event list [SRC: PLAN §3.1 L148-161; LD §8 L417-427]. Envelope names [SRC: AUD §7A.4]; login-specific mapping [SRC: LD §8 L424]. Tenant fields are in the nested scope.* envelope (scope.partner_id, scope.cachd_client_id, scope.location_ids) per AUD §7A.4, with scope.client_id renamed scope.cachd_client_id [TL Decision 2026-11-02, OQ-23, OQ-37] (LD §16.19 row 114 L701, §16.19.4 L1443). Tokens stay flat (claims.schema.json).",
   "type": "object",
   "allOf": [{"$ref": "#/$defs/envelope"}],
   "oneOf": [
@@ -80,7 +80,7 @@
         },
         "details": { "type": "object" },
         "scope": {
-          "description": "Tenant scope [SRC: AUD §7A.4 L264-266] [TL Decision 2026-11-02, OQ-37]. cachd_client_id absent for partner-level users; location_ids absent for /admin [TL Decision 2026-11-02, OQ-15].",
+          "description": "Tenant scope [SRC: AUD §7A.4] [TL Decision 2026-11-02, OQ-37]. cachd_client_id absent for partner-level users; location_ids absent for /admin [TL Decision 2026-11-02, OQ-15].",
           "type": "object",
           "properties": {
             "partner_id": { "$ref": "#/$defs/id" },
@@ -88,9 +88,14 @@
               "description": "The Cachd client (casino operator), not the OAuth client [TL Decision 2026-11-02, OQ-23, OQ-37].",
               "$ref": "#/$defs/id"
             },
-            "location_ids": { "type": "array", "items": { "$ref": "#/$defs/id" }, "minItems": 1}
+            "location_ids": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/id" },
+              "minItems": 1,
+              "description": "Array: one event can cover several locations (AUD §7A.4 L266, multi-location for admin actions); a session/token carries the single location_id; for a one-session event = [location_id] (contract 8.11) [TL Decision 2026-11-02 8:26 PM]."
+            }
           },
-          "not": { "required": ["client_id"]},
+          "not": { "anyOf": [{ "required": ["client_id"]}, { "required": ["location_id"]}]},
           "additionalProperties": false
         }
       }

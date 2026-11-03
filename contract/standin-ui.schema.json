@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:cachd:login:contract:v1:standin-ui",
+  "title": "Stand-in control, UI driver and S1 BFF stub shapes, contract v1 (DRAFT v1-d4)",
+  "description": "All values accepted [TL Decision 2026-11-02 8:26 PM]. See standin-control.md, ui-driver.md, contract-v1.md 6.5 and 6.9.",
+  "$defs": {
+    "clock_get": {
+      "description": "GET /_standin/clock (standin-control 2.2).",
+      "type": "object",
+      "required": ["now"],
+      "properties": { "now": { "type": "string", "format": "date-time", "pattern": "Z$" }},
+      "additionalProperties": false
+    },
+    "password_violations": {
+      "description": "422 body of PUT /_standin/users/{username} (standin-control 2.5, 3).",
+      "type": "object",
+      "required": ["violations"],
+      "properties": {
+        "violations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["min_length", "max_length", "letters_and_numbers", "two_of_four_types", "contains_username", "reused"]}
+        }
+      },
+      "additionalProperties": false
+    },
+    "testid": {
+      "description": "ui-driver.md §2; hub tiles hub-tile-{app_code}.",
+      "type": "string",
+      "anyOf": [
+        {
+          "enum": [
+            "screen-signin",
+            "signin-username",
+            "signin-password",
+            "signin-submit",
+            "screen-totp",
+            "totp-code",
+            "totp-submit",
+            "screen-hub",
+            "screen-8a",
+            "screen-8b",
+            "error-area"
+          ]
+        },
+        { "pattern": "^hub-tile-[a-z0-9_]+$" }
+      ]
+    },
+    "totp_form": {
+      "description": "TOTP step POST fields (ui-driver 1.2).",
+      "type": "object",
+      "required": ["totp_code", "__RequestVerificationToken"],
+      "properties": { "totp_code": { "type": "string", "pattern": "^[0-9]{6}$" }, "__RequestVerificationToken": { "type": "string", "minLength": 1}},
+      "additionalProperties": false
+    },
+    "agent_timeout_config": {
+      "description": "LoginService:Attestation:AgentTimeout (contract 6.5); default 3 s.",
+      "type": "object",
+      "properties": { "AgentTimeout": { "type": "string", "pattern": "^\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$", "default": "00:00:03" }},
+      "additionalProperties": false
+    },
+    "cage_action_path": { "description": "S1 BFF stub action route (contract 6.9).", "type": "string", "pattern": "^/cage/actions/(payment|id_scan|print)$" },
+    "cage_nonce_response": {
+      "type": "object",
+      "required": ["nonce"],
+      "properties": { "nonce": { "type": "string", "pattern": "^[A-Za-z0-9_-]{22}$", "description": "base64url 128-bit, no padding." }},
+      "additionalProperties": false
+    },
+    "cage_action_request": {
+      "type": "object",
+      "required": ["device_attestation"],
+      "properties": { "device_attestation": { "type": "string", "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$" }},
+      "additionalProperties": false
+    },
+    "cage_action_ok": {
+      "type": "object",
+      "required": ["ok"],
+      "properties": { "ok": { "const": true}},
+      "additionalProperties": false
+    },
+    "cage_action_denied": {
+      "description": "HTTP 403.",
+      "type": "object",
+      "required": ["error"],
+      "properties": { "error": { "const": "attestation_invalid" }},
+      "additionalProperties": false
+    }
+  }
+}

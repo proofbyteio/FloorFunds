@@ -1,17 +1,17 @@
 # UI driver contract (DRAFT v1-d4, not frozen)
 
 What browser tests may rely on. Source for every rule: [TL Decision 2026-11-02, CR-05] (rulings md5 5bcaedc9, Addendum 2, §A; answers OQ-SSE2-04, OQ-SSE2-05), unless tagged otherwise.
-**The `data-testid` values below are an SSE proposal; the TL freezes them with v1** (CR-05).
+**The `data-testid` values below are accepted** [TL Decision 2026-11-02 8:26 PM] (CR-05); closed list in `standin-ui.schema.json` (`testid`).
 
 ## 1. Sign-in form `/l/{slug}`
 
 | # | Rule | Source |
 |---|---|---|
 | 1.1 | Password step: `GET /l/{slug}` renders the form; `POST /l/{slug}` with fields `username`, `password`, `device_attestation` (hidden; empty if the agent didn't answer, contract §6.5) and `__RequestVerificationToken` (ASP.NET antiforgery, taken from the GET; **no bypass**) | [TL Decision 2026-11-02, CR-05]; field `device_attestation` [contract §6.6] |
-| 1.2 | TOTP step: `POST` to the step's form action with fields `totp_code` and `__RequestVerificationToken`. The test gets the code from `GET /_standin/users/{username}/totp` | [TL Decision 2026-11-02, CR-05]; field name `totp_code` [SSE proposal → TL at freeze] |
+| 1.2 | TOTP step: `POST` to the step's form action with fields `totp_code` and `__RequestVerificationToken`. The test gets the code from `GET /_standin/users/{username}/totp` | [TL Decision 2026-11-02, CR-05]; field name `totp_code` [TL Decision 2026-11-02 8:26 PM] (`totp_form`) |
 | 1.3 | Attestation at submit: before the POST the page calls `POST /l/{slug}/attest-nonce` and then the agent (contract §6.5). Tests drive the real page; they never post `device_attestation` by hand except in negative tests | [TL Decision 2026-11-02, CR-25] |
 
-## 2. `data-testid` values (SSE proposal)
+## 2. `data-testid` values [TL Decision 2026-11-02 8:26 PM]
 
 | Screen / element | `data-testid` |
 |---|---|
