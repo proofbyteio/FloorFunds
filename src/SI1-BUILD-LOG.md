@@ -325,3 +325,10 @@ Each fix has its own live test in the driver (/tmp/sse-d0/e2e/step4.py; drive.py
 ### v1.1 items
 - **V11-CAGEREMOTE (SA):** contract 6.7 should say that a cage action whose attestation has remote_session=true is refused (403 attestation_invalid; audit reason remote_session per A70).
 - **V11-ADMINERR (ui-driver):** /admin error area now uses testid error-area (G6); the ui-driver should look for it.
+
+## TL 10:36 PM PT: 9b7efc9 accepted pending SSE2's re-check; small follow-up
+- **A69 not accepted. Case that applied: attempted_value is REQUIRED** (audit-events.schema.json, change_denied details required [setting, attempted_value, reason]), so it cannot be omitted. "00:00:00" stays for a non-time value from a non-admin. New live test: the event carries 00:00:00, is schema-valid, and is schema-INVALID with attempted_value removed.
+- **v1.1 item V11-ATTEMPTVAL (SA):** make change_denied attempted_value optional, or allow a marker for non-time input, so the stand-in doesn't have to log a made-up "00:00:00" value.
+- **A70, A71, A72, A73 accepted (TL 10:36 PM).**
+- **check-fixture-secrets.sh** now flags a literal (non-GENERATED) "password" in a tracked fixtures*.json. In the index this FAILs. In history it is WARN only for the 22 older commits in KNOWN_PW (everything before 9b7efc9 that still has literals; history is not rewritten, as A55) and FAILs in any other commit. Throwaway-repo tests (GIT_INDEX_FILE unset): GENERATED-only → OK; a new literal commit → FAIL in the index and the history; literal later removed → the history still FAILs. On si1-fixes itself: WARN only, no FAIL.
+- **No server behaviour change**, so no rebuild. Live suite 301/301 (port guard ok). Evidence /tmp/sse-d0/evidence-fixes2.txt, md5 ecab64e636abe947563efd35273692b1.
