@@ -3,7 +3,7 @@
 For the Tech Lead to answer or relay. "Who" = who I think owns the answer; the TL decides routing.
 Every [OPEN → OQ-n], [CONFLICT → OQ-n] and [DOC SILENT → OQ-n] in the contract points here (the v1-d1/d2 ASSUME and SSE Proposal labels are retired at v1-d3).
 Status (v1-d3, 8:10 PM PT): TL rulings `reviews/contract-v1-tl-rulings.md` md5 `9012597c8e0b145988d95a2e034d20e0` applied. **Resolved** = TL Decision 2026-11-02 (relayed by the parent at 11:37 AM PT); **Open** = not decided; the contract uses the safe default shown.
-LD line numbers refer to md5 `b7385794` (rev 8:15 PM PT, file time 20:10:07); re-mapped from `88878681` at v1-d3.
+LD line numbers refer to md5 `c2b7e689` (rev 8:20 PM PT, file time 20:11:45); re-mapped from `b7385794` at v1-d4 (from `88878681` at v1-d3).
 
 ## Resolved
 

@@ -1,6 +1,6 @@
-# Login service contract v1 (DRAFT v1-d3)
+# Login service contract v1 (DRAFT v1-d4)
 
-Labels and source snapshots: see `README.md`. PLAN = build plan md5 ae18d664; LD = login doc md5 b7385794 (rev 8:15 PM PT, file time 20:10:07; cites re-mapped from 88878681).
+Labels and source snapshots: see `README.md`. PLAN = build plan md5 10fa9853 (check-3 edit only, no line shift); LD = login doc md5 c2b7e689 (rev 8:20 PM PT, file time 20:11:45; cites re-mapped from b7385794).
 "MUST" items are what contract tests may assert against both the stand-in and the real service.
 
 ## 0. Global rules [TL Decision 2026-11-02, G1, G2]
