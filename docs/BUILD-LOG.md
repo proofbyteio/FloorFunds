@@ -1008,12 +1008,12 @@ Each fix has its own live test in the driver (/tmp/sse-d0/e2e/step4.py; drive.py
 ## SSE2, Mon Nov 2, 10:35–10:50 PM PT: re-check of 9b7efc9 (si1-fixes) against my 7397b3f conditions
 
 ### TL rulings 10:35 PM PT, recorded as decisions
-- **DEC-102 (G3 blocker)**: G3 is a **BLOCKER**. A cage action with a validly signed attestation carrying remote_session=true is refused (review §21). The client sees 403 attestation_invalid; the audit reason is remote_session (A70).
-- **DEC-103 (G1 interim range)**: the session cap must be more than 15 min and at most 24 h (interim, PLACEHOLDER until OQ-40), with expiry arithmetic that cannot overflow.
-- **DEC-104 (G2, G4, G6–G9, FS1)**: fixed as I suggested. G2: JSON body {"device_attestation":…} plus the RequestVerificationToken header → 200 {"ok":true} (A72). Any other body counts as missing → 403 (A73).
-- **DEC-105 (G5)**: a pending (password-verified, pre-MFA) sign-in expires after 5 min.
-- **DEC-106 (G10)**: skipped.
-- **DEC-107 (.v\* files)**: the top-level .v\* files belong to the SA, who is moving them. SSE2 leaves them alone.
+- **TLD-SI1-01 (G3 blocker)**: G3 is a **BLOCKER**. A cage action with a validly signed attestation carrying remote_session=true is refused (review §21). The client sees 403 attestation_invalid; the audit reason is remote_session (A70).
+- **TLD-SI1-02 (G1 interim range)**: the session cap must be more than 15 min and at most 24 h (interim, PLACEHOLDER until OQ-40), with expiry arithmetic that cannot overflow.
+- **TLD-SI1-03 (G2, G4, G6–G9, FS1)**: fixed as I suggested. G2: JSON body {"device_attestation":…} plus the RequestVerificationToken header → 200 {"ok":true} (A72). Any other body counts as missing → 403 (A73).
+- **TLD-SI1-04 (G5)**: a pending (password-verified, pre-MFA) sign-in expires after 5 min.
+- **TLD-SI1-05 (G10)**: skipped.
+- **TLD-SI1-06 (.v\* files)**: the top-level .v\* files belong to the SA, who is moving them. SSE2 leaves them alone.
 
 ### Runs (base 18090, my export /tmp/sse2-si1-9b7efc9, own venv, STANDIN_STATE_DIR=/tmp/sse2-si1-9b7efc9/state per A71)
 - Target: 9b7efc9 (parent baaef0e). si1-fixes moved to 3e0b71d at 22:37:36 PT. That commit changes only the secrets script and the SSE log, with no runtime code. My stand-in export was taken at 22:36 and its script md5 (5dc476e4) matches 9b7efc9.
@@ -1046,10 +1046,14 @@ Each fix has its own live test in the driver (/tmp/sse-d0/e2e/step4.py; drive.py
 | N5 | info (test-side, fixed) | The TestKit ErrorText regex took the first, empty error-* testid. It now uses the first non-empty one. | SEC76b/SEC77c |
 
 ### GO/NO-GO for SI1 at 9b7efc9
-**GO.** G1–G9 and FS1 are fixed and independently reproduced; G3 (blocker, DEC-102) is cleared. Results: suite 468/0/84 (no regression from 3feb66c), probes 194/194 and 15/15, UI 14/14, and SSE's 296 rows all reproduced. Open info items: N1–N3 (OQ-SSE2-66).
+**GO.** G1–G9 and FS1 are fixed and independently reproduced; G3 (blocker, TLD-SI1-01) is cleared. Results: suite 468/0/84 (no regression from 3feb66c), probes 194/194 and 15/15, UI 14/14, and SSE's 296 rows all reproduced. Open info items: N1–N3 (OQ-SSE2-66).
 
 ### Port and time log (PST)
 - 22:36:37 ss: 18080–18082, 18090–18092, 8080 and 8081 all free. 22:36:40 9b7efc9 stand-in started as pid 1538586 on 18090–18092 (check-ports free, then mine). STANDIN_STATE_DIR=/tmp/sse2-si1-9b7efc9/state.
 - 22:37:20–22:40:02 full run #1 (2 test-side fails); 22:41:39–22:42 probes, probe-k and UI; 22:44:18–22:44:40 SSE harness repro (×2); 22:44:53–22:47:37 full run #2 (468/0/84).
 - The guard checks before every run that the ports are owned by my pid. SSE's harness also started stand-ins (startup checks, G8); each exited after a failed bind or a refused config, and afterwards only pid 1538586 was listening.
 - Stand-in stop: logged in the commit message and the SSE2 report.
+
+## Relabel and N2 ruling (SSE2, Mon Nov 2, 10:51 PM PT, parent db033f8, docs only, no stand-in started)
+- **Relabel:** DEC numbers are reserved for Mohanraj's own decisions. The TL rulings I recorded on the 10:35 PM pass are renamed in docs/ in the same order: DEC-102→TLD-SI1-01, DEC-103→TLD-SI1-02, DEC-104→TLD-SI1-03, DEC-105→TLD-SI1-04, DEC-106→TLD-SI1-05, DEC-107→TLD-SI1-06 (10 references across BUILD-LOG, TEST-MATRIX-S1 and CONTRACT-REVIEW-v1; there were none in tests/). All other DEC numbers are unchanged. DEC-096..DEC-101 (also TL rulings, from the 9:50 PM pass) are deliberately **not** renamed while the TL decides on them.
+- **N2 / OQ-SSE2-66 → V11-PENDINGEXPIRY (TL 10:51 PM):** no audit event when a pending MFA expires, because the audit schema is frozen and none of its reasons covers an expiry. Deferred to the SA for v1.1. OQ-SSE2-66 is resolved and deferred; N2 stays info.

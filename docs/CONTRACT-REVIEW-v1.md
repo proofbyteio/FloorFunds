@@ -335,6 +335,6 @@ contract-v1 is frozen and not reopened. Findings are against the stand-in, or qu
 **Verdict: GO with conditions** for SI1. No blocker; no failing test in the agreed suite. Conditions: TL decides G1 and G2 (fix, or accept as stand-in limits with a v1.1 item), and rules on G3, which becomes a blocker if remote_session must block cage actions.
 
 ## Addendum: 9b7efc9 re-check (SSE2, Mon Nov 2, 10:50 PM PT)
-All conditions from the 3feb66c review are verified fixed at 9b7efc9: G1 (cap range (15 min, 24 h], no overflow), G2 (6.9 JSON body → 200 {"ok":true}; anything else → 403, A72/A73), G3 (remote_session refused, blocker per DEC-102, audit reason remote_session per A70), and G4–G9 and FS1. Pending MFA expires at > 300000 ms; exactly 300000 ms is accepted. New items are info only: N1 (00:60:00 → out_of_range, not 400), N2 (no event when a pending MFA expires, OQ-SSE2-66), N3 (old literal fixture passwords remain in history, WARN).
+All conditions from the 3feb66c review are verified fixed at 9b7efc9: G1 (cap range (15 min, 24 h], no overflow), G2 (6.9 JSON body → 200 {"ok":true}; anything else → 403, A72/A73), G3 (remote_session refused, blocker per TLD-SI1-01, audit reason remote_session per A70), and G4–G9 and FS1. Pending MFA expires at > 300000 ms; exactly 300000 ms is accepted. New items are info only: N1 (00:60:00 → out_of_range, not 400), N2 (no event when a pending MFA expires, OQ-SSE2-66), N3 (old literal fixture passwords remain in history, WARN).
 
 **Verdict: GO** for SI1 at 9b7efc9.

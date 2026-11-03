@@ -265,7 +265,7 @@ Focus probes (tests/e2e/sse2-probes, black-box, 135/147 + cap isolation 11/14):
 | PR-C0 cage nonce 22 chars (G4) | FAIL | PASS ×3 |
 | PR-C9 JSON body + header → 200 {"ok":true} (G2, A72) | FAIL | PASS ×3 |
 | PR-C8b–f no-header 400 / form 403 (A73) / extra key / malformed JSON | – | PASS ×3 (new) |
-| PR-C10/C10b/C10c remote_session refused, reason remote_session, schema-valid, no replay (G3, DEC-102) | FAIL | PASS ×3 (new b/c) |
+| PR-C10/C10b/C10c remote_session refused, reason remote_session, schema-valid, no replay (G3, TLD-SI1-01) | FAIL | PASS ×3 (new b/c) |
 | PR-K range (15 min, 24 h], huge → out_of_range (G1) | FAIL (K-huge) | PASS |
 | PR-K-DoS boundary (G1) | FAIL | PASS ×6 |
 | PR-K-val / G9 caller first, attempted_value per A69 | info | PASS |
@@ -274,5 +274,5 @@ Focus probes (tests/e2e/sse2-probes, black-box, 135/147 + cap isolation 11/14):
 | FS06 secret in the script path (FS1) | missed | caught (SSE2_FS06_EXPECT_CAUGHT=1) |
 | Totals | 135/147, 11/14, UI 14/14, suite 468/0/84 | 194/194, 15/15, UI 14/14, suite 468/0/84 |
 
-- **OQ-SSE2-66**: should a dropped (expired after 5 min) pending MFA emit an audit event? At 9b7efc9 it emits none (N2, info).
-- OQ-SSE2-63, -64 and -65 are closed by DEC-104 and DEC-105 (fixed at 9b7efc9).
+- **OQ-SSE2-66**: should a dropped (expired after 5 min) pending MFA emit an audit event? At 9b7efc9 it emits none (N2, info). **Resolved, deferred (TL 10:51 PM):** no audit event, because the audit schema is frozen and none of its reasons covers an expiry. Tracked as **V11-PENDINGEXPIRY**, deferred to the SA for v1.1.
+- OQ-SSE2-63, -64 and -65 are closed by TLD-SI1-03 and TLD-SI1-04 (fixed at 9b7efc9).
