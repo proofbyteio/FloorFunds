@@ -78,3 +78,8 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - Not done (by rule): no SI1 build, no BFF stub built (CR-12 spec only, flagged for TL), not FROZEN, no remote/push, nothing in tests/, docs/, tools/.
 - SSE proposals awaiting TL: test ids and `totp_code` (ui-driver.md); fake-agent timeout 3 s; password rule ids; clock GET shape; §6.9 stub paths/shapes; `access_token_admin` partner_id optional; audit `scope.location_ids` (array, per AUD §7A.4) vs LD singular wording.
 
+
+### [SSE] v1-d4 follow-up: LD moved again during the pass (event: found 8:23 PM PT at the final md5 check; written 8:24 PM PT)
+- LD md5 is now 560cb6abd69ca4b5099eab57a17405b8 (rev 8:25 PM PT, file time 20:17:36), not c2b7e689. Snapshot /tmp/sse-d0/login-doc-560cb6ab.md.
+- Diff vs c2b7e689 is inserts only: rev note at L6; rows 120-122 after old L705; new §16.20 (SA-Q1 PCI classes, SA-Q2 cage-action check, SA-Q3 device enrolment; all Proposal (SA), OPEN) after old L1447; one line after old L1471.
+- Re-mapped every LD cite in contract-v1.md, errors.md, OPEN-QUESTIONS.md, standin-control.md, ui-driver.md and the schemas with /tmp/sse-d0/wip/remap_ld3.py; spot-checked L417, L705, L706, L1380, L1430, L1443. Build log and README source history not re-mapped (historical). Linked the §16.20 proposals in the OPEN rows; no contract decision changed. check_schemas.py still ALL PASS.

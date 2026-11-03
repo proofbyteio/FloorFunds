@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:claims",
   "title": "Token payloads and headers, contract v1 (DRAFT v1-d4)",
-  "description": "Pick the $defs entry for the client under test: access_token_cachd, access_token_other (org_claims off), access_token_other_org_claims (org_claims on), id_token_code, id_token_refresh, access_token_admin, jose_header_*. Claim lists [SRC: PLAN §3.1 L116-123; LD §5 L229, §16.5 L906-908]. Value types [TL Decision 2026-11-02, OQ-15]. Time checks use ±30 s skew (G1) [TL Decision 2026-11-02, G1].",
+  "description": "Pick the $defs entry for the client under test: access_token_cachd, access_token_other (org_claims off), access_token_other_org_claims (org_claims on), id_token_code, id_token_refresh, access_token_admin, jose_header_*. Claim lists [SRC: PLAN §3.1 L116-123; LD §5 L230, §16.5 L910-912]. Value types [TL Decision 2026-11-02, OQ-15]. Time checks use ±30 s skew (G1) [TL Decision 2026-11-02, G1].",
   "$defs": {
     "id": {
       "description": "Opaque id, UUID string [TL Decision 2026-11-02, OQ-15]. Pattern enforces UUID even if a validator has format assertion off [TL Decision 2026-11-02, CR-01]; validators MUST still run with format assertion on [TL Decision 2026-11-02, CR-21].",
@@ -12,7 +12,7 @@
     },
     "numeric_date": { "type": "integer", "minimum": 0},
     "amr": {
-      "description": "Array [SRC: PLAN L118]. Closed enum, RFC 8176 values only; nothing passes through from Entra [TL Decision 2026-11-02, CR-02, OQ-22] (LD §16.19.3, row 119 L705). DB sign-in password+TOTP = [pwd, otp, mfa]; recovery-code sign-in = [pwd] (never MFA); Entra amr containing mfa or ngcmfa -> mfa; wiaormfa never -> mfa. Hand-off needs mfa [SRC: LD L1180; TL Decision 2026-11-02, CR-02]",
+      "description": "Array [SRC: PLAN L118]. Closed enum, RFC 8176 values only; nothing passes through from Entra [TL Decision 2026-11-02, CR-02, OQ-22] (LD §16.19.3, row 119 L706). DB sign-in password+TOTP = [pwd, otp, mfa]; recovery-code sign-in = [pwd] (never MFA); Entra amr containing mfa or ngcmfa -> mfa; wiaormfa never -> mfa. Hand-off needs mfa [SRC: LD L1184; TL Decision 2026-11-02, CR-02]",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
@@ -23,7 +23,7 @@
       "const": true
     },
     "no_roles_or_permissions": {
-      "description": "No roles or permissions in any token [SRC: PLAN L121; LD L908]. Names listed are the common ones; tests also assert no other unknown claim via unevaluatedProperties.",
+      "description": "No roles or permissions in any token [SRC: PLAN L121; LD L912]. Names listed are the common ones; tests also assert no other unknown claim via unevaluatedProperties.",
       "not": {
         "anyOf": [
           { "required": ["role"]},
@@ -56,7 +56,7 @@
           "description": "Space-separated (RFC 9068); values openid, cash_advance_api, backoffice_api [TL Decision 2026-11-02, OQ-6].",
           "type": "string"
         },
-        "client_id": { "description": "OAuth client; never used for tenant scoping [SRC: LD §16.5 L906].", "type": "string" },
+        "client_id": { "description": "OAuth client; never used for tenant scoping [SRC: LD §16.5 L910].", "type": "string" },
         "login_provider": { "enum": ["database", "entra"]},
         "amr": { "$ref": "#/$defs/amr" },
         "auth_time": { "$ref": "#/$defs/numeric_date" },
@@ -67,9 +67,9 @@
     "org_claims": {
       "properties": {
         "partner_id": { "$ref": "#/$defs/id" },
-        "cachd_client_id": { "description": "Absent for partner-level users [SRC: PLAN L120; LD L906].", "$ref": "#/$defs/id" },
+        "cachd_client_id": { "description": "Absent for partner-level users [SRC: PLAN L120; LD L910].", "$ref": "#/$defs/id" },
         "location_id": {
-          "description": "The location picked at sign-in [SRC: LD L907]. Required for location sign-ins (/l/{slug}); absent (not null) for /admin tokens, see access_token_admin [TL Decision 2026-11-02, OQ-15] (LD §16.19.2 L1426).",
+          "description": "The location picked at sign-in [SRC: LD L911]. Required for location sign-ins (/l/{slug}); absent (not null) for /admin tokens, see access_token_admin [TL Decision 2026-11-02, OQ-15] (LD §16.19.2 L1430).",
           "$ref": "#/$defs/id"
         }
       },
@@ -93,7 +93,7 @@
       "unevaluatedProperties": false
     },
     "access_token_other_org_claims": {
-      "description": "Non-Cachd client with org_claims on: org claims, still no perm_version [SRC: LD §16.5 L907].",
+      "description": "Non-Cachd client with org_claims on: org claims, still no perm_version [SRC: LD §16.5 L911].",
       "allOf": [{"$ref": "#/$defs/access_token_base"}, {"$ref": "#/$defs/org_claims"}],
       "properties": { "partner_id": true, "cachd_client_id": true, "location_id": true},
       "unevaluatedProperties": false
@@ -120,7 +120,7 @@
       }
     },
     "access_token_admin": {
-      "description": "/admin sign-in (Super Admin, Partner Admin) to backoffice-api: no location_id (absent, not null) [TL Decision 2026-11-02, OQ-15] (LD L1426). partner_id / cachd_client_id optional: whether a Super Admin token carries partner_id is not stated [SSE proposal; flagged for TL].",
+      "description": "/admin sign-in (Super Admin, Partner Admin) to backoffice-api: no location_id (absent, not null) [TL Decision 2026-11-02, OQ-15] (LD L1430). partner_id / cachd_client_id optional: whether a Super Admin token carries partner_id is not stated [SSE proposal; flagged for TL].",
       "allOf": [{"$ref": "#/$defs/access_token_base"}],
       "properties": {
         "aud": { "const": "backoffice-api" },

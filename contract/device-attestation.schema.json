@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:device-attestation",
   "title": "Device agent attestation (compact JWS), contract v1 (DRAFT v1-d4)",
-  "description": "Sent by the page as device_attestation (contract-v1.md 6.4-6.8). Format [TL Decision 2026-11-02, OQ-8/OQ-9; SRC: LD §16.18.5 L1393-1398]. Lifetime, single use, nonce and device binding [SRC: LD §16.18.5 L1377, L1383; PLAN §1.2 L51]. Checks a schema can't express (signature, kid in the enrolled device key registry, exp - iat <= 60 s, nonce unconsumed) are server checks, 6.7. Server-side also: alg pinned to ES256 before parsing; crit refused; aud and purpose must match the verifier; iat/exp skew ±30 s (G1); nonce consumed atomically before the result [TL Decision 2026-11-02, OQ-35]; Addendum [TL Decision 2026-11-02, Addendum 12:15 PM PT].",
+  "description": "Sent by the page as device_attestation (contract-v1.md 6.4-6.8). Format [TL Decision 2026-11-02, OQ-8/OQ-9; SRC: LD §16.18.5 L1397-1402]. Lifetime, single use, nonce and device binding [SRC: LD §16.18.5 L1381, L1387; PLAN §1.2 L51]. Checks a schema can't express (signature, kid in the enrolled device key registry, exp - iat <= 60 s, nonce unconsumed) are server checks, 6.7. Server-side also: alg pinned to ES256 before parsing; crit refused; aud and purpose must match the verifier; iat/exp skew ±30 s (G1); nonce consumed atomically before the result [TL Decision 2026-11-02, OQ-35]; Addendum [TL Decision 2026-11-02, Addendum 12:15 PM PT].",
   "type": "object",
   "properties": { "header": { "$ref": "#/$defs/header" }, "claims": { "$ref": "#/$defs/claims" }},
   "required": ["header", "claims"],
@@ -33,7 +33,7 @@
         "device_id": { "description": "Must equal header kid [TL Decision 2026-11-02 (kid = device id)].", "$ref": "#/$defs/device_id" },
         "remote_session": { "description": "true -> reason=remote_session (screen 8 (Session), variant A).", "type": "boolean" },
         "iat": { "type": "integer", "description": "±30 s skew (G1) [TL Decision 2026-11-02, OQ-35]." },
-        "exp": { "description": "exp - iat <= 60 [SRC: LD L1377]; ±30 s skew (G1) [TL Decision 2026-11-02, OQ-35]; checked by the server.", "type": "integer" },
+        "exp": { "description": "exp - iat <= 60 [SRC: LD L1381]; ±30 s skew (G1) [TL Decision 2026-11-02, OQ-35]; checked by the server.", "type": "integer" },
         "aud": {
           "description": "A single string: the login service issuer for purpose signin/handoff; the Cash Advance server for cage_action. The verifier rejects any other aud [TL Decision 2026-11-02, Addendum 12:15 PM PT (overrides OQ-35 'no aud')].",
           "type": "string",

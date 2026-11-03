@@ -29,16 +29,16 @@ Labels as in `README.md`. "SSE proposal" = SSE's proposed value, for the TL to f
 
 ## 3. Password policy rule ids (returned in `violations`)
 
-The ids are an **SSE proposal** (the TL ruled that SSE lists them, CR-05 / OQ-SSE2-29); the rules themselves are LD §7 (L326-L342) and Addendum 2 OQ-SSE2-31/32.
+The ids are an **SSE proposal** (the TL ruled that SSE lists them, CR-05 / OQ-SSE2-29); the rules themselves are LD §7 (L327-L343) and Addendum 2 OQ-SSE2-31/32.
 
 | id | Rule | Preset | Source |
 |---|---|---|---|
-| `min_length` | ≥12 Unicode code points (`Rune`) after NFKC | both | [SRC: LD L326]; counting [TL Decision 2026-11-02, OQ-SSE2-31] |
+| `min_length` | ≥12 Unicode code points (`Rune`) after NFKC | both | [SRC: LD L327]; counting [TL Decision 2026-11-02, OQ-SSE2-31] |
 | `max_length` | ≤128 code points after NFKC; never truncated | both | [TL Decision 2026-11-02, OQ-SSE2-31] |
-| `letters_and_numbers` | at least one letter and one number | PCI | [SRC: LD L326, L339]; non-ASCII classes **OPEN (SA → compliance owner) → OQ-SSE2-30**, ASCII cases only until answered |
-| `two_of_four_types` | at least 2 of 4 character types | Nevada MICS #7 | [SRC: LD L340] |
+| `letters_and_numbers` | at least one letter and one number | PCI | [SRC: LD L327, L340]; non-ASCII classes **OPEN (SA → compliance owner) → OQ-SSE2-30**, ASCII cases only until answered |
+| `two_of_four_types` | at least 2 of 4 character types | Nevada MICS #7 | [SRC: LD L341] |
 | `contains_username` | the password contains the username: username normalised as `username_hmac` (trim, NFKC, lowercase invariant) vs password after NFKC + lowercase invariant, ordinal substring; no minimum length | both | [TL Decision 2026-11-02, OQ-SSE2-32] |
-| `reused` | one of the last 4 passwords | both | [SRC: LD L327, L339] |
+| `reused` | one of the last 4 passwords | both | [SRC: LD L328, L340] |
 
 ## 4. Fixtures after reset
 

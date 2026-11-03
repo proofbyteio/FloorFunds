@@ -30,6 +30,6 @@ What browser tests may rely on. Source for every rule: [TL Decision 2026-11-02, 
 |---|---|---|
 | "Sign-in didn't work." | error area | [TL Decision 2026-11-02, CR-05] |
 | "This PC's security software isn't responding. Contact IT." | screen 8B | [TL Decision 2026-11-02, CR-05]; contract §5.5 |
-| "Try again after the remote session ends" | screen 8A (LD text) | [TL Decision 2026-11-02, CR-05]; [SRC: LD L1378] |
+| "Try again after the remote session ends" | screen 8A (LD text) | [TL Decision 2026-11-02, CR-05]; [SRC: LD L1382] |
 
 All other copy belongs to UX and is not asserted.
