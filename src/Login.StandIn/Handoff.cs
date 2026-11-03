@@ -11,9 +11,20 @@ namespace Login.StandIn;
 public static class Handoff
 {
     public const string TxCookie = "standin_hx";
-    public const int LaunchSeconds = 60, AuthAgeSeconds = 300;
     // [ASSUMPTION A42] ages are compared in whole elapsed seconds (truncated), like the integer auth_time claim: 300 s passes, 301 s fails.
-    public static long Age(DateTimeOffset now, DateTimeOffset t) => (long)Math.Floor((now - t).TotalSeconds);
+    // A42 (TL 9:32, changed): compare in milliseconds; refuse anything over the limit, no rounding down (300.4 s is refused).
+    public const long AuthAgeMs = 300_000, LaunchMs = 60_000;
+    public static bool Over(DateTimeOffset now, DateTimeOffset t, long limitMs) => (now - t).Ticks > limitMs * TimeSpan.TicksPerMillisecond;
+    // Boundary self-test (the frozen clock control only advances in whole seconds, so exact-ms cases are checked here at startup).
+    public static void SelfTest()
+    {
+        var t0 = DateTimeOffset.UnixEpoch;
+        bool ok = !Over(t0.AddMilliseconds(300_000), t0, AuthAgeMs) && Over(t0.AddMilliseconds(300_001), t0, AuthAgeMs)
+               && Over(t0.AddMilliseconds(300_400), t0, AuthAgeMs) && Over(t0.AddTicks(300_000 * TimeSpan.TicksPerMillisecond + 1), t0, AuthAgeMs)
+               && !Over(t0.AddMilliseconds(60_000), t0, LaunchMs) && Over(t0.AddMilliseconds(60_001), t0, LaunchMs);
+        Console.WriteLine($"A42 boundary selftest: 300000ms=accept 300001ms=refuse 300400ms=refuse 60000ms=accept 60001ms=refuse -> {(ok ? "PASS" : "FAIL")}");
+        if (!ok) throw new InvalidOperationException("A42 boundary selftest failed");
+    }
 
     static string E(string s) => WebUtility.HtmlEncode(s);
 
@@ -25,7 +36,7 @@ public static class Handoff
     public static string? RuleFailure(StandInState st, LoginSession s, StandInUser user, OAuthClient client, DateTimeOffset now)
     {
         // [TL 9:26 PM, A32] auth_time is set only by a real credential entry (password + MFA), never by SSO reuse or refresh.
-        if (!s.Interactive || Age(now, s.AuthTime) > AuthAgeSeconds) return "rule1";
+        if (!s.Interactive || Over(now, s.AuthTime, AuthAgeMs)) return "rule1";
         if (!s.Amr.Contains("mfa")) return "rule2"; // Entra mfa/ngcmfa map to mfa at sign-in; recovery [pwd] never counts
         if (s.HandoffUsed) return "rule3";
         // Rule 5: the user still holds the session's location and is active. The IP allowlist is enforced on every front request (Allowlist.cs).
@@ -52,16 +63,10 @@ public static class Handoff
 
     public static IResult Interstitial(HttpContext c, IAntiforgery af, SignInTx tx, string issuerPath, int agentPort)
     {
-        c.Response.Headers.ContentSecurityPolicy = $"default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:{agentPort}; frame-ancestors 'none'";
         c.Response.Cookies.Append(TxCookie, tx.Id, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Lax, Path = issuerPath, Secure = c.Request.IsHttps });
         var t = af.GetAndStoreTokens(c).RequestToken!;
         // [ASSUMPTION A38] ui-driver has no id for this page; the form id is "handoff" and the page has no screen testid (v1.1 UI item).
-        return Results.Content($$"""
-<!doctype html><html><head><meta charset="utf-8"><title>Opening Cash Advance</title></head><body><main>
-<p>Opening Cash Advance</p>
-<form id="handoff" method="post" action="{{issuerPath}}/connect/authorize">
-<input type="hidden" name="__RequestVerificationToken" value="{{E(t)}}"><input type="hidden" name="device_attestation" value="">
-<noscript><button type="submit">Continue</button></noscript></form>
+        var js = $$"""
 <script>
 (async function () {
   const f = document.getElementById('handoff');
@@ -75,8 +80,9 @@ public static class Handoff
   } catch (e) { }
   f.submit();
 })();
-</script></main></body></html>
-""", "text/html; charset=utf-8");
+</script>
+""";
+        return Ui.Page("Opening Cash Advance", Ui.Render("handoff", ("action", issuerPath + "/connect/authorize"), ("af", t)), js);
     }
 
     public static void Map(WebApplication app, StandInState st, string issuerPath, string issuer, StandInPorts ports)

@@ -17,7 +17,7 @@ public static class OAuth
         // 4.8: our own error page, never a redirect, never an echo.
         c.Response.Headers.CacheControl = "no-store";
         c.Response.Headers.ContentSecurityPolicy = "frame-ancestors 'none'";
-        return SignIn.Html("error-area", "<p>This sign-in link isn't valid</p>", 400);
+        return Ui.Page("Sign-in link not valid", Ui.Render("bad-link"), "", 400);
     }
 
     static IResult Back(string redirectUri, string issuer, string? state, params (string K, string V)[] kv)
@@ -99,7 +99,7 @@ public static class OAuth
                 // [TL Decision 9:26 PM, A32] interactive = now - auth_time <= 300 s AND the session's last authentication was a real
                 // credential entry (password + MFA) made for this authorize (ViaReturn), not SSO reuse, a refresh, or prompt=none.
                 // auth_time is set only by credential entry (never by SSO or refresh), and the entry is spent by the first interactive code.
-                if (isHandoffClient) fresh = s is not null && s.ViaReturn && !s.CodeIssued && !s.InteractiveUsed && prompt != "none" && Handoff.Age(now, s.AuthTime) <= Handoff.AuthAgeSeconds;
+                if (isHandoffClient) fresh = s is not null && s.ViaReturn && !s.CodeIssued && !s.InteractiveUsed && prompt != "none" && !Handoff.Over(now, s.AuthTime, Handoff.AuthAgeMs);
                 bool needLogin = s is null || (prompt == "login" && !fresh) || (maxAge is { } mx && (now - s.AuthTime).TotalSeconds > mx);
                 if (needLogin)
                 {
@@ -113,7 +113,7 @@ public static class OAuth
                 if (isHandoffClient && !fresh)
                 {
                     // 5.1 rule 4 (5.7): missing, expired (60 s, no skew), used, or wrong sid/client -> notfromhub, then the sign-in page.
-                    bool r4 = hl is not null && hlFresh && Handoff.Age(now, hl.IssuedAt) <= Handoff.LaunchSeconds && hl.Sid == s.Sid && hl.ClientId == client.ClientId;
+                    bool r4 = hl is not null && hlFresh && !Handoff.Over(now, hl.IssuedAt, Handoff.LaunchMs) && hl.Sid == s.Sid && hl.ClientId == client.ClientId;
                     if (!r4)
                     {
                         var e = Audit.Build(now, "auth.app_access.denied", "denied", s.UserId, new JsonObject { ["reason"] = "notfromhub" }, SignIn.Scope(loc), Ip(c), null, s.Sid);
@@ -203,8 +203,8 @@ public static class OAuth
                     e["target"] = new JsonObject { ["type"] = "app", ["id"] = client.AppCode }; e["session_kind"] = bound?.Kind ?? "normal";
                     return e;
                 }
-                if (!ok) { st.Emit(Deny("attestation_invalid")); return Results.Redirect(slugRet); } // 5.5: password + MFA, then Cash Advance opens
-                if (remote) { st.Emit(Deny("remote_session")); return SignIn.Html("screen-8a", "<p>Try again after the remote session ends</p>"); } // 5.4
+                if (!ok) { st.Emit(Deny("attestation_invalid")); return Results.Redirect(slugRet + "&agent=down"); } // 5.5: password + MFA, then Cash Advance opens
+                if (remote) { st.Emit(Deny("remote_session")); return Ui.Page("Sign-in is blocked", Ui.Render("screen-8a")); } // 5.4
                 var user = st.Users.Values.First(u => u.UserId == s!.UserId);
                 if (Handoff.RuleFailure(st, s!, user, client, now) is not null) return Results.Redirect(slugRet); // rules re-checked at completion
                 int? maxAge = a.TryGetValue("max_age", out var ma) && int.TryParse(ma, out var m) ? m : null;

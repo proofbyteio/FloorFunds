@@ -1,0 +1,9 @@
+<section class="card card--auth" data-testid="screen-totp">
+<div class="card__header"><div><h1>Enter your one-time code</h1></div></div>
+{{{error}}}
+<form novalidate method="post" action="{{action}}">
+<input type="hidden" name="__RequestVerificationToken" value="{{af}}">
+<div class="field"><label class="field__label" for="totp">6-digit code</label><input class="field__input" id="totp" name="totp_code" data-testid="totp-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></div>
+<button class="button button--primary button--block" type="submit" data-testid="totp-submit">Continue</button>
+</form>
+</section>

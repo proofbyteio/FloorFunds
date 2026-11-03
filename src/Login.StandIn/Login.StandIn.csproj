@@ -12,6 +12,7 @@
   </PropertyGroup>
   <ItemGroup>
     <None Update="fixtures.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../ui/login-hub/**" LinkBase="ui" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="[8.19.2]" />

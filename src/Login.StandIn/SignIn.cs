@@ -33,19 +33,18 @@ public static class SignIn
     {
         c.Response.Headers.CacheControl = "no-store";
         c.Response.Headers.Pragma = "no-cache";
-        c.Response.Headers.ContentSecurityPolicy = $"default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:{controlPort}; frame-ancestors 'none'";
+        c.Response.Headers.ContentSecurityPolicy = Ui.Csp(controlPort);
     }
 
     static string E(string s) => WebUtility.HtmlEncode(s);
-    public static IResult Html(string testid, string body, int status = 200) => Results.Content(
-        $"<!doctype html><html><head><meta charset=\"utf-8\"><title>Sign in</title></head><body><main data-testid=\"{testid}\">{body}</main></body></html>",
-        "text/html; charset=utf-8", null, status);
-    static string Err(string? msg) => $"<div data-testid=\"error-area\" role=\"alert\">{(msg is null ? "" : E(msg))}</div>";
+    // Generic ui/ card (hub, admin, sign-out confirm): layout.html + card.html.
+    public static IResult Html(string testid, string body, int status = 200) =>
+        Ui.Page("Sign in", Ui.Render("card", ("testid", testid), ("body", body)), "", status);
 
     static void SetCookie(HttpContext c, string name, string value, string path) =>
         c.Response.Cookies.Append(name, value, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Lax, Path = path, Secure = c.Request.IsHttps });
 
-    static IResult PasswordPage(HttpContext c, IAntiforgery af, string slugBase, string? error, int agentPort, int status = 200, bool resign = false)
+    static IResult PasswordPage(HttpContext c, IAntiforgery af, string slugBase, string? error, int agentPort, int status = 200, bool resign = false, bool agentDown = false)
     {
         var t = af.GetAndStoreTokens(c).RequestToken!;
         // The page fetches a fresh nonce at submit (6.5), asks the agent with a 3 s timeout, then posts the form.
@@ -65,37 +64,18 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
 });
 </script>
 """;
-        if (resign) // 5.3 re-prompt (UX 07 ids), same fields and flow as the plain sign-in.
-            return Html("page-resign-in", $"<div data-testid=\"error-resign-in\" role=\"alert\">{(error is null ? "" : E(error))}</div>" + $"""
-<form id="f" method="post" action="{slugBase}">
-<input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
-<input type="hidden" name="device_attestation" value="">
-<label>Username <input data-testid="field-resign-in-username" name="username" autocomplete="username"></label>
-<label>Password <input data-testid="field-resign-in-password" name="password" type="password" autocomplete="current-password"></label>
-<button data-testid="resign-in-submit" type="submit">Sign in</button>
-</form>{js}
-""", status);
-        return Html("screen-signin", Err(error) + $"""
-<form id="f" method="post" action="{slugBase}">
-<input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
-<input type="hidden" name="device_attestation" value="">
-<label>Username <input data-testid="signin-username" name="username" autocomplete="username"></label>
-<label>Password <input data-testid="signin-password" name="password" type="password" autocomplete="current-password"></label>
-<button data-testid="signin-submit" type="submit">Sign in</button>
-</form>{js}
-""", status);
+        if (resign) // 5.3 re-prompt (UX 07 #u2/#p2). [ASSUMPTION A44] after attestation_invalid (5.5) it is wrapped in screen 8B (UX 08 agentdown).
+        {
+            var r = Ui.Render("resign-in", ("action", slugBase), ("af", t), ("error", error is null ? "" : Ui.Error(error)));
+            return Ui.Page("Sign in to Cash Advance", agentDown ? Ui.Render("screen-8b", ("resign", r)) : r, js, status);
+        }
+        return Ui.Page("Sign in", Ui.Render("signin", ("action", slugBase), ("af", t), ("error", Ui.Error(error))), js, status);
     }
 
     static IResult TotpPage(HttpContext c, IAntiforgery af, string slugBase, string? error)
     {
         var t = af.GetAndStoreTokens(c).RequestToken!;
-        return Html("screen-totp", Err(error) + $"""
-<form method="post" action="{slugBase}/totp">
-<input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
-<label>Code <input data-testid="totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code"></label>
-<button data-testid="totp-submit" type="submit">Continue</button>
-</form>
-""");
+        return Ui.Page("Enter your one-time code", Ui.Render("totp", ("action", slugBase + "/totp"), ("af", t), ("error", Ui.Error(error))));
     }
 
     public static IResult Hub(StandInState st, LoginSession s)
@@ -127,7 +107,7 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
         string? Ip(HttpContext c) => c.Connection.RemoteIpAddress?.ToString();
         string? Ua(HttpContext c) => c.Request.Headers.UserAgent.ToString() is { Length: > 0 } u ? u : null;
 
-        app.MapGet(issuerPath + "/l/{slug}", (string slug, string? ret, string? resign, HttpContext c) =>
+        app.MapGet(issuerPath + "/l/{slug}", (string slug, string? ret, string? resign, string? agent, HttpContext c) =>
         {
             Headers(c, ports.Control);
             lock (st.Gate)
@@ -140,7 +120,7 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
                     ReturnTo = ret is not null && ret.StartsWith(issuerPath + "/connect/authorize?", StringComparison.Ordinal) ? ret : null };
                 st.Auth.Tx[tx.Id] = tx;
                 SetCookie(c, TxCookie, tx.Id, issuerPath);
-                return PasswordPage(c, af, Base(slug), null, ports.Control, resign: resign == "1" && tx.ReturnTo is not null);
+                return PasswordPage(c, af, Base(slug), null, ports.Control, resign: resign == "1" && tx.ReturnTo is not null, agentDown: agent == "down" && resign == "1" && tx.ReturnTo is not null);
             }
         });
 
@@ -207,7 +187,7 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
                 if (ok && remote)
                 {
                     Fail("remote_session", user!.UserId);
-                    return Html("screen-8a", "<p>Try again after the remote session ends</p>");
+                    return Ui.Page("Sign-in is blocked", Ui.Render("screen-8a"));
                 }
                 user!.FailedPasswords = 0;
                 // 4.11: the pre-session id is reissued after the password step.

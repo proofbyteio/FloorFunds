@@ -25,10 +25,14 @@ var app = builder.Build();
 // Slice 3: the allowlist runs first on every front request.
 var allow = new Allowlist(cfg["StandIn:AllowlistJson"] ?? "/tmp/sse-d0/allowlist-active.json");
 Console.WriteLine($"allowlist loaded={allow.Loaded} entries={allow.Count}");
+// TL 9:32: every stand-in response carries a CSP with frame-ancestors 'none' (pages set their own, richer one).
+app.Use((c, next) => { c.Response.OnStarting(() => { if (!c.Response.Headers.ContainsKey("Content-Security-Policy")) c.Response.Headers.ContentSecurityPolicy = Ui.DefaultCsp; return Task.CompletedTask; }); return next(c); });
 Allowlist.Use(app, ports, allow);
 Listeners.UseListenerRules(app, ports, issuerPath);
 using var keys = new SigningKeys();
 var (disco, jwks) = Discovery.Build(issuer, keys);
+Ui.IssuerPath = issuerPath; Ui.AgentPort = ports.Control; Ui.Load(Environment.GetEnvironmentVariable("STANDIN_UI_DIR"));
+Ui.MapAssets(app); Handoff.SelfTest();
 Discovery.Map(app, issuerPath, disco, jwks);
 var state = new StandInState(cfg["StandIn:Fixtures"] ?? Path.Combine(AppContext.BaseDirectory, "fixtures.json"));
 Control.Map(app, state);
