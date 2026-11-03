@@ -97,3 +97,10 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - **location_ids []:** allowed only when the audit envelope carries admin_type (new optional envelope field); otherwise ≥1 item (contract 8.13). Keyed on admin_type because no event class is /admin-only.
 - **DEC-084** (Mohanraj 8:27 PM PT, t110s414): no Cash Advance hand-off or cage action for /admin sessions; audit reason not_location_user; client access_denied; stub 403 {"error":"access_denied"}; stand-in enforces (contract 5.12, 6.9; errors.md; standin-control 2.9).
 - **check_schemas.py:** 75 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097 unchanged.
+
+## v1-d4 follow-up 4: TL Decision 8:31 PM (commit 56dc948 at 8:30:47 PM PT; written 8:30 PM PT)
+- contract 8.5 and claims no_roles description: admin_type is the kind of sign-in, not a role; no-roles rule holds.
+- admin_type kept in the audit envelope; OPEN-QUESTIONS open item AUD v0.8 (AUD owner to add admin_type to §7A.4; TL asking the SA).
+- Without admin_type, scope and scope.location_ids are required (≥1). check_schemas.py env() fixture now carries a default location scope.
+- §6.9: CA server audits a refused cage action with not_location_user (outside this contract); access_denied confirmed for both refusals; DEC-084 and 8:29 PM ambiguities marked resolved.
+- check_schemas.py: 78 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097 unchanged.
