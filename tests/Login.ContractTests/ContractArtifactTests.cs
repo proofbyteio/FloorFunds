@@ -78,7 +78,7 @@ public class ContractArtifactTests
     }
 
     const string U1 = "0190f2a4-1c2b-7d3e-8f40-123456789abc", U2 = "0190f2a4-1c2b-7d3e-8f40-223456789abc", U3 = "0190f2a4-1c2b-7d3e-8f40-323456789abc";
-    static string AtBase => $$"""{"iss":"http://localhost:5080/standin","sub":"{{U1}}","aud":"cash-advance-api","exp":1700000300,"iat":1700000000,"jti":"jti-0123456789abcdef","scope":"cash_advance","client_id":"cash_advance_bff","login_provider":"database","amr":["pwd","otp","mfa"],"auth_time":1700000000}""";
+    static string AtBase => $$"""{"session_kind":"normal","iss":"http://localhost:5080/standin","sub":"{{U1}}","aud":"cash-advance-api","exp":1700000300,"iat":1700000000,"jti":"jti-0123456789abcdef","scope":"cash_advance","client_id":"cash_advance_bff","login_provider":"database","amr":["pwd","otp","mfa"],"auth_time":1700000000}""";
     static JsonObject With(string json, params (string k, string v)[] add) { var o = JsonNode.Parse(json)!.AsObject(); foreach (var (k, v) in add) o[k] = JsonNode.Parse(v); return o; }
     static (string, string) Org(string k, string id) => (k, $"\"{id}\"");
 
@@ -112,7 +112,7 @@ public class ContractArtifactTests
     {
         NeedContract("claims.schema.json");
         var s = TryDef("claims.schema.json", "id_token_code") ?? Def("claims.schema.json", "id_token"); // CR-03 split at v1-d4
-        var good = $$"""{"iss":"http://localhost:5080/standin","sub":"{{U1}}","aud":"cash_advance_bff","azp":"cash_advance_bff","exp":1700000300,"iat":1700000000,"nonce":"n-1","auth_time":1700000000,"amr":["pwd","otp","mfa"]}""";
+        var good = $$"""{"session_kind":"normal","iss":"http://localhost:5080/standin","sub":"{{U1}}","aud":"cash_advance_bff","azp":"cash_advance_bff","exp":1700000300,"iat":1700000000,"nonce":"n-1","auth_time":1700000000,"amr":["pwd","otp","mfa"]}""";
         Assert.True(Valid(s, good));
         Assert.False(Valid(s, With(good, ("roles", "[\"cashier\"]"))));
         Assert.False(Valid(s, With(good, ("sid", "\"s\""))));
@@ -126,7 +126,7 @@ public class ContractArtifactTests
         Assert.True(line is not null, $"contract row | {id} | not found in {file}");
         return line!;
     }
-    static readonly string Code = $$"""{"iss":"http://localhost:5080/standin","sub":"{{U1}}","aud":"cash_advance_bff","azp":"cash_advance_bff","exp":1700000300,"iat":1700000000,"auth_time":1700000000,"amr":["pwd","otp","mfa"]}""";
+    static readonly string Code = $$"""{"session_kind":"normal","iss":"http://localhost:5080/standin","sub":"{{U1}}","aud":"cash_advance_bff","azp":"cash_advance_bff","exp":1700000300,"iat":1700000000,"auth_time":1700000000,"amr":["pwd","otp","mfa"]}""";
     static JsonSchema? TryDef(string file, string def)
         => JsonNode.Parse(Read(file))!["$defs"]?[def] is null ? null : Def(file, def);
 
