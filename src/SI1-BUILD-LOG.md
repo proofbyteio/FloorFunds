@@ -72,3 +72,24 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
   - [A6] The role name `cashier` and every fixture slug, password and id are unruled (standin-control §4 says OPEN → TL). SSE2 reads them from this file.
   - [A7] faults accepts a partial body.
 - Not built (next commits): `PUT pcs/{pc_id}` and the fake agent; `PUT users/{username}` (needs the password-policy validator) and `GET users/{username}/totp` (needs TOTP, HMAC-SHA1 from the BCL); authorize, token, revoke, introspect and endsession, which need signing and are **BLOCKED B1**; the pages (ui/); audit emission. The clock is not yet consumed by anything.
+
+## SI1-6 PUT /_standin/users/{username} and GET .../totp (9:00 PM PT)
+- What:
+  - `PasswordPolicy.Validate` returns the standin-control §3 rule ids in table order. It is the shared validator, so every future set-password path must use it.
+  - Users are held in memory and reloaded from fixtures on reset. Passwords are stored only as PBKDF2-SHA256 hashes. A history of 4 drives `reused`.
+  - The PUT body is password, roles [{app_code, role}] (app_code must be in the fixtures), location_slugs (must be in the fixtures) and status. It returns `{user_id}`, keeping an existing user's id. A violation gets 422 `{"violations":[…]}`; a bad body gets 400.
+  - The TOTP is RFC 6238 using the BCL's HMACSHA1 (no package). Each user gets a 20-byte secret per reset, and the code is computed at the test clock.
+- Why: standin-control 2.5 and §3.
+- Evidence (live, 18082):
+  - PCI with a short password → [min_length]; with no number → [letters_and_numbers]; Nevada with all lowercase → [two_of_four_types]; a password containing the username → [contains_username]; a valid one → 200 {user_id}; resetting the same password → [reused].
+  - An unknown app_code → 400. The fixture password for cashier_db → [reused].
+  - Each 422 body validates against standin-ui.schema.json `password_violations`.
+  - The TOTP code changes after the clock advances 30 s. An unknown user's TOTP → 404.
+  - RFC 6238 Appendix B SHA1 vectors (T=59, 1111111109, 1234567890, 2000000000) give 287082, 081804, 005924 and 279037: the last 6 digits of the RFC values. The check harness is in /tmp/sse-d0/totpchk, outside the repo.
+- Assumptions:
+  - A8: a letter is Unicode L* and a number is Nd after NFKC (an SA Proposal; OQ-SSE2-30 is still open).
+  - A9: the 4 types are upper, lower, digit and other.
+  - A10: SHA1, a 30 s step and 6 digits.
+  - A11: status is one of active, disabled or locked.
+  - A12: the presets of every partner the user's locations belong to all apply; a user with no location gets both presets.
+  - The username is limited to 1-64 characters.

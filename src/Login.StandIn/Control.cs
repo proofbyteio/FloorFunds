@@ -25,6 +25,8 @@ public sealed class StandInState
     public string OutboxFault { get; private set; } = "ok";
     public string DeviceRegistryFault { get; private set; } = "ok";
     readonly List<JsonObject> _audit = new();
+    public Dictionary<string, StandInUser> Users { get; } = new(StringComparer.Ordinal);
+    public object Gate => _gate;
 
     public StandInState(string fixturePath) { _fixturePath = fixturePath; Reset(); }
 
@@ -36,6 +38,15 @@ public sealed class StandInState
             OutboxFault = "ok"; DeviceRegistryFault = "ok";
             _audit.Clear();
             Clock.Reset();
+            Users.Clear();
+            foreach (var u in Fixtures["users"]!.AsArray())
+            {
+                var user = new StandInUser { Username = (string)u!["username"]!, UserId = (string)u["user_id"]!, Status = (string)u["status"]!,
+                    Roles = u["roles"]!.AsArray().Select(r => ((string)r!["app_code"]!, (string)r["role"]!)).ToList(),
+                    LocationSlugs = u["location_slugs"]!.AsArray().Select(x => (string)x!).ToList() };
+                user.SetPassword(((string)u["password"]!).Normalize(System.Text.NormalizationForm.FormKC));
+                Users[user.Username] = user;
+            }
             // Users, sessions, nonces, hub_launch and lockouts will live in this object and clear here too.
         }
     }
@@ -77,6 +88,42 @@ public static class Control
             if (ob is not (null or "ok" or "fail") || dr is not (null or "ok" or "unavailable")) return Bad();
             st.SetFaults(ob, dr);
             return Results.NoContent();
+        });
+        app.MapPut(P + "/users/{username}", async (string username, HttpRequest r) =>
+        {
+            var o = await ReadObject(r);
+            if (o is null || username.Length is 0 or > 64) return Bad();
+            string? pw; string? status; List<(string, string)> roles; List<string> slugs;
+            try
+            {
+                pw = o["password"]?.GetValue<string>(); status = o["status"]?.GetValue<string>();
+                roles = (o["roles"]?.AsArray() ?? new JsonArray()).Select(x => (x!["app_code"]!.GetValue<string>(), x["role"]!.GetValue<string>())).ToList();
+                slugs = (o["location_slugs"]?.AsArray() ?? new JsonArray()).Select(x => x!.GetValue<string>()).ToList();
+            }
+            catch (Exception e) when (e is InvalidOperationException or NullReferenceException or FormatException) { return Bad(); }
+            if (pw is null || status is null || !UserFixtures.Statuses.Contains(status)) return Bad();
+            lock (st.Gate)
+            {
+                var presetBySlug = UserFixtures.PresetBySlug(st.Fixtures);
+                var apps = UserFixtures.AppCodes(st.Fixtures);
+                if (slugs.Any(s => !presetBySlug.ContainsKey(s)) || roles.Any(x => !apps.Contains(x.Item1))) return Bad();
+                // [ASSUMPTION A12] the presets of every partner the user's locations belong to apply; no location = both presets.
+                var presets = slugs.Count == 0 ? new HashSet<string> { PasswordPolicy.Pci, PasswordPolicy.Nevada } : slugs.Select(s => presetBySlug[s]).ToHashSet();
+                st.Users.TryGetValue(username, out var existing);
+                var nf = pw.Normalize(System.Text.NormalizationForm.FormKC);
+                var violations = PasswordPolicy.Validate(pw, username, presets, p => existing?.Reused(p) ?? false);
+                if (violations.Count > 0) return Results.Json(new { violations }, statusCode: 422);
+                var user = existing ?? new StandInUser { Username = username, UserId = Guid.NewGuid().ToString(), Status = status, Roles = roles, LocationSlugs = slugs };
+                user.Status = status; user.Roles = roles; user.LocationSlugs = slugs;
+                user.SetPassword(nf);
+                st.Users[username] = user;
+                return Results.Json(new { user_id = user.UserId });
+            }
+        });
+        app.MapGet(P + "/users/{username}/totp", (string username) =>
+        {
+            lock (st.Gate)
+                return st.Users.TryGetValue(username, out var u) ? Results.Json(new { code = Totp.Code(u.TotpSecret, st.Clock.Now) }) : Results.NotFound();
         });
         app.MapGet(P + "/audit", (int? since) =>
         {
