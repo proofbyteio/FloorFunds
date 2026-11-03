@@ -17,6 +17,7 @@ var issuer = (cfg["StandIn:Issuer"] ?? $"http://localhost:{ports.Front}/standin"
 var issuerPath = new Uri(issuer).AbsolutePath.TrimEnd('/');
 if (!issuerPath.Contains("/standin")) { Console.Error.WriteLine("Login.StandIn refused to start: issuer path must contain /standin"); return 2; }
 
+builder.Services.AddAntiforgery(o => { o.Cookie.Name = "standin_af"; o.FormFieldName = "__RequestVerificationToken"; o.Cookie.Path = issuerPath; });
 var app = builder.Build();
 // Slice 3: the allowlist runs first on every front request.
 var allow = new Allowlist(cfg["StandIn:AllowlistJson"] ?? "/tmp/sse-d0/allowlist-active.json");
@@ -28,5 +29,9 @@ var (disco, jwks) = Discovery.Build(issuer, keys);
 Discovery.Map(app, issuerPath, disco, jwks);
 var state = new StandInState(cfg["StandIn:Fixtures"] ?? Path.Combine(AppContext.BaseDirectory, "fixtures.json"));
 Control.Map(app, state);
+// SI1-13..16: tokens, sign-in, authorize, token/revoke/introspect/endsession.
+var tokens = new TokenIssuer(issuer, keys);
+SignIn.Map(app, state, issuerPath, issuer, ports);
+OAuth.Map(app, state, issuerPath, issuer, ports, tokens);
 app.Run();
 return 0;
