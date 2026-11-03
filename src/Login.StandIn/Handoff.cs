@@ -170,11 +170,16 @@ public static class Handoff
                 st.Auth.Tx.Remove(tx.Id);
                 var s = new LoginSession { Sid = Guid.NewGuid().ToString(), UserId = u.UserId, Username = u.Username, Slug = "", LocationId = "", AuthTime = now, LastSeen = now,
                     Amr = amr, Kind = kind, AdminType = u.AdminType, PartnerId = u.PartnerId };
+                // TL 10:03 PM: every successful MFA step emits auth.mfa.succeeded BEFORE auth.login.succeeded (admins too).
+                var mev = Audit.Build(now, "auth.mfa.succeeded", "success", u.UserId, new JsonObject { ["method"] = kind == "normal" ? "totp" : "recovery_code" },
+                    SessionScope(st, s), Ip(c), null, s.Sid);
+                mev["session_kind"] = kind; mev["admin_type"] = u.AdminType;
                 var ev = Audit.Build(now, "auth.login.succeeded", "success", u.UserId, new JsonObject
                 { ["provider_kind"] = "database", ["amr"] = new JsonArray(amr.Select(a => (JsonNode)a!).ToArray()), ["auth_time"] = now.ToUnixTimeSeconds() },
                     SessionScope(st, s), Ip(c), null, s.Sid);
                 ev["session_kind"] = kind; ev["admin_type"] = u.AdminType;
-                if (!SignIn.TryEmit(st, ev)) return Admin(c, SignIn.Generic, 1);
+                if (st.OutboxFault == "fail") return Admin(c, SignIn.Generic, 1);
+                st.Emit(mev); st.Emit(ev);
                 st.Auth.Sessions[s.Sid] = s;
                 c.Response.Cookies.Delete(SignIn.TxCookie, new CookieOptions { Path = issuerPath });
                 Cookie(c, SignIn.SessionCookie, s.Sid);

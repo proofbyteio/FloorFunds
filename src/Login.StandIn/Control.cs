@@ -82,7 +82,7 @@ public sealed class StandInState
         {
             Fixtures = JsonNode.Parse(File.ReadAllText(_fixturePath))!.AsObject();
             InjectSecrets(Fixtures);
-            OutboxFault = "ok"; DeviceRegistryFault = "ok";
+            OutboxFault = "ok"; DeviceRegistryFault = "ok"; SessionCap.Reset();
             _audit.Clear();
             Clock.Reset();
             Users.Clear();

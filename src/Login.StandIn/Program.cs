@@ -13,6 +13,9 @@ if (refusal is not null)
     Console.Error.WriteLine($"Login.StandIn refused to start: {refusal}");
     return 2;
 }
+// 7.4 start-up check: the cap must be greater than the 15-minute idle timeout, or the service does not start.
+var capErr = SessionCap.Configure(cfg);
+if (capErr is not null) { Console.Error.WriteLine($"Login.StandIn refused to start: {capErr}"); return 3; }
 var ports = Listeners.Read(cfg);
 StandInState.StateDir = Listeners.StateDir(ports);
 Directory.CreateDirectory(StandInState.StateDir);
@@ -45,5 +48,7 @@ SignIn.Map(app, state, issuerPath, issuer, ports);
 OAuth.Map(app, state, issuerPath, issuer, ports, tokens);
 Handoff.Map(app, state, issuerPath, issuer, ports);
 Reenroll.Map(app, state, issuerPath, ports, cfg);
+SessionCap.Map(app, state, issuerPath, ports);
+CageStub.Map(app, state, issuerPath, ports);
 app.Run();
 return 0;

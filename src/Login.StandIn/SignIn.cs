@@ -11,7 +11,7 @@ public static class SignIn
 {
     public const string TxCookie = "standin_tx", SessionCookie = "standin_session", PcCookie = "standin_pc";
     public const string Generic = "Sign-in didn't work.";
-    public const int IdleMinutes = 15, CapHours = 12;
+    public const int IdleMinutes = 15; // cap: SessionCap (7.4, configurable)
     public static string IssuerPath { get; private set; } = "/standin";
 
     public static LocationInfo? Location(JsonObject fx, string slug) =>
@@ -110,7 +110,7 @@ public static class SignIn
     public static LoginSession? CurrentSession(StandInState st, HttpContext c, DateTimeOffset now)
     {
         if (!c.Request.Cookies.TryGetValue(SessionCookie, out var sid) || !st.Auth.Sessions.TryGetValue(sid, out var s)) return null;
-        if (s.Revoked || now - s.LastSeen > TimeSpan.FromMinutes(IdleMinutes) || now >= s.AuthTime.AddHours(CapHours)) return null;
+        if (s.Revoked || now - s.LastSeen > TimeSpan.FromMinutes(IdleMinutes) || now >= s.AuthTime + SessionCap.For(st, s)) return null;
         return s;
     }
 
