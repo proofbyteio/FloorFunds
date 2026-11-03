@@ -59,6 +59,10 @@ public sealed class StandInUser
     // contract 6.3 lockout state; cleared by /_standin/reset (users are rebuilt).
     public int FailedPasswords { get; set; }
     public DateTimeOffset? LockedUntil { get; set; }
+    // /admin users (contract 5.12, 8.10): admin_type super|partner, no location. FIXTURE recovery codes are kept as SHA-256 hashes only.
+    public string? AdminType { get; init; }
+    public string? PartnerId { get; init; }
+    public HashSet<string> RecoveryCodeHashes { get; } = new(StringComparer.Ordinal);
     public byte[] TotpSecret { get; } = RandomNumberGenerator.GetBytes(20);
     // Newest first; the current password is entry 0. PBKDF2 hashes, never the plaintext.
     public List<(byte[] Salt, byte[] Hash)> PasswordHistory { get; } = new();

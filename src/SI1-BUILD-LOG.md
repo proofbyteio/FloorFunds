@@ -225,3 +225,45 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
 - md5 (driver, evidence):
     948af73451e0493360ced9da84705f95  /tmp/sse-d0/e2e/drive.py
     6564ee37ff911d766e6414b314f60935  /tmp/sse-d0/e2e/si1-13-16-evidence.txt
+
+## TL rulings 9:16 PM and item (1) hand-off (2026-11-02, 9:16 PM-)
+
+### Rulings logged
+- **B2 [TL Decision 9:16 PM]**: FIXTURE client keys. RSA-2048 per client (7.6: private_key_jwt is RS256 only), generated fresh at start and every reset (`Clients.Load`). Private PKCS#8 PEM written only to `$STANDIN_CLIENT_KEY_DIR` (default `/tmp/sse-d0/fixture-client-keys`, mode 0600); `Clients.Load` throws for any path outside /tmp. Public key in memory only. private_key_jwt per 7.6: alg pinned RS256 (none/HS*/ES* refused), iss = sub = client_id, aud = issuer exactly, jti required and refused on reuse until exp (+30 s skew), exp − iat ≤ 60, iat skew +30 s. Token, revoke and introspect all accept it. Basic and an assertion together → invalid_client.
+- **B2 secrets check**: `src/Login.StandIn/scripts/check-fixture-secrets.sh [index]` fails if a tracked file is key-like (*.pem/*.key/*.p8/*.pfx/*.p12), has a PEM PRIVATE KEY block, or has a JWK with private members. It ran on the si1 index (OK, 36 files) and against a negative case in a throwaway repo (FAIL, rc=1). It's not wired into tests/ or tools/ (both off limits), so it's a manual step until the owner of tests/tools wires it into CI.
+- **H1 [TL Decision 9:16 PM, interim; v1.1 for SA ratification]**: hub client `hub` registered (FIXTURE secret). Access-token aud = "hub" (its client_id, PLACEHOLDER). No app_code, no roles, no role check, no org claims. **v1.1 conflict:** `claims.schema.json` access_token.aud enum is ["cash-advance-api","backoffice-api"] and rejects "hub". The schema (frozen) needs an update.
+- **D1 accepted [TL 9:16 PM]**: RS256 for tokens, ES256 only for attestations. v1.1: the contract text states it.
+- **A29, A30 accepted [TL 9:16 PM]**: v1.1 items for the contract to state them (introspect answers for access tokens only; post_logout_redirect_uri never followed).
+- **DEC-093 [TL 9:22 PM; Mohanraj 9:21 PM via PM]**: v1.1 item: clarify the §7.8 text. After re-enrolment finishes, the session ends and redirects to the sign-in entry of the same kind: an admin_type session goes to /admin, a location session to its own /l/{slug}. Each needs a test. **To be built in step (3) recovery_reenroll, not built now.**
+
+### Item (1) built: hub_launch + 5.7 hand-off
+- Handoff.cs: hub_launch is 16 bytes of CSPRNG, base64url, stored only as SHA-256 (`AuthStore.HubLaunches`), bound to sid + client_id. Issued on each hub view for role tiles of hand-off clients only. Tile = start_url + ?hub_launch=. GET /standin/apps re-renders the hub (2.8: tests read hub_launch from the tile; no control route).
+- authorize order for cash_advance_bff: consume hub_launch (even with no session, or when a later rule fails) → 5.13 recovery_session → 5.12 not_location_user → ViaReturn-fresh session = interactive → rule 4 (notfromhub event, re-prompt) → rules 1,2,3,5,6 (no event, 5.10, re-prompt) → interstitial. prompt=none with unmet rules or a cage_consumed session → interaction_required.
+- Interstitial (5.8): no-store, CSP frame-ancestors 'none', connect-src 'self' + agent origin, antiforgery. Server-side tx (cookie standin_hx) binds nonce + hub_launch hash + sid + client_id. POST /standin/connect/authorize carries device_attestation in the body. Attestation purpose "handoff". Rules are re-checked at completion.
+  - invalid, missing, or tx/session mismatch → attestation_invalid, then re-prompt (password + MFA, then Cash Advance opens interactive).
+  - remote → remote_session, then screen-8a.
+  - valid → auth.app.signed_in method=hub_handoff with the original auth_time and sid; the session is marked HandoffUsed + CageConsumed. A cage_consumed session gets no SSO to anything.
+- Re-prompt = /l/{slug}?ret=<authorize without hub_launch/prompt>&resign=1, rendered with the UX 07 page-resign-in ids.
+- Minimal /standin/admin (UX 05 ids): password, then TOTP or a FIXTURE recovery code (stored hashed, single use). A recovery code gives a recovery_reenroll session with amr [pwd]. The fixture admin `partner_admin` (admin_type partner).
+
+### Assumptions
+- A31: hub_launch is minted on every hub view (hub page after sign-in and GET /standin/apps); earlier unused values stay valid until 60 s.
+- A32: for the hand-off client, only a session created by a sign-in that returned to this authorize (ViaReturn), within 60 s and with no code yet, counts as interactive.
+- A33: /admin is minimal: no lockout, no attestation, no re-enrolment flow.
+- A34: refusal order is recovery_session (5.13) first, then not_location_user (5.12).
+- A35: 5.12/5.13 refusals apply to every client's authorize, not only the hand-off (fail closed). Admin sessions are never SSO'd into location apps.
+- A36: a recovery hub shows only "set up your authenticator again" and sign-out; it writes no event at the hub (the recovery_session event is written at authorize).
+- A37: the allowlist half of rule 5 is the existing global front middleware; there is no per-location allowlist.
+- A38: the interstitial has no ui-driver id (v1.1 UI item).
+- A39: the hub's auth.app.signed_in target.id is its client_id "hub" (no app_code).
+- A40: a hub_launch presented with no session is still consumed.
+
+### Gaps
+- Rule 2: there's no live way to show the Entra mfa/ngcmfa → mfa mapping or a non-MFA location session (no Entra provider and no location recovery path). The code checks amr contains "mfa".
+- A location-user recovery sign-in isn't built (step 3).
+
+### Evidence status: BLOCKED (live run not done)
+- The build succeeds (0 errors; NU3018 didn't re-print because restore was cached).
+- At 9:24 PM, ports 18080-18082 were held by another stand-in: pid 628112, started 9:18 PM, `/tmp/sse2-si1/bin/Login.StandIn.dll` (SSE2). It isn't mine, so I didn't kill it.
+- My first driver run went to that instance by mistake before I noticed. It sent control calls (reset, clock advance, PUT users, pcs) to SSE2's in-memory state. That needs reporting.
+- The drive.py handoff/pkjwt scenarios are written (`/tmp/sse-d0/e2e/handoff.py`) but haven't run against this build.

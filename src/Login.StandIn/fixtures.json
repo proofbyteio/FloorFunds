@@ -100,6 +100,22 @@
       ],
       "perm_version": 1,
       "_label": "FIXTURE"
+    },
+    {
+      "username": "partner_admin",
+      "user_id": "5f0c3e1a-0003-4000-8000-000000000c04",
+      "password": "PartnerAdmin-Standin-2026",
+      "status": "active",
+      "admin_type": "partner",
+      "partner_id": "5f0c3e1a-0001-4000-8000-000000000001",
+      "location_slugs": [],
+      "roles": [],
+      "recovery_codes": [
+        "FIXTURE-RC-70491e5978",
+        "FIXTURE-RC-7d16cea9f8"
+      ],
+      "perm_version": 1,
+      "_label": "FIXTURE"
     }
   ],
   "lockout_minutes": 30,
@@ -120,7 +136,9 @@
         "https://cash-advance.fixture.invalid/signed-out"
       ],
       "secret": "XgcQlj98yiO3wpUa5SPLLTN7l5GjNDqNTKEhXTMZ0GE",
-      "_label": "FIXTURE"
+      "_label": "FIXTURE",
+      "start_url": "https://cash-advance.fixture.invalid/",
+      "handoff": true
     },
     {
       "client_id": "backoffice_stub",
@@ -138,7 +156,25 @@
       ],
       "secret": "4qiI2yGJVyjZNBFWlbDja1bMXXxBn7gxk_8kcvaOOMU",
       "_label": "FIXTURE"
+    },
+    {
+      "client_id": "hub",
+      "_label": "FIXTURE",
+      "_comment": "[TL Decision 9:16 PM, H1 interim, v1.1 for SA ratification] PLACEHOLDER: the hub access-token aud is its own client_id; the hub is not an app_code and carries no roles.",
+      "app_code": null,
+      "api_scope": null,
+      "aud": "hub",
+      "cachd": false,
+      "org_claims": false,
+      "refresh": false,
+      "redirect_uris": [
+        "https://hub.fixture.invalid/signin-oidc"
+      ],
+      "post_logout_redirect_uris": [
+        "https://hub.fixture.invalid/signout-callback-oidc"
+      ],
+      "secret": "hTYLlhcgjIAb3fHdhZfovU0_o-uxM30HGvNxrCEQBqw"
     }
   ],
-  "_clients_comment": "FIXTURE clients (contract 4.9). Secrets are 256-bit random test values, hashed at load (7.6); dev-only. The hub client is not registered yet: its token shape is undefined (v1.1 item H1)."
+  "_clients_comment": "FIXTURE clients. Secrets are FIXTURE values for the local stand-in only. Client private keys are generated fresh at start/reset and written under /tmp only (TL Decision 9:16 PM, B2); none is in this file or in git."
 }

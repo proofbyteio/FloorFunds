@@ -58,7 +58,8 @@ public static class OAuth
                     return Back(redirectUri, issuer, state, ("error", "invalid_request"));
                 // 4.9 scopes: openid required; only this client's API scope; offline_access only for refresh clients.
                 var scopes = (Q("scope") ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries).Distinct().ToList();
-                var allowed = new HashSet<string> { "openid", client.ApiScope };
+                var allowed = new HashSet<string> { "openid" };
+                if (client.ApiScope is not null) allowed.Add(client.ApiScope);
                 if (client.Refresh) allowed.Add("offline_access");
                 if (!scopes.Contains("openid") || scopes.Any(s => !allowed.Contains(s))) return Back(redirectUri, issuer, state, ("error", "invalid_scope"));
                 var prompt = Q("prompt");
@@ -67,52 +68,145 @@ public static class OAuth
                 if (Q("max_age") is { } ma) { if (!int.TryParse(ma, out var m) || m < 0) return Back(redirectUri, issuer, state, ("error", "invalid_request")); maxAge = m; }
                 var now = st.Clock.Now;
                 var s = SignIn.CurrentSession(st, c, now);
+                bool isHandoffClient = client.Handoff;
                 // [ASSUMPTION A23] with no session the user goes to the sign-in page of the location cookie's slug, else the first fixture location.
-                var slug = s?.Slug ?? (c.Request.Cookies.TryGetValue("standin_loc", out var lc) && SignIn.Location(st.Fixtures, lc) is not null ? lc
-                    : (string)st.Fixtures["partners"]![0]!["locations"]![0]!["slug"]!);
-                string signInUrl(bool withRet)
+                string firstSlug = (string)st.Fixtures["partners"]![0]!["locations"]![0]!["slug"]!;
+                var slug = s is { AdminType: null } ? s.Slug : (c.Request.Cookies.TryGetValue("standin_loc", out var lc) && SignIn.Location(st.Fixtures, lc) is not null ? lc : firstSlug);
+                var keep = q.Where(kv => kv.Key is not ("prompt" or "hub_launch")).ToDictionary(kv => kv.Key, kv => (string?)kv.Value.ToString());
+                string signInUrl(bool resign)
                 {
-                    if (!withRet) return issuerPath + "/l/" + slug;
-                    var keep = q.Where(kv => kv.Key != "prompt").ToDictionary(kv => kv.Key, kv => (string?)kv.Value.ToString());
-                    return QueryHelpers.AddQueryString(issuerPath + "/l/" + slug, "ret", QueryHelpers.AddQueryString(issuerPath + "/connect/authorize", keep));
+                    var u = QueryHelpers.AddQueryString(issuerPath + "/l/" + slug, "ret", QueryHelpers.AddQueryString(issuerPath + "/connect/authorize", keep));
+                    return resign ? u + "&resign=1" : u;
                 }
+                // 5.7: a presented hub_launch is consumed on the first check, whatever happens next (also when there is no session: A40).
+                var hlRaw = isHandoffClient ? Q("hub_launch") : null;
+                HubLaunch? hl = null; bool hlFresh = false;
+                if (hlRaw is not null && st.Auth.HubLaunches.TryGetValue(AuthStore.H(hlRaw), out hl)) { hlFresh = !hl.Used; hl.Used = true; }
+
+                if (s is not null && (s.Kind == "recovery_reenroll" || s.AdminType is not null))
+                {
+                    // 5.13 then 5.12 [ASSUMPTION A34 order], before rules 1-6; [ASSUMPTION A35] applied to every client, not only the hand-off.
+                    var rec = s.Kind == "recovery_reenroll";
+                    var e = Audit.Build(now, "auth.app_access.denied", "denied", s.UserId, new JsonObject { ["reason"] = rec ? "recovery_session" : "not_location_user" },
+                        Handoff.SessionScope(st, s), Ip(c), null, s.Sid);
+                    e["target"] = new JsonObject { ["type"] = "app", ["id"] = client.AppCode ?? client.ClientId }; e["session_kind"] = s.Kind;
+                    if (s.AdminType is not null) e["admin_type"] = s.AdminType;
+                    st.Emit(e);
+                    return Back(redirectUri, issuer, state, ("error", "access_denied"));
+                }
+
                 bool fresh = s is not null && s.CodeIssued == false && (now - s.AuthTime).TotalSeconds <= 60;
+                // [ASSUMPTION A32] for the hand-off client only a session made by a sign-in that returned to authorize counts as interactive.
+                if (isHandoffClient) fresh = fresh && s!.ViaReturn;
                 bool needLogin = s is null || (prompt == "login" && !fresh) || (maxAge is { } mx && (now - s.AuthTime).TotalSeconds > mx);
                 if (needLogin)
                 {
                     // 4.6
                     if (prompt == "none") return Back(redirectUri, issuer, state, ("error", "login_required"));
+                    return Results.Redirect(signInUrl(isHandoffClient && s is not null));
+                }
+                var loc = SignIn.Location(st.Fixtures, s!.Slug)!;
+                var user = st.Users.Values.First(u => u.UserId == s.UserId);
+                string method = fresh ? "interactive" : "sso";
+                if (isHandoffClient && !fresh)
+                {
+                    // 5.1 rule 4 (5.7): missing, expired (60 s, no skew), used, or wrong sid/client -> notfromhub, then the sign-in page.
+                    bool r4 = hl is not null && hlFresh && (now - hl.IssuedAt).TotalSeconds <= Handoff.LaunchSeconds && hl.Sid == s.Sid && hl.ClientId == client.ClientId;
+                    if (!r4)
+                    {
+                        var e = Audit.Build(now, "auth.app_access.denied", "denied", s.UserId, new JsonObject { ["reason"] = "notfromhub" }, SignIn.Scope(loc), Ip(c), null, s.Sid);
+                        e["target"] = new JsonObject { ["type"] = "app", ["id"] = client.AppCode }; e["session_kind"] = s.Kind;
+                        st.Emit(e);
+                        if (prompt == "none") return Back(redirectUri, issuer, state, ("error", "interaction_required"));
+                        return Results.Redirect(signInUrl(true));
+                    }
+                    // Rules 1, 2, 3, 5, 6: no event (5.10), re-prompt (5.3).
+                    if (Handoff.RuleFailure(st, s, user, client, now) is { } _)
+                    {
+                        if (prompt == "none") return Back(redirectUri, issuer, state, ("error", "interaction_required"));
+                        return Results.Redirect(signInUrl(true));
+                    }
+                    if (prompt == "none") return Back(redirectUri, issuer, state, ("error", "interaction_required")); // the interstitial needs the page
+                    // 5.8: the interstitial; the tx binds nonce + hub_launch + session + client_id server-side.
+                    var tx = new SignInTx { Id = TokenIssuer.NewHandle(), Slug = s.Slug, Purpose = "handoff", Stage = "handoff", Sid = s.Sid, ClientId = client.ClientId,
+                        LaunchHash = AuthStore.H(hlRaw!), Authorize = keep, NonceAt = now,
+                        PcId = c.Request.Cookies.TryGetValue(SignIn.PcCookie, out var pc) ? pc : null };
+                    st.Auth.Tx[tx.Id] = tx;
+                    return Handoff.Interstitial(c, af, tx, issuerPath, ports.Control);
+                }
+                // 5.1 rule 6: a cage_consumed session is not SSO-eligible for anything (errors.md: prompt=none -> interaction_required).
+                if (s.CageConsumed && !fresh)
+                {
+                    if (prompt == "none") return Back(redirectUri, issuer, state, ("error", "interaction_required"));
                     return Results.Redirect(signInUrl(true));
                 }
-                s!.LastSeen = now;
-                var loc = SignIn.Location(st.Fixtures, s.Slug)!;
-                // 5.7 / 5.11 hand-off policy: the Cash Advance client needs a hub_launch. Issuance is not built yet (gap G-H),
-                // so every Cash Advance authorize fails rule 4: notfromhub, then the sign-in page (5.3), no OAuth error.
-                if (client.ClientId == "cash_advance_bff")
+                return IssueCode(c, client, s, user, loc, redirectUri, state, challenge, Q("nonce"), scopes, method, prompt, maxAge, now);
+            }
+        });
+
+        IResult IssueCode(HttpContext c, OAuthClient client, LoginSession s, StandInUser user, LocationInfo loc, string redirectUri, string? state, string challenge,
+            string? nonce, IEnumerable<string> scopes, string method, string? prompt, int? maxAge, DateTimeOffset now)
+        {
+            s.LastSeen = now;
+            // 4.3; the hub has no app_code and no roles (H1), so no role check for it.
+            if (client.AppCode is not null && !user.Roles.Any(r => r.AppCode == client.AppCode))
+            {
+                st.Emit(Audit.Build(now, "auth.app_access.denied", "denied", s.UserId, new JsonObject { ["reason"] = "no_role" },
+                    SignIn.Scope(loc), Ip(c), null, s.Sid).Also(e => { e["target"] = new JsonObject { ["type"] = "app", ["id"] = client.AppCode }; e["session_kind"] = s.Kind; }));
+                return Back(redirectUri, issuer, state, ("error", "access_denied"));
+            }
+            // 4.5 / 5.6: the event and the code in one step; no event, no code. hub_handoff keeps the original auth_time and sid.
+            var details = new JsonObject { ["method"] = method, ["auth_time"] = s.AuthTime.ToUnixTimeSeconds(), ["amr"] = new JsonArray(s.Amr.Select(a => (JsonNode)a!).ToArray()) };
+            if (prompt is not null) details["prompt"] = prompt;
+            if (maxAge is not null) details["max_age"] = maxAge;
+            var ev = Audit.Build(now, "auth.app.signed_in", "success", s.UserId, details, SignIn.Scope(loc), Ip(c), null, s.Sid);
+            // [ASSUMPTION A39] the hub has no app_code, so its target id is its client_id.
+            ev["action"] = "login"; ev["target"] = new JsonObject { ["type"] = "app", ["id"] = client.AppCode ?? client.ClientId }; ev["session_kind"] = s.Kind;
+            if (!SignIn.TryEmit(st, ev)) return Back(redirectUri, issuer, state, ("error", "temporarily_unavailable"));
+            if (method == "hub_handoff") { s.HandoffUsed = true; s.CageConsumed = true; } // rules 3 and 6
+            var code = TokenIssuer.NewHandle();
+            st.Auth.Codes[AuthStore.H(code)] = new CodeGrant(client.ClientId, redirectUri, challenge, nonce, string.Join(' ', scopes), s.Sid, now);
+            s.CodeIssued = true;
+            return Back(redirectUri, issuer, state, ("code", code));
+        }
+
+        // 5.8: the interstitial re-POSTs authorize with device_attestation in the body only.
+        app.MapPost(issuerPath + "/connect/authorize", async (HttpContext c) =>
+        {
+            SignIn.Headers(c, ports.Control);
+            if (!c.Request.HasFormContentType) return Results.BadRequest();
+            try { await af.ValidateRequestAsync(c); } catch (AntiforgeryValidationException) { return Results.BadRequest(); }
+            var f = await c.Request.ReadFormAsync();
+            lock (st.Gate)
+            {
+                var now = st.Clock.Now;
+                if (!c.Request.Cookies.TryGetValue(Handoff.TxCookie, out var hx) || !st.Auth.Tx.TryGetValue(hx, out var tx) || tx.Purpose != "handoff") return BadLink(c);
+                st.Auth.Tx.Remove(tx.Id); // one use
+                c.Response.Cookies.Delete(Handoff.TxCookie, new CookieOptions { Path = issuerPath });
+                var client = st.OAuthClients[tx.ClientId!];
+                var a = tx.Authorize!;
+                string redirectUri = a["redirect_uri"]!; string? state = a.GetValueOrDefault("state");
+                var s = SignIn.CurrentSession(st, c, now);
+                st.Auth.Sessions.TryGetValue(tx.Sid!, out var bound);
+                var loc = SignIn.Location(st.Fixtures, tx.Slug)!;
+                var slugRet = QueryHelpers.AddQueryString(issuerPath + "/l/" + tx.Slug, "ret", QueryHelpers.AddQueryString(issuerPath + "/connect/authorize", a)) + "&resign=1";
+                // 5.8b: the session must be the one the tx is bound to; a mismatch is attestation_invalid.
+                var (ok, remote) = Attestation.Check(st, tx, f["device_attestation"].ToString(), issuer, "handoff", now);
+                if (s is null || s.Sid != tx.Sid || f.ContainsKey("hub_launch")) ok = false;
+                var uid = bound?.UserId ?? s?.UserId;
+                JsonObject Deny(string reason)
                 {
-                    st.Emit(Audit.Build(now, "auth.app_access.denied", "denied", s.UserId, new JsonObject { ["reason"] = "notfromhub" },
-                        SignIn.Scope(loc), Ip(c), null, s.Sid).Also(e => { e["target"] = new JsonObject { ["type"] = "app", ["id"] = client.AppCode }; e["session_kind"] = s.Kind; }));
-                    return Results.Redirect(signInUrl(false));
+                    var e = Audit.Build(now, "auth.app_access.denied", "denied", uid, new JsonObject { ["reason"] = reason }, SignIn.Scope(loc), Ip(c), null, tx.Sid);
+                    e["target"] = new JsonObject { ["type"] = "app", ["id"] = client.AppCode }; e["session_kind"] = bound?.Kind ?? "normal";
+                    return e;
                 }
-                var user = st.Users.Values.First(u => u.UserId == s.UserId);
-                // 4.3
-                if (!user.Roles.Any(r => r.AppCode == client.AppCode))
-                {
-                    st.Emit(Audit.Build(now, "auth.app_access.denied", "denied", s.UserId, new JsonObject { ["reason"] = "no_role" },
-                        SignIn.Scope(loc), Ip(c), null, s.Sid).Also(e => { e["target"] = new JsonObject { ["type"] = "app", ["id"] = client.AppCode }; e["session_kind"] = s.Kind; }));
-                    return Back(redirectUri, issuer, state, ("error", "access_denied"));
-                }
-                // 4.5: the event and the code in one step; no event, no code.
-                var details = new JsonObject { ["method"] = fresh ? "interactive" : "sso", ["auth_time"] = s.AuthTime.ToUnixTimeSeconds(), ["amr"] = new JsonArray(s.Amr.Select(a => (JsonNode)a!).ToArray()) };
-                if (prompt is not null) details["prompt"] = prompt;
-                if (maxAge is not null) details["max_age"] = maxAge;
-                var ev = Audit.Build(now, "auth.app.signed_in", "success", s.UserId, details, SignIn.Scope(loc), Ip(c), null, s.Sid);
-                ev["action"] = "login"; ev["target"] = new JsonObject { ["type"] = "app", ["id"] = client.AppCode }; ev["session_kind"] = s.Kind;
-                if (!SignIn.TryEmit(st, ev)) return Back(redirectUri, issuer, state, ("error", "temporarily_unavailable"));
-                var code = TokenIssuer.NewHandle();
-                st.Auth.Codes[AuthStore.H(code)] = new CodeGrant(client.ClientId, redirectUri, challenge, Q("nonce"), string.Join(' ', scopes), s.Sid, now);
-                s.CodeIssued = true;
-                return Back(redirectUri, issuer, state, ("code", code));
+                if (!ok) { st.Emit(Deny("attestation_invalid")); return Results.Redirect(slugRet); } // 5.5: password + MFA, then Cash Advance opens
+                if (remote) { st.Emit(Deny("remote_session")); return SignIn.Html("screen-8a", "<p>Try again after the remote session ends</p>"); } // 5.4
+                var user = st.Users.Values.First(u => u.UserId == s!.UserId);
+                if (Handoff.RuleFailure(st, s!, user, client, now) is not null) return Results.Redirect(slugRet); // rules re-checked at completion
+                int? maxAge = a.TryGetValue("max_age", out var ma) && int.TryParse(ma, out var m) ? m : null;
+                var scopes = (a.GetValueOrDefault("scope") ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries).Distinct();
+                return IssueCode(c, client, s!, user, loc, redirectUri, state, a["code_challenge"]!, a.GetValueOrDefault("nonce"), scopes, "hub_handoff", null, maxAge, now);
             }
         });
 
@@ -122,7 +216,7 @@ public static class OAuth
             var f = await c.Request.ReadFormAsync();
             lock (st.Gate)
             {
-                var client = Clients.Authenticate(c.Request, st.OAuthClients, f);
+                var client = Clients.Authenticate(c.Request, st.OAuthClients, f, issuer, st.Clock.Now, st.Auth.AssertionJti);
                 if (client is null) return TokenError(c, "invalid_client", 401);
                 // 7.7 [ASSUMPTION A28] the outbox fault makes the token endpoint unavailable; nothing is consumed or issued.
                 if (st.OutboxFault == "fail") return TokenError(c, "temporarily_unavailable", 503);
@@ -176,7 +270,7 @@ public static class OAuth
                         return TokenError(c, "invalid_grant");
                     }
                     // 7.3 role loss: only this client's family.
-                    if (!user.Roles.Any(r => r.AppCode == client.AppCode)) { st.Auth.RevokeFamily(fam.Id); return TokenError(c, "invalid_grant"); }
+                    if (client.AppCode is not null && !user.Roles.Any(r => r.AppCode == client.AppCode)) { st.Auth.RevokeFamily(fam.Id); return TokenError(c, "invalid_grant"); }
                     if (s.Revoked || now >= s.AuthTime.AddHours(SignIn.CapHours)) { st.Auth.RevokeFamily(fam.Id); return TokenError(c, "invalid_grant"); }
                     rr.RotatedAt ??= now;
                     scope = fam.Scope;
@@ -210,7 +304,7 @@ public static class OAuth
             var jwt = token.Count(ch => ch == '.') == 2 ? await tokens.Validate(token, "at+jwt", false, st.Clock.Now) : null;
             lock (st.Gate)
             {
-                var client = Clients.Authenticate(c.Request, st.OAuthClients, f);
+                var client = Clients.Authenticate(c.Request, st.OAuthClients, f, issuer, st.Clock.Now, st.Auth.AssertionJti);
                 if (client is null) return TokenError(c, "invalid_client", 401);
                 if (st.Auth.Refresh.TryGetValue(AuthStore.H(token), out var rr) && st.Auth.Families.TryGetValue(rr.FamilyId, out var fam) && fam.ClientId == client.ClientId)
                     st.Auth.RevokeFamily(fam.Id); // 9.2
@@ -230,7 +324,7 @@ public static class OAuth
             var jwt = token.Count(ch => ch == '.') == 2 ? await tokens.Validate(token, "at+jwt", true, now) : null;
             lock (st.Gate)
             {
-                var client = Clients.Authenticate(c.Request, st.OAuthClients, f);
+                var client = Clients.Authenticate(c.Request, st.OAuthClients, f, issuer, st.Clock.Now, st.Auth.AssertionJti);
                 if (client is null) return TokenError(c, "invalid_client", 401);
                 c.Response.Headers.CacheControl = "no-store";
                 // [ASSUMPTION A29] introspect answers for access tokens only; a refresh token is reported inactive.
@@ -268,13 +362,12 @@ public static class OAuth
 <button data-testid="signout-confirm" type="submit">Sign out</button></form>
 """);
                 }
-                var slug = s?.Slug ?? (string)st.Fixtures["partners"]![0]!["locations"]![0]!["slug"]!;
+                var slug = s is { AdminType: null } ? s.Slug : (string)st.Fixtures["partners"]![0]!["locations"]![0]!["slug"]!;
                 if (s is not null && !s.Revoked)
                 {
                     st.Auth.RevokeSession(s);
-                    var loc = SignIn.Location(st.Fixtures, s.Slug)!;
-                    var e = Audit.Build(now, "auth.session.revoked", "success", s.UserId, new JsonObject { ["reason"] = "sign_out" }, SignIn.Scope(loc), Ip(c), null, s.Sid);
-                    e["session_kind"] = s.Kind; st.Emit(e); // 11.3: one per session.
+                    var e = Audit.Build(now, "auth.session.revoked", "success", s.UserId, new JsonObject { ["reason"] = "sign_out" }, Handoff.SessionScope(st, s), Ip(c), null, s.Sid);
+                    e["session_kind"] = s.Kind; if (s.AdminType is not null) e["admin_type"] = s.AdminType; st.Emit(e); // 11.3: one per session.
                 }
                 c.Response.Cookies.Delete(SignIn.SessionCookie, new CookieOptions { Path = issuerPath });
                 // 11.2c: the end state is always the session's /l/{slug}. [ASSUMPTION A30] post_logout_redirect_uri is never followed.

@@ -12,6 +12,7 @@ public static class SignIn
     public const string TxCookie = "standin_tx", SessionCookie = "standin_session", PcCookie = "standin_pc";
     public const string Generic = "Sign-in didn't work.";
     public const int IdleMinutes = 15, CapHours = 12;
+    public static string IssuerPath { get; private set; } = "/standin";
 
     public static LocationInfo? Location(JsonObject fx, string slug) =>
         fx["partners"]!.AsArray().SelectMany(p => p!["locations"]!.AsArray().Select(l => new LocationInfo((string)l!["slug"]!,
@@ -44,7 +45,7 @@ public static class SignIn
     static void SetCookie(HttpContext c, string name, string value, string path) =>
         c.Response.Cookies.Append(name, value, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Lax, Path = path, Secure = c.Request.IsHttps });
 
-    static IResult PasswordPage(HttpContext c, IAntiforgery af, string slugBase, string? error, int agentPort, int status = 200)
+    static IResult PasswordPage(HttpContext c, IAntiforgery af, string slugBase, string? error, int agentPort, int status = 200, bool resign = false)
     {
         var t = af.GetAndStoreTokens(c).RequestToken!;
         // The page fetches a fresh nonce at submit (6.5), asks the agent with a 3 s timeout, then posts the form.
@@ -64,6 +65,16 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
 });
 </script>
 """;
+        if (resign) // 5.3 re-prompt (UX 07 ids), same fields and flow as the plain sign-in.
+            return Html("page-resign-in", $"<div data-testid=\"error-resign-in\" role=\"alert\">{(error is null ? "" : E(error))}</div>" + $"""
+<form id="f" method="post" action="{slugBase}">
+<input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
+<input type="hidden" name="device_attestation" value="">
+<label>Username <input data-testid="field-resign-in-username" name="username" autocomplete="username"></label>
+<label>Password <input data-testid="field-resign-in-password" name="password" type="password" autocomplete="current-password"></label>
+<button data-testid="resign-in-submit" type="submit">Sign in</button>
+</form>{js}
+""", status);
         return Html("screen-signin", Err(error) + $"""
 <form id="f" method="post" action="{slugBase}">
 <input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
@@ -90,9 +101,10 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
     public static IResult Hub(StandInState st, LoginSession s)
     {
         var user = st.Users.Values.First(u => u.UserId == s.UserId);
-        // Tiles for the apps the user has a role in (PLAN L40). hub_launch issuance (5.7) is not built yet: tiles carry no link.
-        var tiles = string.Concat(user.Roles.Select(r => r.AppCode).Distinct().Select(a => $"<div data-testid=\"hub-tile-{E(a)}\">{E(a)}</div>"));
-        return Html("screen-hub", tiles);
+        // Tiles for the apps the user has a role in (PLAN L40); hand-off tiles carry start_url?hub_launch= (5.7).
+        // errors.md: a recovery session's hub offers only re-enrolment and sign-out, no hub_launch. [ASSUMPTION A36] re-enrolment itself is not built.
+        if (s.Kind == "recovery_reenroll") return Html("screen-hub", $"<p>Set up your authenticator again</p><a href=\"{IssuerPath}/connect/endsession\">Sign out</a>");
+        return Html("screen-hub", Handoff.Tiles(st, s, user, st.Clock.Now));
     }
 
     static async Task<bool> Af(IAntiforgery af, HttpContext c) { try { await af.ValidateRequestAsync(c); return true; } catch (AntiforgeryValidationException) { return false; } }
@@ -109,12 +121,13 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
 
     public static void Map(WebApplication app, StandInState st, string issuerPath, string issuer, StandInPorts ports)
     {
+        IssuerPath = issuerPath;
         var af = app.Services.GetRequiredService<IAntiforgery>();
         string Base(string slug) => issuerPath + "/l/" + slug;
         string? Ip(HttpContext c) => c.Connection.RemoteIpAddress?.ToString();
         string? Ua(HttpContext c) => c.Request.Headers.UserAgent.ToString() is { Length: > 0 } u ? u : null;
 
-        app.MapGet(issuerPath + "/l/{slug}", (string slug, string? ret, HttpContext c) =>
+        app.MapGet(issuerPath + "/l/{slug}", (string slug, string? ret, string? resign, HttpContext c) =>
         {
             Headers(c, ports.Control);
             lock (st.Gate)
@@ -127,7 +140,7 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
                     ReturnTo = ret is not null && ret.StartsWith(issuerPath + "/connect/authorize?", StringComparison.Ordinal) ? ret : null };
                 st.Auth.Tx[tx.Id] = tx;
                 SetCookie(c, TxCookie, tx.Id, issuerPath);
-                return PasswordPage(c, af, Base(slug), null, ports.Control);
+                return PasswordPage(c, af, Base(slug), null, ports.Control, resign: resign == "1" && tx.ReturnTo is not null);
             }
         });
 
@@ -229,7 +242,7 @@ document.getElementById('f').addEventListener('submit', async function (ev) {
                 }
                 // 4.11: a brand-new session id after MFA; any session id the browser had is never promoted.
                 var s = new LoginSession { Sid = Guid.NewGuid().ToString(), UserId = user.UserId, Username = user.Username, Slug = slug,
-                    LocationId = loc.LocationId, AuthTime = now, LastSeen = now };
+                    LocationId = loc.LocationId, AuthTime = now, LastSeen = now, ViaReturn = tx.ReturnTo is not null };
                 var ev1 = Audit.Build(now, "auth.mfa.succeeded", "success", user.UserId, new JsonObject { ["method"] = "totp" }, Scope(loc), Ip(c), Ua(c), s.Sid);
                 var ev2 = Audit.Build(now, "auth.login.succeeded", "success", user.UserId, new JsonObject
                 { ["provider_kind"] = "database", ["amr"] = new JsonArray("pwd", "otp", "mfa"), ["auth_time"] = now.ToUnixTimeSeconds(), ["attestation"] = tx.Attestation },

@@ -35,6 +35,8 @@ public sealed class StandInState
     // Appends to the control feed. Callers build the event with Audit.Build.
     public void Emit(JsonObject e) { lock (_gate) _audit.Add(e); }
 
+    // [TL Decision 9:16 PM, B2] FIXTURE client private keys go here (must be under /tmp; checked in Clients.Load).
+    public static string ClientKeyDir => Environment.GetEnvironmentVariable("STANDIN_CLIENT_KEY_DIR") ?? "/tmp/sse-d0/fixture-client-keys";
     public StandInState(string fixturePath) { _fixturePath = fixturePath; Reset(); }
 
     public void Reset()
@@ -52,12 +54,13 @@ public sealed class StandInState
                 var user = new StandInUser { Username = (string)u!["username"]!, UserId = (string)u["user_id"]!, Status = (string)u["status"]!,
                     Roles = u["roles"]!.AsArray().Select(r => ((string)r!["app_code"]!, (string)r["role"]!)).ToList(),
                     LocationSlugs = u["location_slugs"]!.AsArray().Select(x => (string)x!).ToList(),
-                    PermVersion = (int?)u["perm_version"] ?? 1 };
+                    PermVersion = (int?)u["perm_version"] ?? 1, AdminType = (string?)u["admin_type"], PartnerId = (string?)u["partner_id"] };
+                foreach (var rc in u["recovery_codes"]?.AsArray() ?? new JsonArray()) user.RecoveryCodeHashes.Add(AuthStore.H((string)rc!));
                 user.SetPassword(((string)u["password"]!).Normalize(System.Text.NormalizationForm.FormKC));
                 Users[user.Username] = user;
             }
             Auth.Clear();
-            OAuthClients = Clients.Load(Fixtures);
+            OAuthClients = Clients.Load(Fixtures, ClientKeyDir);
         }
     }
 

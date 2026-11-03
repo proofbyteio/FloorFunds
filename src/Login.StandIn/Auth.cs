@@ -18,9 +18,18 @@ public sealed class SignInTx
     public string? Username { get; set; }
     public string Attestation { get; set; } = "missing"; // 6.2 valid | missing | invalid
     public string? ReturnTo { get; set; }
+    // Hand-off interstitial transactions (5.8b): bound to nonce + hub_launch + login session + client_id.
+    public string Purpose { get; init; } = "signin"; // signin | handoff | admin
+    public string? Sid { get; init; }
+    public string? ClientId { get; init; }
+    public string? LaunchHash { get; init; }
+    public Dictionary<string, string?>? Authorize { get; init; }
+    public bool Resign { get; init; } // re-prompt (5.3): page-resign-in ids
 }
 
-// A login session (4.11, 7.4, 7.8). Kind is always "normal" here: recovery-code sign-in is not built yet.
+public sealed record HubLaunch(string Sid, string ClientId, DateTimeOffset IssuedAt) { public bool Used { get; set; } }
+
+// A login session (4.11, 5.1, 5.12, 7.4, 7.8). Kind is recovery_reenroll only for an /admin recovery-code sign-in (A33).
 public sealed class LoginSession
 {
     public required string Sid { get; init; }
@@ -34,6 +43,12 @@ public sealed class LoginSession
     public string Kind { get; init; } = "normal";
     public bool Revoked { get; set; }
     public bool CodeIssued { get; set; }
+    public string? AdminType { get; init; }          // set only for /admin sessions (no location)
+    public string? PartnerId { get; init; }
+    public bool Interactive { get; init; } = true;  // rule 1: every stand-in session comes from an interactive sign-in
+    public bool ViaReturn { get; init; }            // created by a sign-in that returns to authorize (re-prompt, 5.3)
+    public bool HandoffUsed { get; set; }           // rule 3 cash_advance_handoff_used
+    public bool CageConsumed { get; set; }          // rule 6: not SSO-eligible for anything
 }
 
 public sealed record CodeGrant(string ClientId, string RedirectUri, string Challenge, string? Nonce, string Scope, string Sid, DateTimeOffset IssuedAt)
@@ -66,7 +81,9 @@ public sealed class AuthStore
     public Dictionary<string, AccessRec> Access { get; } = new(StringComparer.Ordinal);      // key: jti
     public Dictionary<string, string> IdTokenSid { get; } = new(StringComparer.Ordinal);     // key: SHA-256 of the ID token
     public Dictionary<string, ECDsa> DeviceKeys { get; } = new(StringComparer.Ordinal);      // fake agent keys (6.8), in memory
-    public void Clear() { Tx.Clear(); Sessions.Clear(); Codes.Clear(); Refresh.Clear(); Families.Clear(); Access.Clear(); IdTokenSid.Clear();
+    public Dictionary<string, HubLaunch> HubLaunches { get; } = new(StringComparer.Ordinal); // key: SHA-256 of hub_launch (5.7 stored hashed)
+    public Dictionary<string, DateTimeOffset> AssertionJti { get; } = new(StringComparer.Ordinal); // 7.6 jti replay cache
+    public void Clear() { Tx.Clear(); Sessions.Clear(); Codes.Clear(); Refresh.Clear(); Families.Clear(); Access.Clear(); IdTokenSid.Clear(); HubLaunches.Clear(); AssertionJti.Clear();
         foreach (var k in DeviceKeys.Values) k.Dispose(); DeviceKeys.Clear(); }
     public static string H(string v) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(v)));
 
@@ -110,7 +127,7 @@ public static class Attestation
         string kid = pc.Mode == "unknown_device" ? "standin-unenrolled-" + pc.PcId[8..] : pc.PcId;
         string nonce = pc.Mode == "replayed" ? "standin-replayed-" + Base64UrlEncoder.Encode(RandomNumberGenerator.GetBytes(16)) : tx.Nonce;
         if (pc.Mode == "expired") iat -= 150;
-        var claims = new { nonce, device_id = kid, remote_session = pc.Mode == "remote_session", iat, exp = iat + 60, aud = issuer, purpose = "signin" };
+        var claims = new { nonce, device_id = kid, remote_session = pc.Mode == "remote_session", iat, exp = iat + 60, aud = issuer, purpose = tx.Purpose };
         var key = pc.Mode == "bad_signature" ? Key(st.Auth, "standin-wrong-key") : Key(st.Auth, kid);
         return Jws(key, kid, claims);
     }
