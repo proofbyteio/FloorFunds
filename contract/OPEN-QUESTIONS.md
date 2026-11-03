@@ -59,7 +59,7 @@ LD line numbers refer to md5 `560cb6ab` (rev 8:25 PM PT, file time 20:17:36); re
 | OQ-SSE2-30 | PCI "letter" / "number" for `Lt`, `Lm`, `Lo`, non-ASCII `Nd` (LD §16.20.1 / row 120: Proposal (SA) letter = `L*`, number = `Nd` after NFKC; OPEN, compliance owner) | ASCII cases testable now; Unicode PCI cases PENDING. TL Rec for the SA: same method as Nevada (after NFKC; letter = any `L*`, number = `Nd`) | SA → compliance owner (LS-OQ-52) | standin-control §3 |
 | LS-OQ-52 | PCI compliance owner sign-off on password classes | follows OQ-SSE2-30 | Compliance owner | standin-control §3 |
 | OQ-39 | GitHub account, repo, visibility, setup (OQ-28) | Local git only, no remote, no push, no credentials. The earlier "company org" proposal is withdrawn [TL Decision 2026-11-02, Addendum 2 §D] | Mohanraj (card t44s0) | - |
-| OQ-40 | Session cap: who can change it; allowed range | **No values picked.** 12 h default, configurable (Mohanraj t43u; LD row 110); technical check cap > 15-min idle or start-up fails; deployment config only | Mohanraj (question t45s0) | §7.4 |
+| OQ-40 | Session cap: who can change it; allowed range | **Partially resolved** [Confirmed OQ-40 partial] (Mohanraj 8:35 PM PT: "super admin or Partner Admin"): only admin_type super or partner; every change audited (`auth.config.session_cap_changed`, old/new/actor). **Open:** the range (no values picked; cap > 15-min idle check kept). **Interim, not decided:** Partner Admin own partner's locations only, Super Admin any | Mohanraj (question t45s0) | §7.4, §8.15 |
 
 Note (not an OQ): `08-session.html` shows `local_agent.action_blocked reason=remote_session`. That is a device-agent event (LD L1254, L1500), not a login-service event, so it stays out of this contract.
 
@@ -141,7 +141,15 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 | Item | State | Who | Where |
 |---|---|---|---|
 | `session_kind` | **Decided:** `normal` \| `recovery_reenroll` in the session model, required token claim, audit envelope (when a session exists). Replaces the DEC-085 `amr==["pwd"]` rule | - | contract 7.8; claims and audit schemas |
+| `session_kind` split | **Resolved** [TL Decision 2026-11-02 8:37 PM]: required in tokens; in audit required only on app sign-in and `recovery_session` refusals (and on `auth.mfa.reenrolled`) | - | contract 7.8 |
 | AUD v0.8 (`session_kind`) | **Open:** AUD owner to add `session_kind` to §7A.4 (with `admin_type`, item above) | AUD owner via SA | audit schema envelope |
-| MFA re-enrolment paths | **Open, Proposal:** `GET /mfa/reenrol`, `POST /mfa/reenrol`, `GET /mfa/reenrol/recovery-codes`; SA to ratify in LD. Audit events for re-enrolment not defined yet | SA | contract 7.8 |
+| MFA re-enrolment paths | **Open, Proposal:** `GET /mfa/reenrol`, `POST /mfa/reenrol`, `GET /mfa/reenrol/recovery-codes`; SA to ratify in LD. Revoke-all-at-once and show-codes-once **accepted** [TL Decision 2026-11-02 8:37 PM]; audit events defined (contract 8.14); paths still Proposal | SA | contract 7.8 |
 | Apps fixture | **Provisional (pending Mohanraj):** `cash_advance`, `back_office`, `reports` | Mohanraj via PM | standin-control §4 |
+
+## TL Decision 2026-11-02 8:37 PM
+
+| Item | State | Who | Where |
+|---|---|---|---|
+| Re-enrolment audit events | **Open (AUD v0.8):** AUD owner to add `auth.mfa.reenrolled` and `auth.mfa.recovery_codes_issued` to AUD | AUD owner via SA | contract 8.14 |
+| Error-admin-sign-in wrapper note (ui-driver) | Deferred to post-freeze list | SSE | ui-driver |
 

@@ -18,7 +18,10 @@
     { "$ref": "#/$defs/fields_not_stated" },
     { "$ref": "#/$defs/auth.password.reset" },
     { "$ref": "#/$defs/auth.provider.changed" },
-    { "$ref": "#/$defs/not_emitted_fields_not_stated" }
+    { "$ref": "#/$defs/not_emitted_fields_not_stated" },
+    { "$ref": "#/$defs/auth.mfa.reenrolled" },
+    { "$ref": "#/$defs/auth.mfa.recovery_codes_issued" },
+    { "$ref": "#/$defs/auth.config.session_cap_changed" }
   ],
   "$defs": {
     "id": { "type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" },
@@ -312,6 +315,58 @@
     "fields_not_stated": {
       "description": "In the list [SRC: PLAN L158-160; LD §8 L427] but no fields are stated anywhere. Envelope only until the SA states fields [TL Decision 2026-11-02, OQ-25].",
       "properties": { "event_type": { "enum": ["auth.refresh.reuse_detected", "auth.break_glass.used", "auth.session.location_switched"]}}
+    },
+    "auth.mfa.reenrolled": {
+      "description": "MFA re-enrolment confirmed (POST, contract 7.8) [TL Decision 2026-11-02 8:37 PM]. Old TOTP secret and every old recovery code revoked at once.",
+      "required": ["target", "session_kind"],
+      "properties": {
+        "event_type": { "const": "auth.mfa.reenrolled" },
+        "outcome": { "const": "success" },
+        "session_kind": { "const": "recovery_reenroll" },
+        "target": { "required": ["type", "id"], "properties": { "type": { "const": "user" }}},
+        "details": {
+          "required": ["method", "old_factor_revoked", "old_recovery_codes_revoked"],
+          "additionalProperties": false,
+          "properties": { "method": { "const": "totp" }, "old_factor_revoked": { "const": true}, "old_recovery_codes_revoked": { "const": true}}
+        }
+      }
+    },
+    "auth.mfa.recovery_codes_issued": {
+      "description": "New recovery codes issued (contract 7.8) [TL Decision 2026-11-02 8:37 PM]. Count only; the codes are never logged (details allows only count).",
+      "required": ["target"],
+      "properties": {
+        "event_type": { "const": "auth.mfa.recovery_codes_issued" },
+        "outcome": { "const": "success" },
+        "target": { "required": ["type", "id"], "properties": { "type": { "const": "user" }}},
+        "details": { "required": ["count"], "additionalProperties": false, "properties": { "count": { "type": "integer", "minimum": 1}}}
+      }
+    },
+    "auth.config.session_cap_changed": {
+      "description": "LoginService:Session:AbsoluteLifetime changed (contract 7.4) [Confirmed OQ-40 partial] (Mohanraj 8:35 PM PT: \"super admin or Partner Admin\"). Only admin_type super or partner; old value, new value and actor required. Not in AUD: AUD v0.8 item.",
+      "required": ["admin_type", "actor", "target"],
+      "properties": {
+        "event_type": { "const": "auth.config.session_cap_changed" },
+        "outcome": { "const": "success" },
+        "admin_type": { "enum": ["super", "partner"]},
+        "actor": { "required": ["user_id"], "properties": { "user_id": { "$ref": "#/$defs/id" }}},
+        "target": { "required": ["type", "id"], "properties": { "type": { "const": "config" }, "id": { "const": "LoginService:Session:AbsoluteLifetime" }}},
+        "details": {
+          "required": ["old_value", "new_value"],
+          "additionalProperties": false,
+          "properties": {
+            "old_value": {
+              "type": "string",
+              "pattern": "^([0-9]+\\.)?[0-9]{2}:[0-9]{2}:[0-9]{2}$",
+              "description": "TimeSpan text, e.g. 12:00:00. No range enforced (OQ-40 range open)."
+            },
+            "new_value": {
+              "type": "string",
+              "pattern": "^([0-9]+\\.)?[0-9]{2}:[0-9]{2}:[0-9]{2}$",
+              "description": "TimeSpan text, e.g. 12:00:00. No range enforced (OQ-40 range open)."
+            }
+          }
+        }
+      }
     }
   }
 }

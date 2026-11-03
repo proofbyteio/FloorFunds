@@ -117,3 +117,11 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - Proposal (SA to ratify in LD): GET /mfa/reenrol, POST /mfa/reenrol, GET /mfa/reenrol/recovery-codes.
 - standin-control §4 apps fixture cash_advance, back_office, reports (provisional, pending Mohanraj).
 - check_schemas.py: 110 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097 unchanged.
+
+## v1-d4 follow-up 7 (final freeze commit): TL Decision 8:37 PM + Confirmed OQ-40 partial (written 8:36 PM PT; same commit as the changes, so its hash/time is in git log)
+- session_kind split confirmed and resolved in OPEN-QUESTIONS.
+- New audit events auth.mfa.reenrolled (session_kind=recovery_reenroll, old factor + old codes revoked) and auth.mfa.recovery_codes_issued (count only; details allow nothing else). Contract 7.8, 8.14.
+- Revoke-all-at-once and show-codes-once accepted; paths still Proposal (SA, LD).
+- OQ-40 partial (Mohanraj 8:35 PM PT, "super admin or Partner Admin"): only admin_type super|partner may change AbsoluteLifetime; auth.config.session_cap_changed with old/new/actor required. Interim partner-own-locations scope NOT decided. Range open; cap > idle check kept. Contract 7.4, 8.15.
+- ui-driver error-admin-sign-in wrapper note deferred post-freeze.
+- check_schemas.py: 130 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097.
