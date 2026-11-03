@@ -1,8 +1,7 @@
-# Login contract v1: DRAFT (not frozen)
+# Login contract v1: FROZEN v1 @ e363090 (tag contract-v1)
 
-Owner: SSE. Status: **DRAFT v1-d4** (NOT frozen; awaiting SSE2 check and TL freeze), written Mon Nov 2, 2026, 11:30-11:40 AM PT (v1-d1); revised from 11:37 AM PT with the TL's answers (v1-d2); revised ~7:55-8:20 PM PT with the TL rulings, Addendum and G1/G2 (v1-d3); revised 8:16-8:24 PM PT with the TL's 8:12 PM / 8:14 PM replies, LD §16.19 rows 110-119 and Addendum 2 (v1-d4).
-It is not frozen. Per build plan §3.1 "Versioning" (TL Decision), v1 freezes only after SSE2's
-adversarial pass and TL review. No stand-in code (SI1) is written until then.
+Owner: SSE. Status: **FROZEN v1 @ e363090** (local annotated tag `contract-v1`) [Freeze status, TL 2026-11-02 8:53 PM]. Freeze record: `reviews/contract-v1-tl-rulings.md` "FREEZE RECORD" (md5 33e71504). Basis: SSE2 FREEZE-OK on an exact export of e363090 (sse2/tests-docs ac3652c). Post-freeze edits are v1.1 only, each with its reason and a contract-test change. History: v1-d1 11:30-11:40 AM PT; v1-d2 from 11:37 AM; v1-d3 ~7:55-8:20 PM; v1-d4 8:16-8:48 PM PT.
+Frozen per build plan §3.1 "Versioning" after SSE2's adversarial pass and TL review. SI1 (the stand-in) builds against tag `contract-v1`.
 
 Clients (Cash Advance BFF, hub, back office, reports) may depend **only** on what is written
 in this folder (plan §3.1). The stand-in and the real OpenIddict service implement the same contract.

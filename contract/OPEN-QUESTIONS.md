@@ -183,3 +183,43 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 | TOTP rate-limit value and source | **Default set** [TL Decision 2026-11-02 8:48 PM] (TL Decision, not Confirmed): 5 failed tries / 15 min / user, `LoginService:Mfa:ReenrollRateLimit`, contract 7.8. **Post-freeze:** SA may revise the value and give its source | SA | contract 7.8 |
 | ui-driver re-enrolment screen | **Post-freeze, v1.1:** test ids for the `/mfa/reenroll` pages | SSE / UX | ui-driver |
 
+## Final state at freeze (e363090, tag `contract-v1`) [Freeze status, TL 2026-11-02 8:53 PM]
+
+Final state of every item at freeze. Sections above are history; where they differ, this section wins.
+
+**Resolved at freeze:** every OQ under "Resolved" above; every row marked Resolved, Decided, Confirmed, Ruled or TL-accepted in later sections; OQ-SSE2-45, OQ-SSE2-46, OQ-SSE2-48 (TL 8:47 PM, fixed in e363090).
+
+**Open at freeze (non-blocking; safe default in the contract):**
+
+| OQ | Final state | Owner |
+|---|---|---|
+| OQ-35 (part) | Device id format open; 1-128 char string, exact match | Device Agent owner |
+| CR-22 (part) | Device location/partner binding open | SA + Device Agent owner |
+| CR-12 (part) | Production cage-action challenge open; S1 uses the BFF stub | SA + Device Agent owner |
+| OQ-SSE2-30 / LS-OQ-52 | PCI Unicode letter/number classes open | SA → compliance owner |
+| OQ-39 | GitHub details open; local git only | Mohanraj |
+| OQ-40 | Partially resolved (DEC-086: super or partner admin); range open | Mohanraj |
+| OQ-SSE2-42/43/44/47/49 | Post-freeze, see v1.1 list | SSE / SSE2 |
+
+**Post-freeze (v1.1) list** (freeze record L263-268, plus items added at freeze):
+
+| # | Item | Reason / source |
+|---|---|---|
+| 1 | OQ-SSE2-42 duplicate `location_ids` | Schema has no `uniqueItems`; server treats duplicates as invalid |
+| 2 | OQ-SSE2-43 cap-change endpoint | Not specified; SEC80-86 pending |
+| 3 | OQ-SSE2-44 `admin_type` on `/l/{slug}` events | Schema can't block it; stand-in never writes it |
+| 4 | OQ-SSE2-47 `cap_changed` partner | Doesn't require `scope.partner_id` for a partner admin |
+| 5 | OQ-SSE2-49 generic 429 message | Not an LD string; only "Sign-in didn't work." (CR-05) exists; tests assert `error-area` + 429 only |
+| 6 | SSE/TL items 4, 6, 7, 8 | Named by number only in the freeze record and SSE2's verdict; text **TO CONFIRM with TL** |
+| 7 | TOTP shared counter and presets | LD row 140 |
+| 8 | `auth.mfa.totp_disabled` | Freeze record |
+| 9 | revoked reason `locked` in the examples | Freeze record |
+| 10 | §8.15 null-actor text | Freeze record |
+| 11 | §7.8 "Proposal" labels | Paths SA-ratified; labels to update |
+| 12 | DEC-086 citation | Cited as "Confirmed OQ-40 partial", not by id |
+| 13 | `check_schemas.py` root argument | Hardcodes the working-tree path (SSE2 TOOL08) |
+| 14 | LD md5 drift | Contract cites 560cb6ab; LD on disk is 190c62e9 |
+| 15 | ui-driver re-enrolment screen | Test ids for `/mfa/reenroll*` |
+| 16 | DEC-091 Cash Advance `app_code` | Owner Mohanraj; value pending PQ-229; `cash_advance` stays PLACEHOLDER |
+| 17 | ui-driver `error-admin-sign-in` wrapper note | Deferred note |
+| 18 | Checker count | SSE run: 165 PASS; SSE2 export: 166. Reconcile |

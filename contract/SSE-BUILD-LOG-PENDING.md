@@ -154,3 +154,10 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - auth.config.change_denied details closed: setting, attempted_value (TimeSpan), reason not_admin|wrong_partner|out_of_range; admin_type required for admin reasons, absent for not_admin; scope.partner_id for partner. CAP04 (password in details) rejected.
 - auth.mfa.failed step=reenroll details closed (no totp_code echo).
 - check_schemas.py: 165 PASS, 0 FAIL, exit 0 (SSE2's export count of 149 differs). Hardcoded path not changed (post-freeze). allowlist.db md5 e5384097.
+
+## Status commit: FROZEN v1 @ e363090 (~8:54 PM PT; status only)
+- What: README status → "FROZEN v1 @ e363090 (tag contract-v1)". OPEN-QUESTIONS gains "Final state at freeze" plus the v1.1 list. No schema or contract-text change.
+- Why: TL freeze (8:53 PM PT) asked for a status commit.
+- Sources: reviews/contract-v1-tl-rulings.md md5 33e71504 (FREEZE RECORD L263-268); SSE2 docs/CONTRACT-REVIEW-v1.md at sse2/tests-docs ac3652c (read only).
+- Process note: a first attempt (ec37c7c) committed only README because the generator script failed. I moved the local branch ref back to e363090 and redid it as one commit. ec37c7c was never pushed.
+- Open: SSE/TL items 4/6/7/8 named by number only (TO CONFIRM with TL). Checker count 165 vs 166.
