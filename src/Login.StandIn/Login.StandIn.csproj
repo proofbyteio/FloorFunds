@@ -8,6 +8,9 @@
     <InvariantGlobalization>false</InvariantGlobalization>
     <RootNamespace>Login.StandIn</RootNamespace>
   </PropertyGroup>
+  <ItemGroup>
+    <None Update="fixtures.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
   <Target Name="StandInBuildFlag" BeforeTargets="Build" Condition="'$(IncludeStandIn)' != 'true'">
     <Error Text="Login.StandIn builds only with -p:IncludeStandIn=true (build plan §3.5)." />
   </Target>

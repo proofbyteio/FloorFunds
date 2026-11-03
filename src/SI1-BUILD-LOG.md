@@ -47,3 +47,28 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
   - the JWKS has 1 key with the 6 members alg, e, kid, kty, n and use, and the kid starts with `standin-`.
 - v1.1 note [V1]: the `disc` sample in check_schemas.py puts token_endpoint and revocation_endpoint at `localhost:8084`, but contract 2.3 says they sit under the public issuer. The stand-in follows 2.3; the sample should be aligned. No test impact, since the schema doesn't constrain the host.
 - Not done: the allowlist runs first on the front (1.7, 2.10). The stand-in has no allowlist yet, and wiring data/allowlist.db is out of scope (that file is never touched).
+
+## SI1-5 control routes: reset, clock, faults, audit; fixtures (8:57 PM PT)
+- What:
+  - `StandInState` holds the in-memory state; `TestClock` is real UTC plus an offset.
+  - `POST /_standin/reset` → 204. It reloads fixtures.json and clears faults, audit and the clock offset.
+  - `GET /_standin/clock` → `{"now":"…Z"}`.
+  - `POST /_standin/clock/advance {"seconds":n}` → 200 `{"now":…}`. A negative or non-integer n gets 400 `{"error":"invalid_request"}`.
+  - `PUT /_standin/faults` → 204. Keys outbox (ok|fail) and device_registry (ok|unavailable); anything else gets 400.
+  - `GET /_standin/audit?since=` → `{"events":[],"next":n}`.
+  - Fixtures (fixtures.json) cover users cashier_db and no_role_user; partners pci and nevada, one location each; apps cash_advance, back_office and reports (all PLACEHOLDER); and a 30-minute lockout.
+- Why: standin-control 2.1, 2.2, 2.6, 2.7 and §4.
+- Evidence (live on 18082; every response no-store):
+  - the clock GET validates against standin-ui.schema.json `clock_get` (0 errors), before and after reset;
+  - advancing by 301 moves now by +301 s;
+  - -1 and 1.5 each get 400;
+  - faults outbox=fail gets 204 and outbox=maybe gets 400;
+  - audit returns `{"events":[],"next":0}`;
+  - after reset the clock is back to real time;
+  - the front's /_standin/clock gets 404.
+- Assumptions:
+  - [A4] The success shapes aren't in the contract, so I picked them: reset and faults return 204 with no body; advance returns the clock_get shape.
+  - [A5] Reset puts the clock back to real time. This is the only "backwards" move, since standin-control 2.1 makes reset restore the clock.
+  - [A6] The role name `cashier` and every fixture slug, password and id are unruled (standin-control §4 says OPEN → TL). SSE2 reads them from this file.
+  - [A7] faults accepts a partial body.
+- Not built (next commits): `PUT pcs/{pc_id}` and the fake agent; `PUT users/{username}` (needs the password-policy validator) and `GET users/{username}/totp` (needs TOTP, HMAC-SHA1 from the BCL); authorize, token, revoke, introspect and endsession, which need signing and are **BLOCKED B1**; the pages (ui/); audit emission. The clock is not yet consumed by anything.

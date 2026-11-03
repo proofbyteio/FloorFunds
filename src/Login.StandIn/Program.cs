@@ -22,5 +22,7 @@ Listeners.UseListenerRules(app, ports, issuerPath);
 using var keys = new SigningKeys();
 var (disco, jwks) = Discovery.Build(issuer, keys);
 Discovery.Map(app, issuerPath, disco, jwks);
+var state = new StandInState(cfg["StandIn:Fixtures"] ?? Path.Combine(AppContext.BaseDirectory, "fixtures.json"));
+Control.Map(app, state);
 app.Run();
 return 0;

@@ -1,0 +1,21 @@
+{
+  "_comment": "SI1 stand-in fixtures (standin-control §4). Slugs, passwords and ids are NOT ruled in v1 (OPEN -> TL at freeze); SSE2 reads them from this file. Role names are [ASSUMPTION A6]. Not secrets: dev-only test data.",
+  "apps": [
+    { "app_code": "cash_advance", "placeholder": true },
+    { "app_code": "back_office", "placeholder": true },
+    { "app_code": "reports", "placeholder": true }
+  ],
+  "partners": [
+    { "slug": "pci", "partner_id": "5f0c3e1a-0001-4000-8000-000000000001", "preset": "pci",
+      "locations": [ { "slug": "pci-main", "location_id": "5f0c3e1a-0001-4000-8000-0000000000a1" } ] },
+    { "slug": "nevada", "partner_id": "5f0c3e1a-0002-4000-8000-000000000002", "preset": "nevada_mics7",
+      "locations": [ { "slug": "nevada-main", "location_id": "5f0c3e1a-0002-4000-8000-0000000000b1" } ] }
+  ],
+  "users": [
+    { "username": "cashier_db", "user_id": "5f0c3e1a-0003-4000-8000-000000000c01", "password": "Cashier-Standin-2026",
+      "status": "active", "location_slugs": [ "pci-main" ], "roles": [ { "app_code": "cash_advance", "role": "cashier" } ] },
+    { "username": "no_role_user", "user_id": "5f0c3e1a-0003-4000-8000-000000000c02", "password": "NoRole-Standin-2026",
+      "status": "active", "location_slugs": [ "pci-main" ], "roles": [] }
+  ],
+  "lockout_minutes": 30
+}
