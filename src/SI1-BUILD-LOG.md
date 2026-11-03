@@ -169,3 +169,9 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
   - A18: source.service is login-standin.
   - A19: the test HMAC key is fixed.
   - A20: the server does not validate events against the schema at runtime (there is no JSON Schema package). Validity comes from how Build constructs them and from harness checks.
+
+## SI1-12 TL Decision 9:06 PM: NU3018 accepted for the local stand-in only (9:05 PM PT)
+- Conditions:
+  1. The warning stays visible. It is not suppressed (no NoWarn or WarningsNotAsErrors change), and NUGET_CERT_REVOCATION_MODE=offline is not set. I checked: neither nuget.config nor the csproj changes revocation mode or NoWarn.
+  2. **Release gate v1.1/CI-01:** before any build leaves this box, the pipeline re-verifies with online revocation checking (`dotnet nuget verify --all`), and any NU3018 there fails the build.
+  3. Adding any package or new source mapping needs a TL ruling; stop and report if one is needed. Microsoft.Bcl.Cryptography 10.0.2 is accepted.
