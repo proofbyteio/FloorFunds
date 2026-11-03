@@ -301,3 +301,10 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
 - DEC-094 (403 message only, no help text, body unchanged).
 - DEC-095 (device-enrolment codes: Super/Partner Admin, Partner Admin only for its own partner).
 - Positive ngcmfa rule-2 path (needs an Entra provider).
+
+## SI1 FROZEN @ 3feb66c (2026-11-02, PT)
+- TL accepted SI1 at 3feb66c at 10:12 PM PT. The local tag si1-freeze stays on 3feb66c; this log-only commit sits on top of it.
+- Live suite 251/251. Evidence /tmp/sse-d0/evidence-final.txt, md5 aa782b7bbda57c6198a00498e44ac770. The step (4) and final-commit details are in src/Login.StandIn/SI1-BUILD-LOG.md.
+- **A68 is a TL Decision (10:12 PM, stand-in only):** the cage_action audience is "cash-advance-server" (value taken from contract/check_schemas.py).
+- **v1.1 item V11-CAGEAUD (SA):** name the exact cage_action aud value for the Cash Advance server. Contract 6.7(5) says only "its own id".
+- No new work after this.
