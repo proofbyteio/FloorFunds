@@ -21,7 +21,7 @@ These entries are SSE's own; SSE2 may copy them in as-is. All times Mon Nov 2, 2
 
 ### [SSE] D1: contract v1 draft
 - **What:** `contract/` README, contract-v1.md, errors.md, three JSON Schemas, OPEN-QUESTIONS.md (OQ-1…OQ-29).
-- **Decisions:** every item labelled [SRC], [ASSUME A-n → OQ-n] or [CONFLICT → OQ-n]. Discovery/JWKS on 8084 per LD §4.5 against PLAN "front" (OQ-1). `attestation_invalid` sourced from PLAN §1.2/4a and LD §8 L420.
+- **Decisions:** every item labelled [SRC], [ASSUME (A-n) → OQ-n] (v1-d1 label, retired at v1-d3) or [CONFLICT → OQ-n]. Discovery/JWKS on 8084 per LD §4.5 against PLAN "front" (OQ-1). `attestation_invalid` sourced from PLAN §1.2/4a and LD §8 L420.
 - **Checks:** all three schemas pass `Draft202012Validator.check_schema` (jsonschema 4.23.0, venv in /tmp/sse-d0) and 22 sample good/bad instances behave as expected (`/tmp/sse-d0/check_schemas.py`; the real tests are SSE2's).
 - **Git:** commits on `feat/contract-v1` built with a private index file and `git update-ref`, so the shared working tree's HEAD (`main`, unborn) and index were not touched (SSE2's untracked `tests/` and `tools/` left alone). No remote; pre-push hook (already present) always fails.
 - **Stopped after D1** as briefed: no SI1 code. Waiting on SSE2's adversarial pass and TL review.
@@ -55,3 +55,12 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - **What:** withdrew my 1 h-24 h bounds proposal (and the other validation extras) in contract §7.4 and OQ-40. Now OPEN for Mohanraj with no values proposed: (a) who can change the cap; (b) the allowed range. Question sent to Mohanraj Nov 2, 12:01 PM PT: "Who should be able to change the 12-hour sign-in limit, and what's the shortest and longest it can be set to?"
 - **Kept:** 12 h default (Mohanraj t43u). Technical check, not policy: cap > 15-minute idle timeout or startup fails. Setting `LoginService:Session:AbsoluteLifetime` in deployment config only, no admin screen (POC assumption → OQ-40).
 - **Idle timeout verified** in LD `88878681` (unchanged since 11:41:20, re-checked 12:08 PM): L229 "Idle timeout 15 min (PCI 8.2.8 [S9]) at the BFF"; L934 login-service cookie "15-minute sliding idle plus the absolute cap"; L321 PCI 8.2.8 row. No conflict.
+
+### [SSE] v1-d3: TL contract v1 rulings applied (TL "pause over" 7:55 PM PT; applied ~7:55-8:11 PM PT)
+- **What:** applied `reviews/contract-v1-tl-rulings.md` (md5 9012597c, incl. Addendum and G1/G2) to contract-v1.md (§0 G1/G2 + rows per OQ), errors.md, OPEN-QUESTIONS.md, the 4 schemas; README to v1-d3 (**not frozen**). Every change tagged [TL Decision 2026-11-02, OQ-n]. Labels ASSUME/SSE Proposal retired; `rg "ASSUME A-"` = 0 in contract/.
+- **Why:** TL rulings close OQ-3..6, 10..12, 14, 16..21, 25, 30..36, 41; Addendum adds attestation `aud` + `purpose`.
+- **Sources:** TLR 9012597c; LD **b7385794** (SA rev 8:15 PM PT, file 20:10:07; it changed from 88878681 mid-pass, all LD cites re-mapped by script, shifts in README); PLAN ae18d664, AUD d835c357, ALW eb7cbf13 unchanged.
+- **Decisions (mine, labelled):** OQ-35 "no jti/aud" is overridden by the Addendum for `aud` (applied Addendum). Access-token `aud` limited to an enum of the OQ-6 values (my reading of OQ-6). Stand-in exact discovery key set is `$defs.standin_exact_keys`, applied with the root schema by the test (a self-$ref caused recursion, removed). Wrong-aud-for-purpose is a server check (§6.7), not schema.
+- **Schemas:** /tmp/sse-d0/check_schemas.py (md5 215787a5…) all positives pass, all negatives fail as expected (new negatives: stand-in exact keys, iss flag, scopes_supported, aud array/unknown, wiaormfa, attestation detail, user_disabled, iam other, purposes/aud, alg RS256/ES384/none/PS256, crit, missing typ).
+- **Open (safe default in contract):** OQ-15/22 parts, OQ-23 rest, OQ-24, OQ-37, OQ-38 (SA; SA posted Proposals in LD §16.19 / rows 110-118, not yet TL-ruled); device id format (Device Agent owner, TL Rec UUID); OQ-39, OQ-40 (Mohanraj, no values picked; cap > idle check kept).
+- **Not done:** no SI1 build; nothing in tests/, docs/, tools/; allowlist.db md5 e5384097 unchanged; no remote/push.
