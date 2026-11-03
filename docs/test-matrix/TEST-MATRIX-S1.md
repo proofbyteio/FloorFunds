@@ -258,3 +258,21 @@ Focus probes (tests/e2e/sse2-probes, black-box, 135/147 + cap isolation 11/14):
 - **OQ-SSE2-63**: cage nonce length: schema says 22 chars (128-bit), stub gives 43 (256-bit). Change the schema or the stub?
 - **OQ-SSE2-64**: lifetime of a password-verified, pre-MFA sign-in transaction?
 - **OQ-SSE2-65**: should session-cap authorize before validating the value (so a non-admin always gets not_admin + an event)?
+
+### Status at 9b7efc9 (si1-fixes re-check, 10:35 PM PT)
+| Probe / item | 3feb66c | 9b7efc9 |
+|---|---|---|
+| PR-C0 cage nonce 22 chars (G4) | FAIL | PASS ×3 |
+| PR-C9 JSON body + header → 200 {"ok":true} (G2, A72) | FAIL | PASS ×3 |
+| PR-C8b–f no-header 400 / form 403 (A73) / extra key / malformed JSON | – | PASS ×3 (new) |
+| PR-C10/C10b/C10c remote_session refused, reason remote_session, schema-valid, no replay (G3, DEC-102) | FAIL | PASS ×3 (new b/c) |
+| PR-K range (15 min, 24 h], huge → out_of_range (G1) | FAIL (K-huge) | PASS |
+| PR-K-DoS boundary (G1) | FAIL | PASS ×6 |
+| PR-K-val / G9 caller first, attempted_value per A69 | info | PASS |
+| PR-G5 pending MFA 300000 ms ok / 300001 ms refused, location + admin | – (TXL info) | PASS (new) |
+| PR-ADM error-area (G6) | FAIL | PASS |
+| FS06 secret in the script path (FS1) | missed | caught (SSE2_FS06_EXPECT_CAUGHT=1) |
+| Totals | 135/147, 11/14, UI 14/14, suite 468/0/84 | 194/194, 15/15, UI 14/14, suite 468/0/84 |
+
+- **OQ-SSE2-66**: should a dropped (expired after 5 min) pending MFA emit an audit event? At 9b7efc9 it emits none (N2, info).
+- OQ-SSE2-63, -64 and -65 are closed by DEC-104 and DEC-105 (fixed at 9b7efc9).

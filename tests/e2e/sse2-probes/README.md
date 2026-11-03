@@ -9,3 +9,8 @@ stand-in's own state dir /tmp/sse-d0/standin-$STANDIN_PORT_BASE (hard-coded by t
     STANDIN_PORT_BASE=18090 python probe-k.py    # 11/14 at 3feb66c (fails = K-DoS boundary, finding G1)
 
 Each script refuses to run unless the ports are owned by the pid in the stand-in pidfile, and resets the stand-in at the end.
+
+9b7efc9 re-check: paths come from env (SSE2_D = export dir with pid and standin.log, STANDIN_STATE_DIR = stand-in state root).
+`source /tmp/sse2-work/env4.sh` sets both. cage() sends JSON + RequestVerificationToken header (A72); form=True sends the old form.
+    STANDIN_PORT_BASE=18090 python probe.py      # 194/194 at 9b7efc9
+    STANDIN_PORT_BASE=18090 python probe-k.py    # 15/15 at 9b7efc9

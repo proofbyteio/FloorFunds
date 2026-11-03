@@ -978,3 +978,78 @@ Its KNOWN list (1ee0939, df0b5d6, ed0ecc1, 9a14163, 8aab98a, f630a8d, c4da996) i
 - 22:14:04–22:14:13 SSE harness repro; 22:14:26–22:17:11 full run; 22:17:59–22:19:54 probes; 22:18:35–39 UI.
 - 22:22:27–22:25:13 final full run (D93_04/05 now real tests: PASS).
 - Stand-in stop: logged in the commit message and the SSE2 report (stopped right after this commit).
+
+<!-- sse-import sha256=b8df23e3e8bfec98a7acf21a8f899370b0328a04496d2c5fc98358fe4e931884 first-seen=9b7efc9 imported-from=9b7efc9 head="SI1 fixes on si1-fixes (from baaef0e), SSE2 review 7397b3f GO-with-conditions (TL 10:30 PM PT, 2026-11-02)" -->
+> **Imported verbatim from SSE**: `src/SI1-BUILD-LOG.md`, first seen in `9b7efc9`, imported from `9b7efc9`.
+
+## SI1 fixes on si1-fixes (from baaef0e), SSE2 review 7397b3f GO-with-conditions (TL 10:30 PM PT, 2026-11-02)
+Each fix has its own live test in the driver (/tmp/sse-d0/e2e/step4.py; drive.py PW line). Live suite 296/296, evidence /tmp/sse-d0/evidence-fixes.txt (md5 in the commit report). si1-freeze stays on 3feb66c.
+- **G1 (interim TL Decision, PLACEHOLDER until Mohanraj gives the range, OQ-40):** cap range is > 00:15:00 and <= 1.00:00:00 (24 h). The A61 config range keys are removed. Values outside → 403 change_denied out_of_range. A pattern-shaped value too big for TimeSpan (e.g. 99999999.00:00:00, 40-digit days) → out_of_range with the raw value, never 500. At start-up a cap > 24 h is refused (non-zero exit). Expiry uses SessionCap.Expired (cap clamped to the range, no DateTimeOffset add). Tests: 1.00:00:01, 2.00:00:00, huge, 40-digit, 00:00:00 → out_of_range; -01:00:00, abc, 01:00, empty, 1.2:3:4 → 400 for an admin; 1.00:00:00 accepted; 24 h cap alive at 23:59:59 then ended (302); start-up 1.00:00:01 refused.
+- **G9:** the caller is checked BEFORE the value. A non-admin always gets 403 change_denied not_admin, even with malformed, negative or huge values. **[ASSUMPTION A69]** attempted_value must match the schema pattern: a pattern-shaped value is logged as sent; anything else is logged as "00:00:00". Admins still get 400 for non-TimeSpan text (A65 narrowed to admins).
+- **G2:** the cage action body follows 6.9 exactly: JSON {"device_attestation":"<JWS>"}. Valid → 200 {"ok":true} (was 501). **[ASSUMPTION A72]** antiforgery comes from the default RequestVerificationToken header (a missing header → 400, tested). **[ASSUMPTION A73]** any other body (form, extra key, malformed JSON) counts as missing attestation → 403 attestation_invalid + audit.
+- **G3 (BLOCKER):** an attestation that verifies but reports remote_session=true is refused for payment, id_scan and print: 403 {"error":"attestation_invalid"} plus a schema-valid auth.app_access.denied with target app cash_advance. **[ASSUMPTION A70]** the audit reason is remote_session (it is in the enum); the client body stays attestation_invalid.
+- **G4:** the cage nonce is 16 random bytes in base64url = 22 chars (cage_nonce_response). Tests: length, alphabet, decodes to 16 bytes, unique.
+- **G5 (TL Decision):** pending pre-MFA state (location totp stage, admin mfa stage) lives 300000 ms from the password step (SignInTx.PreMfaAt). After that the tx is deleted and the user starts a full sign-in (location: password page; /admin: step 1 with the generic error). Tested on the frozen ms clock: 300000 ms accepted, 300001 ms dropped, cannot be revived, a fresh sign-in works. Covers location, super and partner admins.
+- **G6:** the /admin error now sits inside data-testid="error-area" (error-admin-sign-in kept inside it).
+- **G7:** every fixtures.json password is "GENERATED". They are generated at start into <state dir>/fixture-secrets.json (0600). The driver PW dict is derived from fx, so the driver has no literal password left.
+- **G8:** the state root comes from STANDIN_STATE_DIR (default /tmp/sse-d0) + /standin-<front>. **[ASSUMPTION A71]** it must be an absolute path under /tmp/, otherwise the default is used (same rule as B2). Test: a second process with STANDIN_STATE_DIR on our own held ports writes server.pid + fixture-secrets.json there, leaves the default dir alone, then fails to bind.
+- **FS1:** check-fixture-secrets.sh no longer skips its own path. Its patterns do not match their own text. Throwaway-repo test (GIT_INDEX_FILE unset): clean copy → OK; a PEM marker planted in the script → FAIL in both the index and the history.
+- **G10:** skipped (TL).
+<!-- /sse-import -->
+
+<!-- sse-import sha256=eb36292dacea11f3c2ec3a744987485a0edc76120e74cc5ab9197512da1d3749 first-seen=9b7efc9 imported-from=9b7efc9 head="v1.1 items" -->
+> **Imported verbatim from SSE**: `src/SI1-BUILD-LOG.md`, first seen in `9b7efc9`, imported from `9b7efc9`.
+
+### v1.1 items
+- **V11-CAGEREMOTE (SA):** contract 6.7 should say that a cage action whose attestation has remote_session=true is refused (403 attestation_invalid; audit reason remote_session per A70).
+- **V11-ADMINERR (ui-driver):** /admin error area now uses testid error-area (G6); the ui-driver should look for it.
+<!-- /sse-import -->
+
+## SSE2, Mon Nov 2, 10:35–10:50 PM PT: re-check of 9b7efc9 (si1-fixes) against my 7397b3f conditions
+
+### TL rulings 10:35 PM PT, recorded as decisions
+- **DEC-102 (G3 blocker)**: G3 is a **BLOCKER**. A cage action with a validly signed attestation carrying remote_session=true is refused (review §21). The client sees 403 attestation_invalid; the audit reason is remote_session (A70).
+- **DEC-103 (G1 interim range)**: the session cap must be more than 15 min and at most 24 h (interim, PLACEHOLDER until OQ-40), with expiry arithmetic that cannot overflow.
+- **DEC-104 (G2, G4, G6–G9, FS1)**: fixed as I suggested. G2: JSON body {"device_attestation":…} plus the RequestVerificationToken header → 200 {"ok":true} (A72). Any other body counts as missing → 403 (A73).
+- **DEC-105 (G5)**: a pending (password-verified, pre-MFA) sign-in expires after 5 min.
+- **DEC-106 (G10)**: skipped.
+- **DEC-107 (.v\* files)**: the top-level .v\* files belong to the SA, who is moving them. SSE2 leaves them alone.
+
+### Runs (base 18090, my export /tmp/sse2-si1-9b7efc9, own venv, STANDIN_STATE_DIR=/tmp/sse2-si1-9b7efc9/state per A71)
+- Target: 9b7efc9 (parent baaef0e). si1-fixes moved to 3e0b71d at 22:37:36 PT. That commit changes only the secrets script and the SSE log, with no runtime code. My stand-in export was taken at 22:36 and its script md5 (5dc476e4) matches 9b7efc9.
+- Full suite (tools/run-checks.sh standin): **552 total, 468 pass, 0 fail, 84 pending**. This equals the 3feb66c baseline. On the first run, SEC76b and SEC77c failed because of a test-side parser bug in TestKit ErrorText: the G6 markup nests error-admin-sign-in inside error-area. Fixed; not an SSE defect.
+- Probes: probe.py **194/194** (3feb66c: 135/147); probe-k.py **15/15** (3feb66c: 11/14); UI01–05 **14/14**.
+- SSE harness: drive.py and friends copied to /tmp/sse2-repro-464ee82c, with only the paths changed (pid, state, log, bin, export, contract). The post-9b7efc9 PWCHK block was dropped because it reads SSE's /tmp/sse-d0 index. Result **297/297**: all 296 rows of SSE's evidence-fixes.txt (md5 464ee82c) reproduced, plus 1 TL 10:36 row.
+- Fixture secrets (tools/check-fixture-secrets.sh 9b7efc9 9b7efc9, and si1-fixes on si1-fixes 3e0b71d): PASS. FS06 with SSE2_FS06_BASE=9b7efc9 and SSE2_FS06_EXPECT_CAUGHT=1: PASS (the secret is caught in the index and in history).
+
+### Per-item verification at 9b7efc9
+| Item | Result | Evidence |
+|---|---|---|
+| G1 | **fixed** | 00:15:00, 00:14:59 and 00:00:00 → 403 out_of_range; 00:15:01, 23:59:59 and 1.00:00:00 (24 h) → 200; 1.00:00:01, 2 d, 365 d, 99999999 d, 10675199 d, 10675200 d and 99999999999 d → 403 out_of_range. No 500 anywhere. The admin cap page is 200 afterwards and P1 sessions still work (K-DoS ×6, K-huge). The startup check refuses 1.00:00:01. In the 24 h cap test the session is alive at 23:59:59 and ends with a 302 (SSE row, reproduced). |
+| G2 | **fixed** | C9 ×3: JSON + header → 200 {"ok":true}. All C1 negatives (13 cases ×3), C2–C7 and C8d–f pass. A form body carrying a valid JWS → 403 plus a schema-valid denied event (A73). An extra key, non-string, null, [] or non-JSON body → 403. A missing antiforgery token → 400 for both form and JSON-without-header, and that 400 does not consume the nonce. |
+| G3 | **fixed (blocker cleared)** | C10/C10b ×3: 403 {"error":"attestation_invalid"}; one auth.app_access.denied event with reason remote_session, target cash_advance, schema-valid. C10c: the JWS cannot be replayed (nonce consumed). |
+| G4 | **fixed** | C0 ×3: nonce matches `^[A-Za-z0-9_-]{22}$`. |
+| G5 | **fixed** | Frozen ms clock, location and /admin: **300000 ms accepted, 300001 ms refused** (code: `elapsed > 300000`; exactly 5:00.000 is still valid). 24 h → refused. Location returns screen-signin; /admin returns step 1. |
+| G6 | **fixed** | ADM: data-testid="error-area" wraps error-admin-sign-in, with the text present. |
+| G7 | **fixed** | 7/7 fixture passwords are "GENERATED"; values are generated per run into <state>/standin-18090/fixture-secrets.json (0600). Secrets check PASS. The old literals remain in git history (WARN only, see N3). |
+| G8 | **fixed** | My state is under /tmp/sse2-si1-9b7efc9/state/standin-18090. /tmp/sse-d0/standin-18090 was not touched (mtime 22:13). SSE's G8 row reproduced. |
+| G9 | **fixed** | A location user posting 'zz' → 403 not_admin with event attempted_value "00:00:00" (A69). A pattern-shaped huge value → not_admin with the raw value. Both events are schema-valid. An admin posting a malformed value → 400 with no event. |
+| FS1 | **fixed** | The script now scans its own file (FS06 throwaway repo, plus SSE's FS1 rows reproduced). |
+
+### New findings at 9b7efc9 (none blocking)
+| # | Sev | Finding | Evidence |
+|---|---|---|---|
+| N1 | info | A pattern-shaped but unparseable cap value such as 00:60:00 now returns 403 out_of_range (with event) instead of 400. This matches SSE's G1 rule and the TL's "400 or out_of_range". | probe K range 00:60:00 |
+| N2 | info | An expired pending MFA is dropped with no audit event: the TOTP post after 5 min returns the password page and events=[]. The contract does not ask for one. OQ-SSE2-66. | probe INFO G5 |
+| N3 | info | The old literal fixture passwords remain in git history at eb0fa5d..c4da996 (blobs f26fc59a37, e6602328ac, 527aa00967). They are test-only, fixture-only, and flagged WARN by the check. History is not rewritten (local, no remote). | fsec-9b7efc9.txt |
+| N4 | info | si1-fixes advanced to 3e0b71d during the review (script and log only). Verified build: 9b7efc9. 3e0b71d passes the fixture-secrets check. | git log |
+| N5 | info (test-side, fixed) | The TestKit ErrorText regex took the first, empty error-* testid. It now uses the first non-empty one. | SEC76b/SEC77c |
+
+### GO/NO-GO for SI1 at 9b7efc9
+**GO.** G1–G9 and FS1 are fixed and independently reproduced; G3 (blocker, DEC-102) is cleared. Results: suite 468/0/84 (no regression from 3feb66c), probes 194/194 and 15/15, UI 14/14, and SSE's 296 rows all reproduced. Open info items: N1–N3 (OQ-SSE2-66).
+
+### Port and time log (PST)
+- 22:36:37 ss: 18080–18082, 18090–18092, 8080 and 8081 all free. 22:36:40 9b7efc9 stand-in started as pid 1538586 on 18090–18092 (check-ports free, then mine). STANDIN_STATE_DIR=/tmp/sse2-si1-9b7efc9/state.
+- 22:37:20–22:40:02 full run #1 (2 test-side fails); 22:41:39–22:42 probes, probe-k and UI; 22:44:18–22:44:40 SSE harness repro (×2); 22:44:53–22:47:37 full run #2 (468/0/84).
+- The guard checks before every run that the ports are owned by my pid. SSE's harness also started stand-ins (startup checks, G8); each exited after a failed bind or a refused config, and afterwards only pid 1538586 was listening.
+- Stand-in stop: logged in the commit message and the SSE2 report.

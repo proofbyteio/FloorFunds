@@ -123,7 +123,8 @@ public class FixtureSecretsTests(ITestOutputHelper o)
         try
         {
             Run("git", "init -q", repo);
-            Run("git", $"fetch -q {code} feat/si1-standin:refs/heads/base", repo);
+            var baseRef = Environment.GetEnvironmentVariable("SSE2_FS06_BASE") is { Length: > 0 } br ? br : "feat/si1-standin";   // 9b7efc9 re-check: SSE2_FS06_BASE=si1-fixes
+            Run("git", $"fetch -q {code} {baseRef}:refs/heads/base", repo);
             var sref = scriptRef == "feat/si1-standin" ? "base" : (Run("git", $"rev-parse {scriptRef}", code).output.Trim());
             Run("git", "checkout -q base", repo);
             var fx = Path.Combine(repo, "src", "Login.StandIn", "fixtures.json");
@@ -159,7 +160,8 @@ public class FixtureSecretsTests(ITestOutputHelper o)
         try
         {
             Run("git", "init -q", repo);
-            Run("git", $"fetch -q {code} feat/si1-standin:refs/heads/base", repo);
+            var baseRef = Environment.GetEnvironmentVariable("SSE2_FS06_BASE") is { Length: > 0 } br ? br : "feat/si1-standin";   // 9b7efc9 re-check: SSE2_FS06_BASE=si1-fixes
+            Run("git", $"fetch -q {code} {baseRef}:refs/heads/base", repo);
             Run("git", "checkout -q base", repo);
             var sp = Path.Combine(repo, "src", "Login.StandIn", "scripts", "check-fixture-secrets.sh");
             File.AppendAllText(sp, "\n# " + Fake("RC(5e2fa4e0)RC") + " {\"secret\": \"SSE2FAKE-hidden\"}\n");
@@ -167,6 +169,7 @@ public class FixtureSecretsTests(ITestOutputHelper o)
             var (rc, outp) = Run("bash", $"{code}/tools/check-fixture-secrets.sh base HEAD", code, new Dictionary<string, string> { ["FSEC_REPO"] = repo });
             var missed = rc == 0 && !outp.Contains("sse2-fake") && !outp.Contains(Run("git", "rev-parse --short=7 HEAD", repo).output.Trim());
             o.WriteLine($"FS06 secret inside the script path: rc={rc} missed={missed} (finding SSE2-F-FS1 when missed)\n{outp.Trim()}");
+            if (Environment.GetEnvironmentVariable("SSE2_FS06_EXPECT_CAUGHT") == "1") Assert.False(missed, "FS1: secret in the script path is still skipped");
         }
         finally { Directory.Delete(repo, true); }
     }

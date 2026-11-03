@@ -1,5 +1,5 @@
-# SSE2 independent focus probes at 3feb66c (TL 10:08 focus list). Black-box only, base from STANDIN_PORT_BASE (guard in prelude).
-exec(open('/tmp/sse2-work/probe3/prelude.py').read())
+# SSE2 independent focus probes (3feb66c; re-check 9b7efc9 G1-G9) (TL 10:08 focus list). Black-box only, base from STANDIN_PORT_BASE (guard in prelude).
+import os as _os; exec(open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)),'prelude.py')).read())
 import base64 as b64
 def enc(o): return b64.urlsafe_b64encode(json.dumps(o,separators=(',',':')).encode()).rstrip(b'=').decode()
 def dec(x): return json.loads(b64.urlsafe_b64decode(x+'='*(-len(x)%4)))
@@ -50,25 +50,36 @@ for act in ('payment','id_scan','print'):
     # cross-session: nonce + JWS of session A submitted in session B
     b2,_=loc_sess(); pc(b2,'standin-pc-c2-'+act,'valid'); _,ja=cage(b,'attest-nonce'); jwa=agent(ja['nonce'])
     s,r=cage(b2,'actions/'+act,{'device_attestation':jwa}); ok(f'C5 {act}: session A nonce/JWS used in session B -> 403',s==403,(s,r))
-    s,r=cage(b,'actions/'+act,{'device_attestation':jwa}); ok(f'C5b {act}: ... and A can still use it (B attempt did not touch A tx)',s==501,(s,r))
+    s,r=cage(b,'actions/'+act,{'device_attestation':jwa}); ok(f'C5b {act}: ... and A can still use it (B attempt did not touch A tx) -> 200 ok',s==200 and r=={'ok':True},(s,r))
     # nonce age boundary (frozen ms clock, OQ-55 style): 60000 ms ok, 60001 ms refused
-    for ms,exp in ((60000,501),(60001,403)):
+    for ms,exp in ((60000,200),(60001,403)):
         ctl('POST','/_standin/clock/freeze',{'frozen':True}); _,j=cage(b,'attest-nonce'); jw=agent(j['nonce']); ctl('POST','/_standin/clock/advance',{'ms':ms})
         s,r=cage(b,'actions/'+act,{'device_attestation':jw}); ctl('POST','/_standin/clock/freeze',{'frozen':False})
         ok(f'C6 {act}: cage nonce age {ms} ms -> {exp}',s==exp,(s,r))
     _,j=cage(b,'attest-nonce'); jw=agent(j['nonce']); s1,r1=cage(b,'actions/'+act,{'device_attestation':jw}); s2,r2=cage(b,'actions/'+act,{'device_attestation':jw})
-    ok(f'C7 {act}: valid -> 501 (stub), exact replay -> 403',s1==501 and s2==403,(s1,r1,s2,r2))
+    ok(f'C7 {act}: valid -> 200 ok, exact replay -> 403',s1==200 and r1=={'ok':True} and s2==403,(s1,r1,s2,r2))
     # no antiforgery
-    s,_,d=b.req('POST','/standin/cage/actions/'+act,{'device_attestation':jw}); ok(f'C8 {act}: no antiforgery -> 400',s==400,s)
+    s,_,d=b.req('POST','/standin/cage/actions/'+act,{'device_attestation':jw}); ok(f'C8 {act}: no antiforgery (form) -> 400',s==400,s)
+    _,j=cage(b,'attest-nonce'); jw=agent(j['nonce']); s,r=cage(b,'actions/'+act,{'device_attestation':jw},token=False); ok(f'C8b {act}: JSON body, no RequestVerificationToken header -> 400',s==400,(s,r))
+    s,r=cage(b,'actions/'+act,{'device_attestation':jw}); ok(f'C8c {act}: ... and the nonce was not consumed by the 400 (valid JSON retry -> 200)',s==200,(s,r))
+    _,j=cage(b,'attest-nonce'); jw=agent(j['nonce']); n=len(evlist()); s,r=cage(b,'actions/'+act,{'device_attestation':jw},form=True); ev=evlist(n)
+    ok(f'C8d {act}: valid JWS in old form body -> 403 attestation_invalid (A73: form counts as missing) + schema-valid denied event',s==403 and r=={'error':'attestation_invalid'} and len(denied_ev(ev))==1 and not audit_ok(ev),(s,r,reasons(ev)))
+    _,j=cage(b,'attest-nonce'); jw=agent(j['nonce']); s,r=cage(b,'actions/'+act,{'device_attestation':jw,'x':1}); ok(f'C8e {act}: JSON with an extra key -> 403 (A73)',s==403,(s,r))
+    for bad in ('{"device_attestation":123}','[]','not json','{"device_attestation":null}'):
+        _,p0=capget(b); _,j=cage(b,'attest-nonce'); s,_,d=b.req('POST','/standin/cage/actions/'+act,bad,headers={'Content-Type':'application/json','RequestVerificationToken':af(p0)})
+        ok(f'C8f {act}: malformed JSON body {bad!r} -> 403 (never 200/500)',s==403,(s,d[:100]))
     # CONTRACT SHAPE: JSON body {"device_attestation":...} (6.9 / cage_action_request) with antiforgery header
     _,p0=capget(b); tok_=af(p0); _,j=cage(b,'attest-nonce'); jw=agent(j['nonce'])
     s,_,d=b.req('POST','/standin/cage/actions/'+act,json.dumps({'device_attestation':jw}),headers={'Content-Type':'application/json','RequestVerificationToken':tok_})
     print(f'INFO C9 {act}: contract JSON body + valid JWS -> {s} {d[:80]} (contract 6.9 says 200 {{"ok":true}})')
-    ok(f'C9 {act}: contract-shaped JSON request with a valid attestation is accepted (6.9: 200 {{"ok":true}}; stub: 501 accepted)',s in (200,501),(s,d[:120]))
+    ok(f'C9 {act}: contract-shaped JSON request with a valid attestation -> 200 {{"ok":true}} (6.9, A72)',s==200 and json.loads(d)=={'ok':True},(s,d[:120]))
     # remote_session=true, validly signed
     pc(b,'standin-pc-rs-'+act,'remote_session'); _,j=cage(b,'attest-nonce'); jw=agent(j['nonce'])
-    s,r=cage(b,'actions/'+act,{'device_attestation':jw}); print(f'INFO C10 {act}: valid-signature remote_session=true attestation on cage action -> {s} {r} (contract 6.7 silent; 5.2 requires remote_session=false for hand-off)')
-    ok(f'C10 {act}: remote_session=true attestation is NOT accepted for a cage action',s==403,(s,r))
+    n=len(evlist()); s,r=cage(b,'actions/'+act,{'device_attestation':jw}); ev=evlist(n); print(f'INFO C10 {act}: valid-signature remote_session=true attestation on cage action -> {s} {r} (contract 6.7 silent; 5.2 requires remote_session=false for hand-off)')
+    ok(f'C10 {act}: remote_session=true attestation is NOT accepted for a cage action (403 attestation_invalid)',s==403 and r=={'error':'attestation_invalid'},(s,r))
+    d_=denied_ev(ev); ok(f'C10b {act}: audit auth.app_access.denied reason remote_session, target cash_advance, schema-valid (A70)',len(d_)==1 and d_[0]['details'].get('reason')=='remote_session' and not audit_ok(ev),(reasons(ev),audit_ok(ev),d_[:1]))
+    s,r=cage(b,'actions/'+act,{'device_attestation':jw}); ok(f'C10c {act}: the remote_session JWS cannot be replayed (nonce consumed)',s==403,(s,r))
+    pc(b,'standin-pc-c-'+act,'valid')
 # ---------------- session cap (DEC-086) ----------------
 ctl('POST','/_standin/reset')
 bp,_=adm_sess('partner_admin'); bs,_=adm_sess('super_admin'); bl,_=loc_sess()
@@ -85,17 +96,23 @@ capcase(bp,'08:00:00','5f0c3e1a-dead-4000-8000-000000000009','partner admin -> u
 capcase(bp,'08:00:00',' '+P1+' ','partner admin -> own partner padded',200,'changed')
 capcase(bp,'08:00:00','','partner admin -> empty (own)',200,'changed')
 for v,exp in (('00:15:00',(403,'out_of_range')),('00:14:59',(403,'out_of_range')),('00:00:00',(403,'out_of_range')),('00:15:01',(200,'changed')),
-              ('-01:00:00',(400,None)),('-00:16:00',(400,None)),('1.00:00:00',(200,'changed')),('365.00:00:00',(200,'changed')),
-              ('99999999.00:00:00',(400,None)),('00:60:00',(400,None)),('12:00',(400,None)),('12:00:00.5',(400,None)),('P1D',(400,None))):
+              ('-01:00:00',(400,None)),('-00:16:00',(400,None)),('1.00:00:00',(200,'changed')),('23:59:59',(200,'changed')),('1.00:00:01',(403,'out_of_range')),('2.00:00:00',(403,'out_of_range')),('365.00:00:00',(403,'out_of_range')),
+              ('99999999.00:00:00',(403,'out_of_range')),('10675199.00:00:00',(403,'out_of_range')),('10675200.00:00:00',(403,'out_of_range')),('99999999999.00:00:00',(403,'out_of_range')),('00:60:00',(403,'out_of_range')),('12:00',(400,None)),('12:00:00.5',(400,None)),('P1D',(400,None))):
     capcase(bp,v,'',f'range partner {v}',*exp)
 capcase(bl,'08:00:00','','location user',403,'not_admin')
 capcase(bl,'08:00:00',P1,'location user naming own partner',403,'not_admin')
-capcase(bl,'zz','','location user, malformed value',403,'not_admin')
+capcase(bl,'zz','','location user, malformed value (G9: caller first)',403,'not_admin')
+n=len(evlist()); s,_=capset(bl,'zz',''); ev=evlist(n); dn=ev_of(ev,'auth.config.change_denied')
+ok('G9 non-admin malformed: denied event attempted_value 00:00:00 (A69), schema-valid',s==403 and len(dn)==1 and dn[0]['details'].get('attempted_value')=='00:00:00' and not audit_ok(ev),(s,dn[:1],audit_ok(ev)))
+n=len(evlist()); s,_=capset(bl,'99999999.00:00:00',''); ev=evlist(n); dn=ev_of(ev,'auth.config.change_denied')
+ok('G9 non-admin pattern-shaped huge: not_admin, attempted_value raw, schema-valid',s==403 and len(dn)==1 and dn[0]['details'].get('reason')=='not_admin' and dn[0]['details'].get('attempted_value')=='99999999.00:00:00' and not audit_ok(ev),(s,dn[:1],audit_ok(ev)))
+n=len(evlist()); s,_=capset(bp,'zz',''); ev=evlist(n); ok('G9 admin malformed value -> 400, no event',s==400 and not ev,(s,reasons(ev)))
 capcase(bs,'08:00:00',P2,'super admin -> partner 2',200,'changed')
 capcase(bs,'08:00:00','','super admin -> global',200,'changed')
 capcase(bs,'00:10:00','','super admin -> global below idle',403,'out_of_range')
 # effect of an absurd cap: does a session still work (overflow?)
-ctl('POST','/_standin/reset'); bs,_=adm_sess('super_admin'); capset(bs,'10675199.00:00:00','')
+ctl('POST','/_standin/reset'); bs,_=adm_sess('super_admin'); s0,_=capset(bs,'10675199.00:00:00',''); ok('K-huge: global cap 10675199 days refused (G1: 403 out_of_range)',s0==403,s0)
+s0,pg=capget(bs); ok('K-huge: admin cap page still works afterwards (200, current unchanged)',s0==200 and cur(pg) and '10675199' not in cur(pg),(s0,cur(pg)))
 b,p=loc_sess(); s,_,hp=b.req('GET','/standin/apps'); print(f'INFO K-huge: after global cap 10675199 days, location sign-in -> {testid(p)}, /apps -> {s}')
 ok('K-huge: a ~29,000-year global cap does not break sign-in (no 500)',testid(p)=='screen-hub' and s==200,(testid(p),s))
 ctl('POST','/_standin/clock/advance',{'seconds':3600}); s,_,_=b.req('GET','/standin/apps'); print(f'INFO K-huge: /apps after 1 h idle -> {s} (idle 15 min still applies?)')
@@ -157,7 +174,7 @@ for who in ('cashier_db','partner_admin','super_admin'):
     ok(f'EO {who}: mfa.succeeded immediately before login.succeeded',ev[-2:]==['auth.mfa.succeeded','auth.login.succeeded'],ev)
 # secrets: everything the driver saw (USED) + re-enrol keys/codes, against audit (whole run, cumulative since last reset only) and the log
 sec=set(x for x in USED if len(x)>=6)|{k1,k2}|set(c1)|set(c2)
-lg=open('/tmp/sse2-si1-3feb66c/standin.log').read()
+lg=open(D+'/standin.log').read()
 hits=[x for x in sec if x in lg]; ok(f'NS1 none of {len(sec)} secret values (incl. re-enrol keys + new recovery codes) in standin.log',not hits,[h[:6] for h in hits][:5])
 ok('NS2 log has no otpauth/secret= / hub_launch= / code= / state= query fragments',not re.search(r'otpauth://|secret=[A-Z2-7]{16}|hub_launch=[A-Za-z0-9_-]{10}|[?&]code=[A-Za-z0-9_-]{10}',lg),re.findall(r'.{30}(?:otpauth://|secret=|hub_launch=|[?&]code=).{10}',lg)[:3])
 # CSP / XFO over everything seen
@@ -173,11 +190,21 @@ ok('DISC front == back openid-configuration',s1==s2==200 and json.loads(d1)==jso
 b=B(); _,_,p=b.req('GET','/standin/admin'); _,_,p=b.req('POST','/standin/admin',{'username':'partner_admin','password':'wrong-'+secrets.token_hex(4),'__RequestVerificationToken':af(p)})
 print('INFO ADM error testids:',sorted(set(re.findall(r'data-testid="(error-[^"]+)"',p))))
 ok('ADM wrong password page carries ui-driver error-area testid',('data-testid="error-area"' in p) or re.search(r'data-testid="[^"]*error-area',p),sorted(set(re.findall(r'data-testid="([^"]+)"',p))))
-# admin pre-MFA transaction lifetime
-b,p=admin_pw(None,'partner_admin'); ctl('POST','/_standin/clock/advance',{'seconds':86400}); q=admin_mfa(b,p,totp('partner_admin')['code'])
-print(f'INFO TXL admin password step then 24 h later TOTP -> {testid(q)}')
-b,h=pw_step('cashier_db'); ctl('POST','/_standin/clock/advance',{'seconds':86400}); _,_,q=b.req('POST','/standin/l/pci-main/totp',{'totp_code':totp('cashier_db')['code'],'__RequestVerificationToken':af(h)})
-print(f'INFO TXL location password step then 24 h later TOTP -> {testid(q)}')
+# G5 (DEC TL 10:35): pending MFA expires after 5 min; code: PreMfaExpired = elapsed ms > 300000 (300000 still valid)
+ctl('POST','/_standin/reset')
+for ms,live in ((300000,True),(300001,False),(86400000,False)):
+    ctl('POST','/_standin/clock/freeze',{'frozen':True}); b,p=admin_pw(None,'partner_admin'); ctl('POST','/_standin/clock/advance',{'ms':ms})
+    n=len(evlist()); q=admin_mfa(b,p,totp('partner_admin')['code']); ev=evlist(n); ctl('POST','/_standin/clock/freeze',{'frozen':False})
+    got=testid(q); okk=(got=='screen-hub' and b.jar.get('standin_session')) if live else (got!='screen-hub' and not b.jar.get('standin_session') and not ev_of(ev,'auth.login.succeeded'))
+    print(f'INFO G5 admin pending MFA {ms} ms -> {got} events={reasons(ev)}')
+    ok(f'G5 admin: TOTP {ms} ms after password -> {"accepted" if live else "refused"}',okk and not audit_ok(ev),(got,reasons(ev)))
+    ctl('POST','/_standin/reset')
+    ctl('POST','/_standin/clock/freeze',{'frozen':True}); b,h=pw_step('cashier_db'); ctl('POST','/_standin/clock/advance',{'ms':ms})
+    n=len(evlist()); _,_,q=b.req('POST','/standin/l/pci-main/totp',{'totp_code':totp('cashier_db')['code'],'__RequestVerificationToken':af(h)}); ev=evlist(n); ctl('POST','/_standin/clock/freeze',{'frozen':False})
+    got=testid(q); okk=(got=='screen-hub') if live else (got!='screen-hub' and not ev_of(ev,'auth.login.succeeded'))
+    print(f'INFO G5 location pending MFA {ms} ms -> {got} events={reasons(ev)}')
+    ok(f'G5 location: TOTP {ms} ms after password -> {"accepted" if live else "refused"}',okk and not audit_ok(ev),(got,reasons(ev)))
+    ctl('POST','/_standin/reset')
 ctl('POST','/_standin/reset')
 js=json.dumps(ALLEV); ev_hits=[x for x in sec if x in js]
 ok(f'NS3 none of {len(sec)} secret values in {len(ALLEV)} audit events (all resets)',len(ALLEV)>100 and not ev_hits,[h[:6] for h in ev_hits][:5])

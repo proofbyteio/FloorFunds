@@ -115,7 +115,11 @@ public static class StandIn
         var g = GeneratedSecrets["clients"]![clientId]!;
         return g is JsonValue ? (string)g! : (string)g["secret"]!;
     }
-    public static string Password(string user) => (string)Fixtures["users"]!.AsArray().First(u => (string)u!["username"]! == user)!["password"]!;
+    public static string Password(string user)   // G7 (9b7efc9): "GENERATED" in fixtures -> <state dir>/fixture-secrets.json passwords
+    {
+        var v = (string)Fixtures["users"]!.AsArray().First(u => (string)u!["username"]! == user)!["password"]!;
+        return v != "GENERATED" ? v : (string)GeneratedSecrets["passwords"]![user]!;
+    }
 
     // ---- back channel (contract §7, §9, §10) ----
     public static async Task<(HttpStatusCode Status, JsonObject? Body, HttpResponseHeaders Headers)> BackPost(string endpoint, string clientId, IDictionary<string, string> form, string? secretOverride = null)
@@ -334,6 +338,7 @@ public sealed record Page(HttpStatusCode Status, string Body, IReadOnlyDictionar
         : Regex.Match(Body, "data-testid=\"((?:screen|page)-[a-z0-9-]+)\"") is { Success: true } m2 ? m2.Groups[1].Value : null;
     public bool HasTestId(string id) => Body.Contains("data-testid=\"" + id + "\"");
     public string? ErrorText => Regex.Match(Body, "data-testid=\"error-area\"[^>]*>.*?banner__title\">([^<]*)<", RegexOptions.Singleline) is { Success: true } b ? WebUtility.HtmlDecode(b.Groups[1].Value)
-        : Regex.Match(Body, "data-testid=\"error-(?:area|admin-sign-in|resign-in)\"[^>]*>([^<]*)<") is { Success: true, Groups: [_, { Length: > 0 }] } m ? WebUtility.HtmlDecode(m.Groups[1].Value) : null;
+        // G6 (9b7efc9) nests error-admin-sign-in inside error-area: take the first non-empty text among the error testids
+        : Regex.Matches(Body, "data-testid=\"error-(?:area|admin-sign-in|resign-in)\"[^>]*>([^<]*)<").FirstOrDefault(m => m.Groups[1].Length > 0) is { } m ? WebUtility.HtmlDecode(m.Groups[1].Value) : null;
     public string Header(string n) => Headers.TryGetValue(n, out var v) ? v : "";
 }

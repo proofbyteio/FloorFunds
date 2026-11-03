@@ -7,7 +7,9 @@ const env = k => process.env[k] || (() => { console.error(`${k} unset`); process
 const FRONT = env('LOGIN_FRONT_URL'), CTL = env('LOGIN_STANDIN_CONTROL_URL');
 const fx = JSON.parse(fs.readFileSync(env('LOGIN_STANDIN_FIXTURES')));
 const { chromium } = require(env('PW_CORE'));
-const pw = u => fx.users.find(x => x.username === u).password;
+// G7 (9b7efc9): "GENERATED" passwords come from <state dir>/fixture-secrets.json (LOGIN_STANDIN_SECRETS).
+const gen = () => JSON.parse(fs.readFileSync(env('LOGIN_STANDIN_SECRETS')));
+const pw = u => { const v = fx.users.find(x => x.username === u).password; return v === 'GENERATED' ? gen().passwords[u] : v; };
 const ISS = FRONT + '/standin';
 let n = 0, p = 0; const ok = (name, cond, ev = '') => { n++; if (cond) p++; console.log(`${cond ? 'PASS' : 'FAIL'} ${name}${cond ? '' : ' :: ' + JSON.stringify(ev).slice(0, 300)}`); };
 const ctl = async (m, path, body) => { const r = await fetch(CTL + path, { method: m, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined }); return r.headers.get('content-type')?.includes('json') ? r.json() : r.status; };
