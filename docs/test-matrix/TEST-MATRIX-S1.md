@@ -169,3 +169,49 @@ New tests in `tests/Login.ContractTests/PreFreezeSchemaTests.cs` (check 7). Ever
 | OQ-SSE2-47 | cap_changed for a partner admin doesn't require `scope.partner_id`. Post-freeze. |
 | OQ-SSE2-48 | **Ruled (TL 8:47 PM).** Fixed in e363090. |
 | OQ-SSE2-49 | The re-enrol "generic message" is not named. The only error-area string is "Sign-in didn't work.", which comes from a TL ruling (CR-05), not the LD. Tests assert only `error-area` plus 429, never the text. Post-freeze. |
+
+## Revision Mon Nov 2, 9:45 PM PT (SSE2): SI1 stand-in feat/si1-standin 8aab98a, base 18090
+Command: `. /tmp/sse2-work/env.sh && STANDIN_PIDFILE=/tmp/sse2-si1-8aab98a/pid tools/run-checks.sh standin` → **514 / 420 pass / 5 fail / 89 pending / 0 not run** (21:36:55–21:38:02 PST).
+
+| Id | Contract | What | 8aab98a |
+|---|---|---|---|
+| HO01 | 5.6, 5.10 | happy path: code+iss, one signed_in method=hub_handoff, original auth_time+sid, schema-valid | PASS |
+| HO02 / HO03 / HO03b | 5.7 | missing hub_launch; 61 s expired (control +58 s); **60000 ms + latency (TL ms ruling)** | PASS / PASS / **FAIL** (60003 ms accepted, A42 floor) |
+| HO04 / HO05 / HO07 | 5.7 | replay; another session's value (consumed); no session (consumed) | PASS |
+| HO06 | 5.7, A41 | different client: no hand-off, no cage_consumed; consumption = OQ-SSE2-56 | PASS |
+| HO08 / HO09 | 5.12 / 5.13 | admin → not_location_user; recovery → recovery_session, single-use code | PASS |
+| HO10 / HO10b | 5.8(c) | interstitial no-store, antiforgery, connect-src; **exact CSP pin (regression for 9a14163 miss)** | PASS / PASS |
+| HO11–HO14 | 5.5, 5.8 | attestation only in POST body; completion replay; tx/session mismatch; bad attestations; remote_session → screen-8a | PASS |
+| HO15 | 5.1 r3/6 | second hand-off re-prompt no event; **no SSO after cage_consumed**; prompt=none → interaction_required | PASS |
+| HO16 / HO18 / HO18b / HO18c | 5.1 r1 | +301 s; **> 300000 ms (300002) refused**; < 300000 ms accepted; exactly 300000 ms | PASS / **FAIL** / PASS / PENDING OQ-SSE2-55 |
+| HO17 | 5.7 URL exception | app log has no raw hub_launch/code/state | **FAIL** |
+| HO19 (×2) | 5.1 r2, 8.10 | amr [pwd] / [wiaormfa] refused, no event, no tx | PASS |
+| HO20 (×9) | 5.8(c), TL 9:32 item 6 | CSP frame-ancestors 'none' + default-src + no-store on signin, totp, hub, apps, admin, admin-mfa, interstitial, re-sign-in, screen-8a | PASS |
+| HO21 | ui-driver | interstitial ui-driver id | PENDING OQ-SSE2-57 |
+| D93_01–03 | DEC-093 | cashier at /admin no session; admin at /l/ no session; admin authorize never sent to /l/ | PASS |
+| D93_04 / 05 | DEC-093 | admin → /admin, location user → own /l/{slug} after re-enrolment | PENDING OQ-SSE2-54 (A36 not built) |
+| PKJ01–12 | 7.6 | private_key_jwt negatives (alg none/HS/PS, keys, jwk/jku, iss/sub, aud, jti, lifetime, malformed, Basic+assertion, type, rotation) | PASS 12/12 |
+| SEC70–79c | 4.4, 7.2, 9, 10, 11, LD | adversarial set | 15 PASS, **SEC76, SEC77 FAIL**, SEC75b/79c PENDING (OQ-SSE2-52/11) |
+| FS01 | B2 | no private key tracked on si1, sse2, contract | PASS |
+| FS02 (×7) | B2 | negative controls: SSE script fails on .pem/.key, PEM markers (PKCS8, RSA, ENCRYPTED), RSA/EC JWK with d | PASS |
+| FS03 (×2) | B2 | probe: OKP JWK, key deleted in history | logged: **not detected** (info) |
+| FS04 | B2 | FIXTURE client keys under /tmp, mode 0600 | PASS |
+
+### DEC-095 (post-S1, matrix rows only, no tests) [Steering 9:25 PM PT]
+| Id | Rule | Status |
+|---|---|---|
+| D95-01 | super admin can issue a re-enrolment code for any partner | post-S1, no test |
+| D95-02 | partner admin can issue only for its own partner; other partner → refused `wrong_partner` | post-S1, no test |
+| D95-03 | location user issuing → refused `not_admin` | post-S1, no test |
+| D95-04 | the code is single use and short-lived | post-S1, no test |
+
+### New open questions (for the TL)
+- **OQ-SSE2-50**: TOTP single use and attempt lockout come from the LD (L331, L335, L218), not contract-v1. SEC76/77 fail on that basis. Are they S1 requirements?
+- **OQ-SSE2-51**: what is the TOTP attempt limit (count and window)?
+- **OQ-SSE2-52**: 7.2 does not define replay inside the 30 s leeway. 8aab98a gives 3 live chains from one refresh token.
+- **OQ-SSE2-53**: stand-in builds without the hand-off or private_key_jwt: tests skip as pending, not fail. OK?
+- **OQ-SSE2-54**: DEC-093 re-enrolment routes are not built (A36). D93_04/05 stay pending until SI1 step 3.
+- **OQ-SSE2-55**: the exact 300000 ms / 60000 ms boundary is not testable. standin-control 2.2 has whole-second advance on a running wall clock. Add a clock freeze or set, or accept the ±latency method?
+- **OQ-SSE2-56**: hub_launch presented to another client: "ignore" (5.7, A41: still usable) vs the TL's "refused". Must it be consumed?
+- **OQ-SSE2-57**: what is the ui-driver id for the hand-off interstitial (5.8)? There is none in ui-driver.md or SSE code (A38).
+- **OQ-SSE2-58**: 5.8(c) "strict CSP" vs `script-src 'self' 'unsafe-inline'` on every page. Also X-Frame-Options SAMEORIGIN on some pages next to frame-ancestors 'none'.

@@ -291,3 +291,24 @@ Post-freeze, not blockers (OQ-SSE2-42/43/44/47/49 in the test matrix):
 - check_schemas.py hardcodes the working-tree path.
 - The cited LD md5 (560cb6ab) differs from the LD on disk (190c62e9).
 - TL items 4/6/7/8.
+
+## Addendum: stand-in findings at feat/si1-standin 8aab98a (SSE2, Mon Nov 2, 9:45 PM PT)
+Target 8aab98a [TL 9:32 PM PT], base 18090, own state dir. contract-v1 e363090 is frozen and not reopened; these are findings against the stand-in, or questions for v1.1.
+
+| # | Sev | Finding | Evidence |
+|---|---|---|---|
+| F1 | **major** | Auth-age rule 1 rounds down to whole seconds (A42 `Handoff.Age` = floor), against the TL ruling of 9:32 PM PT (ms precision, no rounding down). A session 300002 ms old gets the interstitial. | HO18: "auth age at authorize >= 300002 ms / result: 200". SSE evidence row 109 "exactly 300 s accepted" relies on this. |
+| F2 | **major** | Same floor on the 60 s hub_launch: 60003 ms is accepted. | HO03b: "hub_launch age >= 60003 ms -> 200". SSE row 102. |
+| F3 | **major** | TOTP code replays: one code signs in a second browser. Same at /admin/mfa (±30 s window). | SEC76: "replayed TOTP code accepted: screen-hub". SignIn.cs has no last-used step. (OQ-SSE2-50) |
+| F4 | **major** | No TOTP attempt limit: after 11 wrong codes the right code still signs in. | SEC77. (OQ-SSE2-50/51) |
+| F5 | **major** | The stand-in stdout log (ASP.NET Core "Request starting", Information) holds raw hub_launch, code_challenge and state. Breaks the 5.7 URL exception ("app logs redact hub_launch, code and state"). | HO17: "…&nonce=n-1&hub_launch=zunH_76cMt67ZIWdnR4geQ - …" at pos 323169 of standin.log. |
+| F6 | fixed | 9a14163 interstitial had no CSP. 8aab98a has it. Pinned by HO10b (exact string) and HO20 (every page). | 9a14163 headers: only Cache-Control, Pragma. 8aab98a: `default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:18092; frame-ancestors 'none'`. |
+| F7 | minor | `script-src 'unsafe-inline'` on every page vs 5.8(c) "strict CSP". X-Frame-Options SAMEORIGIN on sign-in and admin pages contradicts frame-ancestors 'none' (CSP wins in current browsers). | HO20 logs. (OQ-SSE2-58) |
+| F8 | minor | Username timing difference: known user 2.3 ms vs unknown user 0.5 ms median (n=40, p=8.9e-14). | SEC79c. (OQ-SSE2-11) |
+| F9 | minor | One refresh token replayed inside the 30 s leeway gives 3 live token chains. | SEC75b. (OQ-SSE2-52) |
+| F10 | info | hub_launch shown to back office is ignored and stays usable (A41). The TL item says "refused". | HO06 log. (OQ-SSE2-56) |
+| F11 | info | SSE's fixture-secrets script checks only the current index. A key deleted in history, and an OKP JWK with `d`, are not detected. Client secrets and recovery codes are plain text in the committed fixtures.json (labelled FIXTURE) and not checked. | FS03 logs: rc=0 "NOT detected". |
+| F12 | info | Discovery advertises front token and revocation endpoints that answer 404. /admin has no lockout (A33). | earlier SEC run. |
+| F13 | info | The interstitial has no ui-driver id (A38). | HO21 pending (OQ-SSE2-57). |
+
+SSE claim "143/143, evidence md5 276d88d0": **reproduced** (SSE harness against my 8aab98a: TOTAL 143 / 143; file md5 276d88d001535ac6eac2723dbe0bb5d1). It conflicts with F1/F2 only on rows 102, 109 and 110.

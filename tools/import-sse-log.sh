@@ -14,7 +14,7 @@
 set -euo pipefail
 commit="${1:?usage: import-sse-log.sh <commit> [repo]}"
 repo="${2:-$(cd "$(dirname "$0")/.." && pwd)}"
-log="$repo/docs/BUILD-LOG.md"; file=contract/SSE-BUILD-LOG-PENDING.md
+log="$repo/docs/BUILD-LOG.md"; file="${SSE_LOG_FILE:-contract/SSE-BUILD-LOG-PENDING.md}"  # SSE_LOG_FILE=src/SI1-BUILD-LOG.md for the SI1 stand-in log (SSE2 9:55 PM PT)
 [ -f "$log" ] || { echo "no $log" >&2; exit 2; }
 sha=$(git -C "$repo" rev-parse --short "$commit^{commit}")
 # Guard: never import an OLDER commit than one already imported (its older entry text would look "revised").
@@ -26,9 +26,9 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 git -C "$repo" show "$sha:$file" >"$tmp/target.md"
 i=0; for c in $(git -C "$repo" log --reverse --format=%h "$sha" -- "$file"); do
   i=$((i+1)); git -C "$repo" show "$c:$file" >"$tmp/$(printf %04d $i)-$c.md" 2>/dev/null || true; done
-python3 - "$tmp" "$log" "$sha" <<'PY'
+python3 - "$tmp" "$log" "$sha" "$file" <<'PY'
 import sys, hashlib, re, glob, os
-tmp, log, sha = sys.argv[1:]
+tmp, log, sha = sys.argv[1:4]
 def entries(text):
     return [p.rstrip("\n") + "\n" for p in re.split(r'(?m)^(?=#{2,3} )', text) if re.match(r'#{2,3} ', p)]
 target = entries(open(f"{tmp}/target.md", encoding="utf-8").read())
@@ -44,7 +44,7 @@ for body in target:
     first = next((c for c, es in hist if body in es), sha)
     rev = " (revised)" if head in heads else ""
     new.append(f'<!-- sse-import sha256={h} first-seen={first} imported-from={sha} head="{head}"{rev} -->\n'
-               f'> **Imported verbatim from SSE**{rev}: `contract/SSE-BUILD-LOG-PENDING.md`, first seen in `{first}`, imported from `{sha}`.\n\n'
+               f'> **Imported verbatim from SSE**{rev}: `{sys.argv[4]}`, first seen in `{first}`, imported from `{sha}`.\n\n'
                f'{body}<!-- /sse-import -->\n')
 if new:
     with open(log, "a", encoding="utf-8") as f:

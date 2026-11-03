@@ -9,6 +9,17 @@ here="$(cd "$(dirname "$0")" && pwd)"; code="$(cd "$here/.." && pwd)"
 export LOGIN_CONTRACT_TARGET="${1:-${LOGIN_CONTRACT_TARGET:-standin}}"
 export DOTNET_ROOT="${DOTNET_ROOT:-$HOME/.dotnet}" PATH="$DOTNET_ROOT:$PATH" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 out="${RESULTS_DIR:-$(mktemp -d /tmp/sse2-results.XXXX)}"; mkdir -p "$out"
+# [TL Decision 9:26 PM PT (c)] port-owner check before every run: abort if anyone but our stand-in (STANDIN_PIDFILE) holds the ports.
+if [ "$LOGIN_CONTRACT_TARGET" = standin ]; then
+  ports=$(for u in "${LOGIN_FRONT_URL:-}" "${LOGIN_BACK_URL:-}" "${LOGIN_STANDIN_CONTROL_URL:-${LOGIN_CONTROL_URL:-}}"; do [ -n "$u" ] && python3 -c 'import sys,urllib.parse as u;print(u.urlsplit(sys.argv[1]).port)' "$u"; done)
+  if [ -n "$ports" ]; then
+    if [ -n "${STANDIN_PIDFILE:-}" ]; then "$here/check-ports.sh" mine "$STANDIN_PIDFILE" $ports || { echo "ABORT: port owner check failed; no traffic sent"; exit 3; }
+    else echo "WARN: STANDIN_PIDFILE not set; port owners not checked ($ports)"; fi
+  fi
+fi
+# [TL Decision 9:26 PM PT (d)] fixture-secrets check (SSE's script, every branch); also runs as FixtureSecretsTests (check fixture-secrets).
+"$here/check-fixture-secrets.sh"; fsec=$?
+[ $fsec -eq 1 ] && { echo "FAIL fixture-secrets: a private key is tracked"; }
 dotnet build "$code/tests/Cachd.Tests.slnx" -nologo -v q >"$out/build.log" 2>&1 || { echo "BUILD FAILED (see $out/build.log)"; exit 2; }
 for p in Login.ContractTests Login.SecurityTests e2e; do
   exe=$(ls "$code/tests/$p/bin/Debug/net10.0/"Login.*Tests "$code/tests/$p/bin/Debug/net10.0/Login.E2E" 2>/dev/null | head -1)
@@ -24,7 +35,7 @@ for f in sorted(glob.glob(out + "/*.xml")):
         if r == "Skip":
             reason = (t.findtext("reason") or "").strip()
             pend[chk].add(reason.split(":")[0][:60])
-order = ["1","2","3","4","4a","4b","5","6","7","8","9","10","11","12","pw-class","session-cap","(none)"]
+order = ["fixture-secrets","1","2","3","4","4a","4b","5","6","7","8","9","10","11","12","pw-class","session-cap","(none)"]
 print(f"{'check':9} {'status':8} pass fail skip")
 anyfail = False
 for c in order + sorted(set(per) - set(order)):
@@ -36,3 +47,4 @@ print(f"TOTAL tests={sum(tot.values())} passed={tot['Pass']} failed={tot['Fail']
 print("results:", out)
 sys.exit(1 if anyfail else 0)
 PY
+rc=$?; [ "${fsec:-0}" -eq 1 ] && rc=1; exit $rc
