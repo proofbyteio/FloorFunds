@@ -180,6 +180,6 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 
 | Item | State | Who | Where |
 |---|---|---|---|
-| TOTP rate-limit value and source | **Post-freeze, open:** SA to give the value and its source. Meanwhile the server must still rate-limit POST `/mfa/reenroll` | SA | contract 7.8 |
+| TOTP rate-limit value and source | **Default set** [TL Decision 2026-11-02 8:48 PM] (TL Decision, not Confirmed): 5 failed tries / 15 min / user, `LoginService:Mfa:ReenrollRateLimit`, contract 7.8. **Post-freeze:** SA may revise the value and give its source | SA | contract 7.8 |
 | ui-driver re-enrolment screen | **Post-freeze, v1.1:** test ids for the `/mfa/reenroll` pages | SSE / UX | ui-driver |
 

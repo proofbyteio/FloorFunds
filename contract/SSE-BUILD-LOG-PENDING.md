@@ -148,3 +148,9 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - Cases: normal (first enrolment) now positive; missing still negative; new negative for another value.
 - Post-freeze OPEN-QUESTIONS items: TOTP rate-limit value/source → SA (server must still limit POST /mfa/reenroll); ui-driver re-enrolment screen → v1.1.
 - check_schemas.py: 148 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097.
+
+## v1-d4 follow-up 12: [TL Decision 2026-11-02 8:48 PM] (written 8:48 PM PT; same commit, hash/time in git log)
+- 7.8 re-enrol POST rate limit (TL Decision, not Confirmed; SA may revise): 5 failed tries / 15 min / user, LoginService:Mfa:ReenrollRateLimit; trip → 429, generic message, no-store, auth.mfa.failed step=reenroll reason=rate_limited (session_kind required). Open TOTP-limit row points here.
+- auth.config.change_denied details closed: setting, attempted_value (TimeSpan), reason not_admin|wrong_partner|out_of_range; admin_type required for admin reasons, absent for not_admin; scope.partner_id for partner. CAP04 (password in details) rejected.
+- auth.mfa.failed step=reenroll details closed (no totp_code echo).
+- check_schemas.py: 165 PASS, 0 FAIL, exit 0 (SSE2's export count of 149 differs). Hardcoded path not changed (post-freeze). allowlist.db md5 e5384097.
