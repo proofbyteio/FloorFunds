@@ -1,6 +1,6 @@
 # Login contract v1: DRAFT (not frozen)
 
-Owner: SSE. Status: **DRAFT v1-d4** (NOT frozen; awaiting SSE2 check and TL freeze), written Mon Nov 2, 2026, 11:30-11:40 AM PT (v1-d1); revised from 11:37 AM PT with the TL's answers (v1-d2); revised ~7:55-8:20 PM PT with the TL rulings, Addendum and G1/G2 (v1-d3); revised 8:16-8:50 PM PT with the TL's 8:12 PM / 8:14 PM replies, LD §16.19 rows 110-119 and Addendum 2 (v1-d4).
+Owner: SSE. Status: **DRAFT v1-d4** (NOT frozen; awaiting SSE2 check and TL freeze), written Mon Nov 2, 2026, 11:30-11:40 AM PT (v1-d1); revised from 11:37 AM PT with the TL's answers (v1-d2); revised ~7:55-8:20 PM PT with the TL rulings, Addendum and G1/G2 (v1-d3); revised 8:16-8:24 PM PT with the TL's 8:12 PM / 8:14 PM replies, LD §16.19 rows 110-119 and Addendum 2 (v1-d4).
 It is not frozen. Per build plan §3.1 "Versioning" (TL Decision), v1 freezes only after SSE2's
 adversarial pass and TL review. No stand-in code (SI1) is written until then.
 
