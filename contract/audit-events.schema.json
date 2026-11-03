@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:audit-events",
   "title": "Audit events the contract tests may assert, contract v1 (DRAFT v1-d3)",
-  "description": "Event list [SRC: PLAN §3.1 L148-161; LD §8 L415-425]. Envelope names [SRC: AUD §7A.4]; login-specific mapping [SRC: LD §8 L422]. The Cachd client field is cachd_client_id [TL Decision 2026-11-02, OQ-23; consistent with B-LS5 and claims.schema.json]; AUD §7A.4 still says client_id [OPEN (SA) -> OQ-37; TL Rec: SA renames to cachd_client_id; safe default: contract keeps cachd_client_id]; partner_id/location_id flat (AUD) vs scope.* (LD) stays open with the SA [OQ-23]. Events marked 'Defined, not emitted in S1' are in the v1 schema so later slices keep the shape [TL Decision 2026-11-02, OQ-26]; draft uses AUD flat names plus LD's actor.session_id, target, action. Only fields the login service writes are listed; relay-assigned fields (received_at, sequence, prev_hash, hash) are not asserted.",
+  "description": "Event list [SRC: PLAN §3.1 L148-161; LD §8 L416-426]. Envelope names [SRC: AUD §7A.4]; login-specific mapping [SRC: LD §8 L423]. The Cachd client field is cachd_client_id [TL Decision 2026-11-02, OQ-23; consistent with B-LS5 and claims.schema.json]; AUD §7A.4 still says client_id [OPEN (SA) -> OQ-37; TL Rec: SA renames to cachd_client_id; safe default: contract keeps cachd_client_id]; partner_id/location_id flat (AUD) vs scope.* (LD) stays open with the SA [OQ-23]. Events marked 'Defined, not emitted in S1' are in the v1 schema so later slices keep the shape [TL Decision 2026-11-02, OQ-26]; draft uses AUD flat names plus LD's actor.session_id, target, action. Only fields the login service writes are listed; relay-assigned fields (received_at, sequence, prev_hash, hash) are not asserted.",
   "type": "object",
   "allOf": [{"$ref": "#/$defs/envelope"}],
   "oneOf": [
@@ -29,9 +29,9 @@
         "event_id": { "description": "UUIDv7, idempotency key [SRC: AUD §7A.4].", "$ref": "#/$defs/id" },
         "schema": { "const": "cachd.log" },
         "schema_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
-        "category": { "description": "Events category [SRC: LD §8 L411]. Literal 'event' [OPEN (SA) -> OQ-23; safe default 'event'].", "const": "event" },
+        "category": { "description": "Events category [SRC: LD §8 L412]. Literal 'event' [OPEN (SA) -> OQ-23; safe default 'event'].", "const": "event" },
         "event_type": {
-          "description": "auth.* plus exactly one iam.* name, iam.permission.change_requested [SRC: LD §8 L425]; no iam.* pattern [OPEN (SA) -> OQ-38; TL Rec: SA renames it auth.provider.change_requested; safe default: allow exactly that one name].",
+          "description": "auth.* plus exactly one iam.* name, iam.permission.change_requested [SRC: LD §8 L426]; no iam.* pattern [OPEN (SA) -> OQ-38; TL Rec: SA renames it auth.provider.change_requested; safe default: allow exactly that one name].",
           "type": "string",
           "pattern": "^(auth\\.[a-z_]+\\.[a-z_]+|iam\\.permission\\.change_requested)$"
         },
@@ -43,7 +43,7 @@
           "$ref": "#/$defs/id"
         },
         "location_id": { "$ref": "#/$defs/id" },
-        "workstation_id": { "description": "If known [SRC: LD L422].", "type": "string" },
+        "workstation_id": { "description": "If known [SRC: LD L423].", "type": "string" },
         "actor": {
           "type": "object",
           "required": ["user_id"],
@@ -52,7 +52,7 @@
               "description": "= sub; null when the user is unknown (failed sign-in) [OPEN (SA) -> OQ-24; TL Rec accepted as safe default].",
               "oneOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]
             },
-            "session_id": { "description": "= login_session_id [SRC: LD L422].", "type": "string" },
+            "session_id": { "description": "= login_session_id [SRC: LD L423].", "type": "string" },
             "roles": { "type": "array", "items": { "type": "string" }},
             "channel": { "type": "string" }
           }
@@ -60,7 +60,7 @@
         "target": { "type": "object", "properties": { "type": { "type": "string" }, "id": { "type": "string" }}},
         "action": { "type": "string" },
         "source": {
-          "description": "service, versions [SRC: AUD §7A.4]; ip, user_agent [SRC: LD L415, L422].",
+          "description": "service, versions [SRC: AUD §7A.4]; ip, user_agent [SRC: LD L416, L423].",
           "type": "object",
           "required": ["service"],
           "properties": {
@@ -72,7 +72,7 @@
           }
         },
         "outcome": {
-          "description": "success / failure / denied [OPEN (SA) -> OQ-23/OQ-24; safe default these three]; success and denied appear in LD L422, L424.",
+          "description": "success / failure / denied [OPEN (SA) -> OQ-23/OQ-24; safe default these three]; success and denied appear in LD L423, L425.",
           "enum": ["success", "failure", "denied"]
         },
         "correlation_id": { "type": "string" },
@@ -89,7 +89,7 @@
     },
     "provider_kind": { "enum": ["database", "entra"]},
     "auth.login.succeeded": {
-      "description": "[SRC: LD §8 L415]. Optional detail attestation [TL Decision 2026-11-02, OQ-11] (TL Rec to the SA for LD §8 L415).",
+      "description": "[SRC: LD §8 L416]. Optional detail attestation [TL Decision 2026-11-02, OQ-11] (TL Rec to the SA for LD §8 L416).",
       "properties": {
         "event_type": { "const": "auth.login.succeeded" },
         "outcome": { "const": "success" },
@@ -112,7 +112,7 @@
       }
     },
     "auth.login.failed": {
-      "description": "[SRC: LD §8 L416; PLAN L150]. Never the password.",
+      "description": "[SRC: LD §8 L417; PLAN L150]. Never the password.",
       "properties": {
         "event_type": { "const": "auth.login.failed" },
         "outcome": { "const": "failure" },
@@ -120,12 +120,12 @@
           "required": ["username_hmac", "reason", "provider_kind"],
           "properties": {
             "username_hmac": {
-              "description": "Lowercase hex HMAC-SHA256 with a secret key over the normalized username (trim, Unicode NFKC, lowercase invariant) [SRC: LD L416; OPEN (SA) -> OQ-24, TL Rec as safe default]. Stand-in key is test-only.",
+              "description": "Lowercase hex HMAC-SHA256 with a secret key over the normalized username (trim, Unicode NFKC, lowercase invariant) [SRC: LD L417; OPEN (SA) -> OQ-24, TL Rec as safe default]. Stand-in key is test-only.",
               "type": "string",
               "pattern": "^[0-9a-f]{64}$"
             },
             "reason": {
-              "description": "Known codes: remote_session [SRC: LD L416]; locked, mfa_missing, tenant_mismatch, stale_auth_time [SRC: PLAN L146]; bad_credentials covers both unknown user and wrong password (no existence oracle), outbox_unavailable [OPEN (SA) -> OQ-24; TL Rec as safe default]. rate_limited is not an outbox reason (LD §8 L429). Full list open with the SA.",
+              "description": "Known codes: remote_session [SRC: LD L417]; locked, mfa_missing, tenant_mismatch, stale_auth_time [SRC: PLAN L146]; bad_credentials covers both unknown user and wrong password (no existence oracle), outbox_unavailable [OPEN (SA) -> OQ-24; TL Rec as safe default]. rate_limited is not an outbox reason (LD §8 L430). Full list open with the SA.",
               "type": "string",
               "pattern": "^[a-z_]+$",
               "examples": ["bad_credentials", "locked", "mfa_missing", "tenant_mismatch", "stale_auth_time", "remote_session"]
@@ -137,14 +137,14 @@
       }
     },
     "auth.account.locked": {
-      "description": "[SRC: LD §8 L417]; 10 tries / 30 min [SRC: PLAN L34].",
+      "description": "[SRC: LD §8 L418]; 10 tries / 30 min [SRC: PLAN L34].",
       "properties": {
         "event_type": { "const": "auth.account.locked" },
         "details": { "required": ["lock_until"], "properties": { "lock_until": { "type": "string", "format": "date-time" }}}
       }
     },
     "auth.account.unlocked": {
-      "description": "Who unlocked, user unlocked, identity check used [SRC: LD §8 L417].",
+      "description": "Who unlocked, user unlocked, identity check used [SRC: LD §8 L418].",
       "properties": {
         "event_type": { "const": "auth.account.unlocked" },
         "target": { "required": ["type", "id"], "properties": { "type": { "const": "user" }}},
@@ -152,7 +152,7 @@
       }
     },
     "auth.mfa": {
-      "description": "[SRC: LD §8 L418].",
+      "description": "[SRC: LD §8 L419].",
       "properties": {
         "event_type": { "enum": ["auth.mfa.enrolled", "auth.mfa.succeeded", "auth.mfa.failed", "auth.mfa.reset"]},
         "details": {
@@ -162,14 +162,14 @@
       }
     },
     "auth.password.changed": {
-      "description": "[SRC: LD §8 L419].",
+      "description": "[SRC: LD §8 L420].",
       "properties": {
         "event_type": { "const": "auth.password.changed" },
         "details": { "required": ["channel"], "properties": { "channel": { "type": "string" }}}
       }
     },
     "auth.session.revoked": {
-      "description": "reason, actor [SRC: LD §8 L421]. One per login session ended, not per client/token [TL Decision 2026-11-02, OQ-10]. reason=user_disabled when refresh finds the user disabled or locked [TL Decision 2026-11-02, OQ-12]. Other values [OPEN (SA) -> OQ-24; safe default the examples].",
+      "description": "reason, actor [SRC: LD §8 L422]. One per login session ended, not per client/token [TL Decision 2026-11-02, OQ-10]. reason=user_disabled when refresh finds the user disabled or locked [TL Decision 2026-11-02, OQ-12]. Other values [OPEN (SA) -> OQ-24; safe default the examples].",
       "properties": {
         "event_type": { "const": "auth.session.revoked" },
         "details": {
@@ -185,7 +185,7 @@
       }
     },
     "auth.app.signed_in": {
-      "description": "[SRC: LD §8 L422; PLAN L156, S1 check 2]. One per code issued.",
+      "description": "[SRC: LD §8 L423; PLAN L156, S1 check 2]. One per code issued.",
       "properties": {
         "event_type": { "const": "auth.app.signed_in" },
         "outcome": { "const": "success" },
@@ -209,7 +209,7 @@
       "required": ["target", "action"]
     },
     "auth.app_access.denied": {
-      "description": "[SRC: LD §8 L424; PLAN §1.2 L51, L157, S1 checks 1, 4, 4a].",
+      "description": "[SRC: LD §8 L425; PLAN §1.2 L51, L157, S1 checks 1, 4, 4a].",
       "properties": {
         "event_type": { "const": "auth.app_access.denied" },
         "outcome": { "const": "denied" },
@@ -218,7 +218,7 @@
           "required": ["reason"],
           "properties": {
             "reason": {
-              "description": "notfromhub: rule 4, hub_launch missing or used [SRC: LD L424, L1180; TL Decision 2026-11-02, OQ-7].",
+              "description": "notfromhub: rule 4, hub_launch missing or used [SRC: LD L425, L1182; TL Decision 2026-11-02, OQ-7].",
               "enum": ["no_role", "remote_session", "attestation_invalid", "notfromhub"]
             }
           }
@@ -227,14 +227,14 @@
       "required": ["target"]
     },
     "auth.password.reset": {
-      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. [SRC: LD §8 L419]. Channel values email | admin [OPEN (SA) -> OQ-24; safe default].",
+      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. [SRC: LD §8 L420]. Channel values email | admin [OPEN (SA) -> OQ-24; safe default].",
       "properties": {
         "event_type": { "enum": ["auth.password.reset_requested", "auth.password.reset_completed"]},
         "details": { "required": ["channel"], "properties": { "channel": { "type": "string" }}}
       }
     },
     "auth.provider.changed": {
-      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. [SRC: LD §8 L420]. before/after never hold secrets.",
+      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. [SRC: LD §8 L421]. before/after never hold secrets.",
       "properties": {
         "event_type": { "const": "auth.provider.changed" },
         "details": {
@@ -249,7 +249,7 @@
       }
     },
     "not_emitted_fields_not_stated": {
-      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. In LD §8 L425 with no fields stated (envelope only) [TL Decision 2026-11-02, OQ-25]. Partner Admin method change = iam.permission.change_requested [OPEN (SA) -> OQ-38].",
+      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. In LD §8 L426 with no fields stated (envelope only) [TL Decision 2026-11-02, OQ-25]. Partner Admin method change = iam.permission.change_requested [OPEN (SA) -> OQ-38].",
       "properties": {
         "event_type": {
           "enum": [
@@ -263,7 +263,7 @@
       }
     },
     "fields_not_stated": {
-      "description": "In the list [SRC: PLAN L158-160; LD §8 L425] but no fields are stated anywhere. Envelope only until the SA states fields [TL Decision 2026-11-02, OQ-25].",
+      "description": "In the list [SRC: PLAN L158-160; LD §8 L426] but no fields are stated anywhere. Envelope only until the SA states fields [TL Decision 2026-11-02, OQ-25].",
       "properties": { "event_type": { "enum": ["auth.refresh.reuse_detected", "auth.break_glass.used", "auth.session.location_switched"]}}
     }
   }

@@ -4,10 +4,10 @@ Labels and source snapshots: see `README.md`.
 
 ## 1. Rule
 
-- Toward OAuth clients: **standard OAuth 2.0 / OIDC error codes only**. [SRC: PLAN §3.1 L137; LD §16.17.2 L1312]
+- Toward OAuth clients: **standard OAuth 2.0 / OIDC error codes only**. [SRC: PLAN §3.1 L137; LD §16.17.2 L1314]
 - Internal reason codes (`locked`, `mfa_missing`, `tenant_mismatch`, `stale_auth_time`, `remote_session`,
   `no_role`, `attestation_invalid`, `notfromhub`, …) go **only** to audit and to our own pages, never to clients.
-  [SRC: PLAN L146; LD §8 L424]
+  [SRC: PLAN L146; LD §8 L425]
 - `error_description` is never sent, so no internal reason can leak through it. OpenIddict sends it by default, so the real service MUST strip `error_description` and `error_uri` in a response handler; a contract test asserts no `error_description` on every endpoint. [TL Decision 2026-11-02, OQ-17]
 - `error_uri` is never sent. [TL Decision 2026-11-02, OQ-17]
 - G2: nothing secret or diagnostic in a URL or a client-visible error; reason codes in audit only. [TL Decision 2026-11-02, G2]
@@ -26,7 +26,7 @@ Labels and source snapshots: see `README.md`.
 | `access_denied` | No role in the client's `app_code` (audit `reason=no_role`); user cancels on the remote-session block (screen 8) | authorize: redirect | [SRC: PLAN L143, L134; S1 checks 1, 4] |
 | `login_required` | `prompt=none` and no login session | authorize: redirect | [SRC: PLAN L144] |
 | `interaction_required` | `prompt=none` and a session exists but interaction is needed (`max_age` exceeded, hand-off rules not met, `cage_consumed`) | authorize: redirect | code [SRC: PLAN L144]; cases [TL Decision 2026-11-02, OQ-18] (Accept; also MFA and location steps) |
-| `temporarily_unavailable` | Outbox write failed (fail closed: no session, no code); issuer dependency down | authorize: redirect. Token endpoint: HTTP 503 JSON `{"error":"temporarily_unavailable"}` (not an RFC 6749 §5.2 token code), `Retry-After: <integer seconds>`, `Cache-Control: no-store`, no description, no partial grant; the presented refresh token is not consumed | code and cases [SRC: PLAN L145, S1 check 9; LD §8 L427]; token transport [TL Decision 2026-11-02, OQ-19] |
+| `temporarily_unavailable` | Outbox write failed (fail closed: no session, no code); issuer dependency down | authorize: redirect. Token endpoint: HTTP 503 JSON `{"error":"temporarily_unavailable"}` (not an RFC 6749 §5.2 token code), `Retry-After: <integer seconds>`, `Cache-Control: no-store`, no description, no partial grant; the presented refresh token is not consumed | code and cases [SRC: PLAN L145, S1 check 9; LD §8 L428]; token transport [TL Decision 2026-11-02, OQ-19] |
 
 Redirect errors carry `error` and the client's `state` and `iss` (RFC 9207), on every authorization response, success and error. [TL Decision 2026-11-02, OQ-17]
 
@@ -34,10 +34,10 @@ Redirect errors carry `error` and the client's `state` and `iss` (RFC 9207), on 
 
 | Situation | What happens | Label |
 |---|---|---|
-| Hand-off rule 1-6 fails (rule 4 also writes `auth.app_access.denied reason=notfromhub`: `hub_launch` missing, expired, used or bound to another session or client, contract 5.7) | Sign-in page again (re-prompt) | [SRC: PLAN L134; LD L1311] |
-| Hand-off refused, `attestation_invalid` (`device_attestation` missing or failing any 6.7 check) | Password + MFA sign-in; cage actions blocked; screen 8 (Session), variant B "security software not responding" | [SRC: LD L1190; PLAN S1 4a, 4b] |
-| Hand-off refused, `remote_session` | Screen 8 (Session), variant A "remote session"; `access_denied` to the client only if the user cancels | [SRC: LD L1189; PLAN L134] |
-| Plain sign-in, agent reports remote session | Screen 8 (Session), variant A "remote session": "Try again after the remote session ends" | [SRC: LD §16.18.5 L1376] |
+| Hand-off rule 1-6 fails (rule 4 also writes `auth.app_access.denied reason=notfromhub`: `hub_launch` missing, expired, used or bound to another session or client, contract 5.7) | Sign-in page again (re-prompt) | [SRC: PLAN L134; LD L1313] |
+| Hand-off refused, `attestation_invalid` (`device_attestation` missing or failing any 6.7 check) | Password + MFA sign-in; cage actions blocked; screen 8 (Session), variant B "security software not responding" | [SRC: LD L1192; PLAN S1 4a, 4b] |
+| Hand-off refused, `remote_session` | Screen 8 (Session), variant A "remote session"; `access_denied` to the client only if the user cancels | [SRC: LD L1191; PLAN L134] |
+| Plain sign-in, agent reports remote session | Screen 8 (Session), variant A "remote session": "Try again after the remote session ends" | [SRC: LD §16.18.5 L1378] |
 | Wrong password, locked account, MFA failure | Our sign-in page messages (UX screens), no redirect to the client | [SRC: PLAN L146 ("our own pages")]; wording owned by UX |
 | `redirect_uri` or `client_id` invalid | Error page on our host; never redirect; generic text ("This sign-in link isn't valid"); echoes no parameter; `Cache-Control: no-store`; `frame-ancestors 'none'`; no audit event | [TL Decision 2026-11-02, OQ-5] |
 | API (resource server) token problems: wrong `aud`, bad signature, expired, stand-in token in Production | HTTP 401 with only `WWW-Authenticate: Bearer error="invalid_token"`, no description; also an ID token sent as a bearer (`ValidTypes=["at+jwt"]`) and a token 31 s past `exp` (G1) | 401 [SRC: PLAN S1 checks 8, 11]; header [TL Decision 2026-11-02, OQ-17]; ID token [TL Decision 2026-11-02, OQ-14] (RFC 6750 §3.1) |
@@ -57,6 +57,6 @@ Connection: close
 ```
 
 Body exactly `403 Forbidden: access denied\n` (empty for HEAD); no HTML, redirect, cookie or app name,
-`Server: server`, plus `Date` and `X-Request-ID`. Allowlist 403s are not on the outbox (LD §8 L429).
-On 8084 the check uses the internal source list (LD §4.5 L209); what an unlisted caller gets there
+`Server: server`, plus `Date` and `X-Request-ID`. Allowlist 403s are not on the outbox (LD §8 L430).
+On 8084 the check uses the internal source list (LD §4.5 L210); what an unlisted caller gets there
 two layers [TL Decision 2026-11-02, OQ-20]: (1) network: no ALB target group, SG only from the BFF and API SGs, so any other caller gets no connection; (2) app: a caller past the SG but not on the internal list gets the same minimal 403 as above.

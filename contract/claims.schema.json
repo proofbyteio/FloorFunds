@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:claims",
   "title": "Token payloads and headers, contract v1 (DRAFT v1-d3)",
-  "description": "Pick the $defs entry for the client under test: access_token_cachd, access_token_other (org_claims off), access_token_other_org_claims (org_claims on), id_token, jose_header_*. Claim lists [SRC: PLAN §3.1 L116-123; LD §5 L228, §16.5 L904-906]. Value types [TL Decision 2026-11-02, OQ-15]. Time checks use ±30 s skew (G1) [TL Decision 2026-11-02, G1].",
+  "description": "Pick the $defs entry for the client under test: access_token_cachd, access_token_other (org_claims off), access_token_other_org_claims (org_claims on), id_token, jose_header_*. Claim lists [SRC: PLAN §3.1 L116-123; LD §5 L229, §16.5 L906-908]. Value types [TL Decision 2026-11-02, OQ-15]. Time checks use ±30 s skew (G1) [TL Decision 2026-11-02, G1].",
   "$defs": {
     "id": { "description": "Opaque id, UUID string [TL Decision 2026-11-02, OQ-15].", "type": "string", "format": "uuid" },
     "numeric_date": { "type": "integer", "minimum": 0},
     "amr": {
-      "description": "Array [SRC: PLAN L118]. RFC 8176 values only. DB sign-in password+TOTP = [pwd, otp, mfa]; Entra: copy only RFC 8176 values, mfa only if Entra amr contains exactly mfa; wiaormfa never counts [TL Decision 2026-11-02, OQ-22]. OPEN (SA) -> OQ-22: recovery code and ngcmfa are not MFA until answered (safe default). Hand-off needs mfa [SRC: LD L1178].",
+      "description": "Array [SRC: PLAN L118]. RFC 8176 values only. DB sign-in password+TOTP = [pwd, otp, mfa]; Entra: copy only RFC 8176 values, mfa only if Entra amr contains exactly mfa; wiaormfa never counts [TL Decision 2026-11-02, OQ-22]. OPEN (SA) -> OQ-22: recovery code and ngcmfa are not MFA until answered (safe default). Hand-off needs mfa [SRC: LD L1180].",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
@@ -18,7 +18,7 @@
       "const": true
     },
     "no_roles_or_permissions": {
-      "description": "No roles or permissions in any token [SRC: PLAN L121; LD L906]. Names listed are the common ones; tests also assert no other unknown claim via unevaluatedProperties.",
+      "description": "No roles or permissions in any token [SRC: PLAN L121; LD L908]. Names listed are the common ones; tests also assert no other unknown claim via unevaluatedProperties.",
       "not": {
         "anyOf": [
           { "required": ["role"]},
@@ -51,7 +51,7 @@
           "description": "Space-separated (RFC 9068); values openid, cash_advance_api, backoffice_api [TL Decision 2026-11-02, OQ-6].",
           "type": "string"
         },
-        "client_id": { "description": "OAuth client; never used for tenant scoping [SRC: LD §16.5 L904].", "type": "string" },
+        "client_id": { "description": "OAuth client; never used for tenant scoping [SRC: LD §16.5 L906].", "type": "string" },
         "login_provider": { "enum": ["database", "entra"]},
         "amr": { "$ref": "#/$defs/amr" },
         "auth_time": { "$ref": "#/$defs/numeric_date" },
@@ -62,9 +62,9 @@
     "org_claims": {
       "properties": {
         "partner_id": { "$ref": "#/$defs/id" },
-        "cachd_client_id": { "description": "Absent for partner-level users [SRC: PLAN L120; LD L904].", "$ref": "#/$defs/id" },
+        "cachd_client_id": { "description": "Absent for partner-level users [SRC: PLAN L120; LD L906].", "$ref": "#/$defs/id" },
         "location_id": {
-          "description": "The location picked at sign-in [SRC: LD L905]. Required for location sign-ins (/l/{slug}); OPEN (SA) -> OQ-15 for /admin tokens, no rule yet (safe default: /admin shape not frozen) [TL Decision 2026-11-02, OQ-15].",
+          "description": "The location picked at sign-in [SRC: LD L907]. Required for location sign-ins (/l/{slug}); OPEN (SA) -> OQ-15 for /admin tokens, no rule yet (safe default: /admin shape not frozen) [TL Decision 2026-11-02, OQ-15].",
           "$ref": "#/$defs/id"
         }
       },
@@ -88,7 +88,7 @@
       "unevaluatedProperties": false
     },
     "access_token_other_org_claims": {
-      "description": "Non-Cachd client with org_claims on: org claims, still no perm_version [SRC: LD §16.5 L905].",
+      "description": "Non-Cachd client with org_claims on: org claims, still no perm_version [SRC: LD §16.5 L907].",
       "allOf": [{"$ref": "#/$defs/access_token_base"}, {"$ref": "#/$defs/org_claims"}],
       "properties": { "partner_id": true, "cachd_client_id": true, "location_id": true},
       "unevaluatedProperties": false
