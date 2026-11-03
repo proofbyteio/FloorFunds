@@ -9,3 +9,9 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
 - Decision [ASSUMPTION A1]: the sources-cleared nuget.config makes "no package fetching" structural. Restore uses only SDK packs.
 - **BLOCKED [B1]:** PLAN §3.3 names `Microsoft.IdentityModel.JsonWebTokens` for signing. It is NOT in ~/.nuget/packages or the shared framework (checked: ls ~/.nuget/packages; /home/box/.dotnet/shared/Microsoft.AspNetCore.App/10.0.14). Token signing (authorize/token/ID token) is stopped until the TL decides. Options for the TL: (a) allow the package into the cache; (b) allow hand-rolled RS256 JWS with System.Security.Cryptography (BCL, no package). JWKS needs no package (RSA parameters from the BCL).
 - [ASSUMPTION A2] Ports: front 18080, back 18081 (stands in for 8084; 8084 is outside my allowed ports), control 18082. All configurable. Contract 1.4 fixes the real back port at 8084; the stand-in port is config (PLAN §3.3 "front: configurable").
+
+## SI1-2 dev-only startup guard (8:55 PM PT)
+- What: `StartupGuard.Check` runs before the host is built. It refuses with exit code 2 and a single stderr line unless the environment is `Development` and `STANDIN_ALLOW=1`. It also refuses on a cloud marker (ECS_CONTAINER_METADATA_URI[_V4], AWS_EXECUTION_ENV) or a non-loopback bind host.
+- Why: PLAN §3.5 row 2; standin-control 1.2; PLAN S1 check 11.
+- Evidence (env -i, port 18080, timeout 3 s): Production → rc 2 "must be Development"; no STANDIN_ALLOW → rc 2; AWS_EXECUTION_ENV → rc 2; StandIn__BindHost=0.0.0.0 → rc 2; Development + STANDIN_ALLOW=1 → listening on 127.0.0.1:18080 (rc 124 = killed by timeout, i.e. it ran).
+- [ASSUMPTION A3] Loopback only. The PLAN also allows "the box's private network", which isn't needed here.
