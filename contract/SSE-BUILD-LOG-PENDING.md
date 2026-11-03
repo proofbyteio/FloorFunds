@@ -125,3 +125,8 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - OQ-40 partial (Mohanraj 8:35 PM PT, "super admin or Partner Admin"): only admin_type super|partner may change AbsoluteLifetime; auth.config.session_cap_changed with old/new/actor required. Interim partner-own-locations scope NOT decided. Range open; cap > idle check kept. Contract 7.4, 8.15.
 - ui-driver error-admin-sign-in wrapper note deferred post-freeze.
 - check_schemas.py: 130 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097.
+
+## v1-d4 follow-up 8: [Confirmed DEC-087] + [TL Decision 2026-11-02 8:39 PM] (written 8:38 PM PT; same commit, hash/time in git log)
+- DEC-087 (Mohanraj 8:36 PM PT): after re-enrolment the recovery_reenroll session ends and is revoked; auth.mfa.reenrolled then auth.session.revoked reason=reenrolled (reason must have session_kind=recovery_reenroll); fresh normal sign-in needed for hand-off/cage. Contract 7.8, standin-control rule; interim OPEN-QUESTIONS item resolved.
+- 8:39 PM: auth.config.change_denied (actor, setting, reason not_admin required); contract 7.4, 8.15. Follow-ups 1, 2, 5 TL-accepted.
+- check_schemas.py: 140 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097.

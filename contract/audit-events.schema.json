@@ -21,7 +21,8 @@
     { "$ref": "#/$defs/not_emitted_fields_not_stated" },
     { "$ref": "#/$defs/auth.mfa.reenrolled" },
     { "$ref": "#/$defs/auth.mfa.recovery_codes_issued" },
-    { "$ref": "#/$defs/auth.config.session_cap_changed" }
+    { "$ref": "#/$defs/auth.config.session_cap_changed" },
+    { "$ref": "#/$defs/auth.config.change_denied" }
   ],
   "$defs": {
     "id": { "type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" },
@@ -199,7 +200,7 @@
       }
     },
     "auth.session.revoked": {
-      "description": "reason, actor [SRC: LD §8 L423]. One per login session ended, not per client/token [TL Decision 2026-11-02, OQ-10]. reason=user_disabled when refresh finds the user disabled or locked [TL Decision 2026-11-02, OQ-12]. Other values [TL Decision 2026-11-02, OQ-24].",
+      "description": "reason, actor [SRC: LD §8 L423]. One per login session ended, not per client/token [TL Decision 2026-11-02, OQ-10]. reason=user_disabled when refresh finds the user disabled or locked [TL Decision 2026-11-02, OQ-12]. Other values [TL Decision 2026-11-02, OQ-24]. reason=reenrolled: the recovery_reenroll session ends right after auth.mfa.reenrolled [Confirmed DEC-087].",
       "properties": {
         "event_type": { "const": "auth.session.revoked" },
         "details": {
@@ -208,11 +209,18 @@
             "reason": {
               "type": "string",
               "pattern": "^[a-z_]+$",
-              "examples": ["sign_out", "admin_revoke", "idle_timeout", "absolute_cap", "refresh_reuse", "user_disabled"]
+              "examples": ["sign_out", "admin_revoke", "idle_timeout", "absolute_cap", "refresh_reuse", "user_disabled", "reenrolled"]
             }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "description": "reason=reenrolled only for a recovery_reenroll session [Confirmed DEC-087].",
+          "if": { "properties": { "details": { "properties": { "reason": { "const": "reenrolled" }}}}},
+          "then": { "required": ["session_kind"], "properties": { "session_kind": { "const": "recovery_reenroll" }}}
+        }
+      ]
     },
     "auth.app.signed_in": {
       "description": "[SRC: LD §8 L424; PLAN L156, S1 check 2]. One per code issued.",
@@ -365,6 +373,26 @@
               "description": "TimeSpan text, e.g. 12:00:00. No range enforced (OQ-40 range open)."
             }
           }
+        }
+      }
+    },
+    "auth.config.change_denied": {
+      "description": "A refused config change (contract 7.4) [TL Decision 2026-11-02 8:39 PM]. Actor, setting and reason required.",
+      "required": ["actor", "target"],
+      "properties": {
+        "event_type": { "const": "auth.config.change_denied" },
+        "outcome": { "const": "denied" },
+        "actor": { "required": ["user_id"]},
+        "target": {
+          "required": ["type", "id"],
+          "properties": {
+            "type": { "const": "config" },
+            "id": { "description": "The setting, e.g. LoginService:Session:AbsoluteLifetime.", "type": "string", "minLength": 1}
+          }
+        },
+        "details": {
+          "required": ["reason"],
+          "properties": { "reason": { "description": "not_admin: no /admin session or admin_type not super|partner.", "enum": ["not_admin"]}}
         }
       }
     }

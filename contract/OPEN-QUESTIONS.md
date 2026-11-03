@@ -126,7 +126,7 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 | Item | State | Who | Where |
 |---|---|---|---|
 | Recovery sessions | **Decided** [Confirmed DEC-085]: `recovery_reenroll` session reaches only MFA re-enrolment and sign-out; hand-off, `hub_launch`, app launch, cage refused with `recovery_session` (audit only), client `access_denied` | - | contract 5.13, 6.9, 7.8; errors.md; audit schema; standin-control 2.10 |
-| DEC-085 follow-up | **Open, TO CONFIRM with Mohanraj:** is cage work allowed in the same session after re-enrolling? **Interim safe default (not decided):** the session stays restricted; the user signs in again with the new MFA | Mohanraj | contract 7.8 |
+| DEC-085 follow-up | **Resolved** [Confirmed DEC-087] (Mohanraj 8:36 PM PT): the session ends after re-enrolling; a fresh sign-in with the new MFA is required before cage work or the hand-off | Mohanraj | contract 7.8 |
 | Re-enrolment endpoints | Paths now proposed in contract 7.8 [TL Decision 2026-11-02 8:35 PM]; see row below | SA / TL | contract 7.8 |
 
 ## TL Decision 2026-11-02 8:31 PM (ui-driver pages) and provisional app_codes
@@ -152,4 +152,13 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 |---|---|---|---|
 | Re-enrolment audit events | **Open (AUD v0.8):** AUD owner to add `auth.mfa.reenrolled` and `auth.mfa.recovery_codes_issued` to AUD | AUD owner via SA | contract 8.14 |
 | Error-admin-sign-in wrapper note (ui-driver) | Deferred to post-freeze list | SSE | ui-driver |
+
+## [Confirmed DEC-087] / [TL Decision 2026-11-02 8:39 PM]
+
+| Item | State | Who | Where |
+|---|---|---|---|
+| `auth.config.change_denied` | **Decided** [TL Decision 2026-11-02 8:39 PM]: refused config changes audited (actor, setting, reason `not_admin`). Not in AUD: AUD v0.8 item | AUD owner via SA | contract 7.4, 8.15 |
+| `recovery_codes_issued` without required `session_kind` | **TL-accepted** [TL Decision 2026-11-02 8:39 PM] | - | contract 8.14 |
+| Two revoked booleans on `auth.mfa.reenrolled` | **TL-accepted** [TL Decision 2026-11-02 8:39 PM] | - | contract 8.14 |
+| Cap values as TimeSpan text | **TL-accepted** [TL Decision 2026-11-02 8:39 PM] | - | contract 8.15 |
 
