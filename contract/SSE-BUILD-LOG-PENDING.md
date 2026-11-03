@@ -91,3 +91,9 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - **§8.11:** token/session single `location_id`; audit array `scope.location_ids` (AUD §7A.4 L266, multi-location for admin actions). Audit scope now rejects a singular `location_id`.
 - **README:** contract's LD 560cb6ab cites govern over the rulings file. PLAN 444ddba4 snapshot /tmp/sse-d0/plan-444ddba4.md; diff vs 10fa9853 = L128, L130, L133 in place, no shift; all PLAN cites map.
 - **check_schemas.py:** 58 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097 unchanged.
+
+## v1-d4 follow-up 3: TL Decision 8:29 PM (commit 4b7fc57 at 8:28:45 PM PT) and Confirmed DEC-084 (commit e0f946a at 8:29:32 PM PT); written 8:29 PM PT
+- **admin_type:** required on /admin tokens (super | partner), if/then discriminator; partner → partner_id required, super → absent; _super/_partner defs retired (contract 8.12).
+- **location_ids []:** allowed only when the audit envelope carries admin_type (new optional envelope field); otherwise ≥1 item (contract 8.13). Keyed on admin_type because no event class is /admin-only.
+- **DEC-084** (Mohanraj 8:27 PM PT, t110s414): no Cash Advance hand-off or cage action for /admin sessions; audit reason not_location_user; client access_denied; stub 403 {"error":"access_denied"}; stand-in enforces (contract 5.12, 6.9; errors.md; standin-control 2.9).
+- **check_schemas.py:** 75 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097 unchanged.
