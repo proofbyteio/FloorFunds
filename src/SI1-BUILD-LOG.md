@@ -31,3 +31,19 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
   - the log shows all three listening on 127.0.0.1.
 - Not proven: the 403 for a non-loopback caller. Because every socket binds to loopback, no such caller can reach it from the box; it is defence in depth. A unit test belongs to SSE2.
 - Scripts (outside the repo): /tmp/sse-d0/run-si1.sh and stop-si1.sh. stop-si1 kills only the PID that run-si1 started.
+
+## SI1-4 discovery and JWKS (8:56 PM PT)
+- What: `{issuer}/.well-known/openid-configuration` and `{issuer}/.well-known/jwks` on both front and back. The bytes are serialised once at start, so both listeners serve identical bytes.
+  - Discovery has exactly the 15 keys from 2.1 + 2.4, with every URL under the issuer (2.3).
+  - JWKS holds one RSA-2048 key made in memory at start: kty RSA, use sig, alg RS256, kid `standin-<16 hex>`. No private material leaves memory.
+  - Cache-Control: discovery `public, max-age=3600`; JWKS `public, max-age=300`.
+  - JWKS needs no NuGet package (BCL RSA + WebEncoders).
+- Why: contract 2.1-2.10 and 3.1-3.4.
+- Evidence (live, 18080 and 18081):
+  - `cmp` shows the front and back bytes are identical for both documents;
+  - the headers are as above;
+  - discovery validates against contract/openid-configuration.schema.json (jsonschema 2020-12 with format checker) with 0 errors;
+  - the key set equals the stand-in exact set;
+  - the JWKS has 1 key with the 6 members alg, e, kid, kty, n and use, and the kid starts with `standin-`.
+- v1.1 note [V1]: the `disc` sample in check_schemas.py puts token_endpoint and revocation_endpoint at `localhost:8084`, but contract 2.3 says they sit under the public issuer. The stand-in follows 2.3; the sample should be aligned. No test impact, since the schema doesn't constrain the host.
+- Not done: the allowlist runs first on the front (1.7, 2.10). The stand-in has no allowlist yet, and wiring data/allowlist.db is out of scope (that file is never touched).

@@ -19,5 +19,8 @@ if (!issuerPath.Contains("/standin")) { Console.Error.WriteLine("Login.StandIn r
 
 var app = builder.Build();
 Listeners.UseListenerRules(app, ports, issuerPath);
+using var keys = new SigningKeys();
+var (disco, jwks) = Discovery.Build(issuer, keys);
+Discovery.Map(app, issuerPath, disco, jwks);
 app.Run();
 return 0;
