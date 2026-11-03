@@ -104,3 +104,9 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - Without admin_type, scope and scope.location_ids are required (≥1). check_schemas.py env() fixture now carries a default location scope.
 - §6.9: CA server audits a refused cage action with not_location_user (outside this contract); access_denied confirmed for both refusals; DEC-084 and 8:29 PM ambiguities marked resolved.
 - check_schemas.py: 78 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097 unchanged.
+
+## v1-d4 follow-up 5: DEC-085 (commit 99f2b7d at 8:32:11 PM PT) and ui-driver pages (commit 2a3ad6a 8:32:55 PM PT); written 8:32 PM PT
+- **DEC-085** (Mohanraj 8:30 PM PT, t113s429): recovery-code sign-in → recovery_reenroll session (contract 7.8): only MFA re-enrolment and sign-out; hand-off (5.13), hub_launch, app launch and cage (6.9) refused, audit reason recovery_session, client access_denied; no app token with amr exactly [pwd] (claims schema; earlier positive case flipped to negative); stand-in 2.10; errors.md. Open: cage work after re-enrol in same session (interim: stays restricted, sign in again; TO CONFIRM with Mohanraj); re-enrolment endpoint paths unspecified.
+- **ui-driver §2a** [TL Decision 8:31 PM]: page-resign-in (UX 07) and page-admin-sign-in (UX 05) with field-/error- ids. UX D-67 (DECISIONS.md md5 b6fa0d1f, read only) gives no ids for these forms, so the ids are SSE-proposed. Mapping noted: contract screens 6/7 = UX 03/06.
+- **Provisional app_codes** cash_advance, back_office, reports: tiles in ui-driver, data not enum; OPEN item for Mohanraj via PM. standin-control fixtures list no apps, so no fixture change.
+- check_schemas.py: 100 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097 unchanged.
