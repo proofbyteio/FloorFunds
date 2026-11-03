@@ -47,7 +47,7 @@ The ids are accepted [TL Decision 2026-11-02 8:26 PM] (closed list, `password_vi
 | Fixture | Content | Source |
 |---|---|---|
 | Users | `cashier_db`, `no_role_user` (PLAN check 1) | [TL Decision 2026-11-02, CR-05]; [SRC: PLAN check 1] |
-| Apps (`auth.app`) | `cash_advance`, `back_office`, `reports`, one hub tile each (`hub-tile-{app_code}`). **Provisional, pending Mohanraj** | [TL Decision 2026-11-02, provisional, pending Mohanraj via PM]; [TL Decision 2026-11-02 8:35 PM] |
+| Apps (`auth.app`) | `cash_advance`, `back_office`, `reports`, one hub tile each (`hub-tile-{app_code}`). **PLACEHOLDER**; `back_office` and `reports` are two separate apps; codes picked by the team member building each app (Cash Advance: TO CONFIRM) | [Confirmed DEC-088] [Confirmed DEC-089]; [TL Decision 2026-11-02 8:35 PM] |
 | Partners | `pci` (PCI baseline preset) and `nevada` (Nevada MICS #7 preset), one location each; check 10 uses `pci` | [TL Decision 2026-11-02, CR-13, OQ-SSE2-13] |
 | Lockout duration | config value, fixture 30 min | [TL Decision 2026-11-02, CR-13] |
 | Location slugs, fixture user passwords, partner/location ids | **not ruled**: SSE2 reads them from the stand-in fixture file; not frozen in v1 | [OPEN → TL at freeze] |

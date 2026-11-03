@@ -134,7 +134,7 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 | Item | State | Who | Where |
 |---|---|---|---|
 | Re-sign-in / admin sign-in test ids | **Resolved** [TL Decision 2026-11-02 8:35 PM]: confirmed by TL; UX is adding them to `05-admin.html` / `07-handoff.html` | UX | ui-driver §2a; `standin-ui.schema.json` |
-| Placeholder `app_code`s `cash_advance`, `back_office`, `reports` | **Open, provisional** [TL Decision 2026-11-02, provisional, pending Mohanraj via PM]: Mohanraj to confirm (via PM). Data in `auth.app` and stand-in fixtures, not a schema enum | Mohanraj via PM | ui-driver §2 |
+| Placeholder `app_code`s `cash_advance`, `back_office`, `reports` | **Resolved** [Confirmed DEC-088] [Confirmed DEC-089] (Mohanraj 8:37 PM PT: "The team member building them should pick the codes"; "Back office and reports are two separate apps"): all three are PLACEHOLDERs; `back_office` and `reports` stay two separate `app_code`s; each app's builder picks its code. Data in `auth.app` and stand-in fixtures, not a schema enum | Mohanraj via PM | ui-driver §2 |
 
 ## TL Decision 2026-11-02 8:35 PM
 
@@ -144,7 +144,7 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 | `session_kind` split | **Resolved** [TL Decision 2026-11-02 8:37 PM]: required in tokens; in audit required only on app sign-in and `recovery_session` refusals (and on `auth.mfa.reenrolled`) | - | contract 7.8 |
 | AUD v0.8 (`session_kind`) | **Open:** AUD owner to add `session_kind` to §7A.4 (with `admin_type`, item above) | AUD owner via SA | audit schema envelope |
 | MFA re-enrolment paths | **Open, Proposal:** `GET /mfa/reenrol`, `POST /mfa/reenrol`, `GET /mfa/reenrol/recovery-codes`; SA to ratify in LD. Revoke-all-at-once and show-codes-once **accepted** [TL Decision 2026-11-02 8:37 PM]; audit events defined (contract 8.14); paths still Proposal | SA | contract 7.8 |
-| Apps fixture | **Provisional (pending Mohanraj):** `cash_advance`, `back_office`, `reports` | Mohanraj via PM | standin-control §4 |
+| Apps fixture | **PLACEHOLDER** [Confirmed DEC-088] [Confirmed DEC-089]: `cash_advance`, `back_office`, `reports` (two separate apps for back office and reports) | - | standin-control §4 |
 
 ## TL Decision 2026-11-02 8:37 PM
 
@@ -161,4 +161,10 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 | `recovery_codes_issued` without required `session_kind` | **TL-accepted** [TL Decision 2026-11-02 8:39 PM] | - | contract 8.14 |
 | Two revoked booleans on `auth.mfa.reenrolled` | **TL-accepted** [TL Decision 2026-11-02 8:39 PM] | - | contract 8.14 |
 | Cap values as TimeSpan text | **TL-accepted** [TL Decision 2026-11-02 8:39 PM] | - | contract 8.15 |
+
+## [Confirmed DEC-088] [Confirmed DEC-089]
+
+| Item | State | Who | Where |
+|---|---|---|---|
+| Cash Advance `app_code` owner | **Open, TO CONFIRM with Mohanraj:** who picks Cash Advance's code (DEC-088 covers "the team member building them"; Cash Advance's builder not stated). No answer assumed; `cash_advance` stays a PLACEHOLDER | Mohanraj | ui-driver §2; standin-control §4 |
 

@@ -23,7 +23,7 @@ What browser tests may rely on. Source for every rule: [TL Decision 2026-11-02, 
 | Screen 8 (Session) variant A, remote session | `screen-8a` |
 | Screen 8 (Session) variant B, security software not responding | `screen-8b` |
 | Error area (any screen) | `error-area` |
-| Hub tiles, placeholder `app_code`s | `hub-tile-cash_advance`, `hub-tile-back_office`, `hub-tile-reports` **provisional** [TL Decision 2026-11-02, provisional, pending Mohanraj via PM]. The `app_code`s are data (`auth.app`, stand-in fixtures), not a schema enum; the schema keeps the generic `hub-tile-{app_code}` pattern |
+| Hub tiles, placeholder `app_code`s | `hub-tile-cash_advance`, `hub-tile-back_office`, `hub-tile-reports` **PLACEHOLDER** [Confirmed DEC-088] [Confirmed DEC-089] (Mohanraj 8:37 PM PT: "The team member building them should pick the codes"; "Back office and reports are two separate apps"). `back_office` and `reports` are two separate apps; each code is picked by the team member building that app; who picks Cash Advance's code is TO CONFIRM (OPEN-QUESTIONS). The `app_code`s are data (`auth.app`, stand-in fixtures), not a schema enum; the schema keeps the generic `hub-tile-{app_code}` pattern |
 
 Screen numbers: contract screen 6 (TOTP) = UX `03-totp.html`, contract screen 7 (hub) = UX `06-hub.html` (UX D-67, matched by meaning) [TL Decision 2026-11-02 8:31 PM].
 

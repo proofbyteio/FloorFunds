@@ -26,7 +26,7 @@
       "additionalProperties": false
     },
     "testid": {
-      "description": "ui-driver.md §2; hub tiles hub-tile-{app_code}. Re-sign-in (UX 07) and admin sign-in (UX 05) ids added [TL Decision 2026-11-02 8:31 PM] (confirmed [TL Decision 2026-11-02 8:35 PM]; UX adding them). Placeholder app_codes cash_advance, back_office, reports are data, not an enum [TL Decision 2026-11-02, provisional, pending Mohanraj via PM].",
+      "description": "ui-driver.md §2; hub tiles hub-tile-{app_code}. Re-sign-in (UX 07) and admin sign-in (UX 05) ids added [TL Decision 2026-11-02 8:31 PM] (confirmed [TL Decision 2026-11-02 8:35 PM]; UX adding them). Placeholder app_codes cash_advance, back_office, reports are PLACEHOLDERs (data, not an enum) [Confirmed DEC-088] [Confirmed DEC-089]; back_office and reports are two separate apps.",
       "type": "string",
       "anyOf": [
         {
