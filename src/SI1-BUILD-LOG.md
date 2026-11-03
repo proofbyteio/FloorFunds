@@ -115,3 +115,10 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
   - Every package gave the NU3018 warning "revocation server could not be reached / RevocationStatusUnknown: unable to get certificate CRL". The sandbox can't reach the CRL endpoint, so the revocation check could not complete; the signatures and the chain were otherwise accepted.
   - I did nothing to work around it: revocation mode is left at its default and no other route was used.
   - The TL should decide whether an offline revocation result is acceptable.
+
+## SI1-8 TL 9:00 PM rulings applied (9:01 PM PT)
+- A2 (accepted): src/README.md documents the 18081↔8084 mapping. Real deployments keep 8084.
+- A4: I re-checked standin-control.md and it is silent on success response shapes. A4 stays (reset and faults → 204, clock → {"now"}, users → {user_id}). Logged for v1.1: "standin-control should specify success shapes".
+- A6: fixtures.json now labels every app, partner, location, user and role object with `"_label":"FIXTURE"`, and the _comment says 'cashier' and all slugs and ids are FIXTURE, not product role names. A reset loads the file correctly, and the cashier_db reuse check still returns [reused].
+- V1: §2.3 is followed (the issuer and front run on 18080, and the token endpoint is on the back listener). Logged for v1.1: "fix the checker sample's localhost:8084 token_endpoint to match §2.3".
+- Post-freeze item 4 (recorded, not yet built): when the cap-change piece is built, the server must enforce the Partner Admin own-partner rule and must have a server-side test for it. It is not in SI1 scope tonight.
