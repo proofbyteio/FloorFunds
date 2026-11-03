@@ -44,5 +44,6 @@ var tokens = new TokenIssuer(issuer, keys);
 SignIn.Map(app, state, issuerPath, issuer, ports);
 OAuth.Map(app, state, issuerPath, issuer, ports, tokens);
 Handoff.Map(app, state, issuerPath, issuer, ports);
+Reenroll.Map(app, state, issuerPath, ports, cfg);
 app.Run();
 return 0;

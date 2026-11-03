@@ -97,8 +97,8 @@ public static class SignIn
     {
         var user = st.Users.Values.First(u => u.UserId == s.UserId);
         // Tiles for the apps the user has a role in (PLAN L40); hand-off tiles carry start_url?hub_launch= (5.7).
-        // errors.md: a recovery session's hub offers only re-enrolment and sign-out, no hub_launch. [ASSUMPTION A36] re-enrolment itself is not built.
-        if (s.Kind == "recovery_reenroll") return Html("screen-hub", $"<p>Set up your authenticator again</p><a href=\"{IssuerPath}/connect/endsession\">Sign out</a>");
+        // errors.md: a recovery session's hub offers only re-enrolment (7.8) and sign-out, no hub_launch.
+        if (s.Kind == "recovery_reenroll") return Html("screen-hub", $"<p>Set up your authenticator again</p><a href=\"{IssuerPath}/mfa/reenroll\">Set up authenticator</a> <a href=\"{IssuerPath}/connect/endsession\">Sign out</a>");
         return Html("screen-hub", Handoff.Tiles(st, s, user, st.Clock.Now));
     }
 
@@ -207,7 +207,8 @@ public static class SignIn
         {
             Headers(c, ports.Control);
             if (!await Af(af, c)) return Results.BadRequest();
-            var code = (await c.Request.ReadFormAsync())["totp_code"].ToString().Trim();
+            var form = await c.Request.ReadFormAsync();
+            var code = form["totp_code"].ToString().Trim(); var rc = form["recovery_code"].ToString().Trim();
             lock (st.Gate)
             {
                 var tx = GetTx(st, c, slug);
@@ -224,11 +225,15 @@ public static class SignIn
                     return TotpPage(c, af, Base(slug), Generic);
                 }
                 // G1 +-30 s; SEC76: a step works once per user (replay refused).
-                bool ok = Totp.Accept(user, code, now);
-                if (!ok)
+                bool ok = code.Length > 0 && Totp.Accept(user, code, now);
+                // [ASSUMPTION A47] location recovery-code sign-in: the TOTP step also takes recovery_code (UX 03-totp "recovery" state);
+                // a code is single-use and makes a recovery_reenroll session with amr [pwd] (7.8, DEC-085). A wrong code counts toward SEC77.
+                bool useRc = code.Length == 0 && rc.Length > 0;
+                bool rec = !ok && useRc && user.RecoveryCodeHashes.Remove(AuthStore.H(rc));
+                if (!ok && !rec)
                 {
                     CountFailure(st, user, Limit(st, user, slug), now, Scope(loc), Ip(c), Ua(c));
-                    st.Emit(Audit.Build(now, "auth.mfa.failed", "failure", user.UserId, new JsonObject { ["method"] = "totp" }, Scope(loc), Ip(c), Ua(c)));
+                    st.Emit(Audit.Build(now, "auth.mfa.failed", "failure", user.UserId, new JsonObject { ["method"] = useRc ? "recovery_code" : "totp" }, Scope(loc), Ip(c), Ua(c)));
                     st.Emit(Audit.Build(now, "auth.login.failed", "failure", user.UserId, new JsonObject
                     { ["username_hmac"] = Audit.UsernameHmac(user.Username), ["reason"] = "mfa_failed", ["provider_kind"] = "database" }, Scope(loc), Ip(c), Ua(c)));
                     return TotpPage(c, af, Base(slug), Generic);
@@ -236,12 +241,12 @@ public static class SignIn
                 // 4.11: a brand-new session id after MFA; any session id the browser had is never promoted.
                 var s = new LoginSession { Sid = Guid.NewGuid().ToString(), UserId = user.UserId, Username = user.Username, Slug = slug,
                     LocationId = loc.LocationId, AuthTime = now, LastSeen = now, ViaReturn = tx.ReturnTo is not null,
-                    Amr = user.FixtureAmr ?? new[] { "pwd", "otp", "mfa" } };
-                var ev1 = Audit.Build(now, "auth.mfa.succeeded", "success", user.UserId, new JsonObject { ["method"] = "totp" }, Scope(loc), Ip(c), Ua(c), s.Sid);
+                    Amr = rec ? new[] { "pwd" } : user.FixtureAmr ?? new[] { "pwd", "otp", "mfa" }, Kind = rec ? "recovery_reenroll" : "normal" };
+                var ev1 = Audit.Build(now, "auth.mfa.succeeded", "success", user.UserId, new JsonObject { ["method"] = rec ? "recovery_code" : "totp" }, Scope(loc), Ip(c), Ua(c), s.Sid);
                 var ev2 = Audit.Build(now, "auth.login.succeeded", "success", user.UserId, new JsonObject
                 { ["provider_kind"] = "database", ["amr"] = new JsonArray(s.Amr.Select(a => (JsonNode)a!).ToArray()), ["auth_time"] = now.ToUnixTimeSeconds(), ["attestation"] = tx.Attestation },
                     Scope(loc), Ip(c), Ua(c), s.Sid);
-                ev1["session_kind"] = "normal"; ev2["session_kind"] = "normal";
+                ev1["session_kind"] = s.Kind; ev2["session_kind"] = s.Kind;
                 // [ASSUMPTION A25] if the outbox is down no session is created (fail closed); the user sees the generic error.
                 if (st.OutboxFault == "fail") return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
                 st.Emit(ev1); st.Emit(ev2);

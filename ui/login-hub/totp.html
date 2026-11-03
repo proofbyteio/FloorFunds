@@ -6,4 +6,9 @@
 <div class="field"><label class="field__label" for="totp">6-digit code</label><input class="field__input" id="totp" name="totp_code" data-testid="totp-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></div>
 <button class="button button--primary button--block" type="submit" data-testid="totp-submit">Continue</button>
 </form>
+<form novalidate method="post" action="{{action}}">
+<input type="hidden" name="__RequestVerificationToken" value="{{af}}">
+<div class="field"><label class="field__label" for="rcode">Use a recovery code instead</label><input class="field__input" id="rcode" name="recovery_code" autocomplete="off"></div>
+<button class="button button--secondary button--block" type="submit">Use recovery code</button>
+</form>
 </section>

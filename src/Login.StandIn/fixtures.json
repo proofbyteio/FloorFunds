@@ -91,6 +91,7 @@
       "location_slugs": [
         "nevada-main"
       ],
+      "recovery_codes_count": 2,
       "roles": [
         {
           "app_code": "back_office",

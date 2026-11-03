@@ -23,7 +23,7 @@ public static class Ui
     public static void Load(string? dir)
     {
         Dir = dir ?? Path.Combine(AppContext.BaseDirectory, "ui");
-        foreach (var n in new[] { "layout", "card", "error-banner", "signin", "resign-in", "screen-8b", "totp", "screen-8a", "handoff", "bad-link" })
+        foreach (var n in new[] { "layout", "card", "error-banner", "signin", "resign-in", "screen-8b", "totp", "screen-8a", "handoff", "bad-link", "reenroll", "recovery-codes" })
         {
             var p = Path.Combine(Dir, n + ".html");
             if (!File.Exists(p)) throw new InvalidOperationException($"ui template missing: {p}");

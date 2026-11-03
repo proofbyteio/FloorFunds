@@ -13,6 +13,8 @@ Ported from the UX mockups (read only), snapshot /tmp/sse-d0/ux-snap-2132:
 | resign-in.html (page-resign-in, #u2/#p2) | 07-handoff.html | cd527610d51891dd3ff237d47ae26761 |
 | handoff.html (interstitial, no testid, A38) | 07-handoff.html | cd527610d51891dd3ff237d47ae26761 |
 | screen-8a.html, screen-8b.html | 08-session.html | cc5cf4e9e114698d6187a10215bd5070 |
+| reenroll.html (screen-reenroll), recovery-codes.html (screen-recovery-codes) | none: no UX mockup for 7.8 [ASSUMPTION A52b] layout follows totp.html/card | n/a |
+| totp.html recovery-code form (A47) | 03-totp.html "recovery" state | 5f9032b052811c5376abaeb6ea00b8ff |
 | (403: no template; plain text body unchanged, DEC-094 / D-88) | 10-blocked.html | 229d28399d550a9adae53e342de8f180 |
 | layout.html, card.html, error-banner.html | 01-location.html / 02 | 7f3c323647713947c82772a16e4403c6 |
 | theme.css (verbatim copy) | theme.css | 80ea155d58e4e8685dbf2bdc11a502ba |

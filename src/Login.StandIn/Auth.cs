@@ -31,7 +31,7 @@ public sealed class SignInTx
 
 public sealed record HubLaunch(string Sid, string ClientId, DateTimeOffset IssuedAt) { public bool Used { get; set; } }
 
-// A login session (4.11, 5.1, 5.12, 7.4, 7.8). Kind is recovery_reenroll only for an /admin recovery-code sign-in (A33).
+// A login session (4.11, 5.1, 5.12, 7.4, 7.8). Kind is recovery_reenroll for a recovery-code sign-in (/admin A33, location A47).
 public sealed class LoginSession
 {
     public required string Sid { get; init; }
@@ -52,6 +52,9 @@ public sealed class LoginSession
     public bool InteractiveUsed { get; set; }       // A32 ruling: the credential entry has been spent on one interactive code
     public bool HandoffUsed { get; set; }           // rule 3 cash_advance_handoff_used
     public bool CageConsumed { get; set; }          // rule 6: not SSO-eligible for anything
+    // 7.8 re-enrolment state, held server-side on the recovery_reenroll session only.
+    public byte[]? PendingSecret { get; set; }
+    public List<string>? NewRecoveryCodes { get; set; }
 }
 
 public sealed record CodeGrant(string ClientId, string RedirectUri, string Challenge, string? Nonce, string Scope, string Sid, DateTimeOffset IssuedAt)

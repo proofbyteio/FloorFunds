@@ -56,3 +56,25 @@ Source: `git show sse2/tests-docs:docs/CONTRACT-REVIEW-v1.md` (@21449f9). One co
    - [ASSUMPTION A56] super_admin has no TOTP secret, so the super MFA lockout path is not tested (TL listed it as optional).
 - Live run: base 18080, own pid 711044 (port guard ok before start), **TOTAL 188 / 188**. That is 189 - 4 F12 + 3 new.
 - Evidence /tmp/sse-d0/evidence-950.txt, md5 **a88e6e466f1528bee57dd2f25650bc51**. Server stopped. allowlist.db is untouched (temp copy only).
+
+## Step (3) recovery_reenroll, resumed TL 9:50 PM (separate commit, after 96a629a)
+Source: /tmp/sse-d0/park-step3/ (step3.patch, Reenroll.cs, reenroll.html, recovery-codes.html). It was reconciled with 10a1ca4 and 96a629a:
+- **Location recovery-code sign-in [ASSUMPTION A47]:** the TOTP step also takes `recovery_code`, using a 2nd form on totp.html (UX 03-totp "recovery" state). A code is single-use. It creates a recovery_reenroll session with amr [pwd], and auth.mfa.succeeded uses method recovery_code.
+  - Reconciled with SEC77: a wrong recovery code counts toward the lockout, and a locked account refuses it. Reconciled with SEC76: a TOTP still goes through Totp.Accept.
+- **Fixtures reconciled with F14:** the parked literal nevada_db codes were dropped. nevada_db gets `"recovery_codes_count": 2`, and its codes are generated at start.
+- **7.8 /mfa/reenroll** (front only, same-origin, antiforgery, no-store; 404 for any other session):
+  - The pending secret is held on the session. The page shows a manual key and an otpauth link. **[GAP A51]** There is no QR image (that needs a package or a hand-written encoder).
+  - The ±30 s confirmation step is recorded as LastTotpStep, so that code can't be replayed (SEC76).
+  - On success, the old secret and all old recovery codes are revoked at once. auth.mfa.reenrolled and auth.mfa.recovery_codes_issued are emitted, count=**10 [ASSUMPTION A49]**.
+- **[ASSUMPTION A50]** 5 failures in 15 min (LoginService:Mfa:ReenrollRateLimit). The 6th try is refused with 429 + auth.mfa.failed reason=rate_limited, without checking the code.
+- **DEC-087:** the codes page is shown once. Then the session is revoked (auth.session.revoked reason=reenrolled) and the cookie is cleared. A 2nd GET gives 404.
+- **DEC-093:** Continue goes to /admin for an admin_type session, and to /l/{slug} for a location session. **[ASSUMPTION A52]** this is a link on the codes page, not a 302, because a 302 would hide the codes. Both kinds are tested live.
+- Templates: ui/login-hub/reenroll.html and recovery-codes.html (no UX mockup exists for 7.8). The README is updated.
+- Tests (reenroll.py, 22 checks), all passing:
+  - location recovery sign-in; GET page; same key on re-GET; cross-origin 400; no antiforgery 400; no session 404; back listener 404;
+  - 5 wrong → step=reenroll; 6th → 429 rate_limited; window passes (the session is kept alive under the 15 min idle limit) → re-enrol 302 + events;
+  - codes page once + revoked; DEC-093 location; 2nd GET 404; codes not in audit;
+  - old recovery code refused; old TOTP refused; new secret signs in; new recovery code works; normal session 404;
+  - DEC-093 admin + new secret at /admin.
+  - All events are schema-valid. HO17 now also covers the new recovery codes.
+- Live run: base 18080, own pid 764442 (port guard ok), **TOTAL 210 / 210**. Evidence /tmp/sse-d0/evidence-step3.txt, md5 **f63d596691fdc37a5460512af79e105f**. Server stopped. allowlist.db is untouched.

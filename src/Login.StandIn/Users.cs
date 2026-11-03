@@ -79,7 +79,9 @@ public sealed class StandInUser
     public string? AdminType { get; init; }
     public string? PartnerId { get; init; }
     public HashSet<string> RecoveryCodeHashes { get; } = new(StringComparer.Ordinal);
-    public byte[] TotpSecret { get; } = RandomNumberGenerator.GetBytes(20);
+    // 7.8 re-enrol rate limit: failed totp_code tries on POST /mfa/reenroll (cleared by /_standin/reset; users are rebuilt).
+    public List<DateTimeOffset> ReenrollFailures { get; } = new();
+    public byte[] TotpSecret { get; set; } = RandomNumberGenerator.GetBytes(20);
     // Newest first; the current password is entry 0. PBKDF2 hashes, never the plaintext.
     public List<(byte[] Salt, byte[] Hash)> PasswordHistory { get; } = new();
 
