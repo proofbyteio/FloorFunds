@@ -175,3 +175,53 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
   1. The warning stays visible. It is not suppressed (no NoWarn or WarningsNotAsErrors change), and NUGET_CERT_REVOCATION_MODE=offline is not set. I checked: neither nuget.config nor the csproj changes revocation mode or NoWarn.
   2. **Release gate v1.1/CI-01:** before any build leaves this box, the pipeline re-verifies with online revocation checking (`dotnet nuget verify --all`), and any NU3018 there fails the build.
   3. Adding any package or new source mapping needs a TL ruling; stop and report if one is needed. Microsoft.Bcl.Cryptography 10.0.2 is accepted.
+
+## SI1-13 Token signing, OAuth clients, fixture additions (9:20 PM PT)
+- Evidence note for SI1-13..16: every result below comes from ONE run against the final build (all four slices), after a reset: `/tmp/sse-d0/e2e/drive.py`, output `/tmp/sse-d0/e2e/si1-13-16-evidence.txt`, **84/84 PASS**. Only temp DB copies were used; ports 18080-18082.
+- **D1 (divergence, v1.1 list):** the task text says "ES256/JWKS per the contract", but the contract (2.1, 3.1, 8.1, claims `jose_header_*`, discovery `id_token_signing_alg_values_supported`) says **RS256**. I followed the contract: tokens are RS256 with a `standin-` kid. ES256 is used only for the fake-agent device attestations (device-attestation.schema.json).
+- Tokens.cs: access token typ at+jwt, 300 s; ID token typ JWT, aud = azp = client_id, nonce only on the code grant; ±30 s skew on validation.
+- Clients.cs: client_secret_basic (SHA-256 hash, fixed-time compare). fixtures.json: clients cash_advance_bff and backoffice_stub, cachd_client_id per partner, user nevada_db, back_office/clerk for cashier_db, and perm_version.
+- Evidence: discovery validates openid-configuration.schema.json; JWKS has RS256 `standin-569d0f257300dccb`; token kid == JWKS kid; the RS256 signature verifies independently (pure-Python PKCS#1 v1.5; no package installed); headers validate jose_header_access_token / jose_header_id_token; payloads validate access_token_other, id_token_code, id_token_refresh; x_standin true, amr [pwd,otp,mfa], aud backoffice-api.
+- Assumptions: **A21** perm_version is 1 for every fixture user. **A24 / blocker B2**: private_key_jwt is refused with invalid_client, because the fixtures have no client JWKs (a TL ruling is needed to add them). **H1** (v1.1): the hub client is not registered, because the hub token's aud is undefined.
+
+## SI1-14 Sign-in, MFA, attestation nonce flow (9:20 PM PT)
+- Auth.cs, SignIn.cs, Program.cs (antiforgery). The order is: attestation, then lockout, then password, then verified remote_session, then TOTP (±1 step). The pre-session id is reissued after the password step, and the new session cookie is set after MFA (4.11).
+- Evidence: sign-in → TOTP → hub; the 4.11 cookie checks pass; all 8 PC modes (valid, missing, and the six that should be invalid) give the expected `attestation` detail; remote_session → screen-8a + login.failed remote_session; registry unavailable → invalid (fails closed); a re-minted nonce voids the old one; no antiforgery → 400; the fake-agent JWS validates the schema; a wrong password and an unknown user give the same bad_credentials; a wrong TOTP gives mfa.failed + login.failed; lockout is Nevada 3 and PCI 10 tries; the lock lifts after 30 min. Every emitted event validates audit-events.schema.json.
+- Assumptions:
+  - **A22 / AG1** (v1.1): the fake agent runs on the control port, `/_standin/agent/attest`, with CORS.
+  - **A23**: the slug comes from the standin_loc cookie, else the first fixture location.
+  - **A25**: if the outbox fails at MFA, no session is created.
+  - **A26**: a wrong TOTP emits both auth.mfa.failed and auth.login.failed reason=mfa_failed.
+- Note: antiforgery makes Cache-Control `no-cache, no-store`; no-store is still present.
+
+## SI1-15 /connect/authorize (9:20 PM PT)
+- Evidence:
+  - A bad client or redirect gives 400 with no echo and no event. invalid_scope, invalid_request, unsupported_response_type and login_required all carry iss and state.
+  - With no session, the user goes to the sign-in page and then back to authorize. The code goes to the exact redirect, with method interactive and then sso.
+  - prompt=login and max_age force a fresh sign-in.
+  - Cash Advance with no hub_launch gives notfromhub plus the sign-in page.
+  - With no role, the client gets access_denied and auth.app_access.denied no_role (target app/back_office).
+  - An outbox failure gives temporarily_unavailable, with no code and no event.
+- Fix during this run: auth.app_access.denied used outcome `failure`. The schema requires `denied`, so I corrected it.
+- Gap **G-H** (open): hub_launch issuance and the Cash Advance hand-off (5.7) are not built, so Cash Advance always gets notfromhub.
+
+## SI1-16 token / revoke / introspect / endsession (9:20 PM PT)
+- Evidence:
+  - The token response has the right fields, no-store and Pragma.
+  - Codes are single-use, and reuse revokes the family. A wrong PKCE verifier, a code older than 60 s, or a bad secret are rejected (401 with WWW-Authenticate Basic). The token endpoint isn't served on the front port (404).
+  - Refresh rotation: a reuse inside the 30 s leeway is accepted. After it, the result is invalid_grant plus auth.refresh.reuse_detected, and the whole chain is revoked.
+  - If the user loses the role, refresh gives invalid_grant.
+  - Introspect gives the active shape. For another client or an unknown token it returns exactly `{"active":false}`.
+  - Revoking a refresh token revokes its family. Revoke always returns 200, and returns 401 without client auth.
+  - Endsession:
+    - With no hint, a confirm page shows.
+    - An expired hint is accepted, gives a 302 to /standin/l/pci-main, and writes one session.revoked sign_out. After that, refresh fails, prompt=none gives login_required, and a second sign-out writes no second event.
+    - The confirm POST works. Without antiforgery it returns 400.
+- Assumptions:
+  - **A27/A28**: an outbox fault returns 503 temporarily_unavailable with Retry-After: 5.
+  - **A29**: introspect covers access tokens only.
+  - **A30**: post_logout_redirect_uri is never followed (no open redirect); the user always goes to the location sign-in page.
+- Not built here: the recovery_reenroll paths (7.8), the admin paths (5.12), and the session-cap UI. The NU3018 warning was not shown in this build because restore was cached (no-op). I suppressed nothing.
+- md5 (driver, evidence):
+    948af73451e0493360ced9da84705f95  /tmp/sse-d0/e2e/drive.py
+    6564ee37ff911d766e6414b314f60935  /tmp/sse-d0/e2e/si1-13-16-evidence.txt
