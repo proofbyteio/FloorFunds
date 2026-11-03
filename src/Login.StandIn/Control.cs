@@ -8,10 +8,15 @@ namespace Login.StandIn;
 public sealed class TestClock
 {
     long _offsetTicks;
-    public DateTimeOffset Now => DateTimeOffset.UtcNow.AddTicks(Interlocked.Read(ref _offsetTicks));
-    public void Advance(long seconds) => Interlocked.Add(ref _offsetTicks, TimeSpan.FromSeconds(seconds).Ticks);
-    // [ASSUMPTION A5] reset puts the clock back to real time.
-    public void Reset() => Interlocked.Exchange(ref _offsetTicks, 0);
+    DateTimeOffset? _frozen; // OQ-55 (TL 9:42): a frozen clock moves only by advance, so live tests hit exact ms boundaries.
+    readonly object _g = new();
+    public DateTimeOffset Now { get { lock (_g) return _frozen ?? DateTimeOffset.UtcNow.AddTicks(_offsetTicks); } }
+    public void Advance(long seconds) => AdvanceMs(checked(seconds * 1000));
+    public void AdvanceMs(long ms) { lock (_g) { var t = TimeSpan.FromMilliseconds(ms).Ticks; if (_frozen is { } f) _frozen = f.AddTicks(t); else _offsetTicks += t; } }
+    public void Freeze(bool on) { lock (_g) { if (on) _frozen ??= DateTimeOffset.UtcNow.AddTicks(_offsetTicks); else if (_frozen is { } f) { _offsetTicks = (f - DateTimeOffset.UtcNow).Ticks; _frozen = null; } } }
+    public bool Frozen { get { lock (_g) return _frozen is not null; } }
+    // [ASSUMPTION A5] reset puts the clock back to real time (and unfreezes it).
+    public void Reset() { lock (_g) { _offsetTicks = 0; _frozen = null; } }
     public string Rfc3339 => Now.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
 }
 
@@ -38,6 +43,30 @@ public sealed class StandInState
     // [TL Decision 9:16 PM, B2] FIXTURE client private keys go here (must be under /tmp; checked in Clients.Load).
     public static string StateDir { get; set; } = "/tmp/sse-d0/standin-18080";
     public static string ClientKeyDir => Environment.GetEnvironmentVariable("STANDIN_CLIENT_KEY_DIR") ?? Path.Combine(StateDir, "fixture-client-keys");
+    // F14 (TL 9:42): client secrets and recovery codes are not in the repo. They are generated once per process start (so a
+    // reset keeps them stable for the driver) and written to <state dir>/fixture-secrets.json (0600), which the driver reads.
+    JsonObject? _secrets;
+    void InjectSecrets(JsonObject fx)
+    {
+        static string R(int n) => Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(n)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        if (_secrets is null)
+        {
+            var cl = new JsonObject(); var rc = new JsonObject();
+            foreach (var c in fx["clients"]!.AsArray()) cl[(string)c!["client_id"]!] = R(32);
+            foreach (var u in fx["users"]!.AsArray())
+                if ((int?)u!["recovery_codes_count"] is int k and > 0)
+                    rc[(string)u["username"]!] = new JsonArray(Enumerable.Range(0, k).Select(_ => (JsonNode)("FIXTURE-RC-" + Convert.ToHexStringLower(System.Security.Cryptography.RandomNumberGenerator.GetBytes(5)))).ToArray());
+            _secrets = new JsonObject { ["_label"] = "FIXTURE secrets, generated at start; never commit", ["clients"] = cl, ["recovery_codes"] = rc };
+            var path = Path.Combine(StateDir, "fixture-secrets.json");
+            File.WriteAllText(path, "");
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            File.WriteAllText(path, _secrets.ToJsonString());
+        }
+        foreach (var c in fx["clients"]!.AsArray()) c!["secret"] = (string)_secrets["clients"]![(string)c["client_id"]!]!;
+        foreach (var u in fx["users"]!.AsArray())
+            if (_secrets["recovery_codes"]![(string)u!["username"]!] is JsonArray a) u["recovery_codes"] = a.DeepClone();
+    }
+
     public StandInState(string fixturePath) { _fixturePath = fixturePath; Reset(); }
 
     public void Reset()
@@ -45,6 +74,7 @@ public sealed class StandInState
         lock (_gate)
         {
             Fixtures = JsonNode.Parse(File.ReadAllText(_fixturePath))!.AsObject();
+            InjectSecrets(Fixtures);
             OutboxFault = "ok"; DeviceRegistryFault = "ok";
             _audit.Clear();
             Clock.Reset();
@@ -86,12 +116,23 @@ public static class Control
         const string P = Listeners.ControlPrefix;
         app.MapPost(P + "/reset", () => { st.Reset(); return Results.NoContent(); });
         app.MapGet(P + "/clock", () => Results.Json(new { now = st.Clock.Rfc3339 }));
+        // OQ-55 (TL 9:42) [v1.1 control addition]: freeze / unfreeze; while frozen only advance moves time.
+        app.MapPost(P + "/clock/freeze", async (HttpRequest r) =>
+        {
+            var o = await ReadObject(r);
+            if (o?["frozen"] is not JsonValue v || !v.TryGetValue(out bool on) || o.Count != 1) return Bad();
+            st.Clock.Freeze(on);
+            return Results.Json(new { now = st.Clock.Rfc3339, frozen = st.Clock.Frozen });
+        });
         app.MapPost(P + "/clock/advance", async (HttpRequest r) =>
         {
             var o = await ReadObject(r);
             // n must be a non-negative integer; time never goes back.
-            if (o?["seconds"] is not JsonValue v || !v.TryGetValue(out long n) || n < 0) return Bad();
-            st.Clock.Advance(n);
+            // OQ-55: exactly one of seconds or ms.
+            if (o is null || o.Count != 1) return Bad();
+            if (o["ms"] is JsonValue mv) { if (!mv.TryGetValue(out long ms) || ms < 0) return Bad(); st.Clock.AdvanceMs(ms); }
+            else if (o["seconds"] is not JsonValue v || !v.TryGetValue(out long n) || n < 0) return Bad();
+            else st.Clock.Advance(n);
             return Results.Json(new { now = st.Clock.Rfc3339 });
         });
         app.MapPut(P + "/faults", async (HttpRequest r) =>
@@ -137,7 +178,11 @@ public static class Control
         app.MapGet(P + "/users/{username}/totp", (string username) =>
         {
             lock (st.Gate)
-                return st.Users.TryGetValue(username, out var u) ? Results.Json(new { code = Totp.Code(u.TotpSecret, st.Clock.Now) }) : Results.NotFound();
+            {
+                // SEC76: the code for the earliest unused step in the +-30 s window; 409 when all are used (advance the clock 30 s).
+                if (!st.Users.TryGetValue(username, out var u)) return Results.NotFound();
+                return Totp.NextUnused(u, st.Clock.Now) is { } s ? Results.Json(new { code = Totp.CodeAt(u.TotpSecret, s) }) : Results.Json(new { error = "no_unused_step" }, statusCode: 409);
+            }
         });
         app.MapPut(P + "/pcs/{pc_id}", async (string pc_id, HttpRequest r) =>
         {

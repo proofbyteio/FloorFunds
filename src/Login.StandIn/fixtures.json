@@ -110,10 +110,7 @@
       "partner_id": "5f0c3e1a-0001-4000-8000-000000000001",
       "location_slugs": [],
       "roles": [],
-      "recovery_codes": [
-        "FIXTURE-RC-70491e5978",
-        "FIXTURE-RC-7d16cea9f8"
-      ],
+      "recovery_codes_count": 2,
       "perm_version": 1,
       "_label": "FIXTURE"
     },
@@ -187,7 +184,7 @@
       "post_logout_redirect_uris": [
         "https://cash-advance.fixture.invalid/signed-out"
       ],
-      "secret": "XgcQlj98yiO3wpUa5SPLLTN7l5GjNDqNTKEhXTMZ0GE",
+      "secret": "GENERATED",
       "_label": "FIXTURE",
       "start_url": "https://cash-advance.fixture.invalid/",
       "handoff": true
@@ -206,7 +203,7 @@
       "post_logout_redirect_uris": [
         "https://backoffice.fixture.invalid/signed-out"
       ],
-      "secret": "4qiI2yGJVyjZNBFWlbDja1bMXXxBn7gxk_8kcvaOOMU",
+      "secret": "GENERATED",
       "_label": "FIXTURE"
     },
     {
@@ -225,7 +222,7 @@
       "post_logout_redirect_uris": [
         "https://hub.fixture.invalid/signout-callback-oidc"
       ],
-      "secret": "hTYLlhcgjIAb3fHdhZfovU0_o-uxM30HGvNxrCEQBqw"
+      "secret": "GENERATED"
     }
   ],
   "_clients_comment": "FIXTURE clients. Secrets are FIXTURE values for the local stand-in only. Client private keys are generated fresh at start/reset and written under /tmp only (TL Decision 9:16 PM, B2); none is in this file or in git."

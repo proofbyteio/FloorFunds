@@ -37,9 +37,22 @@ public static class PasswordPolicy
 // RFC 6238 with BCL HMAC-SHA1. [ASSUMPTION A10] SHA1, 30 s step, 6 digits (RFC defaults; authenticator-app compatible).
 public static class Totp
 {
-    public static string Code(byte[] secret, DateTimeOffset now)
+    public static long Step(DateTimeOffset now) => now.ToUnixTimeSeconds() / 30;
+    public static string Code(byte[] secret, DateTimeOffset now) => CodeAt(secret, Step(now));
+    // SEC76 (TL 9:42): G1 +-30 s window, and a step works once per user: the matched step must be later than the last used one.
+    public static bool Accept(StandInUser u, string code, DateTimeOffset now)
     {
-        var counter = BitConverter.GetBytes(now.ToUnixTimeSeconds() / 30);
+        if (code.Length != 6) return false;
+        var cur = Step(now);
+        foreach (var s in new[] { cur - 1, cur, cur + 1 })
+            if (s > u.LastTotpStep && CodeAt(u.TotpSecret, s) == code) { u.LastTotpStep = s; return true; }
+        return false;
+    }
+    // Control helper: the earliest step in the window not yet used, or null.
+    public static long? NextUnused(StandInUser u, DateTimeOffset now) { var cur = Step(now); for (var s = cur - 1; s <= cur + 1; s++) if (s > u.LastTotpStep) return s; return null; }
+    public static string CodeAt(byte[] secret, long step)
+    {
+        var counter = BitConverter.GetBytes(step);
         if (BitConverter.IsLittleEndian) Array.Reverse(counter);
         var h = HMACSHA1.HashData(secret, counter);
         int o = h[^1] & 0x0f;
@@ -57,7 +70,8 @@ public sealed class StandInUser
     public required List<string> LocationSlugs { get; set; }
     public int PermVersion { get; set; } = 1; // [ASSUMPTION A21] FIXTURE perm_version, default 1.
     // contract 6.3 lockout state; cleared by /_standin/reset (users are rebuilt).
-    public int FailedPasswords { get; set; }
+    public int FailedPasswords { get; set; }   // SEC77 (TL 9:42): wrong passwords AND wrong TOTP codes; reset only by a full sign-in
+    public long LastTotpStep { get; set; } = long.MinValue; // SEC76
     public DateTimeOffset? LockedUntil { get; set; }
     // /admin users (contract 5.12, 8.10): admin_type super|partner, no location. FIXTURE recovery codes are kept as SHA-256 hashes only.
     // [TL Decision 9:26 PM, (b)] FIXTURE-only: the amr a test user's location session carries ([pwd], [wiaormfa]) to prove rule 2 refusals.

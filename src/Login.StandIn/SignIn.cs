@@ -41,6 +41,36 @@ public static class SignIn
     public static IResult Html(string testid, string body, int status = 200) =>
         Ui.Page("Sign in", Ui.Render("card", ("testid", testid), ("body", body)), null, status);
 
+    // OQ-11 (TL 9:42): an unknown user still runs one PBKDF2 hash against this dummy, so timing matches a known user.
+    public static readonly (byte[] Salt, byte[] Hash) DummyCred = StandInUser.Hash(Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)));
+    public static bool PasswordMatches(StandInUser? u, string password)
+    {
+        var (salt, hash) = u is { PasswordHistory.Count: > 0 } ? u.PasswordHistory[0] : DummyCred;
+        var ok = System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            StandInUser.Hash(password.Normalize(System.Text.NormalizationForm.FormKC), salt).Item2, hash);
+        return ok && u is { PasswordHistory.Count: > 0 };
+    }
+    public static bool Locked(StandInUser u, DateTimeOffset now) => u.LockedUntil is { } lu && lu > now;
+    // 6.3 + SEC77 (TL 9:42): one per-user failure counter for wrong passwords and wrong TOTP codes; partner preset limit (Nevada 3, PCI 10).
+    public static int Limit(StandInState st, StandInUser u, string? slug)
+    {
+        string? preset = slug is { Length: > 0 } ? Location(st.Fixtures, slug)?.Preset
+            : st.Fixtures["partners"]!.AsArray().FirstOrDefault(p => (string?)p!["partner_id"] == u.PartnerId)?["preset"]?.GetValue<string>();
+        // [ASSUMPTION A54] /admin: the partner's preset; a super admin (no partner) gets the stricter limit, 3.
+        return preset == PasswordPolicy.Pci ? 10 : 3;
+    }
+    public static void CountFailure(StandInState st, StandInUser u, int limit, DateTimeOffset now, JsonObject scope, string? ip, string? ua)
+    {
+        u.FailedPasswords++;
+        if (u.FailedPasswords < limit) return;
+        var mins = (int?)st.Fixtures["lockout_minutes"] ?? 30;
+        u.LockedUntil = now.AddMinutes(mins); u.FailedPasswords = 0;
+        var e = Audit.Build(now, "auth.account.locked", "success", u.UserId, new JsonObject
+        { ["lock_until"] = u.LockedUntil.Value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'") }, scope, ip, ua);
+        if (u.AdminType is not null) e["admin_type"] = u.AdminType;
+        st.Emit(e);
+    }
+
     static void SetCookie(HttpContext c, string name, string value, string path) =>
         c.Response.Cookies.Append(name, value, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Lax, Path = path, Secure = c.Request.IsHttps });
 
@@ -147,25 +177,14 @@ public static class SignIn
                     { ["username_hmac"] = Audit.UsernameHmac(username), ["reason"] = reason, ["provider_kind"] = "database" }, Scope(loc), Ip(c), Ua(c)));
                     return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
                 }
-                // 6.3 lockout: a locked account is refused without checking the password.
-                if (user is not null && user.LockedUntil is { } lu && lu > now) return Fail("locked", user.UserId);
-                bool pwOk = user is not null && user.Status == "active" && user.LocationSlugs.Contains(slug) && user.PasswordHistory.Count > 0
-                    && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
-                        StandInUser.Hash(password.Normalize(System.Text.NormalizationForm.FormKC), user.PasswordHistory[0].Salt).Item2, user.PasswordHistory[0].Hash);
+                // OQ-11: the hash always runs (dummy for an unknown user), before the lockout check too.
+                bool hashOk = PasswordMatches(user, password);
+                // 6.3 lockout: a locked account is refused whatever the password.
+                if (user is not null && Locked(user, now)) return Fail("locked", user.UserId);
+                bool pwOk = hashOk && user!.Status == "active" && user.LocationSlugs.Contains(slug);
                 if (!pwOk)
                 {
-                    if (user is not null && user.LocationSlugs.Contains(slug))
-                    {
-                        user.FailedPasswords++;
-                        int limit = loc.Preset == PasswordPolicy.Nevada ? 3 : 10;
-                        if (user.FailedPasswords >= limit)
-                        {
-                            var mins = (int?)st.Fixtures["lockout_minutes"] ?? 30;
-                            user.LockedUntil = now.AddMinutes(mins); user.FailedPasswords = 0;
-                            st.Emit(Audit.Build(now, "auth.account.locked", "success", user.UserId, new JsonObject
-                            { ["lock_until"] = user.LockedUntil.Value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'") }, Scope(loc), Ip(c), Ua(c)));
-                        }
-                    }
+                    if (user is not null && user.LocationSlugs.Contains(slug)) CountFailure(st, user, Limit(st, user, slug), now, Scope(loc), Ip(c), Ua(c));
                     return Fail("bad_credentials", null);
                 }
                 // 6.1: a verified remote_session=true refuses the sign-in (screen 8A); an invalid one is ignored (6.2).
@@ -174,10 +193,10 @@ public static class SignIn
                     Fail("remote_session", user!.UserId);
                     return Ui.Page("Sign-in is blocked", Ui.Render("screen-8a"));
                 }
-                user!.FailedPasswords = 0;
+                // [ASSUMPTION A53] the failure counter is NOT reset by a right password alone (else password+wrong-TOTP never locks); a full sign-in resets it.
                 // 4.11: the pre-session id is reissued after the password step.
                 st.Auth.Tx.Remove(tx.Id);
-                tx.Id = TokenIssuer.NewHandle(); tx.Stage = "totp"; tx.Username = user.Username;
+                tx.Id = TokenIssuer.NewHandle(); tx.Stage = "totp"; tx.Username = user!.Username;
                 st.Auth.Tx[tx.Id] = tx;
                 SetCookie(c, TxCookie, tx.Id, issuerPath);
                 return TotpPage(c, af, Base(slug), null);
@@ -197,9 +216,18 @@ public static class SignIn
                     return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
                 var now = st.Clock.Now;
                 // G1 +-30 s: one 30 s step either side.
-                bool ok = code.Length == 6 && new[] { -30, 0, 30 }.Any(d => Totp.Code(user.TotpSecret, now.AddSeconds(d)) == code);
+                // SEC77: once locked, even the right code is refused (and its step is not spent).
+                if (Locked(user, now))
+                {
+                    st.Emit(Audit.Build(now, "auth.login.failed", "failure", user.UserId, new JsonObject
+                    { ["username_hmac"] = Audit.UsernameHmac(user.Username), ["reason"] = "locked", ["provider_kind"] = "database" }, Scope(loc), Ip(c), Ua(c)));
+                    return TotpPage(c, af, Base(slug), Generic);
+                }
+                // G1 +-30 s; SEC76: a step works once per user (replay refused).
+                bool ok = Totp.Accept(user, code, now);
                 if (!ok)
                 {
+                    CountFailure(st, user, Limit(st, user, slug), now, Scope(loc), Ip(c), Ua(c));
                     st.Emit(Audit.Build(now, "auth.mfa.failed", "failure", user.UserId, new JsonObject { ["method"] = "totp" }, Scope(loc), Ip(c), Ua(c)));
                     st.Emit(Audit.Build(now, "auth.login.failed", "failure", user.UserId, new JsonObject
                     { ["username_hmac"] = Audit.UsernameHmac(user.Username), ["reason"] = "mfa_failed", ["provider_kind"] = "database" }, Scope(loc), Ip(c), Ua(c)));
@@ -217,6 +245,7 @@ public static class SignIn
                 // [ASSUMPTION A25] if the outbox is down no session is created (fail closed); the user sees the generic error.
                 if (st.OutboxFault == "fail") return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
                 st.Emit(ev1); st.Emit(ev2);
+                user.FailedPasswords = 0;
                 st.Auth.Tx.Remove(tx.Id);
                 st.Auth.Sessions[s.Sid] = s;
                 c.Response.Cookies.Delete(TxCookie, new CookieOptions { Path = issuerPath });

@@ -79,9 +79,11 @@ public static class OAuth
                     return resign ? u + "&resign=1" : u;
                 }
                 // 5.7: a presented hub_launch is consumed on the first check, whatever happens next (also when there is no session: A40).
-                var hlRaw = isHandoffClient ? Q("hub_launch") : null;
+                // OQ-56 (TL 9:42, replaces A41): a hub_launch shown to any other client is burned too, then ignored (like A40).
+                var hlRaw = Q("hub_launch");
                 HubLaunch? hl = null; bool hlFresh = false;
                 if (hlRaw is not null && st.Auth.HubLaunches.TryGetValue(AuthStore.H(hlRaw), out hl)) { hlFresh = !hl.Used; hl.Used = true; }
+                if (!isHandoffClient) { hlRaw = null; hl = null; hlFresh = false; }
 
                 if (s is not null && (s.Kind == "recovery_reenroll" || s.AdminType is not null))
                 {
@@ -225,7 +227,7 @@ public static class OAuth
                 if (st.OutboxFault == "fail") return TokenError(c, "temporarily_unavailable", 503);
                 var now = st.Clock.Now;
                 var grant = f["grant_type"].ToString();
-                LoginSession? s; string scope; string? nonce = null; Family fam;
+                LoginSession? s; string scope; string? nonce = null; Family fam; RefreshRec? usedRefresh = null;
                 if (grant == "authorization_code")
                 {
                     var code = f["code"].ToString();
@@ -275,7 +277,10 @@ public static class OAuth
                     // 7.3 role loss: only this client's family.
                     if (client.AppCode is not null && !user.Roles.Any(r => r.AppCode == client.AppCode)) { st.Auth.RevokeFamily(fam.Id); return TokenError(c, "invalid_grant"); }
                     if (s.Revoked || now >= s.AuthTime.AddHours(SignIn.CapHours)) { st.Auth.RevokeFamily(fam.Id); return TokenError(c, "invalid_grant"); }
-                    rr.RotatedAt ??= now;
+                    // OQ-52: replay inside the 30 s leeway -> the same successor pair, no new chain.
+                    if (rr.Successor is { } prev)
+                    { c.Response.Headers.CacheControl = "no-store"; c.Response.Headers.Pragma = "no-cache"; return Results.Json(prev.DeepClone()); }
+                    rr.RotatedAt ??= now; usedRefresh = rr;
                     scope = fam.Scope;
                 }
                 else return TokenError(c, "unsupported_grant_type");
@@ -299,6 +304,7 @@ public static class OAuth
                     st.Auth.Refresh[AuthStore.H(rt)] = new RefreshRec { FamilyId = fam.Id };
                     body["refresh_token"] = rt;
                 }
+                if (usedRefresh is not null) usedRefresh.Successor = (JsonObject)body.DeepClone();
                 c.Response.Headers.CacheControl = "no-store"; c.Response.Headers.Pragma = "no-cache";
                 return Results.Json(body);
             }

@@ -61,6 +61,7 @@ public sealed class RefreshRec
 {
     public required string FamilyId { get; init; }
     public DateTimeOffset? RotatedAt { get; set; }
+    public JsonObject? Successor { get; set; } // OQ-52 (TL 9:42): a replay inside the leeway gets this same pair, no new chain
 }
 
 public sealed class Family

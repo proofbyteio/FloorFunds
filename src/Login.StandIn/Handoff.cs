@@ -29,6 +29,7 @@ public static class Handoff
     static string E(string s) => WebUtility.HtmlEncode(s);
 
     // Audit scope for any session: an /admin session has no location (location_ids: [] is allowed only with admin_type).
+    static JsonObject AdminScope(StandInUser u) => new() { ["partner_id"] = u.PartnerId, ["location_ids"] = new JsonArray() };
     public static JsonObject SessionScope(StandInState st, LoginSession s) =>
         s.AdminType is not null ? new JsonObject { ["partner_id"] = s.PartnerId, ["location_ids"] = new JsonArray() } : SignIn.Scope(SignIn.Location(st.Fixtures, s.Slug)!);
 
@@ -131,9 +132,16 @@ public static class Handoff
             {
                 var key = f["username"].ToString().Trim().ToLowerInvariant();
                 var u = st.Users.Values.FirstOrDefault(x => x.Username.ToLowerInvariant() == key && x.AdminType is not null);
-                bool ok = u is not null && u.Status == "active" && u.PasswordHistory.Count > 0 && CryptographicOperations.FixedTimeEquals(
-                    StandInUser.Hash(f["password"].ToString().Normalize(System.Text.NormalizationForm.FormKC), u.PasswordHistory[0].Salt).Item2, u.PasswordHistory[0].Hash);
-                if (!ok) return Admin(c, SignIn.Generic, 1);
+                var now = st.Clock.Now;
+                bool hashOk = SignIn.PasswordMatches(u, f["password"].ToString()); // OQ-11 dummy hash for unknown users
+                // SEC77 (TL 9:42, F12): /admin gets the lockout too.
+                if (u is not null && SignIn.Locked(u, now)) return Admin(c, SignIn.Generic, 1);
+                bool ok = hashOk && u!.Status == "active";
+                if (!ok)
+                {
+                    if (u is not null) SignIn.CountFailure(st, u, SignIn.Limit(st, u, null), now, AdminScope(u), c.Connection.RemoteIpAddress?.ToString(), null);
+                    return Admin(c, SignIn.Generic, 1);
+                }
                 var tx = new SignInTx { Id = TokenIssuer.NewHandle(), Slug = "", Purpose = "admin", Stage = "mfa", Username = u!.Username, NonceAt = st.Clock.Now };
                 st.Auth.Tx[tx.Id] = tx; Cookie(c, SignIn.TxCookie, tx.Id);
                 return Admin(c, null, 2);
@@ -151,9 +159,11 @@ public static class Handoff
                     || !st.Users.TryGetValue(tx.Username!, out var u)) return Admin(c, SignIn.Generic, 1);
                 var totp = f["totp_code"].ToString().Trim(); var rc = f["recovery_code"].ToString().Trim();
                 string kind; string[] amr;
-                if (totp.Length == 6 && new[] { -30, 0, 30 }.Any(d => Totp.Code(u.TotpSecret, now.AddSeconds(d)) == totp)) { kind = "normal"; amr = new[] { "pwd", "otp", "mfa" }; }
-                else if (rc.Length > 0 && u.RecoveryCodeHashes.Remove(AuthStore.H(rc))) { kind = "recovery_reenroll"; amr = new[] { "pwd" }; }
-                else return Admin(c, SignIn.Generic, 2);
+                if (SignIn.Locked(u, now)) return Admin(c, SignIn.Generic, 2); // SEC77: right code refused once locked
+                if (totp.Length > 0 && Totp.Accept(u, totp, now)) { kind = "normal"; amr = new[] { "pwd", "otp", "mfa" }; } // SEC76 replay refused
+                else if (totp.Length == 0 && rc.Length > 0 && u.RecoveryCodeHashes.Remove(AuthStore.H(rc))) { kind = "recovery_reenroll"; amr = new[] { "pwd" }; }
+                else { SignIn.CountFailure(st, u, SignIn.Limit(st, u, null), now, AdminScope(u), c.Connection.RemoteIpAddress?.ToString(), null); return Admin(c, SignIn.Generic, 2); }
+                u.FailedPasswords = 0;
                 st.Auth.Tx.Remove(tx.Id);
                 var s = new LoginSession { Sid = Guid.NewGuid().ToString(), UserId = u.UserId, Username = u.Username, Slug = "", LocationId = "", AuthTime = now, LastSeen = now,
                     Amr = amr, Kind = kind, AdminType = u.AdminType, PartnerId = u.PartnerId };
