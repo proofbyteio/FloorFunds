@@ -8,3 +8,12 @@
 - Assumptions: A59 cage stub mounted under the issuer path. A60 location cage actions return 501 and attestation is not checked (v1.1/SSE2 gap). A61 the range is a placeholder. A62 the cap is read live for each check (OQ-40 not asserted). A63 the path is STANDIN. A64 no session gives 401 with no event. A65 a value that isn't a TimeSpan gives 400 with no event. A66 an unknown partner gives 400. A67 a GET of the cap page counts as activity (same as the re-enrol GET).
 - Driver race: the iat +31 s test now freezes the control clock and takes the server-time sample from it.
 - Live suite: 243/243. Evidence: /tmp/sse-d0/evidence-step4.txt, md5 39d946a382c64dcd52ae0d6e2a317fde.
+
+## TL 10:08 PM ruling: final SI1 commit, 2026-11-02 (PT)
+- TL accepted 1685eea.
+- **A60 is withdrawn (BP-2a).** A location-user cage action now checks attestation FIRST (contract 6.7, purpose cage_action), after the 6.9 admin and recovery refusal. The cage nonce is now server-stored and single-use, and is bound to the session's location and the standin_pc cookie (a SignInTx with Purpose=cage_action). A missing or invalid attestation gets 403 {"error":"attestation_invalid"} (CR-25 / errors.md) and writes auth.app_access.denied with reason attestation_invalid, target app cash_advance, session_kind and SessionScope (schema-valid). Only a valid attestation gets 501 not_implemented. Live tests cover missing, invalid (alg none), bad_signature, valid (501) and a replay (nonce burnt).
+- **A68 (new):** the Cash Advance server's aud for cage_action is "cash-advance-server". Contract 6.7(5) says only "its own id"; I took the value from contract/check_schemas.py. The fake agent signs aud and purpose per tx.Purpose.
+- **A67 accepted (TL):** any authenticated request counts as activity for the idle timeout.
+- **UX D-93:** ui/login-hub/recovery-codes.html now matches screen 03 reenrol-done and reenrol-done-admin. Snapshot /tmp/sse-d0/ux-snap-d93/03-totp.html, md5 7de8580fb134709788ea5afa582a1bf1 (verified; mockup not edited). Both done states have the codes list, the "shown only once" note, no copy button and a Continue link. Both have live tests.
+- **v1.1:** V11-UXSUB: add reenroll-subtitle to ui-driver.md and the standin-ui testid enum. V11-RCCOUNT: the recovery code count of 10 (contract 7.8 gives no count or format).
+- Live suite: 251/251. Evidence: /tmp/sse-d0/evidence-final.txt, md5 aa782b7bbda57c6198a00498e44ac770.

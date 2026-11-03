@@ -112,6 +112,8 @@ public sealed class AuthStore
 // The fake device agent (6.8, standin-control 2.4) and the server check (6.7).
 public static class Attestation
 {
+    // [ASSUMPTION A68] the Cash Advance server's aud for cage_action (contract 6.7(5): "its own id"; value from contract/check_schemas.py).
+    public const string CageAud = "cash-advance-server";
     static string B64(object o) => Base64UrlEncoder.Encode(JsonSerializer.SerializeToUtf8Bytes(o));
 
     static ECDsa Key(AuthStore a, string kid)
@@ -134,7 +136,7 @@ public static class Attestation
         string kid = pc.Mode == "unknown_device" ? "standin-unenrolled-" + pc.PcId[8..] : pc.PcId;
         string nonce = pc.Mode == "replayed" ? "standin-replayed-" + Base64UrlEncoder.Encode(RandomNumberGenerator.GetBytes(16)) : tx.Nonce;
         if (pc.Mode == "expired") iat -= 150;
-        var claims = new { nonce, device_id = kid, remote_session = pc.Mode == "remote_session", iat, exp = iat + 60, aud = issuer, purpose = tx.Purpose };
+        var claims = new { nonce, device_id = kid, remote_session = pc.Mode == "remote_session", iat, exp = iat + 60, aud = tx.Purpose == "cage_action" ? CageAud : issuer, purpose = tx.Purpose };
         var key = pc.Mode == "bad_signature" ? Key(st.Auth, "standin-wrong-key") : Key(st.Auth, kid);
         return Jws(key, kid, claims);
     }

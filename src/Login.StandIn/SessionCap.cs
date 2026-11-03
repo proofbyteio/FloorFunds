@@ -138,14 +138,48 @@ public static class CageStub
         {
             SignIn.Headers(c, ports.Control);
             try { await af.ValidateRequestAsync(c); } catch (AntiforgeryValidationException) { return Results.BadRequest(); }
-            lock (st.Gate) return Refuse(c, "attest-nonce") ?? Results.Json(new { nonce = TokenIssuer.NewHandle() });
+            lock (st.Gate)
+            {
+                var r = Refuse(c, "attest-nonce"); if (r is not null) return r;
+                var s = SignIn.CurrentSession(st, c, st.Clock.Now)!;
+                // BP-2a (TL 10:08): a server-stored, single-use nonce bound to this session's location and standin_pc (6.7, 6.8).
+                c.Request.Cookies.TryGetValue(SignIn.PcCookie, out var pcid);
+                var tx = new SignInTx { Id = TokenIssuer.NewHandle(), Slug = s.Slug, Purpose = "cage_action", Stage = "cage", Sid = s.Sid,
+                    Nonce = TokenIssuer.NewHandle(), NonceAt = st.Clock.Now, PcId = pcid };
+                st.Auth.Tx[tx.Id] = tx;
+                c.Response.Headers.CacheControl = "no-store";
+                return Results.Json(new { nonce = tx.Nonce });
+            }
         });
         app.MapPost(issuerPath + "/cage/actions/{action}", async (string action, HttpContext c) =>
         {
             SignIn.Headers(c, ports.Control);
             if (action is not ("payment" or "id_scan" or "print")) return Results.NotFound();
             try { await af.ValidateRequestAsync(c); } catch (AntiforgeryValidationException) { return Results.BadRequest(); }
-            lock (st.Gate) return Refuse(c, "action " + action) ?? Results.Json(new { error = "not_implemented" }, statusCode: 501);
+            string? jws = c.Request.HasFormContentType ? (string?)(await c.Request.ReadFormAsync())["device_attestation"] : null;
+            lock (st.Gate)
+            {
+                var r = Refuse(c, "action " + action); if (r is not null) return r;
+                var now = st.Clock.Now; var s = SignIn.CurrentSession(st, c, now)!;
+                // BP-2a / 6.7 (TL 10:08, replaces A60): attestation FIRST, purpose cage_action, aud = the Cash Advance server [ASSUMPTION A68].
+                // The JWS names its nonce; take the matching cage tx of THIS session (consumed on every outcome by Check).
+                string? n = null;
+                try { if (jws?.Split('.') is { Length: 3 } pp) n = (string?)System.Text.Json.Nodes.JsonNode.Parse(Microsoft.IdentityModel.Tokens.Base64UrlEncoder.Decode(pp[1]))?["nonce"]; }
+                catch (Exception e) when (e is System.Text.Json.JsonException or FormatException or ArgumentException) { n = null; }
+                var tx = st.Auth.Tx.Values.FirstOrDefault(t => t.Purpose == "cage_action" && t.Sid == s.Sid && t.Nonce is not null && t.Nonce == n)
+                      ?? st.Auth.Tx.Values.FirstOrDefault(t => t.Purpose == "cage_action" && t.Sid == s.Sid && t.Nonce is not null);
+                var ok = tx is not null && Attestation.Check(st, tx, jws, Attestation.CageAud, "cage_action", now).Ok;
+                if (!ok)
+                {
+                    var e = Audit.Build(now, "auth.app_access.denied", "denied", s.UserId, new JsonObject { ["reason"] = "attestation_invalid" },
+                        Handoff.SessionScope(st, s), c.Connection.RemoteIpAddress?.ToString(), null, s.Sid);
+                    e["target"] = new JsonObject { ["type"] = "app", ["id"] = "cash_advance" }; e["session_kind"] = s.Kind;
+                    st.Emit(e);
+                    Console.WriteLine($"cage_stub refused action {action} reason=attestation_invalid attestation={(string.IsNullOrEmpty(jws) ? "missing" : "invalid")}");
+                    return Results.Json(new { error = "attestation_invalid" }, statusCode: 403);
+                }
+                return Results.Json(new { error = "not_implemented" }, statusCode: 501); // valid attestation only; the action itself is the Cash Advance server's
+            }
         });
     }
 }
