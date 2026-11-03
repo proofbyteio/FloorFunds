@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:audit-events",
-  "title": "Audit events the contract tests may assert, contract v1 (DRAFT v1-d3)",
-  "description": "Event list [SRC: PLAN §3.1 L148-161; LD §8 L416-426]. Envelope names [SRC: AUD §7A.4]; login-specific mapping [SRC: LD §8 L423]. The Cachd client field is cachd_client_id [TL Decision 2026-11-02, OQ-23; consistent with B-LS5 and claims.schema.json]; AUD §7A.4 still says client_id [OPEN (SA) -> OQ-37; TL Rec: SA renames to cachd_client_id; safe default: contract keeps cachd_client_id]; partner_id/location_id flat (AUD) vs scope.* (LD) stays open with the SA [OQ-23]. Events marked 'Defined, not emitted in S1' are in the v1 schema so later slices keep the shape [TL Decision 2026-11-02, OQ-26]; draft uses AUD flat names plus LD's actor.session_id, target, action. Only fields the login service writes are listed; relay-assigned fields (received_at, sequence, prev_hash, hash) are not asserted.",
+  "title": "Audit events the contract tests may assert, contract v1 (DRAFT v1-d4)",
+  "description": "Event list [SRC: PLAN §3.1 L148-161; LD §8 L416-426]. Envelope names [SRC: AUD §7A.4]; login-specific mapping [SRC: LD §8 L423]. Tenant fields are in the nested scope.* envelope (scope.partner_id, scope.cachd_client_id, scope.location_ids) per AUD §7A.4 L264-266, with scope.client_id renamed scope.cachd_client_id [TL Decision 2026-11-02, OQ-23, OQ-37] (LD §16.19 row 114 L700, §16.19.4 L1439). Tokens stay flat (claims.schema.json).",
   "type": "object",
   "allOf": [{"$ref": "#/$defs/envelope"}],
   "oneOf": [
@@ -21,7 +21,7 @@
     { "$ref": "#/$defs/not_emitted_fields_not_stated" }
   ],
   "$defs": {
-    "id": { "type": "string", "format": "uuid" },
+    "id": { "type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" },
     "envelope": {
       "type": "object",
       "required": ["event_id", "schema", "schema_version", "category", "event_type", "occurred_at", "outcome", "is_audit", "actor", "source", "details"],
@@ -29,27 +29,21 @@
         "event_id": { "description": "UUIDv7, idempotency key [SRC: AUD §7A.4].", "$ref": "#/$defs/id" },
         "schema": { "const": "cachd.log" },
         "schema_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
-        "category": { "description": "Events category [SRC: LD §8 L412]. Literal 'event' [OPEN (SA) -> OQ-23; safe default 'event'].", "const": "event" },
+        "category": { "description": "Events category [SRC: LD §8 L412]. Literal 'event' [TL Decision 2026-11-02, OQ-23].", "const": "event" },
         "event_type": {
-          "description": "auth.* plus exactly one iam.* name, iam.permission.change_requested [SRC: LD §8 L426]; no iam.* pattern [OPEN (SA) -> OQ-38; TL Rec: SA renames it auth.provider.change_requested; safe default: allow exactly that one name].",
+          "description": "auth.* names only; iam.permission.change_requested renamed auth.provider.change_requested [TL Decision 2026-11-02, OQ-38] (LD §8 L426, row 115 L701).",
           "type": "string",
-          "pattern": "^(auth\\.[a-z_]+\\.[a-z_]+|iam\\.permission\\.change_requested)$"
+          "pattern": "^auth\\.[a-z_]+\\.[a-z_]+$"
         },
         "occurred_at": { "type": "string", "format": "date-time" },
         "location_tz": { "type": "string" },
-        "partner_id": { "$ref": "#/$defs/id" },
-        "cachd_client_id": {
-          "description": "The Cachd client (casino operator), not the OAuth client [TL Decision 2026-11-02, OQ-23]. AUD §7A.4 names it client_id [-> OQ-37]. Absent for partner-level users.",
-          "$ref": "#/$defs/id"
-        },
-        "location_id": { "$ref": "#/$defs/id" },
         "workstation_id": { "description": "If known [SRC: LD L423].", "type": "string" },
         "actor": {
           "type": "object",
           "required": ["user_id"],
           "properties": {
             "user_id": {
-              "description": "= sub; null when the user is unknown (failed sign-in) [OPEN (SA) -> OQ-24; TL Rec accepted as safe default].",
+              "description": "= sub; null when the user is unknown (failed sign-in) [TL Decision 2026-11-02, OQ-24].",
               "oneOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]
             },
             "session_id": { "description": "= login_session_id [SRC: LD L423].", "type": "string" },
@@ -72,7 +66,7 @@
           }
         },
         "outcome": {
-          "description": "success / failure / denied [OPEN (SA) -> OQ-23/OQ-24; safe default these three]; success and denied appear in LD L423, L425.",
+          "description": "success / failure / denied [TL Decision 2026-11-02, OQ-23/OQ-24]; success and denied appear in LD L423, L425.",
           "enum": ["success", "failure", "denied"]
         },
         "correlation_id": { "type": "string" },
@@ -84,7 +78,21 @@
           "description": "Stand-in events only; the audit relay/ingest outside Development rejects and alerts on any event carrying it [TL Decision 2026-11-02, OQ-25].",
           "const": true
         },
-        "details": { "type": "object" }
+        "details": { "type": "object" },
+        "scope": {
+          "description": "Tenant scope [SRC: AUD §7A.4 L264-266] [TL Decision 2026-11-02, OQ-37]. cachd_client_id absent for partner-level users; location_ids absent for /admin [TL Decision 2026-11-02, OQ-15].",
+          "type": "object",
+          "properties": {
+            "partner_id": { "$ref": "#/$defs/id" },
+            "cachd_client_id": {
+              "description": "The Cachd client (casino operator), not the OAuth client [TL Decision 2026-11-02, OQ-23, OQ-37].",
+              "$ref": "#/$defs/id"
+            },
+            "location_ids": { "type": "array", "items": { "$ref": "#/$defs/id" }, "minItems": 1}
+          },
+          "not": { "required": ["client_id"]},
+          "additionalProperties": false
+        }
       }
     },
     "provider_kind": { "enum": ["database", "entra"]},
@@ -120,12 +128,12 @@
           "required": ["username_hmac", "reason", "provider_kind"],
           "properties": {
             "username_hmac": {
-              "description": "Lowercase hex HMAC-SHA256 with a secret key over the normalized username (trim, Unicode NFKC, lowercase invariant) [SRC: LD L417; OPEN (SA) -> OQ-24, TL Rec as safe default]. Stand-in key is test-only.",
+              "description": "Lowercase hex HMAC-SHA256 with a secret key over the normalized username (trim, Unicode NFKC, lowercase invariant) [SRC: LD L417; TL Decision 2026-11-02, OQ-24]. Stand-in key is test-only.",
               "type": "string",
               "pattern": "^[0-9a-f]{64}$"
             },
             "reason": {
-              "description": "Known codes: remote_session [SRC: LD L417]; locked, mfa_missing, tenant_mismatch, stale_auth_time [SRC: PLAN L146]; bad_credentials covers both unknown user and wrong password (no existence oracle), outbox_unavailable [OPEN (SA) -> OQ-24; TL Rec as safe default]. rate_limited is not an outbox reason (LD §8 L430). Full list open with the SA.",
+              "description": "Known codes: remote_session [SRC: LD L417]; locked, mfa_missing, tenant_mismatch, stale_auth_time [SRC: PLAN L146]; bad_credentials covers both unknown user and wrong password (no existence oracle), outbox_unavailable [TL Decision 2026-11-02, OQ-24] (LD §16.19.5); no password_expired reason [TL Decision 2026-11-02, OQ-24]. rate_limited is not an outbox reason (LD §8 L430). Full list per LD §16.19.5 [TL Decision 2026-11-02, OQ-24].",
               "type": "string",
               "pattern": "^[a-z_]+$",
               "examples": ["bad_credentials", "locked", "mfa_missing", "tenant_mismatch", "stale_auth_time", "remote_session"]
@@ -157,7 +165,7 @@
         "event_type": { "enum": ["auth.mfa.enrolled", "auth.mfa.succeeded", "auth.mfa.failed", "auth.mfa.reset"]},
         "details": {
           "required": ["method"],
-          "properties": { "method": { "description": "totp | recovery_code | entra [OPEN (SA) -> OQ-24; safe default].", "type": "string" }}
+          "properties": { "method": { "description": "totp | recovery_code | entra [TL Decision 2026-11-02, OQ-24].", "type": "string" }}
         }
       }
     },
@@ -169,7 +177,7 @@
       }
     },
     "auth.session.revoked": {
-      "description": "reason, actor [SRC: LD §8 L422]. One per login session ended, not per client/token [TL Decision 2026-11-02, OQ-10]. reason=user_disabled when refresh finds the user disabled or locked [TL Decision 2026-11-02, OQ-12]. Other values [OPEN (SA) -> OQ-24; safe default the examples].",
+      "description": "reason, actor [SRC: LD §8 L422]. One per login session ended, not per client/token [TL Decision 2026-11-02, OQ-10]. reason=user_disabled when refresh finds the user disabled or locked [TL Decision 2026-11-02, OQ-12]. Other values [TL Decision 2026-11-02, OQ-24].",
       "properties": {
         "event_type": { "const": "auth.session.revoked" },
         "details": {
@@ -227,7 +235,7 @@
       "required": ["target"]
     },
     "auth.password.reset": {
-      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. [SRC: LD §8 L420]. Channel values email | admin [OPEN (SA) -> OQ-24; safe default].",
+      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. [SRC: LD §8 L420]. Channel values email | admin [TL Decision 2026-11-02, OQ-24].",
       "properties": {
         "event_type": { "enum": ["auth.password.reset_requested", "auth.password.reset_completed"]},
         "details": { "required": ["channel"], "properties": { "channel": { "type": "string" }}}
@@ -249,7 +257,7 @@
       }
     },
     "not_emitted_fields_not_stated": {
-      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. In LD §8 L426 with no fields stated (envelope only) [TL Decision 2026-11-02, OQ-25]. Partner Admin method change = iam.permission.change_requested [OPEN (SA) -> OQ-38].",
+      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. In LD §8 L426 with no fields stated (envelope only) [TL Decision 2026-11-02, OQ-25]. Partner Admin method change = auth.provider.change_requested [TL Decision 2026-11-02, OQ-38].",
       "properties": {
         "event_type": {
           "enum": [
@@ -257,7 +265,7 @@
             "auth.identity.unlinked",
             "auth.bootstrap.completed",
             "auth.mfa.policy_exclusion_detected",
-            "iam.permission.change_requested"
+            "auth.provider.change_requested"
           ]
         }
       }

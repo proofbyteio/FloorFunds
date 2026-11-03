@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:device-attestation",
-  "title": "Device agent attestation (compact JWS), contract v1 (DRAFT v1-d3)",
+  "title": "Device agent attestation (compact JWS), contract v1 (DRAFT v1-d4)",
   "description": "Sent by the page as device_attestation (contract-v1.md 6.4-6.8). Format [TL Decision 2026-11-02, OQ-8/OQ-9; SRC: LD §16.18.5 L1393-1398]. Lifetime, single use, nonce and device binding [SRC: LD §16.18.5 L1377, L1383; PLAN §1.2 L51]. Checks a schema can't express (signature, kid in the enrolled device key registry, exp - iat <= 60 s, nonce unconsumed) are server checks, 6.7. Server-side also: alg pinned to ES256 before parsing; crit refused; aud and purpose must match the verifier; iat/exp skew ±30 s (G1); nonce consumed atomically before the result [TL Decision 2026-11-02, OQ-35]; Addendum [TL Decision 2026-11-02, Addendum 12:15 PM PT].",
   "type": "object",
   "properties": { "header": { "$ref": "#/$defs/header" }, "claims": { "$ref": "#/$defs/claims" }},
   "required": ["header", "claims"],
   "$defs": {
     "device_id": {
-      "description": "Enrolled device id. Real: OPEN (Device Agent / hardware owner) -> OQ-35; TL Rec UUID string; safe default: any 1-128 char string, exact-match registry lookup. Stand-in: starts standin- [TL Decision 2026-11-02, OQ-33].",
+      "description": "Enrolled device id: a 1-128 char string, exact-match registry lookup; UUID recommended, not required [TL Decision 2026-11-02, OQ-35, 8:12 PM reply]. Stand-in: starts standin- [TL Decision 2026-11-02, OQ-33].",
       "type": "string",
       "minLength": 1,
       "maxLength": 128
@@ -22,7 +22,8 @@
         "typ": { "description": "cachd-attestation+jwt [TL Decision 2026-11-02, OQ-35] (Accept).", "const": "cachd-attestation+jwt" }
       },
       "not": { "anyOf": [{ "required": ["jku"]}, { "required": ["jwk"]}, { "required": ["x5u"]}, { "required": ["x5c"]}, { "required": ["crit"]}]},
-      "$comment": "The key comes only from the enrolled device key registry by kid; embedded or remote key references and any crit header are refused [TL Decision 2026-11-02, OQ-35]."
+      "$comment": "The key comes only from the enrolled device key registry by kid; embedded or remote key references and any crit header are refused [TL Decision 2026-11-02, OQ-35]. Only alg, kid, typ allowed [TL Decision 2026-11-02, CR-03]; typ and aud required (8:12 PM reply).",
+      "additionalProperties": false
     },
     "claims": {
       "type": "object",

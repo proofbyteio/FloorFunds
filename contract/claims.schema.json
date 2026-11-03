@@ -1,17 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:claims",
-  "title": "Token payloads and headers, contract v1 (DRAFT v1-d3)",
-  "description": "Pick the $defs entry for the client under test: access_token_cachd, access_token_other (org_claims off), access_token_other_org_claims (org_claims on), id_token, jose_header_*. Claim lists [SRC: PLAN §3.1 L116-123; LD §5 L229, §16.5 L906-908]. Value types [TL Decision 2026-11-02, OQ-15]. Time checks use ±30 s skew (G1) [TL Decision 2026-11-02, G1].",
+  "title": "Token payloads and headers, contract v1 (DRAFT v1-d4)",
+  "description": "Pick the $defs entry for the client under test: access_token_cachd, access_token_other (org_claims off), access_token_other_org_claims (org_claims on), id_token_code, id_token_refresh, access_token_admin, jose_header_*. Claim lists [SRC: PLAN §3.1 L116-123; LD §5 L229, §16.5 L906-908]. Value types [TL Decision 2026-11-02, OQ-15]. Time checks use ±30 s skew (G1) [TL Decision 2026-11-02, G1].",
   "$defs": {
-    "id": { "description": "Opaque id, UUID string [TL Decision 2026-11-02, OQ-15].", "type": "string", "format": "uuid" },
+    "id": {
+      "description": "Opaque id, UUID string [TL Decision 2026-11-02, OQ-15]. Pattern enforces UUID even if a validator has format assertion off [TL Decision 2026-11-02, CR-01]; validators MUST still run with format assertion on [TL Decision 2026-11-02, CR-21].",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
     "numeric_date": { "type": "integer", "minimum": 0},
     "amr": {
-      "description": "Array [SRC: PLAN L118]. RFC 8176 values only. DB sign-in password+TOTP = [pwd, otp, mfa]; Entra: copy only RFC 8176 values, mfa only if Entra amr contains exactly mfa; wiaormfa never counts [TL Decision 2026-11-02, OQ-22]. OPEN (SA) -> OQ-22: recovery code and ngcmfa are not MFA until answered (safe default). Hand-off needs mfa [SRC: LD L1180].",
+      "description": "Array [SRC: PLAN L118]. Closed enum: RFC 8176 values plus ngcmfa [TL Decision 2026-11-02, OQ-22] (LD §16.19 row 119 L705). DB sign-in password+TOTP = [pwd, otp, mfa]; recovery-code sign-in = [pwd] and never counts as MFA; Entra: mfa or ngcmfa counts, wiaormfa never counts and is not copied [TL Decision 2026-11-02, OQ-22]. Hand-off needs mfa or ngcmfa [SRC: LD L1180; LD row 119].",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": { "type": "string", "enum": ["pwd", "otp", "mfa", "hwk", "swk", "pin", "fpt", "face", "rba", "wia", "sms", "user", "kba", "mca"]}
+      "items": { "type": "string", "enum": ["pwd", "otp", "mfa", "hwk", "swk", "pin", "fpt", "face", "rba", "wia", "sms", "user", "kba", "mca", "ngcmfa"]}
     },
     "standin_marker": {
       "description": "Present (true) only on stand-in tokens [SRC: PLAN §3.5]. Rejected outside Development [SRC: PLAN S1 check 11].",
@@ -39,7 +44,7 @@
         "iss": { "type": "string", "format": "uri" },
         "sub": { "$ref": "#/$defs/id" },
         "aud": {
-          "description": "That client's API only [SRC: PLAN L116]. A single string; no array [TL Decision 2026-11-02, OQ-15].",
+          "description": "That client's API only [SRC: PLAN L116]. A single string, only cash-advance-api or backoffice-api; no array [TL Decision 2026-11-02, OQ-15, 8:12 PM reply].",
           "type": "string",
           "enum": ["cash-advance-api", "backoffice-api"]
         },
@@ -64,7 +69,7 @@
         "partner_id": { "$ref": "#/$defs/id" },
         "cachd_client_id": { "description": "Absent for partner-level users [SRC: PLAN L120; LD L906].", "$ref": "#/$defs/id" },
         "location_id": {
-          "description": "The location picked at sign-in [SRC: LD L907]. Required for location sign-ins (/l/{slug}); OPEN (SA) -> OQ-15 for /admin tokens, no rule yet (safe default: /admin shape not frozen) [TL Decision 2026-11-02, OQ-15].",
+          "description": "The location picked at sign-in [SRC: LD L907]. Required for location sign-ins (/l/{slug}); absent (not null) for /admin tokens, see access_token_admin [TL Decision 2026-11-02, OQ-15] (LD §16.19.2 L1426).",
           "$ref": "#/$defs/id"
         }
       },
@@ -93,26 +98,6 @@
       "properties": { "partner_id": true, "cachd_client_id": true, "location_id": true},
       "unevaluatedProperties": false
     },
-    "id_token": {
-      "description": "[SRC: PLAN L122-123]. Lifetime 5 min [TL Decision 2026-11-02, OQ-15].",
-      "type": "object",
-      "allOf": [{"$ref": "#/$defs/no_roles_or_permissions"}],
-      "required": ["iss", "sub", "aud", "azp", "exp", "iat", "nonce", "auth_time", "amr"],
-      "properties": {
-        "iss": { "type": "string", "format": "uri" },
-        "sub": { "$ref": "#/$defs/id" },
-        "aud": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" }, "minItems": 1}]},
-        "azp": { "type": "string" },
-        "exp": { "$ref": "#/$defs/numeric_date" },
-        "iat": { "$ref": "#/$defs/numeric_date" },
-        "nonce": { "type": "string", "minLength": 1},
-        "auth_time": { "$ref": "#/$defs/numeric_date" },
-        "amr": { "$ref": "#/$defs/amr" },
-        "at_hash": { "description": "Allowed, not required [TL Decision 2026-11-02, OQ-14].", "type": "string" },
-        "x_standin": { "$ref": "#/$defs/standin_marker" }
-      },
-      "unevaluatedProperties": false
-    },
     "jose_header_access_token": {
       "type": "object",
       "required": ["alg", "kid", "typ"],
@@ -133,6 +118,49 @@
         "kid": { "type": "string", "minLength": 1},
         "typ": { "const": "JWT", "description": "ID tokens typ=JWT [TL Decision 2026-11-02, OQ-14]." }
       }
+    },
+    "access_token_admin": {
+      "description": "/admin sign-in (Super Admin, Partner Admin) to backoffice-api: no location_id (absent, not null) [TL Decision 2026-11-02, OQ-15] (LD L1426). partner_id / cachd_client_id optional: whether a Super Admin token carries partner_id is not stated [SSE proposal; flagged for TL].",
+      "allOf": [{"$ref": "#/$defs/access_token_base"}],
+      "properties": {
+        "aud": { "const": "backoffice-api" },
+        "partner_id": { "$ref": "#/$defs/id" },
+        "cachd_client_id": { "$ref": "#/$defs/id" },
+        "perm_version": { "type": "integer", "minimum": 0}
+      },
+      "not": { "required": ["location_id"]},
+      "unevaluatedProperties": false
+    },
+    "id_token_base": {
+      "description": "Shared ID token shape [SRC: PLAN L122-123]. Lifetime 5 min [TL Decision 2026-11-02, OQ-15]. Use id_token_code or id_token_refresh [TL Decision 2026-11-02, CR-03].",
+      "type": "object",
+      "allOf": [{"$ref": "#/$defs/no_roles_or_permissions"}],
+      "required": ["iss", "sub", "aud", "azp", "exp", "iat", "auth_time", "amr"],
+      "properties": {
+        "iss": { "type": "string", "format": "uri" },
+        "sub": { "$ref": "#/$defs/id" },
+        "aud": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" }, "minItems": 1}]},
+        "azp": { "type": "string" },
+        "exp": { "$ref": "#/$defs/numeric_date" },
+        "iat": { "$ref": "#/$defs/numeric_date" },
+        "nonce": { "type": "string", "minLength": 1},
+        "auth_time": { "$ref": "#/$defs/numeric_date" },
+        "amr": { "$ref": "#/$defs/amr" },
+        "at_hash": { "description": "Allowed, not required [TL Decision 2026-11-02, OQ-14].", "type": "string" },
+        "x_standin": { "$ref": "#/$defs/standin_marker" }
+      }
+    },
+    "id_token_code": {
+      "description": "ID token from the authorization_code grant: nonce required [TL Decision 2026-11-02, CR-03] (OIDC Core §3.1.3.6).",
+      "allOf": [{"$ref": "#/$defs/id_token_base"}],
+      "required": ["nonce"],
+      "unevaluatedProperties": false
+    },
+    "id_token_refresh": {
+      "description": "ID token from the refresh_token grant: nonce absent [TL Decision 2026-11-02, CR-03] (OIDC Core §12.2).",
+      "allOf": [{"$ref": "#/$defs/id_token_base"}],
+      "not": { "required": ["nonce"]},
+      "unevaluatedProperties": false
     }
   }
 }
