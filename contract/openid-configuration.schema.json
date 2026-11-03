@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:openid-configuration",
-  "title": "Login service discovery document, contract v1 (DRAFT v1-d2)",
-  "description": "GET /.well-known/openid-configuration. Labels per contract/README.md. Fields and fixed values: [SRC: PLAN §3.1 L106]. Listener: front [TL Decision 2026-11-02, OQ-1]; also on 8084 [DOC SILENT -> OQ-31].",
+  "title": "Login service discovery document, contract v1 (DRAFT v1-d3)",
+  "description": "GET /.well-known/openid-configuration. Labels per contract/README.md. Fields and fixed values: [SRC: PLAN §3.1 L106]. Listener: front [TL Decision 2026-11-02, OQ-1]; also on 8084, same bytes and headers [TL Decision 2026-11-02, OQ-31].",
   "type": "object",
   "required": [
     "issuer",
@@ -16,7 +16,10 @@
     "code_challenge_methods_supported",
     "token_endpoint_auth_methods_supported",
     "id_token_signing_alg_values_supported",
-    "subject_types_supported"
+    "subject_types_supported",
+    "token_endpoint_auth_signing_alg_values_supported",
+    "revocation_endpoint_auth_methods_supported",
+    "authorization_response_iss_parameter_supported"
   ],
   "properties": {
     "issuer": {
@@ -26,8 +29,16 @@
       "pattern": "^https?://"
     },
     "authorization_endpoint": { "description": "Front listener [SRC: PLAN L108].", "type": "string", "format": "uri" },
-    "token_endpoint": { "description": "Served on back channel 8084 [SRC: PLAN L109]. URL written under the public issuer; clients call their configured back-channel base URL [SSE Proposal -> OQ-3].", "type": "string", "format": "uri" },
-    "revocation_endpoint": { "description": "Served on back channel 8084 [SRC: PLAN L110]. URL under the public issuer [SSE Proposal -> OQ-3].", "type": "string", "format": "uri" },
+    "token_endpoint": {
+      "description": "Served on back channel 8084 [SRC: PLAN L109]. URL under the public issuer; clients never take it from discovery, they use their configured back-channel base URL [TL Decision 2026-11-02, OQ-3].",
+      "type": "string",
+      "format": "uri"
+    },
+    "revocation_endpoint": {
+      "description": "Served on back channel 8084 [SRC: PLAN L110]. URL under the public issuer; clients take it from config [TL Decision 2026-11-02, OQ-3].",
+      "type": "string",
+      "format": "uri"
+    },
     "end_session_endpoint": { "description": "Front listener [SRC: PLAN L112].", "type": "string", "format": "uri" },
     "jwks_uri": {
       "description": "Path /.well-known/jwks on the front listener [SRC: PLAN L107; TL Decision 2026-11-02, OQ-1].",
@@ -35,34 +46,76 @@
       "format": "uri",
       "pattern": "/\\.well-known/jwks$"
     },
-    "response_types_supported": { "const": ["code"] },
-    "grant_types_supported": { "const": ["authorization_code", "refresh_token"] },
-    "code_challenge_methods_supported": { "const": ["S256"] },
-    "token_endpoint_auth_methods_supported": { "const": ["client_secret_basic", "private_key_jwt"] },
-    "id_token_signing_alg_values_supported": { "const": ["RS256"] },
-    "subject_types_supported": {
-      "description": "Required by OIDC Discovery 1.0 §3; not in PLAN [ASSUME A-2 -> OQ-4].",
-      "const": ["public"]
-    },
-    "token_endpoint_auth_signing_alg_values_supported": {
-      "description": "For private_key_jwt. Value not stated anywhere [ASSUME A-27 -> OQ-21].",
-      "const": ["RS256"]
-    },
+    "response_types_supported": { "const": ["code"]},
+    "grant_types_supported": { "const": ["authorization_code", "refresh_token"]},
+    "code_challenge_methods_supported": { "const": ["S256"]},
+    "token_endpoint_auth_methods_supported": { "const": ["client_secret_basic", "private_key_jwt"]},
+    "id_token_signing_alg_values_supported": { "const": ["RS256"]},
+    "subject_types_supported": { "description": "Required by OIDC Discovery 1.0 §3 [TL Decision 2026-11-02, OQ-4].", "const": ["public"]},
+    "token_endpoint_auth_signing_alg_values_supported": { "description": "For private_key_jwt: RS256 only [TL Decision 2026-11-02, OQ-21].", "const": ["RS256"]},
     "revocation_endpoint_auth_methods_supported": {
-      "description": "Same as the token endpoint [ASSUME A-27 -> OQ-21].",
+      "description": "Same as the token endpoint [TL Decision 2026-11-02, OQ-21].",
       "const": ["client_secret_basic", "private_key_jwt"]
+    },
+    "authorization_response_iss_parameter_supported": {
+      "description": "RFC 9207; iss on every authorization response [TL Decision 2026-11-02, OQ-17].",
+      "const": true
     }
   },
   "not": {
-    "description": "Not in v1: userinfo [SRC: PLAN L123]; front/back-channel logout [SRC: PLAN §1.3 L60]; introspection not published [ASSUME A-3 -> OQ-4].",
+    "description": "Not in v1: userinfo [SRC: PLAN L123]; front/back-channel logout [SRC: PLAN §1.3 L60]; introspection, scopes/claims/prompt values not published [TL Decision 2026-11-02, OQ-4].",
     "anyOf": [
-      { "required": ["userinfo_endpoint"] },
-      { "required": ["introspection_endpoint"] },
-      { "required": ["frontchannel_logout_supported"] },
-      { "required": ["backchannel_logout_supported"] },
-      { "required": ["check_session_iframe"] }
+      { "required": ["userinfo_endpoint"]},
+      { "required": ["introspection_endpoint"]},
+      { "required": ["frontchannel_logout_supported"]},
+      { "required": ["backchannel_logout_supported"]},
+      { "required": ["check_session_iframe"]},
+      { "required": ["scopes_supported"]},
+      { "required": ["claims_supported"]},
+      { "required": ["prompt_values_supported"]}
     ]
   },
   "additionalProperties": true,
-  "$comment": "additionalProperties stays true so the real OpenIddict service can publish extra standard fields; clients may rely only on the fields named above (PLAN §3.1 L100). Whether the stand-in must publish exactly this set: OQ-4."
+  "$comment": "additionalProperties true so the real service may add standard fields [TL Decision 2026-11-02, OQ-4]. The stand-in publishes exactly the properties listed here (the 'standin_exact_keys' $def); contract tests assert that exact key set [TL Decision 2026-11-02, OQ-4].",
+  "$defs": {
+    "standin_exact_keys": {
+      "description": "Stand-in only: exactly these keys, applied in addition to the root schema [TL Decision 2026-11-02, OQ-4].",
+      "propertyNames": {
+        "enum": [
+          "issuer",
+          "authorization_endpoint",
+          "token_endpoint",
+          "revocation_endpoint",
+          "end_session_endpoint",
+          "jwks_uri",
+          "response_types_supported",
+          "grant_types_supported",
+          "code_challenge_methods_supported",
+          "token_endpoint_auth_methods_supported",
+          "id_token_signing_alg_values_supported",
+          "subject_types_supported",
+          "token_endpoint_auth_signing_alg_values_supported",
+          "revocation_endpoint_auth_methods_supported",
+          "authorization_response_iss_parameter_supported"
+        ]
+      },
+      "required": [
+        "issuer",
+        "authorization_endpoint",
+        "token_endpoint",
+        "revocation_endpoint",
+        "end_session_endpoint",
+        "jwks_uri",
+        "response_types_supported",
+        "grant_types_supported",
+        "code_challenge_methods_supported",
+        "token_endpoint_auth_methods_supported",
+        "id_token_signing_alg_values_supported",
+        "subject_types_supported",
+        "token_endpoint_auth_signing_alg_values_supported",
+        "revocation_endpoint_auth_methods_supported",
+        "authorization_response_iss_parameter_supported"
+      ]
+    }
+  }
 }

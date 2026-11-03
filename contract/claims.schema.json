@@ -1,21 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:claims",
-  "title": "Token payloads and headers, contract v1 (DRAFT v1-d2)",
-  "description": "Pick the $defs entry for the client under test: access_token_cachd, access_token_other (org_claims off), access_token_other_org_claims (org_claims on), id_token, jose_header_*. Claim lists [SRC: PLAN §3.1 L116-123; LD §5 L227, §16.5 L894-896]. Value types [ASSUME A-15 -> OQ-15].",
+  "title": "Token payloads and headers, contract v1 (DRAFT v1-d3)",
+  "description": "Pick the $defs entry for the client under test: access_token_cachd, access_token_other (org_claims off), access_token_other_org_claims (org_claims on), id_token, jose_header_*. Claim lists [SRC: PLAN §3.1 L116-123; LD §5 L227, §16.5 L894-896]. Value types [TL Decision 2026-11-02, OQ-15]. Time checks use ±30 s skew (G1) [TL Decision 2026-11-02, G1].",
   "$defs": {
-    "id": {
-      "description": "Opaque id. UUID string assumed [ASSUME A-15 -> OQ-15].",
-      "type": "string",
-      "format": "uuid"
-    },
-    "numeric_date": { "type": "integer", "minimum": 0 },
+    "id": { "description": "Opaque id, UUID string [TL Decision 2026-11-02, OQ-15].", "type": "string", "format": "uuid" },
+    "numeric_date": { "type": "integer", "minimum": 0},
     "amr": {
-      "description": "Array [SRC: PLAN L118]. Values from RFC 8176; DB sign-in password+TOTP = [pwd, otp, mfa] [ASSUME A-28 -> OQ-22]. Hand-off needs mfa [SRC: LD L1168].",
+      "description": "Array [SRC: PLAN L118]. RFC 8176 values only. DB sign-in password+TOTP = [pwd, otp, mfa]; Entra: copy only RFC 8176 values, mfa only if Entra amr contains exactly mfa; wiaormfa never counts [TL Decision 2026-11-02, OQ-22]. OPEN (SA) -> OQ-22: recovery code and ngcmfa are not MFA until answered (safe default). Hand-off needs mfa [SRC: LD L1168].",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": { "type": "string", "enum": ["pwd", "otp", "mfa", "hwk", "swk", "pin", "fpt", "face", "rba", "wia", "sms", "user", "kba", "mca"] }
+      "items": { "type": "string", "enum": ["pwd", "otp", "mfa", "hwk", "swk", "pin", "fpt", "face", "rba", "wia", "sms", "user", "kba", "mca"]}
     },
     "standin_marker": {
       "description": "Present (true) only on stand-in tokens [SRC: PLAN §3.5]. Rejected outside Development [SRC: PLAN S1 check 11].",
@@ -25,34 +21,38 @@
       "description": "No roles or permissions in any token [SRC: PLAN L121; LD L896]. Names listed are the common ones; tests also assert no other unknown claim via unevaluatedProperties.",
       "not": {
         "anyOf": [
-          { "required": ["role"] }, { "required": ["roles"] },
-          { "required": ["permission"] }, { "required": ["permissions"] },
-          { "required": ["groups"] }, { "required": ["wids"] },
-          { "required": ["sid"] }
+          { "required": ["role"]},
+          { "required": ["roles"]},
+          { "required": ["permission"]},
+          { "required": ["permissions"]},
+          { "required": ["groups"]},
+          { "required": ["wids"]},
+          { "required": ["sid"]}
         ]
       }
     },
     "access_token_base": {
       "type": "object",
-      "allOf": [{ "$ref": "#/$defs/no_roles_or_permissions" }],
+      "allOf": [{"$ref": "#/$defs/no_roles_or_permissions"}],
       "required": ["iss", "sub", "aud", "exp", "iat", "jti", "scope", "client_id", "login_provider", "amr", "auth_time"],
       "properties": {
         "iss": { "type": "string", "format": "uri" },
         "sub": { "$ref": "#/$defs/id" },
         "aud": {
-          "description": "That client's API only [SRC: PLAN L116]. Single string or one-element array [ASSUME A-15].",
-          "oneOf": [
-            { "type": "string" },
-            { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 1 }
-          ]
+          "description": "That client's API only [SRC: PLAN L116]. A single string; no array [TL Decision 2026-11-02, OQ-15].",
+          "type": "string",
+          "enum": ["cash-advance-api", "backoffice-api"]
         },
         "exp": { "$ref": "#/$defs/numeric_date" },
         "iat": { "$ref": "#/$defs/numeric_date" },
         "nbf": { "$ref": "#/$defs/numeric_date" },
-        "jti": { "type": "string", "minLength": 16 },
-        "scope": { "description": "Space-separated (RFC 9068) [ASSUME A-7 -> OQ-6].", "type": "string" },
+        "jti": { "type": "string", "minLength": 16},
+        "scope": {
+          "description": "Space-separated (RFC 9068); values openid, cash_advance_api, backoffice_api [TL Decision 2026-11-02, OQ-6].",
+          "type": "string"
+        },
         "client_id": { "description": "OAuth client; never used for tenant scoping [SRC: LD §16.5 L894].", "type": "string" },
-        "login_provider": { "enum": ["database", "entra"] },
+        "login_provider": { "enum": ["database", "entra"]},
         "amr": { "$ref": "#/$defs/amr" },
         "auth_time": { "$ref": "#/$defs/numeric_date" },
         "x_standin": { "$ref": "#/$defs/standin_marker" }
@@ -63,47 +63,52 @@
       "properties": {
         "partner_id": { "$ref": "#/$defs/id" },
         "cachd_client_id": { "description": "Absent for partner-level users [SRC: PLAN L120; LD L894].", "$ref": "#/$defs/id" },
-        "location_id": { "description": "The location picked at sign-in [SRC: LD L895].", "$ref": "#/$defs/id" }
+        "location_id": {
+          "description": "The location picked at sign-in [SRC: LD L895]. Required for location sign-ins (/l/{slug}); OPEN (SA) -> OQ-15 for /admin tokens, no rule yet (safe default: /admin shape not frozen) [TL Decision 2026-11-02, OQ-15].",
+          "$ref": "#/$defs/id"
+        }
       },
       "required": ["partner_id", "location_id"]
     },
     "access_token_cachd": {
       "description": "Cachd clients (Cash Advance BFF): org claims always, perm_version [SRC: PLAN L119-120].",
-      "allOf": [{ "$ref": "#/$defs/access_token_base" }, { "$ref": "#/$defs/org_claims" }],
+      "allOf": [{"$ref": "#/$defs/access_token_base"}, {"$ref": "#/$defs/org_claims"}],
       "required": ["perm_version"],
       "properties": {
-        "perm_version": { "description": "Integer assumed [ASSUME A-15 -> OQ-15].", "type": "integer", "minimum": 0 },
-        "partner_id": true, "cachd_client_id": true, "location_id": true
+        "perm_version": { "description": "Integer [TL Decision 2026-11-02, OQ-15].", "type": "integer", "minimum": 0},
+        "partner_id": true,
+        "cachd_client_id": true,
+        "location_id": true
       },
       "unevaluatedProperties": false
     },
     "access_token_other": {
       "description": "Non-Cachd client (e.g. backoffice_stub) with org_claims off: no perm_version, no org claims [SRC: PLAN L119-120, S1 check 7].",
-      "allOf": [{ "$ref": "#/$defs/access_token_base" }],
+      "allOf": [{"$ref": "#/$defs/access_token_base"}],
       "unevaluatedProperties": false
     },
     "access_token_other_org_claims": {
       "description": "Non-Cachd client with org_claims on: org claims, still no perm_version [SRC: LD §16.5 L895].",
-      "allOf": [{ "$ref": "#/$defs/access_token_base" }, { "$ref": "#/$defs/org_claims" }],
-      "properties": { "partner_id": true, "cachd_client_id": true, "location_id": true },
+      "allOf": [{"$ref": "#/$defs/access_token_base"}, {"$ref": "#/$defs/org_claims"}],
+      "properties": { "partner_id": true, "cachd_client_id": true, "location_id": true},
       "unevaluatedProperties": false
     },
     "id_token": {
-      "description": "[SRC: PLAN L122-123]. Lifetime not stated [ASSUME A-15: 5 min -> OQ-15].",
+      "description": "[SRC: PLAN L122-123]. Lifetime 5 min [TL Decision 2026-11-02, OQ-15].",
       "type": "object",
-      "allOf": [{ "$ref": "#/$defs/no_roles_or_permissions" }],
+      "allOf": [{"$ref": "#/$defs/no_roles_or_permissions"}],
       "required": ["iss", "sub", "aud", "azp", "exp", "iat", "nonce", "auth_time", "amr"],
       "properties": {
         "iss": { "type": "string", "format": "uri" },
         "sub": { "$ref": "#/$defs/id" },
-        "aud": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" }, "minItems": 1 }] },
+        "aud": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" }, "minItems": 1}]},
         "azp": { "type": "string" },
         "exp": { "$ref": "#/$defs/numeric_date" },
         "iat": { "$ref": "#/$defs/numeric_date" },
-        "nonce": { "type": "string", "minLength": 1 },
+        "nonce": { "type": "string", "minLength": 1},
         "auth_time": { "$ref": "#/$defs/numeric_date" },
         "amr": { "$ref": "#/$defs/amr" },
-        "at_hash": { "description": "Allowed (OpenIddict adds it) [ASSUME A-29 -> OQ-14].", "type": "string" },
+        "at_hash": { "description": "Allowed, not required [TL Decision 2026-11-02, OQ-14].", "type": "string" },
         "x_standin": { "$ref": "#/$defs/standin_marker" }
       },
       "unevaluatedProperties": false
@@ -113,8 +118,11 @@
       "required": ["alg", "kid", "typ"],
       "properties": {
         "alg": { "const": "RS256" },
-        "kid": { "description": "Stand-in kids start with standin- [SRC: PLAN §3.5].", "type": "string", "minLength": 1 },
-        "typ": { "description": "[ASSUME A-14 -> OQ-14] RFC 9068.", "const": "at+jwt" }
+        "kid": { "description": "Stand-in kids start with standin- [SRC: PLAN §3.5].", "type": "string", "minLength": 1},
+        "typ": {
+          "description": "RFC 9068; JwtBearer ValidTypes=[\"at+jwt\"], so an ID token as bearer gets 401 [TL Decision 2026-11-02, OQ-14].",
+          "const": "at+jwt"
+        }
       }
     },
     "jose_header_id_token": {
@@ -122,8 +130,8 @@
       "required": ["alg", "kid"],
       "properties": {
         "alg": { "const": "RS256" },
-        "kid": { "type": "string", "minLength": 1 },
-        "typ": { "const": "JWT" }
+        "kid": { "type": "string", "minLength": 1},
+        "typ": { "const": "JWT", "description": "ID tokens typ=JWT [TL Decision 2026-11-02, OQ-14]." }
       }
     }
   }
