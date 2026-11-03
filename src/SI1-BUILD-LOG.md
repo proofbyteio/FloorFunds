@@ -93,3 +93,25 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
   - A11: status is one of active, disabled or locked.
   - A12: the presets of every partner the user's locations belong to all apply; a user with no location gets both presets.
   - The username is limited to 1-64 characters.
+
+## SI1-7 B1 resolved per TL ruling 9:00 PM (a): pinned Microsoft-signed restore from nuget.org (9:01 PM PT)
+- Version pin:
+  - OpenIddict.Server 7.7.2 (net10.0) depends on Microsoft.IdentityModel.JsonWebTokens 8.19.2. Source: api.nuget.org/v3-flatcontainer/openiddict.server/7.7.2/openiddict.server.nuspec.
+  - The csproj pins it with `Version="[8.19.2]"`.
+- nuget.config:
+  - One source, nuget.org.
+  - packageSourceMapping allows only `Microsoft.IdentityModel.*` and `Microsoft.Bcl.Cryptography`. The Bcl ID was added after the first restore failed with NU1100 for this transitive dependency of Tokens 8.19.2. No System.* IDs were needed.
+  - signatureValidationMode=require, with trustedSigners set to the nuget.org repository certificates and owners=Microsoft.
+  - No credentials and no other feeds.
+- The restore used packages.lock.json and then `RestoreLockedMode=true`. The locked restore was re-run and succeeded. The build has 0 warnings and 0 errors.
+- Packages and sha512 (the .nupkg.sha512 files):
+  - Microsoft.IdentityModel.JsonWebTokens 8.19.2: 9kokzW5MVsHjANELTihcvrI48azhzhdFQW+oaEce2rD/sGe5Vf57BRQdXFIyDoWluxYh3vhe8aLQ3mg3BP983w==
+  - Microsoft.IdentityModel.Tokens 8.19.2: 4rGCcWWvktrOG1esOPr2DMLJpxl9DjIAD943L8C8K8Rcsq30vnOG0IcFMlckuOMots/FHNSUJDxqsmo/EG6eBw==
+  - Microsoft.IdentityModel.Logging 8.19.2: 15BrxnYEFaE+3svU/8GB7EYQkOd+x0UdlqmNFoV3gY6vN/u4dg10NuXLoDSSUhxHPdc01cvKeoztwGvAw6Vhng==
+  - Microsoft.IdentityModel.Abstractions 8.19.2: ASRJB/oHIKh2N45fTt/t/+p2WaKxWUfvjTrHUq2N39mON6wJTQTX2gwfZOtwWBM4FZ9I7uNi8rFNaynXbMYNsQ==
+  - Microsoft.Bcl.Cryptography 10.0.2: rbP/krRdXXVG10QyWH0rWa5+0qP5Rob8VZDKno910kHnDcmH9XdFbBtdedO5pVVlpA1y2MXWx360zLLNLctJ+Q==
+- Signatures: `dotnet nuget verify --all` shows, for all 5 packages, an author signature from CN=Microsoft Corporation and a repository signature from CN=NuGet.org Repository by Microsoft.
+- OPEN, for the TL:
+  - Every package gave the NU3018 warning "revocation server could not be reached / RevocationStatusUnknown: unable to get certificate CRL". The sandbox can't reach the CRL endpoint, so the revocation check could not complete; the signatures and the chain were otherwise accepted.
+  - I did nothing to work around it: revocation mode is left at its default and no other route was used.
+  - The TL should decide whether an offline revocation result is acceptable.
