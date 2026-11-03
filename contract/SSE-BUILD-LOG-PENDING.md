@@ -83,3 +83,11 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - LD md5 is now 560cb6abd69ca4b5099eab57a17405b8 (rev 8:25 PM PT, file time 20:17:36), not c2b7e689. Snapshot /tmp/sse-d0/login-doc-560cb6ab.md.
 - Diff vs c2b7e689 is inserts only: rev note at L6; rows 120-122 after old L705; new §16.20 (SA-Q1 PCI classes, SA-Q2 cage-action check, SA-Q3 device enrolment; all Proposal (SA), OPEN) after old L1447; one line after old L1471.
 - Re-mapped every LD cite in contract-v1.md, errors.md, OPEN-QUESTIONS.md, standin-control.md, ui-driver.md and the schemas with /tmp/sse-d0/wip/remap_ld3.py; spot-checked L417, L705, L706, L1380, L1430, L1443. Build log and README source history not re-mapped (historical). Linked the §16.20 proposals in the OPEN rows; no contract decision changed. check_schemas.py still ALL PASS.
+
+## v1-d4 follow-up 2: TL Decision 2026-11-02 8:26 PM (commit cb4e637 at 8:27:05 PM PT; written 8:27 PM PT)
+- **Accepted** SSE proposals (testids, `totp_code`, agent timeout 3 s, password rule ids, clock GET `{"now":…}`, BFF stub paths/shapes); labels replaced with the 8:26 PM tag. New `standin-ui.schema.json` holds the JSON shapes.
+- **§6.9:** stub specified for the freeze, built as part of SI1.
+- **Admin tokens:** split into `access_token_admin_super` (partner_id optional) and `access_token_admin_partner` (required); `access_token_admin` = either. No role claim in tokens, so the test picks the def by fixture user: flagged for TL in OPEN-QUESTIONS.
+- **§8.11:** token/session single `location_id`; audit array `scope.location_ids` (AUD §7A.4 L266, multi-location for admin actions). Audit scope now rejects a singular `location_id`.
+- **README:** contract's LD 560cb6ab cites govern over the rulings file. PLAN 444ddba4 snapshot /tmp/sse-d0/plan-444ddba4.md; diff vs 10fa9853 = L128, L130, L133 in place, no shift; all PLAN cites map.
+- **check_schemas.py:** 58 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097 unchanged.
