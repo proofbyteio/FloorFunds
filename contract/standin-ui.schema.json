@@ -87,7 +87,7 @@
       "additionalProperties": false
     },
     "cage_action_refused": {
-      "description": "HTTP 403 when the caller is not a location user (any admin_type token or /admin session); generic body, reason not_location_user in audit only (G2) [Confirmed DEC-084].",
+      "description": "HTTP 403 when the caller is not a location user (any admin_type token or /admin session); generic body, reason not_location_user in audit only (G2) [Confirmed DEC-084]. Also for a recovery_reenroll session (audit reason recovery_session) [Confirmed DEC-085].",
       "type": "object",
       "required": ["error"],
       "properties": { "error": { "const": "access_denied" }},

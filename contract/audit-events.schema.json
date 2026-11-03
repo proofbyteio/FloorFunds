@@ -235,6 +235,10 @@
           "description": "No hand-off for /admin sessions [Confirmed DEC-084].",
           "if": { "required": ["admin_type"]},
           "then": { "properties": { "details": { "properties": { "method": { "not": { "const": "hub_handoff" }}}}}}
+        },
+        {
+          "description": "No app sign-in from a recovery_reenroll session (amr exactly [pwd]) [Confirmed DEC-085].",
+          "not": { "properties": { "details": { "properties": { "amr": { "const": ["pwd"]}}, "required": ["amr"]}}}
         }
       ]
     },
@@ -248,8 +252,8 @@
           "required": ["reason"],
           "properties": {
             "reason": {
-              "description": "notfromhub: rule 4, hub_launch missing or used [SRC: LD L426, L1186; TL Decision 2026-11-02, OQ-7]. not_location_user: an /admin session (admin_type super or partner) asked for the Cash Advance hand-off [Confirmed DEC-084].",
-              "enum": ["no_role", "remote_session", "attestation_invalid", "notfromhub", "not_location_user"]
+              "description": "notfromhub: rule 4, hub_launch missing or used [SRC: LD L426, L1186; TL Decision 2026-11-02, OQ-7]. not_location_user: an /admin session (admin_type super or partner) asked for the Cash Advance hand-off [Confirmed DEC-084]. recovery_session: a recovery_reenroll session (recovery-code sign-in, amr [pwd]) asked for the hand-off, an app launch or hub_launch [Confirmed DEC-085].",
+              "enum": ["no_role", "remote_session", "attestation_invalid", "notfromhub", "not_location_user", "recovery_session"]
             }
           }
         }

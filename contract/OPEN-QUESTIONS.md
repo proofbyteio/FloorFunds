@@ -121,3 +121,11 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 |---|---|---|---|
 | AUD v0.8 | **Open:** AUD owner to add `admin_type` to §7A.4 (TL asking the SA) | AUD owner via SA | audit schema envelope `admin_type`; contract 8.13 |
 
+## Confirmed DEC-085 (Mohanraj 8:30 PM PT (t113s429): "No, they can only sign in and set up their authenticator again")
+
+| Item | State | Who | Where |
+|---|---|---|---|
+| Recovery sessions | **Decided** [Confirmed DEC-085]: `recovery_reenroll` session reaches only MFA re-enrolment and sign-out; hand-off, `hub_launch`, app launch, cage refused with `recovery_session` (audit only), client `access_denied` | - | contract 5.13, 6.9, 7.8; errors.md; audit schema; standin-control 2.10 |
+| DEC-085 follow-up | **Open, TO CONFIRM with Mohanraj:** is cage work allowed in the same session after re-enrolling? **Interim safe default (not decided):** the session stays restricted; the user signs in again with the new MFA | Mohanraj | contract 7.8 |
+| Re-enrolment endpoints | **Open:** paths and audit events for MFA re-enrolment not in the contract yet | SA / TL | contract 7.8 |
+

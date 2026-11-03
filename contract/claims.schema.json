@@ -12,7 +12,7 @@
     },
     "numeric_date": { "type": "integer", "minimum": 0},
     "amr": {
-      "description": "Array [SRC: PLAN L118]. Closed enum, RFC 8176 values only; nothing passes through from Entra [TL Decision 2026-11-02, CR-02, OQ-22] (LD §16.19.3, row 119 L706). DB sign-in password+TOTP = [pwd, otp, mfa]; recovery-code sign-in = [pwd] (never MFA); Entra amr containing mfa or ngcmfa -> mfa; wiaormfa never -> mfa. Hand-off needs mfa [SRC: LD L1184; TL Decision 2026-11-02, CR-02]",
+      "description": "Array [SRC: PLAN L118]. Closed enum, RFC 8176 values only; nothing passes through from Entra [TL Decision 2026-11-02, CR-02, OQ-22] (LD §16.19.3, row 119 L706). DB sign-in password+TOTP = [pwd, otp, mfa]; recovery-code sign-in = [pwd] (never MFA); Entra amr containing mfa or ngcmfa -> mfa; wiaormfa never -> mfa. Hand-off needs mfa [SRC: LD L1184; TL Decision 2026-11-02, CR-02] A recovery-code session ([pwd]) gets no app token at all [Confirmed DEC-085].",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
@@ -38,7 +38,13 @@
     },
     "access_token_base": {
       "type": "object",
-      "allOf": [{"$ref": "#/$defs/no_roles_or_permissions"}],
+      "allOf": [
+        { "$ref": "#/$defs/no_roles_or_permissions" },
+        {
+          "description": "No app token from a recovery_reenroll session (amr exactly [pwd]) [Confirmed DEC-085].",
+          "not": { "properties": { "amr": { "const": ["pwd"]}}, "required": ["amr"]}
+        }
+      ],
       "required": ["iss", "sub", "aud", "exp", "iat", "jti", "scope", "client_id", "login_provider", "amr", "auth_time"],
       "properties": {
         "iss": { "type": "string", "format": "uri" },
@@ -122,7 +128,13 @@
     "id_token_base": {
       "description": "Shared ID token shape [SRC: PLAN L122-123]. Lifetime 5 min [TL Decision 2026-11-02, OQ-15]. Use id_token_code or id_token_refresh [TL Decision 2026-11-02, CR-03].",
       "type": "object",
-      "allOf": [{"$ref": "#/$defs/no_roles_or_permissions"}],
+      "allOf": [
+        { "$ref": "#/$defs/no_roles_or_permissions" },
+        {
+          "description": "No app token from a recovery_reenroll session [Confirmed DEC-085].",
+          "not": { "properties": { "amr": { "const": ["pwd"]}}, "required": ["amr"]}
+        }
+      ],
       "required": ["iss", "sub", "aud", "azp", "exp", "iat", "auth_time", "amr"],
       "properties": {
         "iss": { "type": "string", "format": "uri" },
