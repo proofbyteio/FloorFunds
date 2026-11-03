@@ -217,16 +217,16 @@ Command: `. /tmp/sse2-work/env.sh && STANDIN_PIDFILE=/tmp/sse2-si1-8aab98a/pid t
 - **OQ-SSE2-58**: 5.8(c) "strict CSP" vs `script-src 'self' 'unsafe-inline'` on every page. Also X-Frame-Options SAMEORIGIN on some pages next to frame-ancestors 'none'.
 
 ### Status at feat/si1-standin 3feb66c (si1-freeze), SSE2 Mon Nov 2, 10:25 PM PT
-Rulings: DEC-096 (OQ-56), DEC-097 (OQ-55), DEC-098 (OQ-57), DEC-099 (fixture secrets), DEC-100 (OQ-58), DEC-101 (discovery 404s). See docs/BUILD-LOG.md.
+Rulings: TLD-SI1-07 (OQ-56), TLD-SI1-08 (OQ-55), TLD-SI1-09 (OQ-57), TLD-SI1-10 (fixture secrets), TLD-SI1-11 (OQ-58), TLD-SI1-12 (discovery 404s). See docs/BUILD-LOG.md.
 
 | Id | Rule | Status at 3feb66c |
 |---|---|---|
-| HO03b / HO03c | hub_launch 60001 ms refused / exactly 60000 ms accepted (frozen ms clock, DEC-097) | PASS / PASS |
+| HO03b / HO03c | hub_launch 60001 ms refused / exactly 60000 ms accepted (frozen ms clock, TLD-SI1-08) | PASS / PASS |
 | HO18 / HO18b / HO18c | auth age 300001 ms refused / 299999 and exactly 300000 ms accepted | PASS |
-| HO06 | hub_launch at another client is ignored there and burned (DEC-096) | PASS |
+| HO06 | hub_launch at another client is ignored there and burned (TLD-SI1-07) | PASS |
 | HO17 | app log has no hub_launch, code, code_challenge, state | PASS (was FAIL at 8aab98a) |
-| HO20 / HO22 | CSP on every page; no 'unsafe-inline'; XFO DENY or absent (DEC-100) | PASS (HO22 ×15) |
-| HO21 | interstitial ui-driver id | PENDING (DEC-098, v1.1 UX+SA) |
+| HO20 / HO22 | CSP on every page; no 'unsafe-inline'; XFO DENY or absent (TLD-SI1-11) | PASS (HO22 ×15) |
+| HO21 | interstitial ui-driver id | PENDING (TLD-SI1-09, v1.1 UX+SA) |
 | SEC76 / SEC76b | TOTP single use, location and /admin | PASS |
 | SEC77 / b / c / d | TOTP lockout; nevada 3 wrong locks; admin lockout; tx opened before lock refused | PASS |
 | D93_01–05 | admin/location separation; after re-enrol Continue → /admin or /l/{own slug}, codes once (2nd GET 404), session ended | PASS (D93_04/05 enabled at 3feb66c; OQ-SSE2-54 closed) |
