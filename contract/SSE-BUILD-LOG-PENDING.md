@@ -110,3 +110,10 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - **ui-driver §2a** [TL Decision 8:31 PM]: page-resign-in (UX 07) and page-admin-sign-in (UX 05) with field-/error- ids. UX D-67 (DECISIONS.md md5 b6fa0d1f, read only) gives no ids for these forms, so the ids are SSE-proposed. Mapping noted: contract screens 6/7 = UX 03/06.
 - **Provisional app_codes** cash_advance, back_office, reports: tiles in ui-driver, data not enum; OPEN item for Mohanraj via PM. standin-control fixtures list no apps, so no fixture change.
 - check_schemas.py: 100 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097 unchanged.
+
+## v1-d4 follow-up 6: TL Decision 8:35 PM (commit 6e55557 8:34:48 PM PT; written 8:34 PM PT)
+- 05/07 test ids confirmed by TL; proposal label removed; UX adding them.
+- session_kind (normal | recovery_reenroll): contract 7.8; required token claim (access + ID); optional audit envelope field (present when the event has a session), required = normal on auth.app.signed_in, = recovery_reenroll on reason recovery_session. Token with recovery_reenroll and any app aud rejected. DEC-085 amr==[pwd] rule reverted; "amr recovery-code [pwd] ok" restored. AUD v0.8 item for session_kind.
+- Proposal (SA to ratify in LD): GET /mfa/reenrol, POST /mfa/reenrol, GET /mfa/reenrol/recovery-codes.
+- standin-control §4 apps fixture cash_advance, back_office, reports (provisional, pending Mohanraj).
+- check_schemas.py: 110 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097 unchanged.
