@@ -27,6 +27,10 @@ public sealed class StandInState
     readonly List<JsonObject> _audit = new();
     public Dictionary<string, StandInUser> Users { get; } = new(StringComparer.Ordinal);
     public object Gate => _gate;
+    public Dictionary<string, StandInPc> Pcs { get; } = new(StringComparer.Ordinal);
+
+    // Appends to the control feed. Callers build the event with Audit.Build.
+    public void Emit(JsonObject e) { lock (_gate) _audit.Add(e); }
 
     public StandInState(string fixturePath) { _fixturePath = fixturePath; Reset(); }
 
@@ -39,6 +43,7 @@ public sealed class StandInState
             _audit.Clear();
             Clock.Reset();
             Users.Clear();
+            Pcs.Clear();
             foreach (var u in Fixtures["users"]!.AsArray())
             {
                 var user = new StandInUser { Username = (string)u!["username"]!, UserId = (string)u["user_id"]!, Status = (string)u["status"]!,
@@ -124,6 +129,21 @@ public static class Control
         {
             lock (st.Gate)
                 return st.Users.TryGetValue(username, out var u) ? Results.Json(new { code = Totp.Code(u.TotpSecret, st.Clock.Now) }) : Results.NotFound();
+        });
+        app.MapPut(P + "/pcs/{pc_id}", async (string pc_id, HttpRequest r) =>
+        {
+            var o = await ReadObject(r);
+            if (o is null || !Login.StandIn.Pcs.ValidId(pc_id)) return Bad();
+            string? mode, slug;
+            try { mode = o["mode"]?.GetValue<string>(); slug = o["location_slug"]?.GetValue<string>(); }
+            catch (InvalidOperationException) { return Bad(); }
+            if (mode is null || slug is null || !Login.StandIn.Pcs.Modes.Contains(mode)) return Bad();
+            lock (st.Gate)
+            {
+                if (!UserFixtures.PresetBySlug(st.Fixtures).ContainsKey(slug)) return Bad();
+                st.Pcs[pc_id] = new StandInPc(pc_id, mode, slug);
+            }
+            return Results.Json(new { cookie = new { name = "standin_pc", value = pc_id } });
         });
         app.MapGet(P + "/audit", (int? since) =>
         {
