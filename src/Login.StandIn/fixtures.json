@@ -1,5 +1,5 @@
 {
-  "_comment": "SI1 stand-in fixtures (standin-control §4). FIXTURE (TL ruling A6, 9:00 PM): every slug, id, username, password, app_code and role name in this file (including 'cashier') is FIXTURE test data, NOT a product role name or a ruled value. SSE2 reads them from this file. Dev-only, not secrets.",
+  "_comment": "SI1 stand-in fixtures (standin-control \u00a74). FIXTURE (TL ruling A6, 9:00 PM): every slug, id, username, password, app_code and role name in this file (including 'cashier') is FIXTURE test data, NOT a product role name or a ruled value. SSE2 reads them from this file. Dev-only, not secrets.",
   "apps": [
     {
       "app_code": "cash_advance",
@@ -29,7 +29,8 @@
           "_label": "FIXTURE"
         }
       ],
-      "_label": "FIXTURE"
+      "_label": "FIXTURE",
+      "cachd_client_id": "5f0c3e1a-0001-4000-8000-0000000000c1"
     },
     {
       "slug": "nevada",
@@ -42,7 +43,8 @@
           "_label": "FIXTURE"
         }
       ],
-      "_label": "FIXTURE"
+      "_label": "FIXTURE",
+      "cachd_client_id": "5f0c3e1a-0002-4000-8000-0000000000c2"
     }
   ],
   "users": [
@@ -59,9 +61,15 @@
           "app_code": "cash_advance",
           "role": "cashier",
           "_label": "FIXTURE"
+        },
+        {
+          "app_code": "back_office",
+          "role": "clerk",
+          "_label": "FIXTURE"
         }
       ],
-      "_label": "FIXTURE"
+      "_label": "FIXTURE",
+      "perm_version": 1
     },
     {
       "username": "no_role_user",
@@ -72,9 +80,65 @@
         "pci-main"
       ],
       "roles": [],
+      "_label": "FIXTURE",
+      "perm_version": 1
+    },
+    {
+      "username": "nevada_db",
+      "user_id": "5f0c3e1a-0003-4000-8000-000000000c03",
+      "password": "Nevada-Standin-2026",
+      "status": "active",
+      "location_slugs": [
+        "nevada-main"
+      ],
+      "roles": [
+        {
+          "app_code": "back_office",
+          "role": "clerk",
+          "_label": "FIXTURE"
+        }
+      ],
+      "perm_version": 1,
       "_label": "FIXTURE"
     }
   ],
   "lockout_minutes": 30,
-  "_label": "FIXTURE"
+  "_label": "FIXTURE",
+  "clients": [
+    {
+      "client_id": "cash_advance_bff",
+      "app_code": "cash_advance",
+      "api_scope": "cash_advance_api",
+      "aud": "cash-advance-api",
+      "cachd": true,
+      "org_claims": true,
+      "refresh": true,
+      "redirect_uris": [
+        "https://cash-advance.fixture.invalid/signin-oidc"
+      ],
+      "post_logout_redirect_uris": [
+        "https://cash-advance.fixture.invalid/signed-out"
+      ],
+      "secret": "XgcQlj98yiO3wpUa5SPLLTN7l5GjNDqNTKEhXTMZ0GE",
+      "_label": "FIXTURE"
+    },
+    {
+      "client_id": "backoffice_stub",
+      "app_code": "back_office",
+      "api_scope": "backoffice_api",
+      "aud": "backoffice-api",
+      "cachd": false,
+      "org_claims": false,
+      "refresh": true,
+      "redirect_uris": [
+        "https://backoffice.fixture.invalid/signin-oidc"
+      ],
+      "post_logout_redirect_uris": [
+        "https://backoffice.fixture.invalid/signed-out"
+      ],
+      "secret": "4qiI2yGJVyjZNBFWlbDja1bMXXxBn7gxk_8kcvaOOMU",
+      "_label": "FIXTURE"
+    }
+  ],
+  "_clients_comment": "FIXTURE clients (contract 4.9). Secrets are 256-bit random test values, hashed at load (7.6); dev-only. The hub client is not registered yet: its token shape is undefined (v1.1 item H1)."
 }

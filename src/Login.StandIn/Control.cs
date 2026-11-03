@@ -28,6 +28,9 @@ public sealed class StandInState
     public Dictionary<string, StandInUser> Users { get; } = new(StringComparer.Ordinal);
     public object Gate => _gate;
     public Dictionary<string, StandInPc> Pcs { get; } = new(StringComparer.Ordinal);
+    // Sign-in transactions, sessions, codes and tokens (SI1-14..16). Guarded by Gate.
+    public AuthStore Auth { get; } = new();
+    public Dictionary<string, OAuthClient> OAuthClients { get; private set; } = new();
 
     // Appends to the control feed. Callers build the event with Audit.Build.
     public void Emit(JsonObject e) { lock (_gate) _audit.Add(e); }
@@ -48,11 +51,13 @@ public sealed class StandInState
             {
                 var user = new StandInUser { Username = (string)u!["username"]!, UserId = (string)u["user_id"]!, Status = (string)u["status"]!,
                     Roles = u["roles"]!.AsArray().Select(r => ((string)r!["app_code"]!, (string)r["role"]!)).ToList(),
-                    LocationSlugs = u["location_slugs"]!.AsArray().Select(x => (string)x!).ToList() };
+                    LocationSlugs = u["location_slugs"]!.AsArray().Select(x => (string)x!).ToList(),
+                    PermVersion = (int?)u["perm_version"] ?? 1 };
                 user.SetPassword(((string)u["password"]!).Normalize(System.Text.NormalizationForm.FormKC));
                 Users[user.Username] = user;
             }
-            // Users, sessions, nonces, hub_launch and lockouts will live in this object and clear here too.
+            Auth.Clear();
+            OAuthClients = Clients.Load(Fixtures);
         }
     }
 
