@@ -903,3 +903,78 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - SSE's harness (drive.py md5 aa030b98, handoff.py md5 ec41e904) copied to /tmp/sse2-repro-0320f2ee with only the pid and key paths changed. Run against my 8aab98a on 18090 with my own venv: **TOTAL 143 / 143 reproduced.** Evidence file /tmp/sse-d0/e2e/si1-item1-evidence.txt md5 276d88d001535ac6eac2723dbe0bb5d1 matches the claim (276d88d0).
   - Caveat: rows 102 (hub_launch "exactly 60 s accepted") and 109/110 ("exactly 300 s accepted") pass only because of A42's whole-second floor. Real elapsed time is 60.003 s and 300.002 s. Under the TL millisecond ruling these should be refused. So 143/143 is reproducible, but three rows assert the behaviour the ruling forbids.
 - Informational run at f630a8d: 15 fails and 45 skips, caused by my TestKit not parsing the new server-rendered ui/login-hub markup (testid on `<section>`, not `<main>`). These say nothing about f630a8d. The TestKit needs updating before f630a8d is the target.
+
+<!-- sse-import sha256=31968c3ad435086782a23eece47e068e2ae734ecfbb3c867b7141417a7472c7f first-seen=baaef0e imported-from=baaef0e head="SI1 FROZEN @ 3feb66c (2026-11-02, PT)" -->
+> **Imported verbatim from SSE**: `src/SI1-BUILD-LOG.md`, first seen in `baaef0e`, imported from `baaef0e`.
+
+## SI1 FROZEN @ 3feb66c (2026-11-02, PT)
+- TL accepted SI1 at 3feb66c at 10:12 PM PT. The local tag si1-freeze stays on 3feb66c; this log-only commit sits on top of it.
+- Live suite 251/251. Evidence /tmp/sse-d0/evidence-final.txt, md5 aa782b7bbda57c6198a00498e44ac770. The step (4) and final-commit details are in src/Login.StandIn/SI1-BUILD-LOG.md.
+- **A68 is a TL Decision (10:12 PM, stand-in only):** the cage_action audience is "cash-advance-server" (value taken from contract/check_schemas.py).
+- **v1.1 item V11-CAGEAUD (SA):** name the exact cage_action aud value for the Cash Advance server. Contract 6.7(5) says only "its own id".
+- No new work after this.
+<!-- /sse-import -->
+
+## SSE2, Mon Nov 2, 9:50–10:20 PM PT: TL rulings recorded, 10a1ca4 and 3feb66c (si1-freeze) verified, SI1 GO/NO-GO
+
+### TL rulings 9:50 PM PT, recorded as decisions
+- **DEC-096 (OQ-SSE2-56)**: a hub_launch presented at a client other than the one it was minted for is **burned** (consumed, cannot be used afterwards). Test HO06/HO06b: the other client gets no hand-off and the original client then gets no cage_consumed.
+- **DEC-097 (OQ-SSE2-55)**: boundaries are tested with a frozen millisecond clock (standin-control clock/freeze + clock/advance {ms}). Exactly 300000 ms and 60000 ms are **accepted**; 300001 ms and 60001 ms are **refused**. Tests HO03b/HO03c/HO18 (ms precision, no floor).
+- **DEC-098 (OQ-SSE2-57)**: HO21 (ui-driver id for the hand-off interstitial) stays **pending**, v1.1 item for UX + SA.
+- **DEC-099 (fixture secrets)**: the fixture-secrets check gives **WARN only** for secret blobs that appear only in commits inside `eb0fa5d..c4da996` (inclusive) and **FAIL** for anything else, with negative controls in throwaway /tmp repos (fake markers). `tools/check-fixture-secrets.sh` (FSEC_REPO, FSEC_RANGE, FSEC_FP_FILE); FS01–FS06.
+- **DEC-100 (OQ-SSE2-58)**: CSP must not contain `'unsafe-inline'`; X-Frame-Options is either DENY or absent (frame-ancestors 'none' is the rule).
+- **DEC-101 (discovery 404s)**: discovery advertising front endpoints that 404 is **info / deferred**, v1.1 item for SA. (At 3feb66c, front and back discovery match and CT01 passes.)
+
+### Scope (TL 10:08 PM, 10:11 PM via parent)
+Final target **feat/si1-standin 3feb66c** (tag `si1-freeze`), SSE claim 251/251, evidence /tmp/sse-d0/evidence-final.txt md5 aa782b7bbda57c6198a00498e44ac770. Focus: session-cap scope, no secrets in events/logs, mfa before login events, cage attestation fails closed, D93_04/05 re-enrol. Intermediate commits 188/210/243 not run standalone (allowed). baaef0e (22:11:50 PST, after the tag) changes only src/SI1-BUILD-LOG.md; imported with `SSE_LOG_FILE=src/SI1-BUILD-LOG.md tools/import-sse-log.sh baaef0e` (imported 1, skipped 25).
+
+### Runs (all on base 18090, my own export /tmp/sse2-si1-<sha>, my own venv /tmp/sse2-work/venv, state /tmp/sse-d0/standin-18090 which the stand-in hard-codes)
+| Target | Command | Result |
+|---|---|---|
+| 10a1ca4 | `. /tmp/sse2-work/env.sh && STANDIN_PIDFILE=/tmp/sse2-si1-10a1ca4/pid RESULTS_DIR=/tmp/sse2-work/full2-10a1ca4 tools/run-checks.sh standin` | 547 total, 460 pass, **0 fail**, 87 pending |
+| 10a1ca4 SSE harness | copy of SSE drive.py, own pid/key paths | 189/189, **reproduced** |
+| 3feb66c | `. /tmp/sse2-work/env3.sh && STANDIN_PIDFILE=/tmp/sse2-si1-3feb66c/pid RESULTS_DIR=/tmp/sse2-work/full-3feb66c tools/run-checks.sh standin` (22:14:26–22:17:11) | 552 total, 466 pass, **0 fail**, 86 pending |
+| 3feb66c final (after D93_04/05 enabled) | same command, RESULTS_DIR=/tmp/sse2-work/full2-3feb66c (22:22:27–22:25:13) | **552 total, 468 pass, 0 fail, 84 pending**; dec-093 5/0/0 |
+| 3feb66c SSE harness | `cd /tmp/sse2-repro-aa782b7b && STANDIN_PORT_BASE=18090 /tmp/sse2-work/venv/bin/python drive.py` (22:14:04–13) | **251/251 reproduced**; same row set as SSE's evidence |
+| 3feb66c focus probes | `cd tests/e2e/sse2-probes && STANDIN_PORT_BASE=18090 /tmp/sse2-work/venv/bin/python probe.py` (22:19:52–54) | 135/147; the 12 fails are C0×3, C9×3, C10×3, K malformed-by-non-admin, K-huge, ADM |
+| 3feb66c cap isolation | `… python probe-k.py` (22:19:29–31) | 11/14; the 3 fails are the K-huge DoS |
+| 3feb66c UI01–05 | `. /tmp/sse2-work/ui-env.sh && LOGIN_STANDIN_FIXTURES=/tmp/sse2-si1-3feb66c/src/Login.StandIn/fixtures.json node tests/ui/standin-ui.mjs` (22:18:35–39) | **14/14** |
+| fixture secrets | `tools/check-fixture-secrets.sh si1-freeze` (22:18:44) | feat/si1-standin PASS (3 WARN blobs, all only inside the range), sse2/tests-docs PASS (allow-listed fake markers), feat/contract-v1 PASS |
+
+8aab98a fails F1–F5 (SEC76, SEC77, HO03b, HO17, HO18) are all fixed at 10a1ca4 and stay fixed at 3feb66c. No regressions seen between 10a1ca4 and 3feb66c (460→466 pass, 0 fail both).
+
+### SSE's fixture script at 3feb66c (md5 9b4b8bb6)
+Its KNOWN list (1ee0939, df0b5d6, ed0ecc1, 9a14163, 8aab98a, f630a8d, c4da996) is exactly the set of commits that hold the 3 secret blobs (f26fc59a37, e6602328ac, 527aa00967), and **all 7 are inside eb0fa5d..c4da996**. The 6 range commits not listed (eb0fa5d, 97bfdb2, 3087f58, dd59e85, f63b2c8, 40da81d) hold none of them, so the list is stricter than the TL range, which is fine. Wired into tools/check-fixture-secrets.sh and FS05 RangeCases. SSE2-F-FS1 (minor): the script skips its own path; FS06 probes a secret hidden there and my wrapper still catches it (missed=False).
+
+### Verified at 3feb66c (SSE's change list)
+- CSP `script-src 'self'`, no 'unsafe-inline', present on every HTML response; XFO DENY or absent (DEC-100). UI01–05 show no CSP violations.
+- recovery_reenroll / DEC-093: D93_04/05 done states, Continue → /standin/admin or /standin/l/{slug}, codes shown once (2nd GET 404, no-store), session revoked, old TOTP and old recovery code refused, new TOTP signs in (DEC-087). Session-cap page 404 in a recovery session.
+- Re-enrol rate limit: 5 wrong → 200 each, 6th → 429 + auth.mfa.failed reason=rate_limited, still 429 at 14:59.999. At 15:00 the session has idled out (302), so the window end is not observable (info).
+- Admin paths and DEC-086 cap: not_admin, wrong_partner (other, upper-case, unknown), out_of_range (00:15:00, 00:14:59, 00:00:00), 00:15:01 accepted; negatives and malformed → 400.
+- mfa.succeeded immediately before login.succeeded for location, partner admin, super admin.
+- BP-2a: cage attestation is checked first and fails closed on payment, id_scan and print for: missing, empty, alg none (±sig), HS256, RS256, es256, jwk header, crit, flipped sig, tampered payload, garbage, two-part, agent modes bad_signature/expired/replayed/unknown/revoked/other_location, consumed nonce, cross-purpose, cross-session, nonce age 60001 ms (60000 ms ok). Every denial emits a schema-valid auth.app_access.denied attestation_invalid. Future iat: not black-box testable (no backward clock, key in memory); code reading shows `iat > now+30` refused.
+- No secrets: 496 secret values (passwords, TOTP secrets, recovery codes old and new, tokens, hub_launch, code, state) absent from standin.log and from all 153 audit events.
+
+### Findings at 3feb66c
+| # | Sev | Finding | Evidence |
+|---|---|---|---|
+| G1 | **major** | No upper bound on the session cap (A61). A partner admin can set a cap ≥ ~2,914,000 days (~7,980 years) on its own partner; after that every session of that partner returns 500, including the admin's own cap page, so it cannot undo it (only a super admin or restart can). Set globally by a super admin, all sign-ins 500. Log: `ArgumentOutOfRangeException: The added or subtracted value results in an un-representable DateTime`. 2,000,000 days still works. A cap on P2 does not affect P1. | probe-k: "partner cap 2914000.00:00:00: set->200; P1 location /apps->500; partner admin cap page->500"; probe K-huge ('screen-hub', 500). OQ-SSE2-60 |
+| G2 | **major** | Cage stub not contract-shaped (6.9): a JSON body `{"device_attestation":…}` with a valid attestation gets 403 attestation_invalid (stub reads form only), and a valid form request gets 501 not_implemented instead of 200 {"ok":true}. Fails closed, so not a security hole. | probe C9 ×3. OQ-SSE2-61 |
+| G3 | **major (needs ruling)** | A validly signed attestation with remote_session=true is accepted for cage actions (same 501 as a clean one). 6.7 is silent; 5.2 requires remote_session=false for the hand-off; the LD agent blocks actions during a remote session. Blocker if the TL rules 5.2 applies to cage actions. | probe C10 ×3: (501, not_implemented). OQ-SSE2-62 |
+| G4 | minor | Cage nonce is 43 chars (256-bit); cage_nonce_response schema says `^[A-Za-z0-9_-]{22}$`. | probe C0 ×3. OQ-SSE2-63 |
+| G5 | minor | A password-verified, pre-MFA sign-in transaction never expires: TOTP 24 h later still reaches the hub (location and /admin). Contract sets no lifetime. | probe TXL. OQ-SSE2-64 |
+| G6 | minor | /admin errors carry only `error-admin-sign-in`, no `error-area` (ui-driver §2a). | probe ADM |
+| G7 | minor | 6 of 7 fixture passwords are static literals ("…-Standin-2026"); only super_admin is GENERATED. Conflicts with "fixture passwords must be generated"; test-only and fixture-only. | src/Login.StandIn/fixtures.json @3feb66c |
+| G8 | minor | Stand-in state dir hard-coded to /tmp/sse-d0/standin-{port}. | Program.cs; state of my run under /tmp/sse-d0/standin-18090 |
+| G9 | info | Session-cap validates format before authorization: a location user posting a malformed value gets 400 with no change_denied event. | probe "K location user, malformed value" ((400, None), []). OQ-SSE2-65 |
+| G10 | info | /favicon.ico 404. RL window end not observable (idle = window). | probe |
+
+### GO/NO-GO for SI1 at 3feb66c
+**GO with conditions.** No failing test in the agreed suite (468/0/84), SSE's 251/251 reproduced, UI 14/14, and every TL focus area passes. No blocker. Before S1 sign-off: G1 (cap upper bound, or reject values that overflow) and G2 (cage stub contract shape) should be fixed or accepted as stand-in limits by the TL; G3 needs a TL ruling and becomes a blocker if remote_session must block cage actions.
+
+### Port and time log (PST)
+- 22:13:43 10a1ca4 run #2 done; 22:13:53 killed my 10a1ca4 stand-in pid 683623; check-ports: 18090–18092 free; nothing on 18080–18082, 8080, 8081.
+- 22:13:56 3feb66c stand-in pid 1199260 on 18090–18092 (guard: owned by my pid before every run).
+- 22:14:04–22:14:13 SSE harness repro; 22:14:26–22:17:11 full run; 22:17:59–22:19:54 probes; 22:18:35–39 UI.
+- 22:22:27–22:25:13 final full run (D93_04/05 now real tests: PASS).
+- Stand-in stop: logged in the commit message and the SSE2 report (stopped right after this commit).

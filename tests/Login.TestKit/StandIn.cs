@@ -47,7 +47,23 @@ public static class StandIn
     public static async Task Reset() { using var r = await Ctl.PostAsync(Control + "/_standin/reset", null); r.EnsureSuccessStatusCode(); }
     public static async Task<JsonObject> Advance(long seconds) => await CtlJson(HttpMethod.Post, "/_standin/clock/advance", new JsonObject { ["seconds"] = seconds });
     public static async Task<string> Now() => (string)(await CtlJson(HttpMethod.Get, "/_standin/clock", null))["now"]!;
-    public static async Task<string> Totp(string user) => (string)(await CtlJson(HttpMethod.Get, $"/_standin/users/{user}/totp", null))["code"]!;
+    // OQ-55 (SSE 10a1ca4, v1.1 control addition): frozen clock; while frozen only advance moves time. Advance takes exactly one of seconds|ms.
+    public static async Task<JsonObject> AdvanceMs(long ms) => await CtlJson(HttpMethod.Post, "/_standin/clock/advance", new JsonObject { ["ms"] = ms });
+    public static async Task<JsonObject> Freeze(bool on) => await CtlJson(HttpMethod.Post, "/_standin/clock/freeze", new JsonObject { ["frozen"] = on });
+    // SEC76 fix (10a1ca4): the control TOTP is the earliest UNUSED step's code, 409 {"error":"no_unused_step"} when the window is spent.
+    public static async Task<(HttpStatusCode Status, string? Code)> TotpRaw(string user)
+    {
+        using var r = await Send(HttpMethod.Get, $"/_standin/users/{user}/totp", null);
+        var t = await r.Content.ReadAsStringAsync();
+        return (r.StatusCode, r.IsSuccessStatusCode ? (string?)JsonNode.Parse(t)!["code"] : null);
+    }
+    /// Code for the earliest unused step; on 409 advances 30 s once (as SSE's driver does) and asks again.
+    public static async Task<string> Totp(string user)
+    {
+        var (s, c) = await TotpRaw(user);
+        if (s == HttpStatusCode.Conflict) { await Advance(30); (s, c) = await TotpRaw(user); }
+        return c ?? throw new InvalidOperationException($"control totp {user}: {(int)s}");
+    }
     public static async Task<string> PutPc(string pcId, string mode, string slug) =>
         (string)(await CtlJson(HttpMethod.Put, $"/_standin/pcs/{pcId}", new JsonObject { ["mode"] = mode, ["location_slug"] = slug }))["cookie"]!["value"]!;
     public static async Task Faults(string? outbox = null, string? registry = null)
@@ -86,13 +102,26 @@ public static class StandIn
     public static JsonObject Fixtures => _fx ??= JsonNode.Parse(File.ReadAllText(FixturePath))!.AsObject();
     public static JsonObject Client(string id) => Fixtures["clients"]!.AsArray().First(c => (string)c!["client_id"]! == id)!.AsObject();
     public static string Redirect(string id) => (string)Client(id)["redirect_uris"]![0]!;
+    // F14 (SSE 10a1ca4, TL 9:42 PM PT): client secrets and recovery codes are no longer committed; the stand-in generates them at
+    // start into <state dir>/fixture-secrets.json (0600). Read from LOGIN_STANDIN_SECRETS, else /tmp/sse-d0/standin-{front port}/.
+    public static string SecretsPath => Environment.GetEnvironmentVariable("LOGIN_STANDIN_SECRETS")
+        ?? $"/tmp/sse-d0/standin-{new Uri(Front).Port}/fixture-secrets.json";
+    static JsonObject? _sx;
+    public static JsonObject GeneratedSecrets => _sx ??= JsonNode.Parse(File.ReadAllText(SecretsPath))!.AsObject();
+    public static string Secret(string clientId)
+    {
+        var v = (string?)Client(clientId)["secret"];
+        if (v is not null && v != "GENERATED") return v;   // pre-F14 builds
+        var g = GeneratedSecrets["clients"]![clientId]!;
+        return g is JsonValue ? (string)g! : (string)g["secret"]!;
+    }
     public static string Password(string user) => (string)Fixtures["users"]!.AsArray().First(u => (string)u!["username"]! == user)!["password"]!;
 
     // ---- back channel (contract §7, §9, §10) ----
     public static async Task<(HttpStatusCode Status, JsonObject? Body, HttpResponseHeaders Headers)> BackPost(string endpoint, string clientId, IDictionary<string, string> form, string? secretOverride = null)
     {
         var req = new HttpRequestMessage(HttpMethod.Post, BackEndpoint(endpoint)) { Content = new FormUrlEncodedContent(form) };
-        var secret = secretOverride ?? (string)Client(clientId)["secret"]!;
+        var secret = secretOverride ?? Secret(clientId);
         req.Headers.Authorization = new AuthenticationHeaderValue("Basic",
             Convert.ToBase64String(Encoding.UTF8.GetBytes(Uri.EscapeDataString(clientId) + ":" + Uri.EscapeDataString(secret))));
         using var r = await Ctl.SendAsync(req);
@@ -105,7 +134,7 @@ public static class StandIn
     {
         var req = new HttpRequestMessage(HttpMethod.Post, BackEndpoint("introspect")) { Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["token"] = token }) };
         req.Headers.Authorization = new AuthenticationHeaderValue("Basic",
-            Convert.ToBase64String(Encoding.UTF8.GetBytes(clientId + ":" + Uri.EscapeDataString((string)Client(clientId)["secret"]!))));
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(clientId + ":" + Uri.EscapeDataString(Secret(clientId)))));
         using var r = await Ctl.SendAsync(req);
         return $"{(int)r.StatusCode} {await r.Content.ReadAsStringAsync()}";
     }
@@ -142,7 +171,9 @@ public static class StandIn
         JsonObject? body = null; try { body = t.Length > 0 ? JsonNode.Parse(t) as JsonObject : null; } catch (System.Text.Json.JsonException) { }
         return (r.StatusCode, body);
     }
-    public static string RecoveryCode(string user, int i) => (string)Fixtures["users"]!.AsArray().First(u => (string)u!["username"]! == user)!["recovery_codes"]![i]!;
+    public static string RecoveryCode(string user, int i) =>
+        Fixtures["users"]!.AsArray().First(u => (string)u!["username"]! == user)!["recovery_codes"] is JsonArray a ? (string)a[i]!
+        : (string)GeneratedSecrets["recovery_codes"]![user]![i]!;   // F14
 
     public static async Task<HttpStatusCode> Revoke(string clientId, string token) =>
         (await BackPost("revoke", clientId, new Dictionary<string, string> { ["token"] = token })).Status;
@@ -298,7 +329,11 @@ public sealed class Browser : IDisposable
 
 public sealed record Page(HttpStatusCode Status, string Body, IReadOnlyDictionary<string, string> Headers, Uri? Location)
 {
-    public string? TestId => Regex.Match(Body, "<main data-testid=\"([^\"]+)\"") is { Success: true } m ? m.Groups[1].Value : null;
-    public string? ErrorText => Regex.Match(Body, "data-testid=\"error-area\"[^>]*>([^<]*)<") is { Success: true } m ? WebUtility.HtmlDecode(m.Groups[1].Value) : null;
+    // <main data-testid> (stand-in <= 8aab98a) or the first screen-/page- testid on any element (ui/login-hub, f630a8d+; screen-8b wraps page-resign-in).
+    public string? TestId => Regex.Match(Body, "<main data-testid=\"([^\"]+)\"") is { Success: true } m ? m.Groups[1].Value
+        : Regex.Match(Body, "data-testid=\"((?:screen|page)-[a-z0-9-]+)\"") is { Success: true } m2 ? m2.Groups[1].Value : null;
+    public bool HasTestId(string id) => Body.Contains("data-testid=\"" + id + "\"");
+    public string? ErrorText => Regex.Match(Body, "data-testid=\"error-area\"[^>]*>.*?banner__title\">([^<]*)<", RegexOptions.Singleline) is { Success: true } b ? WebUtility.HtmlDecode(b.Groups[1].Value)
+        : Regex.Match(Body, "data-testid=\"error-(?:area|admin-sign-in|resign-in)\"[^>]*>([^<]*)<") is { Success: true, Groups: [_, { Length: > 0 }] } m ? WebUtility.HtmlDecode(m.Groups[1].Value) : null;
     public string Header(string n) => Headers.TryGetValue(n, out var v) ? v : "";
 }

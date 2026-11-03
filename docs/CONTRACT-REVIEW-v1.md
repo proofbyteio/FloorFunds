@@ -312,3 +312,24 @@ Target 8aab98a [TL 9:32 PM PT], base 18090, own state dir. contract-v1 e363090 i
 | F13 | info | The interstitial has no ui-driver id (A38). | HO21 pending (OQ-SSE2-57). |
 
 SSE claim "143/143, evidence md5 276d88d0": **reproduced** (SSE harness against my 8aab98a: TOTAL 143 / 143; file md5 276d88d001535ac6eac2723dbe0bb5d1). It conflicts with F1/F2 only on rows 102, 109 and 110.
+
+## Addendum: SI1 GO/NO-GO at feat/si1-standin 3feb66c, tag si1-freeze (SSE2, Mon Nov 2, 10:25 PM PT)
+contract-v1 is frozen and not reopened. Findings are against the stand-in, or questions for v1.1. Details, commands and evidence: docs/BUILD-LOG.md (same date), TEST-MATRIX-S1 "Status at 3feb66c".
+
+- SSE claim 251/251 (evidence md5 aa782b7b): **reproduced** on my own export and stand-in (base 18090). 189 at 10a1ca4 also reproduced. 188/210/243 not run standalone.
+- My suite: 0 fail (468 pass, 84 pending; D93_04/05 enabled and passing). UI01–05 14/14. Fixture secrets PASS on all three branches; SSE's 7 A55 commits are all inside eb0fa5d..c4da996.
+- 8aab98a F1–F5 and F6/F7 are fixed: ms-precision boundaries, TOTP single use, TOTP lockout, no secrets in logs, CSP script-src 'self' without 'unsafe-inline', XFO DENY or absent.
+
+| # | Sev | Finding at 3feb66c |
+|---|---|---|
+| G1 | major | Session cap has no upper bound; ≥ ~2,914,000 days makes every session of that partner (or all, if global) return 500, and the partner admin cannot undo it. OQ-SSE2-60 |
+| G2 | major | Cage stub reads form only and answers 501 to a valid request; 6.9 shape is JSON in, 200 {"ok":true} out. Fails closed. OQ-SSE2-61 |
+| G3 | major, needs ruling | remote_session=true attestation accepted for cage actions. OQ-SSE2-62 |
+| G4 | minor | Cage nonce 43 chars vs schema 22. OQ-SSE2-63 |
+| G5 | minor | Pre-MFA sign-in tx has no lifetime. OQ-SSE2-64 |
+| G6 | minor | /admin error lacks error-area testid. |
+| G7 | minor | 6 of 7 fixture passwords are static literals, not generated. |
+| G8 | minor | State dir hard-coded to /tmp/sse-d0/standin-{port}. |
+| G9–G10 | info | validation before authorization on session-cap (OQ-SSE2-65); favicon 404; RL window end not observable. |
+
+**Verdict: GO with conditions** for SI1. No blocker; no failing test in the agreed suite. Conditions: TL decides G1 and G2 (fix, or accept as stand-in limits with a v1.1 item), and rules on G3, which becomes a blocker if remote_session must block cage actions.

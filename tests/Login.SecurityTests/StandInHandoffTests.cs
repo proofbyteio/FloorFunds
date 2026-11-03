@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
 using Cachd.Login.TestKit;
 
@@ -6,7 +7,9 @@ namespace Cachd.Login.SecurityTests;
 
 /// <summary>
 /// HO01-HO16: §5.7 / 5.8 / 5.12 / 5.13 hand-off negatives (SSE2, Mon Nov 2 2026 ~9:45 PM PT) [TL Decision 9:26 PM PT (e)]:
-/// target feat/si1-standin 8aab98a [TL 9:32 PM PT: replaces 9a14163]. Every assertion cites contract-v1 (e363090).
+/// target feat/si1-standin 10a1ca4 [TL 9:50 PM PT; was 8aab98a at 9:32 PM PT]. Every assertion cites contract-v1 (e363090).
+/// TL 9:50 PM PT rulings applied: OQ-56 burn (HO06), OQ-55 frozen ms clock (HO18/18b/18c, HO03b/03c), OQ-58 CSP/XFO (HO10b, HO20,
+/// HO22), OQ-57 (HO21 pending, v1.1 UX+SA).
 /// Where the contract is silent the test logs and skips with an OQ instead of asserting a guess.
 /// Stand-in-only: uses /_standin/* (reset, clock, totp, pcs, audit) and the fake agent (standin-control 2.4, SI1 A22).
 /// </summary>
@@ -135,22 +138,28 @@ public class StandInHandoffTests
         Assert.Equal(new[] { NotFromHub }, Reasons(await StandIn.AuditSince(n1)));
     }
 
-    [Fact] // 5.7 "clients without the hand-off ignore it"
-    public async Task HO06_hub_launch_sent_to_a_non_handoff_client_is_ignored()
+    [Fact] // 5.7 "clients without the hand-off ignore it" + TL 9:50 PM PT OQ-56 (replaces SI1 A41): presented at another client it is BURNED and ignored
+    public async Task HO06_hub_launch_presented_at_back_office_is_ignored_there_and_burned_for_cash_advance()
     {
         await Ready();
         var (b, hl) = await SignedIn(); using var __ = b;
         var n0 = await StandIn.AuditNext();
         var r = await b.Authorize("backoffice_stub", Pkce.S256(Pkce.NewVerifier()), extra: "&hub_launch=" + hl);
-        Assert.NotNull(r.Code); // normal SSO
-        Assert.DoesNotContain(NotFromHub, Reasons(await StandIn.AuditSince(n0)));
-        // TL 9:32 PM item 2 "use by a different client: refused": the other client gets no hand-off from it (no hub_handoff,
-        // session not cage_consumed). Whether it must also be consumed is OQ-SSE2-56 (contract 5.7 "ignore" vs SI1 A41 "stays usable").
+        Assert.NotNull(r.Code); // ignored there: normal SSO
         var ev = await StandIn.AuditSince(n0);
+        Assert.DoesNotContain(NotFromHub, Reasons(ev));
         Assert.DoesNotContain(ev, e => (string?)e["details"]?["method"] == "hub_handoff");
-        var after = await b.Authorize("backoffice_stub", Pkce.S256(Pkce.NewVerifier()));
-        Assert.NotNull(after.Code); // not cage_consumed
-        Log("HO06 (OQ-SSE2-56): same value at Cash Advance afterwards -> " + (int)(await CashAdvance(b, hl)).Page.Status + " (200 = still usable, SI1 A41)");
+        Assert.NotNull((await b.Authorize("backoffice_stub", Pkce.S256(Pkce.NewVerifier()))).Code); // session not cage_consumed
+        // OQ-56: the same value at the correct client is refused (burned) -> notfromhub + re-prompt, no code
+        var n1 = await StandIn.AuditNext();
+        var ca = await CashAdvance(b, hl);
+        Log($"HO06 same hub_launch at cash_advance_bff after back office: {(int)ca.Page.Status} {ca.Page.Location}");
+        AssertRePrompt(ca.Page);
+        Assert.Null(ca.Code);
+        Assert.Equal(new[] { NotFromHub }, Reasons(await StandIn.AuditSince(n1)));
+        Assert.Null(b.Cookie("standin_hx"));
+        // control: a fresh value straight from the hub still works (the burn is per value, not per session)
+        Assert.Equal(HttpStatusCode.OK, (await CashAdvance(b, Browser.HubLaunch(await b.Hub()))).Page.Status);
     }
 
     [Fact] // 5.7 "consumed on the first check even if another rule fails"; SI1 A40 extends this to no session
@@ -334,77 +343,116 @@ public class StandInHandoffTests
         Assert.Empty(await StandIn.AuditSince(n0));
     }
 
-    [Fact] // 5.7 URL exception: "ALB and app logs redact hub_launch, code and state values on both hosts"
-    public async Task HO17_app_log_does_not_contain_raw_hub_launch_or_code()
+    [Fact] // 5.7 URL exception: "ALB and app logs redact hub_launch, code and state values on both hosts" (+ code_challenge, TL 9:50 PM PT)
+    public async Task HO17_app_log_does_not_contain_hub_launch_code_code_challenge_or_state()
     {
         await Ready();
         var log = Environment.GetEnvironmentVariable("LOGIN_STANDIN_LOG");
         if (log is null || !File.Exists(log)) Assert.Skip("PENDING: set LOGIN_STANDIN_LOG to the stand-in's stdout log to run this check");
         var (b, hl) = await SignedIn(); using var __ = b;
-        await CashAdvance(b, hl); var ok = await b.CompleteInterstitial();
-        var code = Browser.Query(ok.Location)["code"];
-        await Task.Delay(300);
+        var state = "sse2st" + Guid.NewGuid().ToString("N")[..16];
+        var verifier = Pkce.NewVerifier(); var challenge = Pkce.S256(verifier);
+        await b.Authorize("cash_advance_bff", challenge, state: state, extra: "&hub_launch=" + Uri.EscapeDataString(hl));
+        var ok = await b.CompleteInterstitial();
+        var q = Browser.Query(ok.Location);
+        var code = q["code"];
+        Assert.Equal(state, q.GetValueOrDefault("state"));
+        // also a refused path (notfromhub logs) and a back-office SSO with its own state/challenge
+        var state2 = "sse2st" + Guid.NewGuid().ToString("N")[..16]; var ch2 = Pkce.S256(Pkce.NewVerifier());
+        await b.Authorize("backoffice_stub", ch2, state: state2);
+        var (st, body, _) = await StandIn.Token("cash_advance_bff", new Dictionary<string, string>
+        { ["grant_type"] = "authorization_code", ["code"] = code, ["redirect_uri"] = StandIn.Redirect("cash_advance_bff"), ["code_verifier"] = verifier });
+        await Task.Delay(500);
         var text = File.ReadAllText(log);
-        Assert.DoesNotContain(hl, text);
-        Assert.DoesNotContain(code, text);
-        Assert.DoesNotContain("st-1", text.Replace("standin", "")); // state value used by Browser.Authorize
+        var secrets = new Dictionary<string, string> { ["hub_launch"] = hl, ["code"] = code, ["code_challenge"] = challenge, ["code_verifier"] = verifier,
+            ["state"] = state, ["state(back office)"] = state2, ["code_challenge(back office)"] = ch2 };
+        if (body?["refresh_token"] is { } rt) secrets["refresh_token"] = (string)rt!;
+        if (body?["access_token"] is { } at) secrets["access_token"] = (string)at!;
+        foreach (var (k, v) in secrets) Log($"HO17 {k}: {(text.Contains(v) ? "FOUND in log" : "absent")} ({v.Length} chars)");
+        Log($"HO17 log {log}: {text.Length} chars; token rc {(int)st}");
+        Assert.All(secrets, kv => Assert.False(text.Contains(kv.Value), $"{kv.Key} value is in the stand-in log"));
     }
     // ================= TL 9:32 PM PT additions (target 8aab98a) =================
     static async Task<DateTimeOffset> AuthTime() =>
         DateTimeOffset.Parse((string)(await StandIn.AuditSince(0)).Last(e => (string)e["event_type"]! == "auth.login.succeeded")["occurred_at"]!);
     static async Task<DateTimeOffset> ClockNow() => DateTimeOffset.Parse(await StandIn.Now());
 
-    [Fact] // 5.1 rule 1 + TL 9:32 PM ruling: millisecond precision, no rounding down: 300001 ms is refused
-    public async Task HO18_auth_age_over_300000_ms_is_refused()
+    // OQ-55 (TL 9:50 PM PT, SSE 10a1ca4): frozen clock (POST /_standin/clock/freeze {"frozen":true}); only advance moves it, in ms.
+    // Rule 1 compares in ms with no rounding down (TL 9:32 PM): 300000 ms accepted, 300001 ms re-prompt. hub_launch: 60000 / 60001 ms.
+    // The hub_launch is fetched so that it is exactly 1000 ms old at authorize, so rule 4 always holds in the auth-age tests.
+    static async Task<Page> AtAuthAgeMs(Browser b, long ageMs)
+    {
+        await StandIn.AdvanceMs(ageMs - 1000);
+        var hl = Browser.HubLaunch(await b.Hub())!;
+        await StandIn.AdvanceMs(1000);
+        var p = (await CashAdvance(b, hl)).Page;
+        Log($"auth age {ageMs} ms (frozen clock {await StandIn.Now()}) -> {(int)p.Status} {p.Location} {p.TestId}");
+        return p;
+    }
+    static async Task<Browser> FrozenSignedIn()
     {
         await Ready();
-        var (b, _) = await SignedIn(); using var __ = b;
-        var t0 = await AuthTime();
-        await StandIn.Advance(299);
-        var hl = Browser.HubLaunch(await b.Hub())!;   // fresh hub_launch so rule 4 holds
-        await StandIn.Advance(1);
-        var lower = (await ClockNow() - t0).TotalMilliseconds; // the authorize below is at least this old
-        Log($"HO18 auth age at authorize >= {lower:F0} ms");
-        Assert.True(lower > 300000, $"precondition: {lower} ms");
+        var f = await StandIn.Freeze(true);
+        Assert.True((bool)f["frozen"]!);
+        var (b, _) = await SignedIn();
+        var t0 = await StandIn.Now(); await Task.Delay(1100);
+        Assert.Equal(t0, await StandIn.Now()); // really frozen: wall time does not move it
+        return b;
+    }
+
+    [Fact] // 5.1 rule 1 + TL 9:32 PM ms ruling + OQ-55 frozen clock: 300001 ms is refused
+    public async Task HO18_auth_age_300001_ms_is_refused()
+    {
+        using var b = await FrozenSignedIn();
         var n0 = await StandIn.AuditNext();
-        var p = (await CashAdvance(b, hl)).Page;
-        Log($"HO18 result: {(int)p.Status} {p.Location}");
+        var p = await AtAuthAgeMs(b, 300_001);
         AssertRePrompt(p);                             // rule 1 failure = re-prompt (5.3), no event (5.10)
         Assert.Empty(await StandIn.AuditSince(n0));
     }
 
-    [Fact] // positive control for HO18: clearly inside the window (about 299 s + latency) is accepted
-    public async Task HO18b_auth_age_below_300000_ms_is_accepted()
+    [Fact] // positive control just inside: 299999 ms accepted (interstitial)
+    public async Task HO18b_auth_age_299999_ms_is_accepted()
     {
-        await Ready();
-        var (b, _) = await SignedIn(); using var __ = b;
-        var t0 = await AuthTime();
-        await StandIn.Advance(298);
-        var hl = Browser.HubLaunch(await b.Hub())!;
-        await StandIn.Advance(1);
-        var p = (await CashAdvance(b, hl)).Page;
-        var upper = (await ClockNow() - t0).TotalMilliseconds;
-        Assert.True(upper < 300000, $"precondition: {upper} ms");
-        Assert.Equal(HttpStatusCode.OK, p.Status); // interstitial
+        using var b = await FrozenSignedIn();
+        Assert.Equal(HttpStatusCode.OK, (await AtAuthAgeMs(b, 299_999)).Status);
     }
 
-    [Fact(Skip = "PENDING OQ-SSE2-55: exactly 300000 ms (accepted) is not reachable: standin-control 2.2 clock = wall time + whole-second offset, no freeze/set. HO18b covers < 300000 ms, HO18 > 300000 ms")]
-    public void HO18c_auth_age_exactly_300000_ms_is_accepted() { }
-
-    [Fact] // 5.7 "valid <=60 s" with the TL 9:32 PM ms ruling: 60000 ms + latency is refused
-    public async Task HO03b_hub_launch_older_than_60000_ms_is_notfromhub()
+    [Fact] // OQ-55 (TL 9:50 PM PT): exactly 300000 ms is accepted ("<= 5 min")
+    public async Task HO18c_auth_age_exactly_300000_ms_is_accepted()
     {
-        await Ready();
-        var (b, _) = await SignedIn(); using var __ = b;
-        var hub = await b.Hub(); var t = await ClockNow(); var hl = Browser.HubLaunch(hub)!;
-        await StandIn.Advance(60);
-        var age = (await ClockNow() - t).TotalMilliseconds;
-        Assert.True(age > 60000, $"precondition {age}");
-        var n0 = await StandIn.AuditNext();
+        using var b = await FrozenSignedIn();
+        var p = await AtAuthAgeMs(b, 300_000);
+        Assert.Equal(HttpStatusCode.OK, p.Status);
+        Assert.NotNull(b.Cookie("standin_hx"));
+    }
+
+    static async Task<Page> AtLaunchAgeMs(Browser b, long ageMs)
+    {
+        var hl = Browser.HubLaunch(await b.Hub())!;
+        await StandIn.AdvanceMs(ageMs);
         var p = (await CashAdvance(b, hl)).Page;
-        Log($"HO03b hub_launch age >= {age:F0} ms -> {(int)p.Status}");
+        Log($"hub_launch age {ageMs} ms -> {(int)p.Status} {p.Location} {p.TestId}");
+        return p;
+    }
+
+    [Fact] // 5.7 "valid <=60 s" + TL 9:32 PM ms ruling + OQ-55: 60001 ms is notfromhub
+    public async Task HO03b_hub_launch_60001_ms_is_notfromhub()
+    {
+        using var b = await FrozenSignedIn();
+        var n0 = await StandIn.AuditNext();
+        var p = await AtLaunchAgeMs(b, 60_001);
         AssertRePrompt(p);
         Assert.Equal(new[] { NotFromHub }, Reasons(await StandIn.AuditSince(n0)));
+    }
+
+    [Fact] // OQ-55 (TL 9:50 PM PT): exactly 60000 ms is accepted
+    public async Task HO03c_hub_launch_exactly_60000_ms_is_accepted()
+    {
+        using var b = await FrozenSignedIn();
+        var n0 = await StandIn.AuditNext();
+        var p = await AtLaunchAgeMs(b, 60_000);
+        Assert.Equal(HttpStatusCode.OK, p.Status);
+        Assert.DoesNotContain(NotFromHub, Reasons(await StandIn.AuditSince(n0)));
     }
 
     [Theory] // 5.1 rule 2: amr [pwd] and [wiaormfa] never count (8.10); 5.10 no event; SI1 FIXTURE users (8aab98a)
@@ -456,6 +504,40 @@ public class StandInHandoffTests
         Assert.Contains("frame-ancestors 'none'", csp);
         Assert.Contains(csp, d => d.StartsWith("default-src "));
         Assert.Contains("no-store", p.Header("Cache-Control"));
+        AssertOq58(p.Header("Content-Security-Policy"), p.Header("X-Frame-Options"), page);
+        // TL 9:38 PM (SSE c4da996): no inline script / style / handler, so the CSP needs no 'unsafe-inline' or nonce
+        Assert.DoesNotMatch("<script(?![^>]*\\ssrc=)[^>]*>", p.Body);
+        Assert.DoesNotMatch("\\sstyle=\"", p.Body);
+        Assert.DoesNotMatch("\\son[a-z]+=\"", p.Body);
+    }
+    /// OQ-58 (TL 9:50 PM PT): no 'unsafe-inline' anywhere in any CSP; X-Frame-Options DENY or absent.
+    internal static void AssertOq58(string csp, string xfo, string what)
+    {
+        Assert.False(csp.Contains("unsafe-inline", StringComparison.OrdinalIgnoreCase), $"{what}: 'unsafe-inline' in CSP [{csp}]");
+        Assert.True(xfo.Length == 0 || xfo.Trim().Equals("DENY", StringComparison.OrdinalIgnoreCase), $"{what}: X-Frame-Options [{xfo}] (DENY or absent)");
+    }
+
+    // OQ-58 sweep over non-page responses on all three listeners: assets, discovery, JWKS, errors, 404, 405, back-channel errors.
+    public static IEnumerable<object[]> Responses() => new[]
+    {
+        "F GET /ui/theme.css", "F GET /ui/js/signin.js", "F GET /ui/js/handoff.js", "F GET /.well-known/openid-configuration", "F GET /.well-known/jwks.json",
+        "F GET /nope", "F GET /l/no-such-slug", "F POST /l/pci-main", "F GET /connect/authorize?client_id=x", "F GET /connect/endsession",
+        "B GET /.well-known/openid-configuration", "B POST /connect/token", "B GET /connect/token", "B POST /connect/introspect", "B GET /nope",
+    }.Select(x => new object[] { x });
+    [Theory, MemberData(nameof(Responses))]
+    public async Task HO22_every_response_has_no_unsafe_inline_and_xfo_deny_or_absent(string req)
+    {
+        await Ready();
+        var parts = req.Split(' ');
+        var host = parts[0] == "F" ? StandIn.Front : StandIn.Back;
+        using var h = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+        using var m = new HttpRequestMessage(new HttpMethod(parts[1]), host + StandIn.IssuerPath + parts[2]);
+        if (parts[1] == "POST") m.Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["x"] = "1" });
+        using var r = await h.SendAsync(m);
+        var csp = r.Headers.TryGetValues("Content-Security-Policy", out var c) ? string.Join(", ", c) : "";
+        var xfo = r.Headers.TryGetValues("X-Frame-Options", out var x) ? string.Join(", ", x) : "";
+        Log($"HO22 {req}: {(int)r.StatusCode} CSP=[{csp}] XFO=[{xfo}]");
+        AssertOq58(csp, xfo, req);
     }
 
     [Fact] // 5.8(c) exact pin of the hand-off page CSP (regression for the 9a14163 omission)
@@ -466,13 +548,15 @@ public class StandInHandoffTests
         var p = (await CashAdvance(b, hl)).Page;
         var agent = new Uri(StandIn.Control).Port;
         var csp = p.Header("Content-Security-Policy");
-        Assert.Equal($"default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:{agent}; frame-ancestors 'none'", csp);
+        Log($"HO10b CSP=[{csp}] XFO=[{p.Header("X-Frame-Options")}]");
+        // pinned at 10a1ca4 (c4da996: scripts in ui/login-hub/js, no 'unsafe-inline'; OQ-58 TL 9:50 PM PT)
+        Assert.Equal($"default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' http://localhost:{agent}; base-uri 'none'; object-src 'none'; frame-ancestors 'none'", csp);
         // single CSP header (two headers would intersect, a second one could hide a weaker policy)
         Assert.DoesNotContain(", default-src", csp);
-        Log("HO10b note: script-src 'unsafe-inline' is present; 5.8(c) asks for 'a strict CSP' -> OQ-SSE2-58 (minor)");
+        AssertOq58(csp, p.Header("X-Frame-Options"), "interstitial");
     }
 
-    [Fact(Skip = "PENDING OQ-SSE2-57: no ui-driver id for the hand-off interstitial in contract/ui-driver.md or SSE code (SI1 A38: form id 'handoff', no screen testid). Assert <main data-testid=ID> once the TL/UX names ID")]
+    [Fact(Skip = "PENDING OQ-SSE2-57 [TL 9:50 PM PT: confirmed no interstitial ui-driver id in v1; v1.1 for UX + SA]. Not guessed. Assert the screen testid once UX/SA name it")]
     public void HO21_interstitial_has_its_ui_driver_id() { }
 }
 
@@ -520,9 +604,61 @@ public class Dec093Tests
         }
     }
 
-    [Fact(Skip = "PENDING OQ-SSE2-54: §7.8 re-enrolment completion not built at 8aab98a (SI1 A36, step 3). Assert: admin recovery_reenroll -> after re-enrol, session ended, Location = /admin, never /l/{slug}")]
-    public void D93_04_admin_after_reenrolment_goes_to_admin_never_location() { }
+    // D93_04/05 (enabled at 3feb66c, SSE2 10:20 PM PT; OQ-SSE2-54 closed): recovery sign-in -> /mfa/reenroll -> codes page once -> Continue.
+    static string Base32Hotp(string key, long step)
+    {
+        var k = key.Replace(" ", "").TrimEnd('=').ToUpperInvariant(); var bytes = new List<byte>(); int buf = 0, bits = 0;
+        foreach (var ch in k) { buf = (buf << 5) | "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".IndexOf(ch); bits += 5; if (bits >= 8) { bytes.Add((byte)(buf >> (bits - 8))); bits -= 8; } }
+        var msg = BitConverter.GetBytes(step); if (BitConverter.IsLittleEndian) Array.Reverse(msg);
+        var h = System.Security.Cryptography.HMACSHA1.HashData(bytes.ToArray(), msg); int o = h[^1] & 15;
+        return ((((h[o] & 0x7f) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3]) % 1000000).ToString("D6");
+    }
+    static async Task<(Page Codes, Page Again, Page AfterApps)> Reenrol(Browser b, string expectHome)
+    {
+        var g = await b.Get(StandIn.IssuerPath + "/mfa/reenroll");
+        Assert.Equal(HttpStatusCode.OK, g.Status);
+        var key = WebUtility.HtmlDecode(Regex.Match(g.Body, "data-testid=\"reenroll-manual-key\">([^<]+)<").Groups[1].Value);
+        var now = DateTimeOffset.Parse(await StandIn.Now()).ToUnixTimeSeconds() / 30;
+        var post = await b.Post(StandIn.IssuerPath + "/mfa/reenroll", new Dictionary<string, string> { ["totp_code"] = Base32Hotp(key, now) });
+        Assert.Equal(HttpStatusCode.Redirect, post.Status);
+        Assert.EndsWith("/mfa/reenroll/recovery-codes", post.Location?.ToString());
+        var codes = await b.Get(StandIn.IssuerPath + "/mfa/reenroll/recovery-codes");
+        Assert.Equal(HttpStatusCode.OK, codes.Status);
+        Assert.Equal(10, Regex.Matches(codes.Body, "<li><code>[0-9a-f]+</code></li>").Count);
+        var links = Regex.Matches(codes.Body, "href=\"([^\"]+)\"").Select(m => WebUtility.HtmlDecode(m.Groups[1].Value)).ToList();
+        Assert.Contains(StandIn.IssuerPath + expectHome, links);
+        Assert.DoesNotContain(links, l => l.Contains("/apps") || l.Contains("/cage"));
+        return (codes, await b.Get(StandIn.IssuerPath + "/mfa/reenroll/recovery-codes"), await b.Hub());
+    }
 
-    [Fact(Skip = "PENDING OQ-SSE2-54: location-user recovery sign-in not built at 8aab98a (SI1 A36, Gaps). Assert: after re-enrol Location = /l/{own slug}, never /admin, never another location's slug")]
-    public void D93_05_location_user_after_reenrolment_goes_to_own_slug_never_admin() { }
+    [Fact]
+    public async Task D93_04_admin_after_reenrolment_goes_to_admin_never_location()
+    {
+        await StandInHandoffTests.Ready(); await StandIn.Reset();
+        using var b = new Browser();
+        var p = await b.AdminSignIn("partner_admin", recoveryIndex: 0);
+        Assert.True(p.Status is HttpStatusCode.Redirect or HttpStatusCode.OK, $"{p.Status}");
+        var (codes, again, apps) = await Reenrol(b, "/admin");
+        Assert.DoesNotMatch(StandIn.IssuerPath + "/l/", string.Join(" ", Regex.Matches(codes.Body, "href=\"([^\"]+)\"").Select(m => m.Groups[1].Value)));
+        Assert.Equal(HttpStatusCode.NotFound, again.Status);       // codes shown once
+        Assert.NotEqual(HttpStatusCode.OK, apps.Status);           // DEC-087: session ended
+    }
+
+    [Fact]
+    public async Task D93_05_location_user_after_reenrolment_goes_to_own_slug_never_admin()
+    {
+        await StandInHandoffTests.Ready(); await StandIn.Reset();
+        using var b = new Browser();
+        b.SetCookie("standin_pc", await StandIn.PutPc("standin-sse2-d93", "valid", "nevada-main"));
+        await b.OpenSignIn("nevada-main");
+        var p = await b.SubmitPassword("nevada_db", StandIn.Password("nevada_db"));
+        Assert.Equal("screen-totp", p.TestId);
+        await b.Post(StandIn.IssuerPath + "/l/nevada-main/totp", new Dictionary<string, string> { ["recovery_code"] = StandIn.RecoveryCode("nevada_db", 0) });
+        var (codes, again, apps) = await Reenrol(b, "/l/nevada-main");
+        var links = string.Join(" ", Regex.Matches(codes.Body, "href=\"([^\"]+)\"").Select(m => m.Groups[1].Value));
+        Assert.DoesNotContain(StandIn.IssuerPath + "/admin", links);
+        Assert.DoesNotContain("/l/pci-main", links);
+        Assert.Equal(HttpStatusCode.NotFound, again.Status);
+        Assert.NotEqual(HttpStatusCode.OK, apps.Status);
+    }
 }

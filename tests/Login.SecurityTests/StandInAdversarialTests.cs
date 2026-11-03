@@ -7,7 +7,7 @@ using Cachd.Login.TestKit;
 namespace Cachd.Login.SecurityTests;
 
 /// <summary>
-/// SEC70-79: adversarial probes against the stand-in (SSE2, Mon Nov 2 2026 ~9:30-10:30 PM PT, target feat/si1-standin 8aab98a (rerun 9:50 PM PT; first run ed0ecc1)).
+/// SEC70-79: adversarial probes against the stand-in (SSE2, Mon Nov 2 2026 ~9:30-10:30 PM PT, target feat/si1-standin 10a1ca4 [TL 9:50 PM PT] (earlier: 8aab98a, ed0ecc1)).
 /// Every assertion cites contract-v1 (e363090) or the LD line it rests on. Where neither states a behaviour,
 /// the probe records what it saw and skips with an OQ-SSE2-5x instead of asserting a guess.
 /// Stand-in-only: uses /_standin/* (reset, clock, totp, audit).
@@ -24,6 +24,7 @@ public class StandInAdversarialTests
         new() { ["grant_type"] = "authorization_code", ["code"] = code, ["redirect_uri"] = redirect, ["code_verifier"] = verifier };
     static Dictionary<string, string> RefreshForm(string rt) => new() { ["grant_type"] = "refresh_token", ["refresh_token"] = rt };
     static string Err(JsonObject? b) => (string?)b?["error"] ?? "<none>";
+    static void Log(string m) => TestContext.Current.TestOutputHelper?.WriteLine(m);
     const string Inactive = "200 {\"active\":false}"; // contract 10.1: exactly {"active":false}, no other member
 
     // ---------- SEC70: authorization code is single-use and short-lived ----------
@@ -286,24 +287,47 @@ public class StandInAdversarialTests
         TestContext.Current.TestOutputHelper?.WriteLine("access token from rotated chain after reuse: " + await StandIn.IntrospectRaw("backoffice_stub", at1));
     }
 
-    /// 7.2 says reuse AFTER the leeway is refused; it does not say what reuse WITHIN the leeway returns
-    /// (the same new token, or a fresh pair each time). The stand-in mints a fresh live pair per replay (OAuth.cs, RotatedAt ??= now).
+    /// OQ-52 (TL 9:42 PM PT, SSE 10a1ca4 RefreshRec.Successor): a replay inside the 30 s leeway returns the SAME successor pair,
+    /// mints nothing and emits no event; after the leeway it is reuse (SEC75). Chains: rt0 -> rt1 -> rt2, replays at each link.
     [Fact]
-    public async Task SEC75b_refresh_replay_within_leeway_probe()
+    public async Task SEC75b_refresh_replay_within_leeway_returns_same_pair_and_mints_nothing()
     {
         await Ready();
         using var b = new Browser();
         var (tok, _, _) = await b.SignInAndGetTokens();
         var rt0 = (string)tok["refresh_token"]!;
-        var minted = new List<string>();
+        var n0 = await StandIn.AuditNext();
+        var (s1, r1, _) = await StandIn.Token("backoffice_stub", RefreshForm(rt0));
+        Assert.Equal(HttpStatusCode.OK, s1);
+        var rt1 = (string)r1!["refresh_token"]!; var at1 = (string)r1["access_token"]!;
+        var replays = new List<JsonObject>();
         for (var i = 0; i < 3; i++)
         {
+            await StandIn.Advance(i == 2 ? 29 : 0); // last replay just inside 30 s
             var (s, r, _) = await StandIn.Token("backoffice_stub", RefreshForm(rt0));
-            minted.Add($"{(int)s} {(r?["refresh_token"] is null ? Err(r) : "rt#" + ((string)r["refresh_token"]!).GetHashCode())}");
+            Assert.Equal(HttpStatusCode.OK, s);
+            replays.Add(r!);
         }
-        var live = 0;
-        foreach (var m in minted) if (m.StartsWith("200")) live++;
-        Assert.Skip($"PENDING OQ-SSE2-52: 7.2 does not define replay within the 30 s leeway. Observed 3 replays of one refresh token within 0 s: [{string.Join(", ", minted)}] -> {live} distinct live chains.");
+        Assert.All(replays, r => { Assert.Equal(rt1, (string)r["refresh_token"]!); Assert.Equal(at1, (string)r["access_token"]!); });
+        Assert.Empty(await StandIn.AuditSince(n0)); // no reuse_detected, nothing else
+        // chain continues from the one successor: rt1 -> rt2, and rt1 replay inside 30 s returns rt2
+        var (s2, r2, _) = await StandIn.Token("backoffice_stub", RefreshForm(rt1));
+        Assert.Equal(HttpStatusCode.OK, s2);
+        var rt2 = (string)r2!["refresh_token"]!;
+        Assert.NotEqual(rt1, rt2);
+        var (s2b, r2b, _) = await StandIn.Token("backoffice_stub", RefreshForm(rt1));
+        Assert.Equal($"200 {rt2}", $"{(int)s2b} {(string?)r2b?["refresh_token"]}");
+        // rt0 replay now (29 s after its rotation, but its successor rt1 was rotated too): returns still the cached rt1 body?
+        var (s0, r0, _) = await StandIn.Token("backoffice_stub", RefreshForm(rt0));
+        Log($"SEC75b rt0 replay after rt1 rotated (29 s): {(int)s0} {(r0?["refresh_token"] is null ? Err(r0) : ((string)r0["refresh_token"]! == rt1 ? "rt1 (stale cached successor)" : "other"))}");
+        // after the leeway: rt0 -> reuse_detected, whole family revoked (rt2 dead)
+        await StandIn.Advance(31);
+        var n1 = await StandIn.AuditNext();
+        var (s3, r3, _) = await StandIn.Token("backoffice_stub", RefreshForm(rt0));
+        Assert.Equal("400 invalid_grant", $"{(int)s3} {Err(r3)}");
+        var (s4, r4, _) = await StandIn.Token("backoffice_stub", RefreshForm(rt2));
+        Assert.Equal("400 invalid_grant", $"{(int)s4} {Err(r4)}");
+        Assert.Contains(await StandIn.AuditSince(n1), e => (string?)e["event_type"] == "auth.refresh.reuse_detected");
     }
 
     // ---------- SEC76/77: TOTP step (LD L331, L335; contract 6.3 lockout) ----------
@@ -323,6 +347,47 @@ public class StandInAdversarialTests
         var replay = await c.SubmitTotp(code); // same time step, same code
         Assert.True(replay.TestId == "screen-totp" && c.Cookie("standin_session") is null,
             $"replayed TOTP code accepted: {replay.TestId}, session cookie set={c.Cookie("standin_session") is not null}");
+        var (st, next) = await StandIn.TotpRaw("cashier_db");
+        Log($"SEC76 control /totp after use: {(int)st} {(next == code ? "SAME code (bad)" : "other step")}");
+        Assert.NotEqual(code, next);
+    }
+
+    static async Task<(Browser B, Page P)> AdminPw(string user, string? pw = null)
+    {
+        var b = new Browser();
+        await b.Get(StandIn.IssuerPath + "/admin");
+        var p = await b.Post(StandIn.IssuerPath + "/admin", new Dictionary<string, string> { ["username"] = user, ["password"] = pw ?? StandIn.Password(user) });
+        return (b, p);
+    }
+    static Task<Page> AdminMfa(Browser b, string code) => b.Post(StandIn.IssuerPath + "/admin/mfa", new Dictionary<string, string> { ["totp_code"] = code });
+
+    [Fact] // SEC76 on /admin/mfa (TL 9:50 PM PT "SEC76 TOTP replay ... including /admin")
+    public async Task SEC76b_admin_totp_code_is_single_use()
+    {
+        await Ready();
+        var (a, pa) = await AdminPw("partner_admin"); using var _a = a;
+        Assert.Contains("field-admin-totp", pa.Body);
+        var code = await StandIn.Totp("partner_admin");
+        var n0 = await StandIn.AuditNext();
+        await AdminMfa(a, code);
+        Assert.NotNull(a.Cookie("standin_session"));
+        Assert.Single(await StandIn.AuditSince(n0), e => (string?)e["event_type"] == "auth.login.succeeded");
+        var (c, pc) = await AdminPw("partner_admin"); using var _c = c;
+        Assert.Contains("field-admin-totp", pc.Body);
+        var n1 = await StandIn.AuditNext();
+        var replay = await AdminMfa(c, code);
+        Log($"SEC76b admin replay: {(int)replay.Status} testid={replay.TestId} error=[{replay.ErrorText}]");
+        Assert.Null(c.Cookie("standin_session"));
+        Assert.Equal("page-admin-sign-in", replay.TestId);
+        Assert.NotNull(replay.ErrorText);
+        Assert.DoesNotContain(await StandIn.AuditSince(n1), e => (string?)e["event_type"] == "auth.login.succeeded");
+        // the location step shares the user's last step: an admin's spent code is spent everywhere it applies (one counter per user)
+        var (st, next) = await StandIn.TotpRaw("partner_admin");
+        Assert.NotEqual(code, next);
+        // and the next unused code still works (positive control)
+        Assert.Equal(HttpStatusCode.OK, st);
+        await AdminMfa(c, next!);
+        Assert.NotNull(c.Cookie("standin_session"));
     }
 
     [Fact] // LD L335 "lockoutOnFailure: true on password, TOTP and recovery-code steps"; contract 6.3 threshold 10 (PCI)
@@ -337,6 +402,80 @@ public class StandInAdversarialTests
         for (var i = 0; i < 11; i++) await a.SubmitTotp(wrong);
         var p = await a.SubmitTotp(await StandIn.Totp("cashier_db"));
         Assert.True(a.Cookie("standin_session") is null, $"after 11 wrong TOTP codes the right code still signs in ({p.TestId}); no lockout/attempt limit on the TOTP step");
+        using var d = new Browser(); // right password + right code in a fresh browser: still locked
+        await d.SignIn("cashier_db");
+        Assert.Null(d.Cookie("standin_session"));
+    }
+
+    static string Wrong(string right) => ((int.Parse(right) + 500000) % 1000000).ToString("D6");
+    static int Locked(List<JsonObject> ev) => ev.Count(e => (string?)e["event_type"] == "auth.account.locked");
+
+    [Fact] // SSE A53 (TL 9:42 PM): a right password does not reset the counter; 3 x (right pw + wrong TOTP) locks Nevada (MICS preset 3)
+    public async Task SEC77b_nevada_right_password_wrong_totp_three_times_locks()
+    {
+        await Ready();
+        var n0 = await StandIn.AuditNext();
+        for (var i = 0; i < 3; i++)
+        {
+            using var b = new Browser();
+            await b.OpenSignIn("nevada-main");
+            Assert.Equal("screen-totp", (await b.SubmitPassword("nevada_db", StandIn.Password("nevada_db"))).TestId);
+            var (_, right) = await StandIn.TotpRaw("nevada_db");
+            await b.SubmitTotp(Wrong(right ?? "000000"));
+            Log($"SEC77b round {i + 1}: locked events so far {Locked(await StandIn.AuditSince(n0))}");
+        }
+        Assert.Equal(1, Locked(await StandIn.AuditSince(n0)));
+        using var c = new Browser();
+        var p = await c.SignIn("nevada_db");
+        Log($"SEC77b after lock, full right sign-in: testid={p.TestId}");
+        Assert.Null(c.Cookie("standin_session"));
+        Assert.NotEqual("screen-hub", p.TestId);
+    }
+
+    [Fact] // SEC77 on /admin (TL 9:50 PM PT "SEC77 lockout including /admin"); SSE A54 limit = the admin's partner preset (partner_admin: PCI 10)
+    public async Task SEC77c_admin_lockout_password_and_totp()
+    {
+        await Ready();
+        var n0 = await StandIn.AuditNext();
+        // 5 wrong passwords + 5 (right pw + wrong TOTP) = 10 = PCI preset -> locked on the 10th
+        for (var i = 0; i < 5; i++) { var (b, _) = await AdminPw("partner_admin", "Wrong-Password-1x"); b.Dispose(); }
+        Assert.Equal(0, Locked(await StandIn.AuditSince(n0)));
+        for (var i = 0; i < 5; i++)
+        {
+            var (b, p) = await AdminPw("partner_admin"); using var _ = b;
+            Assert.Contains("field-admin-totp", p.Body);
+            var (_, right) = await StandIn.TotpRaw("partner_admin");
+            await AdminMfa(b, Wrong(right ?? "000000"));
+        }
+        var ev = await StandIn.AuditSince(n0);
+        var locked = ev.Where(e => (string?)e["event_type"] == "auth.account.locked").ToList();
+        Log("SEC77c locked events: " + string.Join(" | ", locked.Select(e => e.ToJsonString())));
+        Assert.Single(locked);
+        Assert.Equal("partner", (string?)locked[0]["admin_type"]);
+        Assert.Null(AuditSchema.Validate(locked[0]));
+        // locked: right password + right TOTP refused, at the password step and at the mfa step
+        var (c, pc) = await AdminPw("partner_admin"); using var _c = c;
+        Log($"SEC77c locked, right password: testid={pc.TestId} error=[{pc.ErrorText}] mfa-form={pc.Body.Contains("field-admin-totp")}");
+        Assert.DoesNotContain("field-admin-totp", pc.Body);
+        Assert.Null(c.Cookie("standin_session"));
+        Assert.Equal(1, Locked(await StandIn.AuditSince(n0))); // no second locked event
+        // generic error: same text as an unknown admin (no enumeration of the locked state)
+        var (u, pu) = await AdminPw("ghost_admin", "Wrong-Password-1x"); using var _u = u;
+        Assert.NotNull(pc.ErrorText);
+        Assert.Equal(pu.ErrorText, pc.ErrorText);
+    }
+
+    [Fact] // SEC77 on /admin: an mfa-stage tx opened before the lock cannot finish after it
+    public async Task SEC77d_admin_mfa_tx_opened_before_lock_is_refused_after_lock()
+    {
+        await Ready();
+        var (early, pe) = await AdminPw("partner_admin"); using var _e = early;
+        Assert.Contains("field-admin-totp", pe.Body);
+        for (var i = 0; i < 10; i++) { var (b, _) = await AdminPw("partner_admin", "Wrong-Password-1x"); b.Dispose(); }
+        var (st, code) = await StandIn.TotpRaw("partner_admin");
+        Assert.Equal(HttpStatusCode.OK, st);
+        await AdminMfa(early, code!);
+        Assert.Null(early.Cookie("standin_session"));
     }
 
     // ---------- SEC78: audit events vs audit-events.schema.json; no secrets ----------
@@ -344,7 +483,7 @@ public class StandInAdversarialTests
     public async Task SEC78_every_emitted_audit_event_validates_and_carries_no_secret()
     {
         await Ready();
-        var secrets = new List<string> { StandIn.Password("cashier_db"), StandIn.Password("no_role_user"), (string)StandIn.Client("backoffice_stub")["secret"]! };
+        var secrets = new List<string> { StandIn.Password("cashier_db"), StandIn.Password("no_role_user"), StandIn.Secret("backoffice_stub") };
         using (var b = new Browser())
         {
             var (tok, _, _) = await b.SignInAndGetTokens();
@@ -413,27 +552,41 @@ public class StandInAdversarialTests
         Assert.All(rows, r => Assert.EndsWith(": 404", r));
     }
 
-    // ---------- SEC79c: timing of unknown vs known username (OQ-SSE2-11 threshold unruled) ----------
+    // ---------- SEC79c: timing of unknown vs known username (OQ-SSE2-11; SSE 10a1ca4: dummy PBKDF2 for unknown users) ----------
+    // Criterion: SSE's stated test (SI1 log TL 9:42 PM: "median timing unknown vs known-wrong within 0.5x-2x"). The TL has not set a
+    // stricter threshold; the diff and Mann-Whitney p are logged for the TL.
     [Fact]
-    public async Task SEC79c_username_timing_probe()
+    public async Task SEC79c_username_timing_unknown_vs_known_within_half_to_double()
     {
         await Ready();
-        async Task<double> One(string user)
+        async Task<double> One(string slug, string user)
         {
             using var b = new Browser();
-            await b.OpenSignIn("pci-main");
+            await b.OpenSignIn(slug);
             var sw = System.Diagnostics.Stopwatch.StartNew();
             await b.SubmitPassword(user, "Wrong-Password-1x", callAgent: false);
             return sw.Elapsed.TotalMilliseconds;
         }
-        for (var i = 0; i < 5; i++) { await One("cashier_db"); await One("ghost_user"); }
-        var known = new List<double>(); var unknown = new List<double>();
+        async Task<double> Admin(string user)
+        {
+            using var b = new Browser();
+            await b.Get(StandIn.IssuerPath + "/admin");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            await b.Post(StandIn.IssuerPath + "/admin", new Dictionary<string, string> { ["username"] = user, ["password"] = "Wrong-Password-1x" });
+            return sw.Elapsed.TotalMilliseconds;
+        }
+        for (var i = 0; i < 5; i++) { await One("pci-main", "cashier_db"); await One("pci-main", "ghost_user"); await Admin("partner_admin"); await Admin("ghost_admin"); }
+        var known = new List<double>(); var unknown = new List<double>(); var ak = new List<double>(); var au = new List<double>();
         for (var i = 0; i < 40; i++)
         {
             await StandIn.Reset(); // lockout never triggers
-            known.Add(await One("cashier_db")); unknown.Add(await One("ghost_user_" + i));
+            known.Add(await One("pci-main", "cashier_db")); unknown.Add(await One("pci-main", "ghost_user_" + i));
+            ak.Add(await Admin("partner_admin")); au.Add(await Admin("ghost_admin_" + i));
         }
-        var mk = Timing.Median(known); var mu = Timing.Median(unknown);
-        Assert.Skip($"PENDING OQ-SSE2-11 (threshold unruled). Measured n=40: median known-user wrong password {mk:F1} ms vs unknown user {mu:F1} ms (diff {mk - mu:F1} ms; Mann-Whitney p={Timing.MannWhitneyP(known, unknown):G3}).");
+        var mk = Timing.Median(known); var mu = Timing.Median(unknown); var mak = Timing.Median(ak); var mau = Timing.Median(au);
+        Log($"SEC79c n=40 location: known-wrong {mk:F1} ms, unknown {mu:F1} ms, ratio {mu / mk:F2}, p={Timing.MannWhitneyP(known, unknown):G3}");
+        Log($"SEC79c n=40 /admin:   known-wrong {mak:F1} ms, unknown {mau:F1} ms, ratio {mau / mak:F2}, p={Timing.MannWhitneyP(ak, au):G3}");
+        Assert.InRange(mu / mk, 0.5, 2.0);
+        Assert.InRange(mau / mak, 0.5, 2.0);
     }
 }

@@ -35,19 +35,40 @@ public class DiscoveryAndKeysTests
 
     static string[] Arr(JsonElement d, string p) => d.GetProperty(p).EnumerateArray().Select(e => e.GetString()!).ToArray();
 
-    [Fact, Trait("check", "7")]
-    public async Task CT01_discovery_matches_plan_exactly()
+    static readonly string[] Required = { "issuer", "authorization_endpoint", "token_endpoint", "revocation_endpoint", "end_session_endpoint", "jwks_uri" };
+    // back-channel keys SI1 F12 (SSE 10a1ca4) drops from the front copy; contract 2.1/2.9 says identical copies
+    static readonly string[] BackChannel = { "token_endpoint", "revocation_endpoint", "token_endpoint_auth_methods_supported" };
+    static void CheckPlan(JsonElement d)
     {
-        NeedLive();
-        var d = await Discovery();
-        foreach (var p in new[] { "issuer", "authorization_endpoint", "token_endpoint", "revocation_endpoint", "end_session_endpoint", "jwks_uri" })
-            Assert.True(d.TryGetProperty(p, out _), $"discovery lacks {p}");
+        foreach (var p in Required) Assert.True(d.TryGetProperty(p, out _), $"discovery lacks {p}");
         Assert.Equal(new[] { "code" }, Arr(d, "response_types_supported"));
         Assert.Equal(new[] { "authorization_code", "refresh_token" }, Arr(d, "grant_types_supported").Order().ToArray());
         Assert.Equal(new[] { "S256" }, Arr(d, "code_challenge_methods_supported"));
         Assert.Equal(new[] { "client_secret_basic", "private_key_jwt" }, Arr(d, "token_endpoint_auth_methods_supported").Order().ToArray());
         Assert.Equal(new[] { "RS256" }, Arr(d, "id_token_signing_alg_values_supported"));
         Assert.False(d.TryGetProperty("userinfo_endpoint", out _), "userinfo is not in v1");
+    }
+
+    [Fact, Trait("check", "7")]
+    public async Task CT01_discovery_matches_plan_exactly()
+    {
+        NeedLive();
+        var d = await Discovery();
+        var missing = BackChannel.Where(k => !d.TryGetProperty(k, out _)).ToArray();
+        if (missing.Length > 0 && Target.IsStandIn && Target.BackUrl is not null)
+        {
+            // TL 9:50 PM PT: "Discovery 404 endpoints: v1.1 for SA (discovery returning to identical copies) - mark info/deferred, not a failure."
+            // The front copy may omit the back-channel keys; everything else, and the full back copy, must still match the plan.
+            foreach (var p in Required.Except(BackChannel)) Assert.True(d.TryGetProperty(p, out _), $"front discovery lacks {p}");
+            Assert.Equal(new[] { "code" }, Arr(d, "response_types_supported"));
+            Assert.Equal(new[] { "S256" }, Arr(d, "code_challenge_methods_supported"));
+            Assert.False(d.TryGetProperty("userinfo_endpoint", out _), "userinfo is not in v1");
+            var back = await GetJson(Target.BackUrl + "/standin/.well-known/openid-configuration");
+            CheckPlan(back);
+            Assert.Equal(d.GetProperty("issuer").GetString(), back.GetProperty("issuer").GetString());
+            Assert.Skip($"DEFERRED v1.1 SA (TL 9:50 PM PT, info): front discovery omits [{string.Join(", ", missing)}] (SI1 F12, not identical copies per contract 2.1/2.9); front non-back-channel keys and full back copy match the plan");
+        }
+        CheckPlan(d);
     }
 
     [Fact, Trait("check", "11")]

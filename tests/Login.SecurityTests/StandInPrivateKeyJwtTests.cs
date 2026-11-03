@@ -135,7 +135,7 @@ public class StandInPrivateKeyJwtTests
     public async Task PKJ10_basic_plus_assertion_is_refused()
     {
         var now = await Ready();
-        Assert.Equal(Bad, await Probe(StandIn.Assertion("backoffice_stub", nowUnix: now), basic: ("backoffice_stub", (string)StandIn.Client("backoffice_stub")["secret"]!)));
+        Assert.Equal(Bad, await Probe(StandIn.Assertion("backoffice_stub", nowUnix: now), basic: ("backoffice_stub", StandIn.Secret("backoffice_stub"))));
     }
 
     [Fact] // 7.6 client_assertion_type must be jwt-bearer

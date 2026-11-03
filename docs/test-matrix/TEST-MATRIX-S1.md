@@ -215,3 +215,46 @@ Command: `. /tmp/sse2-work/env.sh && STANDIN_PIDFILE=/tmp/sse2-si1-8aab98a/pid t
 - **OQ-SSE2-56**: hub_launch presented to another client: "ignore" (5.7, A41: still usable) vs the TL's "refused". Must it be consumed?
 - **OQ-SSE2-57**: what is the ui-driver id for the hand-off interstitial (5.8)? There is none in ui-driver.md or SSE code (A38).
 - **OQ-SSE2-58**: 5.8(c) "strict CSP" vs `script-src 'self' 'unsafe-inline'` on every page. Also X-Frame-Options SAMEORIGIN on some pages next to frame-ancestors 'none'.
+
+### Status at feat/si1-standin 3feb66c (si1-freeze), SSE2 Mon Nov 2, 10:25 PM PT
+Rulings: DEC-096 (OQ-56), DEC-097 (OQ-55), DEC-098 (OQ-57), DEC-099 (fixture secrets), DEC-100 (OQ-58), DEC-101 (discovery 404s). See docs/BUILD-LOG.md.
+
+| Id | Rule | Status at 3feb66c |
+|---|---|---|
+| HO03b / HO03c | hub_launch 60001 ms refused / exactly 60000 ms accepted (frozen ms clock, DEC-097) | PASS / PASS |
+| HO18 / HO18b / HO18c | auth age 300001 ms refused / 299999 and exactly 300000 ms accepted | PASS |
+| HO06 | hub_launch at another client is ignored there and burned (DEC-096) | PASS |
+| HO17 | app log has no hub_launch, code, code_challenge, state | PASS (was FAIL at 8aab98a) |
+| HO20 / HO22 | CSP on every page; no 'unsafe-inline'; XFO DENY or absent (DEC-100) | PASS (HO22 ×15) |
+| HO21 | interstitial ui-driver id | PENDING (DEC-098, v1.1 UX+SA) |
+| SEC76 / SEC76b | TOTP single use, location and /admin | PASS |
+| SEC77 / b / c / d | TOTP lockout; nevada 3 wrong locks; admin lockout; tx opened before lock refused | PASS |
+| D93_01–05 | admin/location separation; after re-enrol Continue → /admin or /l/{own slug}, codes once (2nd GET 404), session ended | PASS (D93_04/05 enabled at 3feb66c; OQ-SSE2-54 closed) |
+| CT01 | discovery front == plan | PASS |
+| FS05 | fixture secrets WARN only inside eb0fa5d..c4da996, FAIL outside (96a629a cases, negative controls) | PASS |
+| FS06 | probe: secret hidden in the script's own path | PASS (wrapper catches it; SSE script alone skips it, SSE2-F-FS1 minor) |
+| UI01–05 | Playwright: sign-in, TOTP, hub, hand-off, wrong password, remote_session 8A, agent down, /admin, no framing, no CSP violations | 14/14 PASS |
+
+Focus probes (tests/e2e/sse2-probes, black-box, 135/147 + cap isolation 11/14):
+| Id | Rule | Status |
+|---|---|---|
+| PR-C1–C8 | cage payment/id_scan/print fail closed: missing, empty, alg none/HS256/RS256/es256, jwk, crit, bad sig, tampered, garbage, agent modes, consumed/cross-purpose/cross-session nonce, nonce age 60000 ok / 60001 refused, schema-valid attestation_invalid event | PASS |
+| PR-C0 | cage nonce matches cage_nonce_response `{22}` | **FAIL** minor (43 chars), OQ-SSE2-63 |
+| PR-C9 | contract-shaped JSON body accepted, 200 {"ok":true} (6.9) | **FAIL** major, OQ-SSE2-61 |
+| PR-C10 | remote_session=true attestation refused for cage actions | **FAIL** major pending ruling, OQ-SSE2-62 |
+| PR-K | cap not_admin, wrong_partner, out_of_range (≤15 min, 0), negatives/malformed 400 | PASS |
+| PR-K-DoS | huge cap does not break sessions | **FAIL** major: ≥2,914,000 days → every session of that partner 500, OQ-SSE2-60 |
+| PR-K-val | non-admin malformed value → not_admin event | info: 400, no event (validation first), OQ-SSE2-65 |
+| PR-R0–R7, RL1–2 | re-enrol D93_04/05, DEC-087 revocation, 5/15 min rate limit → 429 rate_limited | PASS |
+| PR-EO | mfa.succeeded immediately before login.succeeded (location, partner, super) | PASS |
+| PR-NS1–3 | no secret in standin.log or in any audit event (496 values, 153 events) | PASS |
+| PR-TXL | pre-MFA tx has a lifetime | minor: none (TOTP 24 h later works), OQ-SSE2-64 |
+| PR-ADM | /admin error has error-area testid | minor FAIL |
+
+### New open questions (for the TL)
+- **OQ-SSE2-60**: what is the session-cap upper bound? Mohanraj left the range undefined; at 3feb66c no upper bound means a cap ≥ ~7,980 years overflows DateTime and 500s every session of the partner.
+- **OQ-SSE2-61**: must the S1 cage stub accept the 6.9 JSON body and return 200 {"ok":true}, or are form-only and 501 accepted stand-in limits?
+- **OQ-SSE2-62**: must a cage action refuse an attestation with remote_session=true (as 5.2 does for the hand-off)?
+- **OQ-SSE2-63**: cage nonce length: schema says 22 chars (128-bit), stub gives 43 (256-bit). Change the schema or the stub?
+- **OQ-SSE2-64**: lifetime of a password-verified, pre-MFA sign-in transaction?
+- **OQ-SSE2-65**: should session-cap authorize before validating the value (so a non-admin always gets not_admin + an event)?
