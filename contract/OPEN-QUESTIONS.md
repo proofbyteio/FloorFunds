@@ -173,6 +173,13 @@ All rows [TL Decision 2026-11-02 8:26 PM]. Schema cases: `check_schemas.py` (one
 | Item | State | Who | Where |
 |---|---|---|---|
 | Re-enrolment paths | Renamed `/mfa/reenroll`, `/mfa/reenroll/recovery-codes` (GET, POST `/mfa/reenroll`); still Proposal until the SA records them in LD | SA | contract 7.8 |
-| `recovery_codes_issued` `session_kind` | Now **required** (`recovery_reenroll`) [TL Decision 2026-11-02 8:41 PM, SA ratification]; supersedes follow-up 1 (8:39 PM) | - | contract 8.14 |
-| TOTP rate limit on POST `/mfa/reenroll` | **Open:** the contract states no TOTP rate-limit value (6.3 is the password lockout preset); "existing TOTP rate limit" is referenced, not defined. TL / SA to point to the source value | TL / SA | contract 7.8 |
+| `recovery_codes_issued` `session_kind` | Required, `normal` (first enrolment) or `recovery_reenroll` (re-enrol path) [TL Decision 2026-11-02 8:42 PM]; was const `recovery_reenroll` at 8:41 PM, which [TL Decision 2026-11-02 8:41 PM, SA ratification]; supersedes follow-up 1 (8:39 PM) | - | contract 8.14 |
+| TOTP rate limit on POST `/mfa/reenroll` | **Moved to post-freeze ([TL Decision 2026-11-02 8:42 PM], row below).** Was: the contract states no TOTP rate-limit value (6.3 is the password lockout preset); "existing TOTP rate limit" is referenced, not defined. TL / SA to point to the source value | TL / SA | contract 7.8 |
+
+## [TL Decision 2026-11-02 8:42 PM]: post-freeze items
+
+| Item | State | Who | Where |
+|---|---|---|---|
+| TOTP rate-limit value and source | **Post-freeze, open:** SA to give the value and its source. Meanwhile the server must still rate-limit POST `/mfa/reenroll` | SA | contract 7.8 |
+| ui-driver re-enrolment screen | **Post-freeze, v1.1:** test ids for the `/mfa/reenroll` pages | SSE / UX | ui-driver |
 

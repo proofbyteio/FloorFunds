@@ -142,3 +142,9 @@ Note: line numbers in each entry refer to the source md5 named in that entry (or
 - Successful POST: auth.mfa.reenrolled + auth.mfa.recovery_codes_issued (count only); wrong totp_code: auth.mfa.failed step=reenroll. All three require session_kind=recovery_reenroll.
 - Second GET recovery-codes → 404; codes never logged. Failed POST: 200 re-render, generic error (error-area), no echo, no-store; existing TOTP rate limit applies (value not in contract: OPEN item).
 - check_schemas.py: 147 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097.
+
+## v1-d4 follow-up 11: [TL Decision 2026-11-02 8:42 PM] pre-freeze blocker (written 8:43 PM PT; same commit, hash/time in git log)
+- auth.mfa.recovery_codes_issued session_kind: const recovery_reenroll → enum [normal, recovery_reenroll], still required (normal at first enrolment). Contract 7.8, 8.14, OPEN-QUESTIONS updated.
+- Cases: normal (first enrolment) now positive; missing still negative; new negative for another value.
+- Post-freeze OPEN-QUESTIONS items: TOTP rate-limit value/source → SA (server must still limit POST /mfa/reenroll); ui-driver re-enrolment screen → v1.1.
+- check_schemas.py: 148 PASS, 0 FAIL, exit 0. allowlist.db md5 e5384097.

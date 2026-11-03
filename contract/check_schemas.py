@@ -237,7 +237,8 @@ exp("config change denied missing setting", val(a,dict(CD(),target={"type":"conf
 # [TL Decision 2026-11-02 8:41 PM, SA ratification] re-enrolment events carry session_kind
 MF=lambda det={"method":"totp","step":"reenroll"},**kw: env("auth.mfa.failed","failure",det,target=U,**kw)
 exp("codes_issued session_kind missing", val(a,{k:v for k,v in CI().items() if k!="session_kind"}), True)
-exp("codes_issued session_kind normal", val(a,CI(session_kind="normal")), True)
+exp("codes_issued first enrolment session_kind normal ok", val(a,CI(session_kind="normal")), False)  # [TL Decision 2026-11-02 8:42 PM]
+exp("codes_issued session_kind other value", val(a,CI(session_kind="recovery")), True)
 exp("reenroll mfa.failed ok", val(a,MF(session_kind="recovery_reenroll")), False)
 exp("reenroll mfa.failed session_kind missing", val(a,MF()), True)
 exp("reenroll mfa.failed session_kind normal", val(a,MF(session_kind="normal")), True)
