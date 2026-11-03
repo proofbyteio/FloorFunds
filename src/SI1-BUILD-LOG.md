@@ -15,3 +15,19 @@ Append-only. Branch `feat/si1-standin`, based on 589fefd (the status commit; con
 - Why: PLAN §3.5 row 2; standin-control 1.2; PLAN S1 check 11.
 - Evidence (env -i, port 18080, timeout 3 s): Production → rc 2 "must be Development"; no STANDIN_ALLOW → rc 2; AWS_EXECUTION_ENV → rc 2; StandIn__BindHost=0.0.0.0 → rc 2; Development + STANDIN_ALLOW=1 → listening on 127.0.0.1:18080 (rc 124 = killed by timeout, i.e. it ran).
 - [ASSUMPTION A3] Loopback only. The PLAN also allows "the box's private network", which isn't needed here.
+
+## SI1-3 front, back and control listeners (8:56 PM PT)
+- What: Kestrel is configured explicitly, so ASPNETCORE_URLS is ignored. It runs three 127.0.0.1 listeners: front 18080, back 18081 and control 18082 (config StandIn:FrontPort/BackPort/ControlPort). The listener is chosen by the connection's local port, never by the Host header.
+  - Front: 404 for `/_standin*` and for token/revoke/introspect.
+  - Back: only token, revoke, introspect, discovery and JWKS; everything else 404.
+  - Control: every response is no-store; a non-loopback remote gets 403; only `/_standin/*`.
+  - The issuer defaults to http://localhost:{front}/standin. Start is refused if the issuer path lacks /standin.
+- Why: contract 1.2-1.5 and 2.9; standin-control 1.1 and 1.3-1.5.
+- Evidence (curl):
+  - front /_standin/reset → 404;
+  - front /standin/connect/token → 404;
+  - back /standin/foo → 404;
+  - control /other → 404 no-store;
+  - the log shows all three listening on 127.0.0.1.
+- Not proven: the 403 for a non-loopback caller. Because every socket binds to loopback, no such caller can reach it from the box; it is defence in depth. A unit test belongs to SSE2.
+- Scripts (outside the repo): /tmp/sse-d0/run-si1.sh and stop-si1.sh. stop-si1 kills only the PID that run-si1 started.
