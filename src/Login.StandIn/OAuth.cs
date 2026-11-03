@@ -243,7 +243,7 @@ public static class OAuth
                     var calc = Base64UrlEncoder.Encode(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
                     if (verifier.Length is < 43 or > 128 || !CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(calc), Encoding.ASCII.GetBytes(g.Challenge)))
                         return TokenError(c, "invalid_grant");
-                    if (!st.Auth.Sessions.TryGetValue(g.Sid, out s) || s.Revoked || now >= s.AuthTime + SessionCap.For(st, s)) return TokenError(c, "invalid_grant");
+                    if (!st.Auth.Sessions.TryGetValue(g.Sid, out s) || s.Revoked || SessionCap.Expired(st, s, now)) return TokenError(c, "invalid_grant");
                     scope = g.Scope; nonce = g.Nonce;
                     fam = new Family { Id = TokenIssuer.NewHandle(), ClientId = client.ClientId, Sid = s.Sid, Scope = scope };
                     st.Auth.Families[fam.Id] = fam; g.FamilyId = fam.Id;
@@ -276,7 +276,7 @@ public static class OAuth
                     }
                     // 7.3 role loss: only this client's family.
                     if (client.AppCode is not null && !user.Roles.Any(r => r.AppCode == client.AppCode)) { st.Auth.RevokeFamily(fam.Id); return TokenError(c, "invalid_grant"); }
-                    if (s.Revoked || now >= s.AuthTime + SessionCap.For(st, s)) { st.Auth.RevokeFamily(fam.Id); return TokenError(c, "invalid_grant"); }
+                    if (s.Revoked || SessionCap.Expired(st, s, now)) { st.Auth.RevokeFamily(fam.Id); return TokenError(c, "invalid_grant"); }
                     // OQ-52: replay inside the 30 s leeway -> the same successor pair, no new chain.
                     if (rr.Successor is { } prev)
                     { c.Response.Headers.CacheControl = "no-store"; c.Response.Headers.Pragma = "no-cache"; return Results.Json(prev.DeepClone()); }

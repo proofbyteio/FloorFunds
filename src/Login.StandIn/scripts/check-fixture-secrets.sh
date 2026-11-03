@@ -1,4 +1,5 @@
 #!/bin/bash
+# FS1 (TL 10:30 PM): this script scans itself too; its patterns are written so they never match their own text.
 # [TL Decision 9:16 PM, B2; extended TL 9:42 PM, F14] Fails if a private key (PEM, or JWK private members for RSA/EC/OKP, incl. OKP "d")
 # or a fixture client secret / recovery code is tracked, in the index or anywhere in git history.
 # Client secrets and recovery codes are generated at stand-in start into <state dir>/fixture-secrets.json (/tmp), never committed.
@@ -33,7 +34,6 @@ n=0
 while IFS= read -r f; do
   n=$((n+1))
   case "$f" in *.pem|*.key|*.p8|*.pfx|*.p12) echo "FAIL key-like file tracked: $f"; bad=1; continue;; esac
-  [ "$f" = "src/Login.StandIn/scripts/check-fixture-secrets.sh" ] && continue
   blob=$(g ls-files -s -- "$f" | awk '{print $2}')
   for r in $(keyhit "$blob" | tr ' ' '_'); do echo "FAIL index ${r//_/ } in: $f"; bad=1; done
   for r in $(sechit "$blob" "$f" | tr ' ' '_'); do echo "FAIL index ${r//_/ } in: $f"; bad=1; done
@@ -46,7 +46,6 @@ if git rev-parse -q --verify "$rev^{commit}" >/dev/null; then
     hn=$((hn+1))
     while read -r mode type blob path; do
       [ "$type" = blob ] || continue
-      [ "$path" = "src/Login.StandIn/scripts/check-fixture-secrets.sh" ] && continue
       case "$path" in *.pem|*.key|*.p8|*.pfx|*.p12) echo "FAIL history key-like file $path @${c:0:7}"; bad=1;; esac
       [ -n "${kc[$blob]+x}" ] || kc[$blob]=$(keyhit "$blob" | tr '\n' ';')
       [ -n "${sc[$blob]+x}" ] || sc[$blob]=$(sechit "$blob" "$path" | tr '\n' ';')

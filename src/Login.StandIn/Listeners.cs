@@ -15,7 +15,9 @@ public static class Listeners
     public static int Base(IConfiguration c) => int.TryParse(Environment.GetEnvironmentVariable("STANDIN_PORT_BASE"), out var b) && b is > 1024 and < 65533 ? b : c.GetValue("StandIn:PortBase", 18080);
     public static StandInPorts Read(IConfiguration c) { var b = Base(c); return new(b, b + 1, b + 2); }
     // Each instance has its own /tmp state dir keyed by the base (client keys, pid).
-    public static string StateDir(StandInPorts p) => $"/tmp/sse-d0/standin-{p.Front}";
+    // G8 (TL 10:30 PM): root from STANDIN_STATE_DIR, default /tmp/sse-d0. [ASSUMPTION A71] must be an absolute path under /tmp (as B2), else default.
+    public static string StateRoot { get { var e = Environment.GetEnvironmentVariable("STANDIN_STATE_DIR"); return e is { Length: > 0 } && Path.IsPathRooted(e) && Path.GetFullPath(e).StartsWith("/tmp/") ? Path.GetFullPath(e).TrimEnd('/') : "/tmp/sse-d0"; } }
+    public static string StateDir(StandInPorts p) => $"{StateRoot}/standin-{p.Front}";
 
     // Every listener binds 127.0.0.1 only. ASPNETCORE_URLS is ignored because Kestrel is configured explicitly.
     public static void Bind(WebApplicationBuilder b, StandInPorts p)

@@ -108,7 +108,7 @@ public static class Handoff
         // Minimal /admin sign-in (UX 05 ids): password, then TOTP or a recovery code. [ASSUMPTION A33] no lockout, attestation or
         // re-enrolment flow; a recovery code makes a recovery_reenroll session with amr [pwd] (5.13). Not a full /admin build.
         string Page(string? err, int step, string t) => $"""
-<div data-testid="error-admin-sign-in" role="alert">{(err is null ? "" : E(err))}</div>
+<div data-testid="error-area" role="alert"><div data-testid="error-admin-sign-in">{(err is null ? "" : E(err))}</div></div>
 """ + (step == 1 ? $"""
 <form method="post" action="{issuerPath}/admin"><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
 <label>Username <input data-testid="field-admin-username" name="username"></label>
@@ -145,7 +145,7 @@ public static class Handoff
                     if (u is not null) SignIn.CountFailure(st, u, SignIn.Limit(st, u, null), now, AdminScope(u), c.Connection.RemoteIpAddress?.ToString(), null);
                     return Admin(c, SignIn.Generic, 1);
                 }
-                var tx = new SignInTx { Id = TokenIssuer.NewHandle(), Slug = "", Purpose = "admin", Stage = "mfa", Username = u!.Username, NonceAt = st.Clock.Now };
+                var tx = new SignInTx { Id = TokenIssuer.NewHandle(), Slug = "", Purpose = "admin", Stage = "mfa", Username = u!.Username, NonceAt = st.Clock.Now, PreMfaAt = now };
                 st.Auth.Tx[tx.Id] = tx; Cookie(c, SignIn.TxCookie, tx.Id);
                 return Admin(c, null, 2);
             }
@@ -160,6 +160,7 @@ public static class Handoff
                 var now = st.Clock.Now;
                 if (!c.Request.Cookies.TryGetValue(SignIn.TxCookie, out var id) || !st.Auth.Tx.TryGetValue(id, out var tx) || tx.Purpose != "admin"
                     || !st.Users.TryGetValue(tx.Username!, out var u)) return Admin(c, SignIn.Generic, 1);
+                if (tx.PreMfaExpired(now)) { st.Auth.Tx.Remove(tx.Id); return Admin(c, SignIn.Generic, 1); } // G5: 5 min, then a full sign-in
                 var totp = f["totp_code"].ToString().Trim(); var rc = f["recovery_code"].ToString().Trim();
                 string kind; string[] amr;
                 if (SignIn.Locked(u, now)) return Admin(c, SignIn.Generic, 2); // SEC77: right code refused once locked

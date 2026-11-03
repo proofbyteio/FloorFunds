@@ -110,7 +110,7 @@ public static class SignIn
     public static LoginSession? CurrentSession(StandInState st, HttpContext c, DateTimeOffset now)
     {
         if (!c.Request.Cookies.TryGetValue(SessionCookie, out var sid) || !st.Auth.Sessions.TryGetValue(sid, out var s)) return null;
-        if (s.Revoked || now - s.LastSeen > TimeSpan.FromMinutes(IdleMinutes) || now >= s.AuthTime + SessionCap.For(st, s)) return null;
+        if (s.Revoked || now - s.LastSeen > TimeSpan.FromMinutes(IdleMinutes) || SessionCap.Expired(st, s, now)) return null;
         return s;
     }
 
@@ -196,7 +196,7 @@ public static class SignIn
                 // [ASSUMPTION A53] the failure counter is NOT reset by a right password alone (else password+wrong-TOTP never locks); a full sign-in resets it.
                 // 4.11: the pre-session id is reissued after the password step.
                 st.Auth.Tx.Remove(tx.Id);
-                tx.Id = TokenIssuer.NewHandle(); tx.Stage = "totp"; tx.Username = user!.Username;
+                tx.Id = TokenIssuer.NewHandle(); tx.Stage = "totp"; tx.Username = user!.Username; tx.PreMfaAt = now;
                 st.Auth.Tx[tx.Id] = tx;
                 SetCookie(c, TxCookie, tx.Id, issuerPath);
                 return TotpPage(c, af, Base(slug), null);
@@ -213,6 +213,8 @@ public static class SignIn
             {
                 var tx = GetTx(st, c, slug);
                 var loc = Location(st.Fixtures, slug);
+                // G5: pending pre-MFA state older than 5 min is dropped; the user starts a full sign-in (same page as an unknown tx).
+                if (tx is not null && tx.Stage == "totp" && tx.PreMfaExpired(st.Clock.Now)) { st.Auth.Tx.Remove(tx.Id); tx = null; }
                 if (tx is null || loc is null || tx.Stage != "totp" || !st.Users.TryGetValue(tx.Username!, out var user))
                     return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
                 var now = st.Clock.Now;

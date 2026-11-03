@@ -14,10 +14,9 @@ public static class SessionCap
     public const string Setting = "LoginService:Session:AbsoluteLifetime";
     static readonly Regex Fmt = new(@"^([0-9]+\.)?[0-9]{2}:[0-9]{2}:[0-9]{2}$");
     public static TimeSpan Default { get; private set; } = TimeSpan.FromHours(12);
-    // PLACEHOLDER range (OQ-40 (b) open, no values proposed): optional StandIn:SessionCapRange:Min / :Max; unset = no bound.
-    // The only built-in bound is the technical check (cap > 15-min idle timeout), not policy. [ASSUMPTION A61]
-    public static TimeSpan? RangeMin { get; private set; }
-    public static TimeSpan? RangeMax { get; private set; }
+    // G1 (TL 10:30 PM, interim TL Decision): range is > 15 min (the idle timeout) and <= 24 h. PLACEHOLDER until Mohanraj gives the range (OQ-40).
+    // Replaces A61 (unbounded). The 24 h bound also keeps AuthTime + cap far from DateTimeOffset overflow.
+    public static readonly TimeSpan RangeMax = TimeSpan.FromHours(24);
     static TimeSpan _global;
     static readonly Dictionary<string, TimeSpan> _partner = new(StringComparer.Ordinal);
     static readonly object G = new();
@@ -28,9 +27,8 @@ public static class SessionCap
         var raw = cfg[Setting] ?? "12:00:00";
         if (!Fmt.IsMatch(raw) || !TimeSpan.TryParse(raw, CultureInfo.InvariantCulture, out var v)) return $"{Setting} is not a TimeSpan";
         if (v <= TimeSpan.FromMinutes(SignIn.IdleMinutes)) return $"{Setting} must be greater than the {SignIn.IdleMinutes}-minute idle timeout";
+        if (v > RangeMax) return $"{Setting} must be at most 24:00:00 (PLACEHOLDER range, OQ-40)";
         Default = v;
-        if (TimeSpan.TryParse(cfg["StandIn:SessionCapRange:Min"], CultureInfo.InvariantCulture, out var mn)) RangeMin = mn;
-        if (TimeSpan.TryParse(cfg["StandIn:SessionCapRange:Max"], CultureInfo.InvariantCulture, out var mx)) RangeMax = mx;
         Reset(); return null;
     }
     public static void Reset() { lock (G) { _global = Default; _partner.Clear(); } }
@@ -39,7 +37,13 @@ public static class SessionCap
     static string? PartnerOf(StandInState st, LoginSession s) => s.AdminType is not null ? s.PartnerId : SignIn.Location(st.Fixtures, s.Slug)?.PartnerId;
     // [ASSUMPTION A62] the effective cap is read at each check (OQ-40: effect on running sessions is NOT asserted by any test).
     public static TimeSpan For(StandInState st, LoginSession s) => ForPartner(PartnerOf(st, s));
-    static bool InRange(TimeSpan v) => v > TimeSpan.FromMinutes(SignIn.IdleMinutes) && (RangeMin is null || v >= RangeMin) && (RangeMax is null || v <= RangeMax);
+    static bool InRange(TimeSpan v) => v > TimeSpan.FromMinutes(SignIn.IdleMinutes) && v <= RangeMax;
+    // G1: expiry math that can never overflow or throw (cap is clamped to the range; AuthTime is a real clock time).
+    public static bool Expired(StandInState st, LoginSession s, DateTimeOffset now)
+    {
+        var cap = For(st, s); if (cap > RangeMax) cap = RangeMax; if (cap < TimeSpan.Zero) cap = TimeSpan.Zero;
+        return now - s.AuthTime >= cap;
+    }
 
     static string E(string s) => WebUtility.HtmlEncode(s);
 
@@ -53,7 +57,7 @@ public static class SessionCap
             var t = af.GetAndStoreTokens(c).RequestToken!;
             var body = $"""
 <p data-testid="session-cap-status">{E(msg)}</p>
-<p>Current: <code data-testid="session-cap-current">{E(Text(ForPartner(pid)))}</code> <span>STANDIN; range PLACEHOLDER (OQ-40)</span></p>
+<p>Current: <code data-testid="session-cap-current">{E(Text(ForPartner(pid)))}</code> <span>STANDIN; range PLACEHOLDER (OQ-40): more than 00:15:00, at most 1.00:00:00</span></p>
 <form method="post" action="{P}"><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
 <label>New cap (TimeSpan, e.g. 12:00:00) <input data-testid="field-session-cap" name="value"></label>
 <label>Partner id <input data-testid="field-session-cap-partner" name="partner_id" value="{E(pid ?? "")}"></label>
@@ -86,19 +90,29 @@ public static class SessionCap
                 if (s is null) return Results.StatusCode(401);             // [ASSUMPTION A64] no session: no actor, so 401 and no event
                 if (s.Kind == "recovery_reenroll") return Results.NotFound(); // 7.8: nothing but re-enrolment
                 s.LastSeen = now;
-                // [ASSUMPTION A65] a value that is not TimeSpan text (schema pattern) is 400 with no event: attempted_value must match the pattern.
-                if (!Fmt.IsMatch(raw) || !TimeSpan.TryParse(raw, CultureInfo.InvariantCulture, out var v)) return Page(c, PartnerOf(st, s), "Not a TimeSpan", 400);
-                var partners = st.Fixtures["partners"]!.AsArray().Select(p => (string)p!["partner_id"]!).ToHashSet();
-                // Target: super -> partner_id given = that partner, empty = global default; partner -> empty = own partner.
-                string? target = want.Length > 0 ? want : (s.AdminType == "partner" ? s.PartnerId : null);
-                if (target is not null && !partners.Contains(target) && s.AdminType == "super") return Page(c, null, "Unknown partner", 400); // [ASSUMPTION A66]
-                string? reason = s.AdminType is not ("super" or "partner") ? "not_admin"
-                    : s.AdminType == "partner" && target != s.PartnerId ? "wrong_partner"
-                    : !InRange(v) ? "out_of_range" : null;
+                // G9 (TL 10:30 PM): WHO first, then the value. A non-admin is refused (403 + change_denied not_admin) whatever it sent.
+                bool fmt = Fmt.IsMatch(raw);
+                bool parsed = fmt && TimeSpan.TryParse(raw, CultureInfo.InvariantCulture, out _); TimeSpan v = parsed ? TimeSpan.Parse(raw, CultureInfo.InvariantCulture) : TimeSpan.Zero;
+                // [ASSUMPTION A69] attempted_value must be TimeSpan text (schema pattern): pattern-shaped text is logged as sent; anything else is
+                // logged as "00:00:00" (a value that is itself out of range), because the schema forbids free text there.
+                string attempted = fmt ? raw : "00:00:00";
+                string? reason = null; string? target = null;
+                if (s.AdminType is not ("super" or "partner")) reason = "not_admin";
+                else
+                {
+                    // [ASSUMPTION A65, narrowed by G9] an ADMIN sending non-TimeSpan text (malformed, negative) gets 400 with no event.
+                    if (!fmt) return Page(c, PartnerOf(st, s), "Not a TimeSpan", 400);
+                    var partners = st.Fixtures["partners"]!.AsArray().Select(p => (string)p!["partner_id"]!).ToHashSet();
+                    // Target: super -> partner_id given = that partner, empty = global default; partner -> empty = own partner.
+                    target = want.Length > 0 ? want : (s.AdminType == "partner" ? s.PartnerId : null);
+                    if (target is not null && !partners.Contains(target) && s.AdminType == "super") return Page(c, null, "Unknown partner", 400); // [ASSUMPTION A66]
+                    // G1: pattern-shaped but not representable (huge) counts as out of range, never 500.
+                    reason = s.AdminType == "partner" && target != s.PartnerId ? "wrong_partner" : !parsed || !InRange(v) ? "out_of_range" : null;
+                }
                 if (reason is not null)
                 {
                     var d = Audit.Build(now, "auth.config.change_denied", "denied", s.UserId,
-                        new JsonObject { ["setting"] = Setting, ["attempted_value"] = Text(v), ["reason"] = reason }, Handoff.SessionScope(st, s), Ip(c), null, s.Sid);
+                        new JsonObject { ["setting"] = Setting, ["attempted_value"] = attempted, ["reason"] = reason }, Handoff.SessionScope(st, s), Ip(c), null, s.Sid);
                     d["target"] = new JsonObject { ["type"] = "config", ["id"] = Setting };
                     if (reason != "not_admin") d["admin_type"] = s.AdminType;
                     if (!SignIn.TryEmit(st, d)) return Page(c, target, "Not saved", 503);
@@ -119,7 +133,7 @@ public static class SessionCap
 // contract 6.9 BFF cage stub, refusal part only (STANDIN, mounted under the issuer path so the stand-in session cookie applies) [ASSUMPTION A59].
 // DEC-084: any admin_type session -> 403 {"error":"access_denied"} on the nonce and every action, checked before attestation;
 // DEC-085: recovery_reenroll the same. The reason goes to the stub's own log only (G2; the Cash Advance audit is outside this contract).
-// [ASSUMPTION A60] attestation checking for location users is not built here (SSE2 / Cash Advance BFF stub): nonce issued, action -> 501.
+// A60 withdrawn (TL 10:08, BP-2a): location actions check attestation first; G2 (TL 10:30): valid -> 200 {"ok":true}.
 public static class CageStub
 {
     public static void Map(WebApplication app, StandInState st, string issuerPath, StandInPorts ports)
@@ -142,10 +156,10 @@ public static class CageStub
             {
                 var r = Refuse(c, "attest-nonce"); if (r is not null) return r;
                 var s = SignIn.CurrentSession(st, c, st.Clock.Now)!;
-                // BP-2a (TL 10:08): a server-stored, single-use nonce bound to this session's location and standin_pc (6.7, 6.8).
+                // G4: base64url 128-bit = 22 chars (cage_nonce_response). BP-2a (TL 10:08): a server-stored, single-use nonce bound to this session's location and standin_pc (6.7, 6.8).
                 c.Request.Cookies.TryGetValue(SignIn.PcCookie, out var pcid);
                 var tx = new SignInTx { Id = TokenIssuer.NewHandle(), Slug = s.Slug, Purpose = "cage_action", Stage = "cage", Sid = s.Sid,
-                    Nonce = TokenIssuer.NewHandle(), NonceAt = st.Clock.Now, PcId = pcid };
+                    Nonce = Microsoft.IdentityModel.Tokens.Base64UrlEncoder.Encode(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)), NonceAt = st.Clock.Now, PcId = pcid };
                 st.Auth.Tx[tx.Id] = tx;
                 c.Response.Headers.CacheControl = "no-store";
                 return Results.Json(new { nonce = tx.Nonce });
@@ -156,7 +170,17 @@ public static class CageStub
             SignIn.Headers(c, ports.Control);
             if (action is not ("payment" or "id_scan" or "print")) return Results.NotFound();
             try { await af.ValidateRequestAsync(c); } catch (AntiforgeryValidationException) { return Results.BadRequest(); }
-            string? jws = c.Request.HasFormContentType ? (string?)(await c.Request.ReadFormAsync())["device_attestation"] : null;
+            // G2 (TL 10:30): 6.9 body exactly: JSON {"device_attestation":"<JWS>"} (cage_action_request, closed); antiforgery in the
+            // RequestVerificationToken header. [ASSUMPTION A73] any other body (form, extra keys, not JSON) = attestation missing -> 403.
+            string? jws = null;
+            if (c.Request.ContentType?.StartsWith("application/json", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                try
+                {
+                    if ((await System.Text.Json.Nodes.JsonNode.ParseAsync(c.Request.Body)) is JsonObject o && o.Count == 1 && o["device_attestation"] is JsonValue jv && jv.TryGetValue(out string? js)) jws = js;
+                }
+                catch (System.Text.Json.JsonException) { jws = null; }
+            }
             lock (st.Gate)
             {
                 var r = Refuse(c, "action " + action); if (r is not null) return r;
@@ -168,17 +192,20 @@ public static class CageStub
                 catch (Exception e) when (e is System.Text.Json.JsonException or FormatException or ArgumentException) { n = null; }
                 var tx = st.Auth.Tx.Values.FirstOrDefault(t => t.Purpose == "cage_action" && t.Sid == s.Sid && t.Nonce is not null && t.Nonce == n)
                       ?? st.Auth.Tx.Values.FirstOrDefault(t => t.Purpose == "cage_action" && t.Sid == s.Sid && t.Nonce is not null);
-                var ok = tx is not null && Attestation.Check(st, tx, jws, Attestation.CageAud, "cage_action", now).Ok;
-                if (!ok)
+                var (ok, remote) = tx is not null ? Attestation.Check(st, tx, jws, Attestation.CageAud, "cage_action", now) : (false, false);
+                // G3 BLOCKER (TL 10:30): a valid attestation reporting remote_session=true never gets a cage action.
+                // Client: 403 attestation_invalid (same body); audit reason remote_session [ASSUMPTION A70]. v1.1 (SA): 6.7 to say so.
+                string? why = !ok ? "attestation_invalid" : remote ? "remote_session" : null;
+                if (why is not null)
                 {
-                    var e = Audit.Build(now, "auth.app_access.denied", "denied", s.UserId, new JsonObject { ["reason"] = "attestation_invalid" },
+                    var e = Audit.Build(now, "auth.app_access.denied", "denied", s.UserId, new JsonObject { ["reason"] = why },
                         Handoff.SessionScope(st, s), c.Connection.RemoteIpAddress?.ToString(), null, s.Sid);
                     e["target"] = new JsonObject { ["type"] = "app", ["id"] = "cash_advance" }; e["session_kind"] = s.Kind;
                     st.Emit(e);
-                    Console.WriteLine($"cage_stub refused action {action} reason=attestation_invalid attestation={(string.IsNullOrEmpty(jws) ? "missing" : "invalid")}");
+                    Console.WriteLine($"cage_stub refused action {action} reason={why} attestation={(ok ? "valid" : string.IsNullOrEmpty(jws) ? "missing" : "invalid")}");
                     return Results.Json(new { error = "attestation_invalid" }, statusCode: 403);
                 }
-                return Results.Json(new { error = "not_implemented" }, statusCode: 501); // valid attestation only; the action itself is the Cash Advance server's
+                return Results.Json(new { ok = true }); // G2: 6.9 cage_action_ok; the stub performs no real action
             }
         });
     }

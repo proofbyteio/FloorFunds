@@ -41,7 +41,7 @@ public sealed class StandInState
     public void Emit(JsonObject e) { lock (_gate) _audit.Add(e); }
 
     // [TL Decision 9:16 PM, B2] FIXTURE client private keys go here (must be under /tmp; checked in Clients.Load).
-    public static string StateDir { get; set; } = "/tmp/sse-d0/standin-18080";
+    public static string StateDir { get; set; } = Listeners.StateRoot + "/standin-18080"; // G8
     public static string ClientKeyDir => Environment.GetEnvironmentVariable("STANDIN_CLIENT_KEY_DIR") ?? Path.Combine(StateDir, "fixture-client-keys");
     // F14 (TL 9:42): client secrets and recovery codes are not in the repo. They are generated once per process start (so a
     // reset keeps them stable for the driver) and written to <state dir>/fixture-secrets.json (0600), which the driver reads.

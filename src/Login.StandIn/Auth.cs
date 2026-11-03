@@ -21,6 +21,10 @@ public sealed class SignInTx
     public string? Username { get; set; }
     public string Attestation { get; set; } = "missing"; // 6.2 valid | missing | invalid
     public string? ReturnTo { get; set; }
+    // G5 (TL 10:30 PM, TL Decision): when the password step passed; pending pre-MFA state lives 5 min (ms clock), then a full sign-in again.
+    public DateTimeOffset PreMfaAt { get; set; }
+    public const int PreMfaMs = 300_000;
+    public bool PreMfaExpired(DateTimeOffset now) => (now - PreMfaAt).TotalMilliseconds > PreMfaMs;
     // Hand-off interstitial transactions (5.8b): bound to nonce + hub_launch + login session + client_id.
     public string Purpose { get; init; } = "signin"; // signin | handoff | admin
     public string? Sid { get; init; }
