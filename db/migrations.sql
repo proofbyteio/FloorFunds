@@ -272,3 +272,26 @@ BEGIN
 END $EF$;
 COMMIT;
 
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261104170000_S2aLlcColumnUpdate') THEN
+    DO $s2a_llc_upd$
+    DECLARE a text := current_database() || '_admin_api';
+    BEGIN
+      EXECUTE format('REVOKE UPDATE ON auth.location_login_config FROM %I', a);
+      EXECUTE format('GRANT UPDATE (provider_kind, display_name, entra_allowed_tenant_ids, oidc_authority, oidc_client_id, secret_ref, allow_db_fallback, mfa_required, updated_by, updated_at, row_version) ON auth.location_login_config TO %I', a);
+    END $s2a_llc_upd$;
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261104170000_S2aLlcColumnUpdate') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261104170000_S2aLlcColumnUpdate', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+

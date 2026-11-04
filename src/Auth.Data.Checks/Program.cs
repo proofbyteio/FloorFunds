@@ -1,5 +1,6 @@
-// S2a P2 DB integration checks (spec §8-§10). Runs against a migrated, seeded test DB (ff_sse only).
-// env: CONNECTION_STRING (owner), ADMIN_API_CONNECTION_STRING, LOGIN_CONNECTION_STRING; arg 0: fixtures.json path.
+// S2a P2 DB integration checks (spec §8-§10). Runs against a migrated, seeded TEST DB named in AUTH_CHECKS_DB (TLD 8:20 P2-2).
+// env: AUTH_CHECKS_DB (target DB name), CONNECTION_STRING (owner), ADMIN_API_CONNECTION_STRING, LOGIN_CONNECTION_STRING;
+// arg 0: fixtures.json path.
 // Test data below is SSE2-FAKE-TEST-ONLY (fake tenant ids, account 000000000000 ARNs). Never prints connection strings.
 using System.Text.Json;
 using Auth.Data;
@@ -34,9 +35,18 @@ var ownerCs = Env("CONNECTION_STRING");
 var adminCs = Env("ADMIN_API_CONNECTION_STRING");
 var loginCs = Env("LOGIN_CONNECTION_STRING");
 var fixturesPath = args.Length > 0 ? args[0] : "Login.StandIn/fixtures.json";
-var dbName = new NpgsqlConnectionStringBuilder(ownerCs).Database!;
-if (dbName != "ff_sse") { Console.Error.WriteLine("refuse: checks run on ff_sse only"); return 2; }
+// Checks write committed SSE2-FAKE-TEST-ONLY rows and alter constraints inside rolled-back transactions, so the target DB
+// is named explicitly (AUTH_CHECKS_DB), all three connection strings must point at it, and a safety guard refuses anything
+// that is not an engineers' test DB (ff_sse, ff_sse2) or a db/ kit scratch DB (ff_kit_*). SSE runs only ff_sse / ff_kit_*.
+var dbName = Environment.GetEnvironmentVariable("AUTH_CHECKS_DB") ?? "";
+static bool IsTestDb(string n) => n is "ff_sse" or "ff_sse2" || System.Text.RegularExpressions.Regex.IsMatch(n, "^ff_kit_[a-z0-9_]{1,45}$");
+if (!IsTestDb(dbName))
+{ Console.Error.WriteLine("refuse: set AUTH_CHECKS_DB to a test DB: ff_sse, ff_sse2 or ff_kit_<name> (throwaway kit DB)"); return 2; }
+if (new[] { ownerCs, adminCs, loginCs }.Any(cs => new NpgsqlConnectionStringBuilder(cs).Database != dbName))
+{ Console.Error.WriteLine("refuse: every connection string's Database must equal AUTH_CHECKS_DB"); return 2; }
 string adminRole = dbName + "_admin_api", loginRole = dbName + "_login";
+string[] LlcMutable = ["provider_kind", "display_name", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret_ref",
+                       "allow_db_fallback", "mfa_required", "updated_by", "updated_at", "row_version"];
 
 await using var ownerDs = NpgsqlDataSource.Create(ownerCs);
 await using var adminDs = NpgsqlDataSource.Create(adminCs);
@@ -103,7 +113,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [20261104160000_S2aInitial]", applied.SequenceEqual(["20261104160000_S2aInitial"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
@@ -159,7 +169,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     var expect = new Dictionary<(string, string), string[]>
     {
         [("location", adminRole)] = ["SELECT", "INSERT"], [("location", loginRole)] = ["SELECT"],
-        [("location_login_config", adminRole)] = ["SELECT", "INSERT", "UPDATE"], [("location_login_config", loginRole)] = ["SELECT"],
+        [("location_login_config", adminRole)] = ["SELECT", "INSERT"], [("location_login_config", loginRole)] = ["SELECT"],
         [("location_login_config_change", adminRole)] = ["SELECT", "INSERT"], [("location_login_config_change", loginRole)] = [],
         [("app_user", adminRole)] = [], [("app_user", loginRole)] = ["SELECT"],
         [("external_login", adminRole)] = [], [("external_login", loginRole)] = ["SELECT"],
@@ -176,18 +186,25 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     foreach (var t in expect.Keys.Select(k => k.Item1).Distinct())
         Ok($"grants: PUBLIC has nothing on auth.{t}", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_class cl, aclexplode(cl.relacl) x WHERE cl.oid = ('auth.' || $1)::regclass AND x.grantee = 0)", t));
 
-    var colMism = new List<string>();
-    foreach (var col in new[] { "location_id", "partner_id", "slug", "name" })
-        if (await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.location', $2, 'UPDATE')", adminRole, col) != (col == "name")) colMism.Add("location." + col);
-    var sessUpd = new[] { "last_seen_at", "revoked_at", "revoked_reason", "interactive_used_at", "handoff_used_at", "cage_consumed_at", "code_issued" };
-    await using (var cmd = new NpgsqlCommand("SELECT column_name FROM information_schema.columns WHERE table_schema='auth' AND table_name='session'", c))
+    // Column-level UPDATE, every column of every auth table, both roles (P2-1: no UPDATE on PKs / created_* / immutable).
+    var updAllowed = new Dictionary<(string, string), string[]>
     {
-        var all = new List<string>();
-        await using (var rr = await cmd.ExecuteReaderAsync()) while (await rr.ReadAsync()) all.Add(rr.GetString(0));
-        foreach (var col in all)
-            if (await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.session', $2, 'UPDATE')", loginRole, col) != sessUpd.Contains(col)) colMism.Add("session." + col);
-    }
-    Ok("grants: column UPDATE = location(name) for admin_api; session(7 spec columns) for login; nothing else", colMism.Count == 0, string.Join(", ", colMism));
+        [("location", adminRole)] = ["name"],
+        [("location_login_config", adminRole)] = LlcMutable,
+        [("session", loginRole)] = ["last_seen_at", "revoked_at", "revoked_reason", "interactive_used_at", "handoff_used_at", "cage_consumed_at", "code_issued"],
+    };
+    var colMism = new List<string>();
+    var cols = new List<(string T, string C)>();
+    await using (var cmd = new NpgsqlCommand("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema='auth' ORDER BY 1, 2", c))
+    await using (var rr = await cmd.ExecuteReaderAsync()) while (await rr.ReadAsync()) cols.Add((rr.GetString(0), rr.GetString(1)));
+    foreach (var (t, col) in cols)
+        foreach (var r in new[] { adminRole, loginRole })
+            if (await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.' || $2, $3, 'UPDATE')", r, t, col)
+                != (updAllowed.TryGetValue((t, r), out var ok) && ok.Contains(col))) colMism.Add($"{t}.{col}/{r}");
+    Ok($"grants: column UPDATE ({cols.Count} columns x 2 roles) = location(name) + location_login_config(11 mutable) for admin_api; session(7) for login; nothing else",
+        cols.Count > 0 && colMism.Count == 0, string.Join(", ", colMism));
+    Ok("grants: admin_api UPDATE on location_login_config location_id/created_at/created_by = none (P2-1)",
+        !await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.location_login_config', 'location_id', 'UPDATE') OR has_column_privilege($1, 'auth.location_login_config', 'created_at', 'UPDATE') OR has_column_privilege($1, 'auth.location_login_config', 'created_by', 'UPDATE')", adminRole));
 
     foreach (var f in new[] { "auth.location_partner(uuid)", "auth.tenant_bound_elsewhere(uuid,uuid)" })
     {
@@ -309,6 +326,17 @@ await Check("RLS admin_api: partner pci CAN insert own change row", async () =>
 await Check("RLS admin_api: UPDATE location.slug denied (column grant, 42501); name allowed", async () =>
     await Try(adminDs, $"UPDATE auth.location SET slug = 'zz' WHERE location_id = '{L_PCI}'", "super") == "42501"
     && await Try(adminDs, $"UPDATE auth.location SET name = 'renamed' WHERE location_id = '{L_PCI}'", "super") == "ok");
+await Check("P2-1 admin_api: UPDATE location_login_config.location_id denied (42501)", async () =>
+    await Try(adminDs, $"UPDATE auth.location_login_config SET location_id = gen_random_uuid() WHERE location_id = '{L_PCI}'", "super") == "42501");
+await Check("P2-1 admin_api: UPDATE location_login_config.created_at denied (42501)", async () =>
+    await Try(adminDs, $"UPDATE auth.location_login_config SET created_at = now() WHERE location_id = '{L_PCI}'", "super") == "42501");
+await Check("P2-1 admin_api: UPDATE location_login_config.created_by denied (42501)", async () =>
+    await Try(adminDs, $"UPDATE auth.location_login_config SET created_by = gen_random_uuid() WHERE location_id = '{L_PCI}'", "super") == "42501");
+await Check("P2-1 admin_api: §8.5 UPDATE of all 11 mutable columns allowed (rolled back)", async () =>
+    await Try(adminDs, $"UPDATE auth.location_login_config SET provider_kind = provider_kind, display_name = display_name, entra_allowed_tenant_ids = entra_allowed_tenant_ids, oidc_authority = oidc_authority, oidc_client_id = oidc_client_id, secret_ref = secret_ref, allow_db_fallback = allow_db_fallback, mfa_required = mfa_required, updated_by = '{ACTOR}', updated_at = now(), row_version = row_version + 1 WHERE location_id = '{L_PCI}'", "super") == "ok");
+await Check("P2-1 admin_api: UPDATE on change table / audit_outbox denied (append-only, 42501)", async () =>
+    await Try(adminDs, "UPDATE auth.location_login_config_change SET at = now()", "super") == "42501"
+    && await Try(adminDs, "UPDATE auth.audit_outbox SET occurred_at = now()", "super") == "42501");
 await Check("RLS admin_api: DELETE denied on location/config/change (42501)", async () =>
     await Try(adminDs, "DELETE FROM auth.location", "super") == "42501" && await Try(adminDs, "DELETE FROM auth.location_login_config", "super") == "42501"
     && await Try(adminDs, "DELETE FROM auth.location_login_config_change", "super") == "42501");
