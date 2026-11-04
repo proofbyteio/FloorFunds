@@ -127,6 +127,7 @@
         "details": {
           "required": ["provider_kind", "amr"],
           "properties": {
+            "config_row_version": { "description": "OPTIONAL in v1.1: auth.location_login_config.row_version the sign-in used (Entra and database locations) [TLD 2026-11-04 7:45, SSE2 F16].", "type": "integer", "minimum": 1 },
             "provider_kind": { "$ref": "#/$defs/provider_kind" },
             "tenant_id": { "type": "string" },
             "amr": { "type": "array" },
@@ -161,6 +162,7 @@
               "pattern": "^[a-z_]+$",
               "examples": ["bad_credentials", "locked", "mfa_missing", "tenant_mismatch", "stale_auth_time", "remote_session"]
             },
+            "config_row_version": { "description": "OPTIONAL in v1.1: auth.location_login_config.row_version the sign-in used (Entra and database locations) [TLD 2026-11-04 7:45, SSE2 F16].", "type": "integer", "minimum": 1 },
             "provider_kind": { "$ref": "#/$defs/provider_kind" }
           },
           "not": { "anyOf": [{ "required": ["password"]}, { "required": ["username"]}]}
@@ -363,7 +365,7 @@
             "changed_fields": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/login_config_field" } },
             "before": { "oneOf": [ { "$ref": "#/$defs/provider_state" }, { "type": "null" } ] },
             "after": { "$ref": "#/$defs/provider_state" },
-            "reason": { "type": ["string", "null"], "maxLength": 500 }
+            "reason": { "description": "Stored and emitted TRIMMED: null, or 10..500 characters after trim [TLD 2026-11-04 7:39, OQ-S2a-7].", "oneOf": [ { "type": "null" }, { "type": "string", "maxLength": 500, "pattern": "^\\s*\\S[\\s\\S]{8,498}\\S\\s*$" } ] }
           }
         }
       },
@@ -378,11 +380,11 @@
       ]
     },
     "downgrade_rule": {
-      "description": "v1.1 S2a: a downgrade is Super Admin only with a written reason [Confirmed DEC-096 (fallback), DEC-098 (MFA off)].",
+      "description": "v1.1 S2a: a downgrade is Super Admin only with a written reason, 10..500 characters after trim [Confirmed DEC-096 (fallback), DEC-098 (MFA off); TLD 2026-11-04 7:39 (length)].",
       "required": ["admin_type"],
       "properties": {
         "admin_type": { "const": "super" },
-        "details": { "required": ["reason"], "properties": { "reason": { "type": "string", "minLength": 1, "pattern": "\\S" } } }
+        "details": { "required": ["reason"], "properties": { "reason": { "type": "string", "minLength": 10, "maxLength": 500, "pattern": "^\\s*\\S[\\s\\S]{8,498}\\S\\s*$" } } }
       }
     },
     "not_emitted_fields_not_stated": {
@@ -466,7 +468,7 @@
       ]
     },
     "auth.config.change_denied.location_login_config": {
-      "description": "v1.1 S2a. Refused location login config create/update [TL Decision, S2a brief: 'refusals emit a denied event'] [Confirmed DEC-098: Partner Admin downgrade -> denied, reason not_super_admin]. target = the location (update) or the partner (create, no location yet). scope.partner_id = the TARGET's partner (ASSUMPTION A-6); actor_partner_id = the Partner Admin's own partner. Details closed: field NAMES only, never values (no secret_ref, no tenant id). Reasons: not_admin (no admin_type / permission not held by a built-in admin role), wrong_partner (Partner Admin, other partner), not_super_admin (Partner Admin downgrade), tenant_bound_elsewhere (tenant already used by another partner's location; Super Admin too).",
+      "description": "v1.1 S2a. Refused location login config create/update [TL Decision, S2a brief: 'refusals emit a denied event'] [Confirmed DEC-098: Partner Admin downgrade -> denied, reason not_super_admin]. target = the location (update) or the partner (create, no location yet). scope.partner_id = the TARGET's partner (ASSUMPTION A-6); actor_partner_id = the Partner Admin's own partner. Details closed: field NAMES only, never values (no secret_ref, no tenant id). Reasons: not_admin (no admin_type / permission not held by a built-in admin role), forbidden_scope (Partner Admin, other partner's location or partner; the client sees 404 not_found [TLD 2026-11-04 7:39, OQ-S2a-3]), not_super_admin (Partner Admin downgrade), tenant_bound_elsewhere (tenant already used by another partner's location; Super Admin too).",
       "required": ["actor", "target", "scope"],
       "properties": {
         "event_type": { "const": "auth.config.change_denied" },
@@ -483,7 +485,7 @@
           "properties": {
             "setting": { "const": "location_login_config" },
             "operation": { "enum": ["create", "update"] },
-            "reason": { "enum": ["not_admin", "wrong_partner", "not_super_admin", "tenant_bound_elsewhere"] },
+            "reason": { "description": "forbidden_scope replaces S2a wrong_partner [TLD 2026-11-04 7:39, OQ-S2a-3]: the client gets 404 not_found, the attempt is still audited.", "enum": ["not_admin", "forbidden_scope", "not_super_admin", "tenant_bound_elsewhere"] },
             "attempted_fields": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/login_config_field" } },
             "actor_partner_id": { "$ref": "#/$defs/id" }
           }
@@ -496,7 +498,7 @@
         { "if": { "required": ["details"], "properties": { "details": { "required": ["reason"], "properties": { "reason": { "const": "not_admin" } } } } },
           "then": { "not": { "required": ["admin_type"] } },
           "else": { "required": ["admin_type"] } },
-        { "if": { "required": ["details"], "properties": { "details": { "required": ["reason"], "properties": { "reason": { "enum": ["wrong_partner", "not_super_admin"] } } } } },
+        { "if": { "required": ["details"], "properties": { "details": { "required": ["reason"], "properties": { "reason": { "enum": ["forbidden_scope", "not_super_admin"] } } } } },
           "then": { "properties": { "admin_type": { "const": "partner" } } } },
         { "if": { "required": ["admin_type"], "properties": { "admin_type": { "const": "partner" } } },
           "then": { "properties": { "details": { "required": ["actor_partner_id"] } } },
