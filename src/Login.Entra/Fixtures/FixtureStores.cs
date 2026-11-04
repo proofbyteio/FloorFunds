@@ -23,7 +23,11 @@ public sealed class EntraFixture
 public sealed record FixtureLocation(string Slug, LocationLoginConfig Config);
 public sealed record FixtureLink(string Issuer, Guid TenantId, Guid ObjectId, Guid UserId, string? Email);
 /// <summary>Status is the raw DB text; parsed with UserStatusText.Parse (unknown → throw, fail closed).</summary>
-public sealed record FixtureUser(Guid UserId, Guid? PartnerId, string Status, DateTimeOffset? LockedUntil);
+public sealed record FixtureUser(Guid UserId, Guid? PartnerId, string Status, DateTimeOffset? LockedUntil)
+{
+    /// <summary>Test-only: hand the reader a raw enum value (e.g. default/Unknown) that UserStatusText.Parse never yields.</summary>
+    public UserStatus? RawStatus { get; init; }
+}
 public sealed record FixtureAssignment(Guid UserId, Guid LocationId);
 
 /// <summary>Thread-safe, mutable in tests (row_version bump, etc.).</summary>
@@ -49,7 +53,7 @@ public sealed class FixtureEntraStore(EntraFixture f) : ILocationLoginConfigRead
             if (l is null) return Task.FromResult<ExternalLoginMatch?>(null);
             // FK external_login → app_user: a link with no user row is a broken DB; throw (fail closed), never null.
             var u = f.Users.FirstOrDefault(x => x.UserId == l.UserId) ?? throw new InvalidOperationException("fixture: external_login without app_user row");
-            return Task.FromResult<ExternalLoginMatch?>(new(u.UserId, u.PartnerId, UserStatusText.Parse(u.Status), u.LockedUntil));
+            return Task.FromResult<ExternalLoginMatch?>(new(u.UserId, u.PartnerId, u.RawStatus ?? UserStatusText.Parse(u.Status), u.LockedUntil));
         }
     }
 
@@ -62,21 +66,22 @@ public sealed class FixtureEntraStore(EntraFixture f) : ILocationLoginConfigRead
     public Task<bool> IsAssignedAsync(Guid userId, Guid locationId, CancellationToken ct)
     { lock (_gate) return Task.FromResult(f.Assignments.Any(a => a.UserId == userId && a.LocationId == locationId)); }
 
-    public Task<string?> ResolveAsync(string secretRef, CancellationToken ct)
-    { lock (_gate) return Task.FromResult(f.Secrets.TryGetValue(secretRef, out var s) ? s : null); }
+    public Task<string?> ResolveAsync(SecretReference secretRef, CancellationToken ct)
+    { lock (_gate) return Task.FromResult(f.Secrets.TryGetValue(secretRef.Reveal(), out var s) ? s : null); }
 
     public void Mutate(Action<EntraFixture> m) { lock (_gate) m(f); }
 }
 
 /// <summary>The ONLY place LocationLoginConfig is constructed (named arguments, never positional), so the
-/// coming Abstractions change (SecretRef → SecretReference, not positional) touches one spot.</summary>
+/// coming Abstractions change (7e0350b: SecretRef is a non-positional SecretReference) touches one spot.</summary>
 public static class FixtureConfig
 {
     public static LocationLoginConfig Build(Guid locationId, Guid partnerId, string slug, ProviderKind providerKind, string displayName,
         IReadOnlyList<Guid> tenants, string? authority, string? clientId, string? secretRef, bool allowDbFallback, bool mfaRequired, long rowVersion = 1) =>
         new(LocationId: locationId, PartnerId: partnerId, Slug: slug, ProviderKind: providerKind, DisplayName: displayName,
-            EntraAllowedTenantIds: tenants, OidcAuthority: authority, OidcClientId: clientId, SecretRef: secretRef,
-            AllowDbFallback: allowDbFallback, MfaRequired: mfaRequired, RowVersion: rowVersion);
+            EntraAllowedTenantIds: tenants, OidcAuthority: authority, OidcClientId: clientId,
+            AllowDbFallback: allowDbFallback, MfaRequired: mfaRequired, RowVersion: rowVersion)
+        { SecretRef = string.IsNullOrWhiteSpace(secretRef) ? null : new SecretReference(secretRef) }; // 7e0350b: init-only, not positional
 
     public static LocationLoginConfig WithoutSecret(LocationLoginConfig c) => c with { SecretRef = null };
 }

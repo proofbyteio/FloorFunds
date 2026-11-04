@@ -165,6 +165,40 @@ public class EntFlowTests
         Assert.Equal(sa, Shape(b));
     }
 
+    // 7e0350b (SSE2 N1): UserStatus {Unknown=0, Active=1, Disabled=2}; default is Unknown and MaySignIn is false.
+    public static TheoryData<string> NonActive => new() { "default", "unknown" };
+
+    [Theory, MemberData(nameof(NonActive))]
+    public async Task ENT_09u_default_and_unknown_status_refused(string which)
+    {
+        UserStatus st = which == "default" ? default : UserStatus.Unknown;
+        Assert.Equal(UserStatus.Unknown, st);
+        Assert.False(new ExternalLoginMatch(Guid.NewGuid(), Env.PartnerId, st, null).MaySignIn(DateTimeOffset.UtcNow));
+        Assert.False(default(ExternalLoginMatch)?.MaySignIn(DateTimeOffset.UtcNow) ?? false);
+        await using var e = await Env.StartAsync();
+        e.Store.Mutate(d => { d.Users.RemoveAll(u => u.UserId == e.UserA); d.Users.Add(new(e.UserA, Env.PartnerId, "active", null) { RawStatus = st }); });
+        Refused(await e.SignInAsync("loc-a"), e, "bad_credentials", "user_status_unknown");
+    }
+
+    // 7e0350b (SSE2 N2): a SecretReference never reaches audit or logs, on success or refusal, nor via ToString/JSON.
+    [Fact] public async Task ENT_19_secret_reference_never_in_audit_or_logs()
+    {
+        await using var e = await Env.StartAsync();
+        Signed(await e.SignInAsync("loc-a"), e);
+        e.Fake.NextUser = new FakeUser { Oid = e.OidA, Amr = ["pwd"] };
+        await e.SignInAsync("loc-a"); // refused (mfa_missing)
+        e.Store.Mutate(d => d.Assignments.Clear());
+        await e.SignInAsync("loc-a"); // refused (not_location_user)
+        var cfg = FixtureConfig.Build(Env.LocA, Env.PartnerId, "x", ProviderKind.Entra, "x", [Guid.NewGuid()], "https://login.example.test", "cid", "arn:sse2-fake-test-only:secret:ref-a-9q7z", false, true);
+        var loc = EntraLocation.TryCreate(cfg, false, out _)!;
+        Assert.Equal("arn:sse2-fake-test-only:secret:ref-a-9q7z", loc.SecretRef.Reveal());
+        var dump = string.Join("\n", e.Logs.Lines) + System.Text.Json.JsonSerializer.Serialize(e.Host.Audit)
+            + cfg + System.Text.Json.JsonSerializer.Serialize(cfg) + loc + System.Text.Json.JsonSerializer.Serialize(loc) + cfg.SecretRef;
+        Assert.True(e.Host.Audit.Count() >= 3);
+        Assert.DoesNotContain("sse2-fake-test-only:secret", dump);
+        Assert.DoesNotContain("9q7z", dump);
+    }
+
     [Fact] public async Task ENT_05_tampered_state_and_replayed_callback_refused()
     {
         await using var e = await Env.StartAsync();
@@ -443,7 +477,7 @@ public class EntFlowTests
     [Fact] public async Task ENT_CFG_01b_unresolvable_secret_fails_closed()
     {
         await using var e = await Env.StartAsync();
-        e.Store.Mutate(d => d.Secrets.Remove("ref-a"));
+        e.Store.Mutate(d => d.Secrets.Remove("arn:sse2-fake-test-only:secret:ref-a-9q7z"));
         var f = await e.SignInAsync("loc-a");
         Assert.Equal(HttpStatusCode.ServiceUnavailable, f.FinalStatus); Assert.Empty(e.Host.Sessions);
         Assert.True(e.LogHas("detail=secret_unresolved"));

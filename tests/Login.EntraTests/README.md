@@ -28,3 +28,13 @@ Membership runs before lock/status so a locked user at a foreign location is not
 
 Tests: ENT_04 (now `not_location_user`), ENT_04e x4 (null partner, mismatch+assigned, match+unassigned,
 match+assigned signs in; no partner ids leaked), ENT_04f (mismatch vs unassigned give identical audit/log shape).
+
+## Abstractions 7e0350b (S2a P2, SSE2 N1-N3), merged by 6402993
+
+- `SecretRef` is a non-positional, `[JsonIgnore]` `SecretReference` (ToString `[redacted]`). `FixtureConfig.Build` sets it with
+  `{ SecretRef = ... }`; `WithoutSecret` is `c with { SecretRef = null }`. `EntraLocation.SecretRef` is the same type,
+  non-positional. `ISecretResolver.ResolveAsync(SecretReference)` is the only caller of `Reveal()`.
+- `UserStatus { Unknown=0, Active=1, Disabled=2 }`: only `UserStatus.Active` passes (no numeric casts); default/Unknown →
+  `bad_credentials`/`user_status_unknown`. `FixtureUser.RawStatus` (test-only) injects raw values.
+- Tests: ENT_09u x2 (default, Unknown), ENT_19 (SecretReference never in logs/audit/ToString/JSON). Fixture refs are now
+  `arn:sse2-fake-test-only:secret:ref-{a,b,c}-9q7z` so leaks are greppable.

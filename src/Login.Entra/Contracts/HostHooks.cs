@@ -33,5 +33,6 @@ public interface IEntraHost
 /// Not in Login.Abstractions (3f3fef9), so it stays a Login.Entra host hook.</summary>
 public interface ISecretResolver
 {
-    Task<string?> ResolveAsync(string secretRef, CancellationToken ct);
+    /// <remarks>The only caller of <see cref="SecretReference.Reveal"/>. Never log the reference or the result.</remarks>
+    Task<string?> ResolveAsync(SecretReference secretRef, CancellationToken ct);
 }

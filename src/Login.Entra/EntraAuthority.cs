@@ -3,8 +3,11 @@ using Login.Abstractions;
 namespace Login.Entra;
 
 /// <summary>Validated Entra settings for one location. Authority = base + "/{tid}/v2.0", exactly one tenant (TLD-S2B-18).</summary>
-public sealed record EntraLocation(LocationLoginConfig Config, Guid TenantId, string Authority, string MetadataAddress, string ClientId, string SecretRef)
+public sealed record EntraLocation(LocationLoginConfig Config, Guid TenantId, string Authority, string MetadataAddress, string ClientId)
 {
+    /// <summary>Opaque; ToString is "[redacted]". Not positional, [JsonIgnore]; only ISecretResolver calls Reveal() (SSE2 N2).</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public SecretReference SecretRef { get; init; } = null!; // always set by TryCreate (the only constructor path)
+
     public static readonly Guid MsaTenant = Guid.Parse("9188040d-6c67-4c5b-b112-36a304b66dad");
 
     /// <summary>Null means invalid config → fail closed (TLD-S2B-16).</summary>
@@ -16,11 +19,11 @@ public sealed record EntraLocation(LocationLoginConfig Config, Guid TenantId, st
         if (c.EntraAllowedTenantIds is not { Count: 1 }) { why = "tenant_count"; return null; }
         var tid = c.EntraAllowedTenantIds[0];
         if (tid == Guid.Empty || tid == MsaTenant) { why = "tenant_invalid"; return null; }
-        if (string.IsNullOrWhiteSpace(c.OidcClientId) || string.IsNullOrWhiteSpace(c.SecretRef)) { why = "client_missing"; return null; }
+        if (string.IsNullOrWhiteSpace(c.OidcClientId) || c.SecretRef is null) { why = "client_missing"; return null; }
         if (!Uri.TryCreate(c.OidcAuthority, UriKind.Absolute, out var b) || !string.IsNullOrEmpty(b.Query) || !string.IsNullOrEmpty(b.Fragment))
         { why = "authority_invalid"; return null; }
         if (b.Scheme != Uri.UriSchemeHttps && !(allowHttp && b.Scheme == Uri.UriSchemeHttp && b.IsLoopback)) { why = "authority_not_https"; return null; }
         var authority = c.OidcAuthority!.TrimEnd('/') + "/" + tid.ToString("D") + "/v2.0";
-        return new EntraLocation(c, tid, authority, authority + "/.well-known/openid-configuration", c.OidcClientId!, c.SecretRef!);
+        return new EntraLocation(c, tid, authority, authority + "/.well-known/openid-configuration", c.OidcClientId!) { SecretRef = c.SecretRef };
     }
 }
