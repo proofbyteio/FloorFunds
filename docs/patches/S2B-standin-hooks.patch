@@ -1,0 +1,217 @@
+diff --git a/src/Login.StandIn/EntraHost.cs b/src/Login.StandIn/EntraHost.cs
+new file mode 100644
+index 0000000..e065501
+--- /dev/null
++++ b/src/Login.StandIn/EntraHost.cs
+@@ -0,0 +1,54 @@
++// S2b hook (SSE2 proposal, for SSE to apply): bridges Login.Entra to the stand-in's audit feed and sessions.
++// Login.Entra never references the stand-in (TLD-S2B-04); only this adapter, owned by SSE, references Login.Entra.
++using System.Net;
++using System.Text.Json.Nodes;
++using Login.Entra.Contracts;
++using Login.Entra.Drafts;
++
++namespace Login.StandIn;
++
++public sealed class EntraStandInHost(StandInState st, string issuerPath) : IEntraHost
++{
++    public Task WriteAuditAsync(EntraAuditEvent ev, CancellationToken ct)
++    {
++        var now = st.Clock.Now;
++        var d = new JsonObject { ["provider_kind"] = ev.ProviderKind, ["username_hmac"] = Audit.UsernameHmac(ev.UsernameSubject) };
++        if (ev.Reason is not null) d["reason"] = ev.Reason;
++        if (ev.Amr is not null) d["amr"] = new JsonArray(ev.Amr.Select(a => (JsonNode)a!).ToArray()); // mapped amr only (TLD-S2B-12)
++        if (ev.AuthTime is { } at) d["auth_time"] = at.ToUnixTimeSeconds();
++        var scope = ev.LocationId is { } l ? new JsonObject { ["location_id"] = l.ToString("D") } : null;
++        st.Emit(Audit.Build(now, ev.EventType, ev.EventType.EndsWith("succeeded", StringComparison.Ordinal) ? "success" : "failure",
++            ev.UserId?.ToString("D"), d, scope));
++        return Task.CompletedTask;
++    }
++
++    public Task CompleteSignInAsync(HttpContext c, EntraSignInResult r)
++    {
++        var now = st.Clock.Now;
++        LoginSession s;
++        lock (st.Gate)
++        {
++            var uid = r.UserId.ToString("D");
++            var username = st.Users.Values.FirstOrDefault(u => u.UserId == uid)?.Username ?? uid; // username comes from OUR user row
++            s = new LoginSession { Sid = Guid.NewGuid().ToString(), UserId = uid, Username = username, Slug = "",
++                LocationId = r.LocationId.ToString("D"), AuthTime = r.AuthTime, LastSeen = now, Amr = r.Amr.ToArray() };
++            st.Auth.Sessions[s.Sid] = s;
++        }
++        c.Response.Cookies.Append(SignIn.SessionCookie, s.Sid, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Lax, Path = issuerPath, Secure = c.Request.IsHttps });
++        c.Response.Redirect(r.ReturnUrl is { Length: > 0 } u && u.StartsWith(issuerPath + "/", StringComparison.Ordinal) ? u : issuerPath + "/hub");
++        return Task.CompletedTask;
++    }
++
++    public async Task RenderErrorAsync(HttpContext c, Guid? locationId)
++    {
++        c.Response.StatusCode = 503; c.Response.ContentType = "text/html; charset=utf-8";
++        await c.Response.WriteAsync($"<!doctype html><title>Sign-in</title><p data-testid=\"entra-error\">{WebUtility.HtmlEncode(SignIn.Generic)}</p>");
++    }
++
++    public Task RenderDatabaseFormAsync(HttpContext c, LocationLoginConfig cfg, bool viaFallback)
++    {
++        // The database form lives at the existing /l/{slug} route; the server decided (TLD-S2B-15), the browser just follows.
++        c.Response.Redirect(issuerPath + "/l/" + Uri.EscapeDataString(c.Request.RouteValues["slug"]?.ToString() ?? "") + (viaFallback ? "?fallback=1" : ""));
++        return Task.CompletedTask;
++    }
++}
+diff --git a/src/Login.StandIn/Login.StandIn.csproj b/src/Login.StandIn/Login.StandIn.csproj
+index 8059d07..d297b3a 100644
+--- a/src/Login.StandIn/Login.StandIn.csproj
++++ b/src/Login.StandIn/Login.StandIn.csproj
+@@ -17,6 +17,10 @@
+   <ItemGroup>
+     <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="[8.19.2]" />
+   </ItemGroup>
++  <ItemGroup>
++    <!-- S2b: the stand-in hosts Login.Entra (one-way reference; Login.Entra never references the stand-in, TLD-S2B-04). -->
++    <ProjectReference Include="../Login.Entra/Login.Entra.csproj" />
++  </ItemGroup>
+   <Target Name="StandInBuildFlag" BeforeTargets="Build" Condition="'$(IncludeStandIn)' != 'true'">
+     <Error Text="Login.StandIn builds only with -p:IncludeStandIn=true (build plan §3.5)." />
+   </Target>
+diff --git a/src/Login.StandIn/Program.cs b/src/Login.StandIn/Program.cs
+index 1d2b063..94bd2c5 100644
+--- a/src/Login.StandIn/Program.cs
++++ b/src/Login.StandIn/Program.cs
+@@ -26,7 +26,28 @@ var issuer = (cfg["StandIn:Issuer"] ?? $"http://localhost:{ports.Front}/standin"
+ var issuerPath = new Uri(issuer).AbsolutePath.TrimEnd('/');
+ if (!issuerPath.Contains("/standin")) { Console.Error.WriteLine("Login.StandIn refused to start: issuer path must contain /standin"); return 2; }
+ 
++// S2b (SSE2 proposal): Entra sign-in, off unless StandIn:Entra:Enabled=true. Readers are fixture-backed
++// (TLD-S2B-10/22) until SSE's ILocationLoginConfigReader / IExternalLoginLookup implementations land.
++var entraOn = string.Equals(cfg["StandIn:Entra:Enabled"], "true", StringComparison.OrdinalIgnoreCase);
++if (entraOn)
++{
++    var fx = Login.Entra.Fixtures.EntraFixture.Load(cfg["StandIn:Entra:Fixture"] ?? throw new InvalidOperationException("StandIn:Entra:Fixture required"));
++    var store = new Login.Entra.Fixtures.FixtureEntraStore(fx);
++    builder.Services.AddSingleton<Login.Entra.Drafts.ILocationLoginConfigReader>(store);
++    builder.Services.AddSingleton<Login.Entra.Drafts.IExternalLoginLookup>(store);
++    builder.Services.AddSingleton<Login.Entra.Drafts.IAppUserReader>(store);
++    builder.Services.AddSingleton<Login.Entra.Drafts.ILocationAssignmentCheck>(store);
++    builder.Services.AddSingleton<Login.Entra.Drafts.ISecretResolver>(store);
++    builder.Services.AddSingleton<Login.Entra.Contracts.IEntraHost>(sp => new EntraStandInHost(sp.GetRequiredService<StandInState>(), issuerPath));
++    Login.Entra.EntraServiceCollectionExtensions.AddEntraLocationSignIn(builder.Services.AddAuthentication(), builder.Environment, o =>
++    {
++        o.CallbackPath = issuerPath + "/signin-entra";
++        o.AllowInsecureTestAuthority = builder.Environment.IsEnvironment("Testing");
++    });
++}
+ builder.Services.AddAntiforgery(o => { o.Cookie.Name = "standin_af"; o.FormFieldName = "__RequestVerificationToken"; o.Cookie.Path = issuerPath; o.SuppressXFrameOptionsHeader = true; }); // F7: never SAMEORIGIN
++StandInState? stateRef = null;
++if (entraOn) builder.Services.AddSingleton(_ => stateRef ?? throw new InvalidOperationException("stand-in state not ready"));
+ var app = builder.Build();
+ // Slice 3: the allowlist runs first on every front request.
+ var allow = new Allowlist(cfg["StandIn:AllowlistJson"] ?? "/tmp/sse-d0/allowlist-active.json");
+@@ -41,6 +62,7 @@ Ui.IssuerPath = issuerPath; Ui.AgentPort = ports.Control; Ui.Load(Environment.Ge
+ Ui.MapAssets(app); Handoff.SelfTest();
+ Discovery.Map(app, issuerPath, disco, jwks);
+ var state = new StandInState(cfg["StandIn:Fixtures"] ?? Path.Combine(AppContext.BaseDirectory, "fixtures.json"));
++stateRef = state;
+ Control.Map(app, state);
+ // SI1-13..16: tokens, sign-in, authorize, token/revoke/introspect/endsession.
+ var tokens = new TokenIssuer(issuer, keys);
+@@ -50,5 +72,23 @@ Handoff.Map(app, state, issuerPath, issuer, ports);
+ Reenroll.Map(app, state, issuerPath, ports, cfg);
+ SessionCap.Map(app, state, issuerPath, ports);
+ CageStub.Map(app, state, issuerPath, ports);
++if (entraOn)
++{
++    app.UseAuthentication();
++    app.MapGet(issuerPath + "/entra/l/{slug}", (string slug, string? ret, HttpContext c) =>
++        c.RequestServices.GetRequiredService<Login.Entra.EntraLocationEndpoint>().HandleAsync(c, slug, ret));
++    app.MapGet(issuerPath + "/entra/logout", async (string location, HttpContext c) =>
++    {
++        // Ours first (endsession ordering, ENT-SO-01): revoke the stand-in session, then hand off to Entra.
++        if (!Guid.TryParse(location, out var lid)) return Results.BadRequest();
++        var to = await c.RequestServices.GetRequiredService<Login.Entra.EntraSignOut>().SignOutAsync(c, lid, issuer + "/hub", () =>
++        {
++            if (SignIn.CurrentSession(state, c, state.Clock.Now) is { } s) lock (state.Gate) { s.Revoked = true; state.Auth.Sessions.Remove(s.Sid); }
++            c.Response.Cookies.Delete(SignIn.SessionCookie, new CookieOptions { Path = issuerPath });
++            return Task.CompletedTask;
++        });
++        return Results.Redirect(to ?? issuerPath + "/hub");
++    });
++}
+ app.Run();
+ return 0;
+diff --git a/src/Login.StandIn/packages.lock.json b/src/Login.StandIn/packages.lock.json
+index 784abc6..563b923 100644
+--- a/src/Login.StandIn/packages.lock.json
++++ b/src/Login.StandIn/packages.lock.json
+@@ -11,6 +11,14 @@
+           "Microsoft.IdentityModel.Tokens": "8.19.2"
+         }
+       },
++      "Microsoft.AspNetCore.Authentication.OpenIdConnect": {
++        "type": "Transitive",
++        "resolved": "10.0.14",
++        "contentHash": "W5g9xaWjPudw7GNwxCqP9uLxpwE1+LkRf4f8i0aF6Ga1AY3qU2UvBa4+41Opz15sO5oTCLwYYXcvb477Ry8NZQ==",
++        "dependencies": {
++          "Microsoft.IdentityModel.Protocols.OpenIdConnect": "8.19.2"
++        }
++      },
+       "Microsoft.Bcl.Cryptography": {
+         "type": "Transitive",
+         "resolved": "10.0.2",
+@@ -29,6 +37,23 @@
+           "Microsoft.IdentityModel.Abstractions": "8.19.2"
+         }
+       },
++      "Microsoft.IdentityModel.Protocols": {
++        "type": "Transitive",
++        "resolved": "8.19.2",
++        "contentHash": "sGxSsSrZXNmca6D+jHH2rVRyo2nNRd/g4H9CFbPmLLq0xgoH1U0orLWE5minfijw7+zq49tBs7txenbfAErRoQ==",
++        "dependencies": {
++          "Microsoft.IdentityModel.Tokens": "8.19.2"
++        }
++      },
++      "Microsoft.IdentityModel.Protocols.OpenIdConnect": {
++        "type": "Transitive",
++        "resolved": "8.19.2",
++        "contentHash": "1XOcyY36cVymzE3qKdzKaUEZ4Pzt7ZpSa14JZoPPK1NLFUkQDs85TCqpV6XDo0YjFXj6nVK00AfOHppjghjhtw==",
++        "dependencies": {
++          "Microsoft.IdentityModel.Protocols": "8.19.2",
++          "System.IdentityModel.Tokens.Jwt": "8.19.2"
++        }
++      },
+       "Microsoft.IdentityModel.Tokens": {
+         "type": "Transitive",
+         "resolved": "8.19.2",
+@@ -37,6 +62,33 @@
+           "Microsoft.Bcl.Cryptography": "10.0.2",
+           "Microsoft.IdentityModel.Logging": "8.19.2"
+         }
++      },
++      "Microsoft.IdentityModel.Validators": {
++        "type": "Transitive",
++        "resolved": "8.19.2",
++        "contentHash": "QkQWzd4McF5QZKuHB1r6tzP+Fh3BOPPDvMDl2BfpmoVstMQZwwJi72xkj005nRfXgVrQj80SeHwI8yrIj4Rkpw==",
++        "dependencies": {
++          "Microsoft.IdentityModel.Protocols": "8.19.2",
++          "Microsoft.IdentityModel.Protocols.OpenIdConnect": "8.19.2",
++          "Microsoft.IdentityModel.Tokens": "8.19.2",
++          "System.IdentityModel.Tokens.Jwt": "8.19.2"
++        }
++      },
++      "System.IdentityModel.Tokens.Jwt": {
++        "type": "Transitive",
++        "resolved": "8.19.2",
++        "contentHash": "gqhDC/icByKEutygpr+OFgAmjwTVowyzFjWB8K0q1ww8uFj5a1BQNL+QvijUl9uhq4p8OdDwcAIrjVC+eC9FVA==",
++        "dependencies": {
++          "Microsoft.IdentityModel.JsonWebTokens": "8.19.2",
++          "Microsoft.IdentityModel.Tokens": "8.19.2"
++        }
++      },
++      "login.entra": {
++        "type": "Project",
++        "dependencies": {
++          "Microsoft.AspNetCore.Authentication.OpenIdConnect": "[10.0.14, 10.0.14]",
++          "Microsoft.IdentityModel.Validators": "[8.19.2, 8.19.2]"
++        }
+       }
+     }
+   }
