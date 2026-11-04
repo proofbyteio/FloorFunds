@@ -6,6 +6,12 @@ Frozen per build plan §3.1 "Versioning" after SSE2's adversarial pass and TL re
 Clients (Cash Advance BFF, hub, back office, reports) may depend **only** on what is written
 in this folder (plan §3.1). The stand-in and the real OpenIddict service implement the same contract.
 
+## v1.1 changes (post-freeze; reason + contract-test change in the same change set, plan §3.1)
+
+| Change | Reason | Contract tests |
+|---|---|---|
+| **S2a location login config (screen 9)**: new `v1.1-S2a-location-login-config.md` and `location-login-config.schema.json`; `audit-events.schema.json`: `auth.provider.changed` re-specified (closed details, `approval_id` removed, `row_version`/`change_id`/`changed_fields`/`reason` added, downgrade ⇒ Super Admin + reason), `auth.config.change_denied` gains a `location_login_config` branch (v1 `config` branch unchanged), `auth.provider.change_requested` removed | Confirmed DEC-096 (Mohanraj 7:20 AM PT Nov 4: no four-eyes, changes apply immediately, fallback-on Super Admin only with a reason) and DEC-098 (7:22 AM PT: MFA-off Super Admin only with a reason); TL S2a brief + 7:27 AM addition (API, readers, tables, grants). Sources/md5s in the spec §1 | `check_schemas.py`: `change_requested` now expected rejected; v1 `provider.changed` shapes now expected rejected. New `check_v1_1_s2a.py`: validates every spec example, secret_ref leak checks, negatives. Run both: `/tmp/sse-d0/venv/bin/python contract/check_schemas.py && /tmp/sse-d0/venv/bin/python contract/check_v1_1_s2a.py` |
+
 ## Files
 
 | File | What it fixes |
@@ -18,6 +24,9 @@ in this folder (plan §3.1). The stand-in and the real OpenIddict service implem
 | `device-attestation.schema.json` | JSON Schema for the device agent's attestation JWS (header and claims), sent as `device_attestation` |
 | `standin-control.md` | Stand-in control API on the separate control listener (reset, clock, PCs, fake agent, users/TOTP, faults, audit) and fixtures [TL Decision 2026-11-02, CR-05] |
 | `ui-driver.md` | How tests drive the stand-in sign-in UI: form fields, test ids, assertable strings [TL Decision 2026-11-02, CR-05] |
+| `v1.1-S2a-location-login-config.md` | v1.1 S2a: location login config API (screen 9), check order, errors, role × scope matrix, events, DDL intent, RO/RW grants, readers, deferred, OPEN/ASSUMPTION register |
+| `location-login-config.schema.json` | v1.1 S2a: JSON Schema for the location login config request/response bodies (secret_ref write-only) |
+| `check_v1_1_s2a.py` | v1.1 S2a contract test (run: `/tmp/sse-d0/venv/bin/python contract/check_v1_1_s2a.py`; exit 0 = all pass) |
 | `check_schemas.py` | Schema self-check with positive and negative samples (run: `/tmp/sse-d0/venv/bin/python contract/check_schemas.py`; exit 0 = all pass) |
 | `OPEN-QUESTIONS.md` | Every point the sources don't state (OQ-n), for the Tech Lead to answer or relay |
 | `SSE-BUILD-LOG-PENDING.md` | SSE's step log. SSE2 creates `code/docs/BUILD-LOG.md` and `code/README.md` and copies these entries over; SSE never writes in `docs/` (TL Decision 2026-11-02, OQ-27) |
@@ -32,6 +41,7 @@ in this folder (plan §3.1). The stand-in and the real OpenIddict service implem
 - **[TL Decision 2026-11-02, OQ-n]**: answered by the Tech Lead on Nov 2 (v1-d2 relay; v1-d3 rulings file below); the source doc may not say it yet.
 - **[Mohanraj Decision 2026-11-02 (t43u), OQ-n]**: decided by Mohanraj in his own message t43u, Nov 2 12:00 PM PT, verbatim: "In GitHub and 12 hr is fine but if we can have it configurable then it will be better".
 - **Cite precedence:** where this contract and `reviews/contract-v1-tl-rulings.md` differ on an LD line cite, the contract's cites (LD md5 `560cb6ab`) govern [TL Decision 2026-11-02 8:26 PM].
+- v1.1 S2a also uses **ASSUMPTION A-n**, **OPEN OQ-S2a-n** and **DRAFT** (proposed; named owner must sign off), defined in that spec.
 - **[DOC SILENT → OQ-n]**: a TL answer or source leaves this open; the draft states what it does meanwhile.
 
 ## Sources (read only; md5 at read time)

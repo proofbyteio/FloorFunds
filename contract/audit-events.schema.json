@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:cachd:login:contract:v1:audit-events",
-  "title": "Audit events the contract tests may assert, contract v1 (DRAFT v1-d4)",
+  "title": "Audit events the contract tests may assert, contract v1.1 (v1-d4 + S2a location login config)",
   "description": "Event list [SRC: PLAN §3.1 L148-161; LD §8 L417-427]. Envelope names [SRC: AUD §7A.4]; login-specific mapping [SRC: LD §8 L424]. Tenant fields are in the nested scope.* envelope (scope.partner_id, scope.cachd_client_id, scope.location_ids) per AUD §7A.4, with scope.client_id renamed scope.cachd_client_id [TL Decision 2026-11-02, OQ-23, OQ-37] (LD §16.19 row 114 L701, §16.19.4 L1443). Tokens stay flat (claims.schema.json).",
   "type": "object",
   "allOf": [{"$ref": "#/$defs/envelope"}],
@@ -35,7 +35,7 @@
         "schema_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
         "category": { "description": "Events category [SRC: LD §8 L413]. Literal 'event' [TL Decision 2026-11-02, OQ-23].", "const": "event" },
         "event_type": {
-          "description": "auth.* names only; iam.permission.change_requested renamed auth.provider.change_requested [TL Decision 2026-11-02, OQ-38] (LD §8 L427, row 115 L702).",
+          "description": "auth.* names only; iam.permission.change_requested renamed auth.provider.change_requested [TL Decision 2026-11-02, OQ-38] (LD §8 L427, row 115 L702). v1.1: auth.provider.change_requested is no longer an event at all [Confirmed DEC-096; LD §4.1 L178, §17 item 15].",
           "type": "string",
           "pattern": "^auth\\.[a-z_]+\\.[a-z_]+$"
         },
@@ -320,31 +320,80 @@
         "details": { "required": ["channel"], "properties": { "channel": { "type": "string" }}}
       }
     },
+    "provider_state": {
+      "description": "v1.1 S2a. before/after state of a location login config: exactly these keys, never secret_ref or any secret [SRC: LD §4.1 L184] [Confirmed DEC-096, DEC-098]. Same shape as location-login-config.schema.json $defs.audited_state.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider_kind", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"],
+      "properties": {
+        "provider_kind": { "$ref": "#/$defs/provider_kind" },
+        "entra_allowed_tenant_ids": { "type": "array", "maxItems": 1, "items": { "$ref": "#/$defs/id" } },
+        "allow_db_fallback": { "type": "boolean" },
+        "mfa_required": { "type": "boolean" }
+      }
+    },
+    "login_config_field": {
+      "description": "v1.1 S2a. Field NAMES only, never values (secret_ref = replaced or cleared).",
+      "enum": ["provider_kind", "display_name", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret_ref", "allow_db_fallback", "mfa_required"]
+    },
     "auth.provider.changed": {
-      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. [SRC: LD §8 L422]. before/after never hold secrets.",
+      "description": "v1.1 (S2a, contract/v1.1-S2a-location-login-config.md §7). Emitted for every applied create/update of a location login config, by Super Admin or Partner Admin, in the SAME Transaction DB transaction as the config row and the auth.location_login_config_change row, fail-closed [SRC: LD §4.1 L184; Confirmed DEC-096]. v1 approval_id REMOVED (no four-eyes, DEC-096; LD §8 L436 strike). Details closed; no secret values ever. row_version added at SSE2's request (v1.1). Downgrades (mfa_required true->false, allow_db_fallback false->true, or created with mfa_required false / allow_db_fallback true) require admin_type super and a non-empty reason [Confirmed DEC-096, DEC-098].",
+      "required": ["admin_type", "actor", "target", "scope"],
       "properties": {
         "event_type": { "const": "auth.provider.changed" },
+        "outcome": { "const": "success" },
+        "admin_type": { "enum": ["super", "partner"] },
+        "actor": { "required": ["user_id"], "properties": { "user_id": { "$ref": "#/$defs/id" } } },
+        "target": {
+          "required": ["type", "id"],
+          "properties": { "type": { "const": "location" }, "id": { "$ref": "#/$defs/id" } }
+        },
+        "scope": {
+          "required": ["partner_id", "location_ids"],
+          "properties": { "location_ids": { "minItems": 1, "maxItems": 1 } }
+        },
         "details": {
-          "required": ["location_id", "before", "after", "approval_id"],
+          "required": ["location_id", "change_id", "change_kind", "row_version", "changed_fields", "before", "after", "reason"],
+          "additionalProperties": false,
           "properties": {
             "location_id": { "$ref": "#/$defs/id" },
-            "before": { "type": "object" },
-            "after": { "type": "object" },
-            "approval_id": { "type": "string" }
+            "change_id": { "description": "= auth.location_login_config_change.change_id.", "$ref": "#/$defs/id" },
+            "change_kind": { "enum": ["created", "updated"] },
+            "row_version": { "description": "Config row_version AFTER the change (v1.1, SSE2 request).", "type": "integer", "minimum": 1 },
+            "changed_fields": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/login_config_field" } },
+            "before": { "oneOf": [ { "$ref": "#/$defs/provider_state" }, { "type": "null" } ] },
+            "after": { "$ref": "#/$defs/provider_state" },
+            "reason": { "type": ["string", "null"], "maxLength": 500 }
           }
         }
+      },
+      "allOf": [
+        { "if": { "required": ["details"], "properties": { "details": { "required": ["change_kind"], "properties": { "change_kind": { "const": "created" } } } } },
+          "then": { "properties": { "details": { "properties": { "before": { "type": "null" } } } } },
+          "else": { "properties": { "details": { "properties": { "before": { "type": "object" } } } } } },
+        { "if": { "required": ["details"], "properties": { "details": { "required": ["after"], "properties": { "after": { "required": ["mfa_required"], "properties": { "mfa_required": { "const": false } } }, "before": { "anyOf": [ { "type": "null" }, { "required": ["mfa_required"], "properties": { "mfa_required": { "const": true } } } ] } } } } },
+          "then": { "$ref": "#/$defs/downgrade_rule" } },
+        { "if": { "required": ["details"], "properties": { "details": { "required": ["after"], "properties": { "after": { "required": ["allow_db_fallback"], "properties": { "allow_db_fallback": { "const": true } } }, "before": { "anyOf": [ { "type": "null" }, { "required": ["allow_db_fallback"], "properties": { "allow_db_fallback": { "const": false } } } ] } } } } },
+          "then": { "$ref": "#/$defs/downgrade_rule" } }
+      ]
+    },
+    "downgrade_rule": {
+      "description": "v1.1 S2a: a downgrade is Super Admin only with a written reason [Confirmed DEC-096 (fallback), DEC-098 (MFA off)].",
+      "required": ["admin_type"],
+      "properties": {
+        "admin_type": { "const": "super" },
+        "details": { "required": ["reason"], "properties": { "reason": { "type": "string", "minLength": 1, "pattern": "\\S" } } }
       }
     },
     "not_emitted_fields_not_stated": {
-      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. In LD §8 L427 with no fields stated (envelope only) [TL Decision 2026-11-02, OQ-25]. Partner Admin method change = auth.provider.change_requested [TL Decision 2026-11-02, OQ-38].",
+      "description": "Defined, not emitted in S1 [TL Decision 2026-11-02, OQ-26]. In LD §8 L427 with no fields stated (envelope only) [TL Decision 2026-11-02, OQ-25]. v1.1: auth.provider.change_requested removed from this list: Partner Admin method changes apply immediately with no request event [Confirmed DEC-096; LD §4.1 L178, §17 item 15].",
       "properties": {
         "event_type": {
           "enum": [
             "auth.identity.linked",
             "auth.identity.unlinked",
             "auth.bootstrap.completed",
-            "auth.mfa.policy_exclusion_detected",
-            "auth.provider.change_requested"
+            "auth.mfa.policy_exclusion_detected"
           ]
         }
       }
@@ -410,6 +459,51 @@
       }
     },
     "auth.config.change_denied": {
+      "description": "v1.1: a refused admin change. Exactly one branch by target.type: config (v1 body, unchanged) or location_login_config / partner (S2a, contract/v1.1-S2a-location-login-config.md §7.2).",
+      "oneOf": [
+        { "$ref": "#/$defs/auth.config.change_denied.config" },
+        { "$ref": "#/$defs/auth.config.change_denied.location_login_config" }
+      ]
+    },
+    "auth.config.change_denied.location_login_config": {
+      "description": "v1.1 S2a. Refused location login config create/update [TL Decision, S2a brief: 'refusals emit a denied event'] [Confirmed DEC-098: Partner Admin downgrade -> denied, reason not_super_admin]. target = the location (update) or the partner (create, no location yet). scope.partner_id = the TARGET's partner (ASSUMPTION A-6); actor_partner_id = the Partner Admin's own partner. Details closed: field NAMES only, never values (no secret_ref, no tenant id). Reasons: not_admin (no admin_type / permission not held by a built-in admin role), wrong_partner (Partner Admin, other partner), not_super_admin (Partner Admin downgrade), tenant_bound_elsewhere (tenant already used by another partner's location; Super Admin too).",
+      "required": ["actor", "target", "scope"],
+      "properties": {
+        "event_type": { "const": "auth.config.change_denied" },
+        "outcome": { "const": "denied" },
+        "actor": { "required": ["user_id"], "properties": { "user_id": { "$ref": "#/$defs/id" } } },
+        "target": {
+          "required": ["type", "id"],
+          "properties": { "type": { "enum": ["location_login_config", "partner"] }, "id": { "$ref": "#/$defs/id" } }
+        },
+        "scope": { "required": ["partner_id"] },
+        "details": {
+          "required": ["setting", "operation", "reason", "attempted_fields"],
+          "additionalProperties": false,
+          "properties": {
+            "setting": { "const": "location_login_config" },
+            "operation": { "enum": ["create", "update"] },
+            "reason": { "enum": ["not_admin", "wrong_partner", "not_super_admin", "tenant_bound_elsewhere"] },
+            "attempted_fields": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/login_config_field" } },
+            "actor_partner_id": { "$ref": "#/$defs/id" }
+          }
+        }
+      },
+      "allOf": [
+        { "if": { "required": ["details"], "properties": { "details": { "required": ["operation"], "properties": { "operation": { "const": "create" } } } } },
+          "then": { "properties": { "target": { "properties": { "type": { "const": "partner" } } } } },
+          "else": { "properties": { "target": { "properties": { "type": { "const": "location_login_config" } } }, "scope": { "required": ["location_ids"], "properties": { "location_ids": { "minItems": 1, "maxItems": 1 } } } } } },
+        { "if": { "required": ["details"], "properties": { "details": { "required": ["reason"], "properties": { "reason": { "const": "not_admin" } } } } },
+          "then": { "not": { "required": ["admin_type"] } },
+          "else": { "required": ["admin_type"] } },
+        { "if": { "required": ["details"], "properties": { "details": { "required": ["reason"], "properties": { "reason": { "enum": ["wrong_partner", "not_super_admin"] } } } } },
+          "then": { "properties": { "admin_type": { "const": "partner" } } } },
+        { "if": { "required": ["admin_type"], "properties": { "admin_type": { "const": "partner" } } },
+          "then": { "properties": { "details": { "required": ["actor_partner_id"] } } },
+          "else": { "properties": { "details": { "not": { "required": ["actor_partner_id"] } } } } }
+      ]
+    },
+    "auth.config.change_denied.config": {
       "description": "A refused config change (contract 7.4) [TL Decision 2026-11-02 8:39 PM]. Actor, setting and reason required. Details closed (no password/secret fields): setting, attempted_value, reason required; admin_type required when the actor is an admin (wrong_partner, out_of_range), absent for not_admin; scope.partner_id required when admin_type=partner [TL Decision 2026-11-02 8:48 PM].",
       "required": ["actor", "target"],
       "properties": {

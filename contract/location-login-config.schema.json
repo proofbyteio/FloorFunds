@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cachd-ones.invalid/contract/location-login-config.schema.json",
+  "title": "Location login config API, contract v1.1 (slice S2a, screen 9)",
+  "description": "Request/response bodies for the location login config API. Prose, check order, error table and DDL intent: v1.1-S2a-location-login-config.md. Table columns [SRC: LD \u00a74.1 L167]. secret_ref is WRITE-ONLY: it appears only in write requests, never in any response, event or log [SRC: LD \u00a74.1 L171 'secret_ref is never shown (only set / rotated on)'] [TL Decision, S2a brief]. Labels: [SRC], [Confirmed DEC-n], [TL Decision], ASSUMPTION, OPEN.",
+  "$defs": {
+    "id": {
+      "description": "UUID string; same rule as claims/audit schemas (format uuid plus 8-4-4-4-12 pattern, CR-01).",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "provider_kind": {
+      "description": "[SRC: LD \u00a74.1 L167; audit-events $defs.provider_kind].",
+      "enum": ["database", "entra"]
+    },
+    "tenant_id": {
+      "description": "Entra tenant id (tid). Lower-case canonical form in responses. The nil UUID is refused (ASSUMPTION A-7).",
+      "allOf": [
+        {"$ref": "#/$defs/id"},
+        {"not": {"const": "00000000-0000-0000-0000-000000000000"}}
+      ]
+    },
+    "tenant_ids": {
+      "description": "Column is uuid[] [SRC: LD \u00a74.1 L167]; the API accepts EXACTLY ONE for entra and none for database [TL Decision, S2a interim; LD \u00a74.2 L188 'a location lists one allowed tenant ID'].",
+      "type": "array",
+      "items": {"$ref": "#/$defs/tenant_id"},
+      "maxItems": 1
+    },
+    "oidc_authority": {
+      "description": "Absolute https BASE URL, scheme+host[:port] only, no path, query, fragment or userinfo, no trailing slash, e.g. https://login.microsoftonline.com. The login service builds {authority}/{tid}/v2.0 per request [TL Decision, S2a brief].",
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^https://[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252}[A-Za-z0-9])?(?::[0-9]{1,5})?$"
+    },
+    "oidc_client_id": {
+      "description": "Entra application (client) id; GUID (ASSUMPTION A-8).",
+      "$ref": "#/$defs/id"
+    },
+    "secret_ref_input": {
+      "description": "WRITE-ONLY, opaque. ASSUMPTION A-1: shaped like an AWS Secrets Manager ARN [SRC: LD \u00a74.1 L168 'secret_ref is an AWS Secrets Manager ARN']. Fixtures use fake account 000000000000 and the word FAKE. Secret kind (client secret vs certificate) deferred.",
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$"
+    },
+    "display_name": {
+      "description": "'Name shown on the sign-in page' [SRC: mockup 09]. Trimmed length 1..100 (ASSUMPTION A-9).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^\\S(?:.*\\S)?$"
+    },
+    "reason": {
+      "description": "Written reason. Required (non-null) for a downgrade [Confirmed DEC-096, DEC-098]. Trimmed length 1..500 (ASSUMPTION A-10; minimum length OPEN OQ-S2a-7). Stored in the change row and the event.",
+      "type": ["string", "null"],
+      "maxLength": 500
+    },
+    "slug": {
+      "description": "Server-generated, >=64 bits of randomness [SRC: LD \u00a74.3 L193]. Match rule after trim + ASCII lower-case [TL Decision, S2a brief].",
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62})$"
+    },
+    "login_config_write": {
+      "description": "Full replacement of the editable fields (PUT body and the login_config of a create). Every editable key is REQUIRED (send null / [] explicitly) so nothing is cleared silently. secret_ref: absent = keep current; string = replace (rotation); null = clear (only when switching to database). row_version is NOT in the body: it travels in If-Match. Unknown keys -> 422 unknown_field.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider_kind", "display_name", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "allow_db_fallback", "mfa_required"],
+      "properties": {
+        "provider_kind": {"$ref": "#/$defs/provider_kind"},
+        "display_name": {"$ref": "#/$defs/display_name"},
+        "entra_allowed_tenant_ids": {"$ref": "#/$defs/tenant_ids"},
+        "oidc_authority": {"oneOf": [{"$ref": "#/$defs/oidc_authority"}, {"type": "null"}]},
+        "oidc_client_id": {"oneOf": [{"$ref": "#/$defs/oidc_client_id"}, {"type": "null"}]},
+        "secret_ref": {"oneOf": [{"$ref": "#/$defs/secret_ref_input"}, {"type": "null"}]},
+        "allow_db_fallback": {"type": "boolean"},
+        "mfa_required": {"type": "boolean"},
+        "reason": {"$ref": "#/$defs/reason"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"provider_kind": {"const": "entra"}}, "required": ["provider_kind"]},
+          "then": {
+            "properties": {
+              "entra_allowed_tenant_ids": {"minItems": 1},
+              "oidc_authority": {"type": "string"},
+              "oidc_client_id": {"type": "string"},
+              "secret_ref": {"type": "string"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"provider_kind": {"const": "database"}}, "required": ["provider_kind"]},
+          "then": {
+            "properties": {
+              "entra_allowed_tenant_ids": {"maxItems": 0},
+              "oidc_authority": {"type": "null"},
+              "oidc_client_id": {"type": "null"},
+              "secret_ref": {"type": "null"},
+              "allow_db_fallback": {"const": false}
+            }
+          }
+        }
+      ]
+    },
+    "create_location_request": {
+      "description": "POST create: a location cannot be created without a provider choice [SRC: LD \u00a74.1 L169 'The location-creation screen requires a provider choice']. slug is server-generated (not accepted). On create an entra secret_ref must be a string (no current secret to keep).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["partner_id", "name", "login_config"],
+      "properties": {
+        "partner_id": {"$ref": "#/$defs/id"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "^\\S(?:.*\\S)?$"},
+        "login_config": {"$ref": "#/$defs/login_config_write"}
+      }
+    },
+    "secret_view": {
+      "description": "The only secret information ever returned [SRC: LD \u00a74.1 L171]. rotated_at = time of the latest change row whose changed_fields contains secret_ref (ASSUMPTION A-3); null when set is false.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["set", "rotated_at"],
+      "properties": {
+        "set": {"type": "boolean"},
+        "rotated_at": {"type": ["string", "null"], "format": "date-time"}
+      },
+      "if": {"properties": {"set": {"const": false}}},
+      "then": {"properties": {"rotated_at": {"type": "null"}}}
+    },
+    "login_config_view": {
+      "description": "GET / PUT 200 / POST 201 body. Closed: no secret_ref key exists (additionalProperties false). row_version mirrors the ETag.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["location_id", "partner_id", "slug", "name", "provider_kind", "display_name", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret", "allow_db_fallback", "mfa_required", "row_version", "created_by", "created_at", "updated_by", "updated_at"],
+      "properties": {
+        "location_id": {"$ref": "#/$defs/id"},
+        "partner_id": {"$ref": "#/$defs/id"},
+        "slug": {"$ref": "#/$defs/slug"},
+        "name": {"type": "string", "minLength": 1},
+        "provider_kind": {"$ref": "#/$defs/provider_kind"},
+        "display_name": {"$ref": "#/$defs/display_name"},
+        "entra_allowed_tenant_ids": {"$ref": "#/$defs/tenant_ids"},
+        "oidc_authority": {"oneOf": [{"$ref": "#/$defs/oidc_authority"}, {"type": "null"}]},
+        "oidc_client_id": {"oneOf": [{"$ref": "#/$defs/oidc_client_id"}, {"type": "null"}]},
+        "secret": {"$ref": "#/$defs/secret_view"},
+        "allow_db_fallback": {"type": "boolean"},
+        "mfa_required": {"type": "boolean"},
+        "row_version": {"type": "integer", "minimum": 1},
+        "created_by": {"$ref": "#/$defs/id"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "updated_by": {"$ref": "#/$defs/id"},
+        "updated_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "audited_state": {
+      "description": "The before/after shape shared by the change row and auth.provider.changed. Exactly these four keys; never secret_ref [SRC: LD \u00a74.1 L184 'before/after provider kind and tenant ids, no secrets'] [Confirmed DEC-096/098 for the two flags].",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider_kind", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"],
+      "properties": {
+        "provider_kind": {"$ref": "#/$defs/provider_kind"},
+        "entra_allowed_tenant_ids": {"$ref": "#/$defs/tenant_ids"},
+        "allow_db_fallback": {"type": "boolean"},
+        "mfa_required": {"type": "boolean"}
+      }
+    },
+    "changed_field": {
+      "description": "Field NAMES only (never values). secret_ref here means 'replaced or cleared', the value is never recorded (ASSUMPTION A-4).",
+      "enum": ["provider_kind", "display_name", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret_ref", "allow_db_fallback", "mfa_required"]
+    },
+    "change_history": {
+      "description": "GET .../login-config/changes body (screen 9 'Change history' [SRC: mockup 09]). Newest first. Reads follow org:V (ASSUMPTION A-11; OPEN OQ-S2a-9 whether reason text is shown to view-only readers).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["change_id", "at", "actor_user_id", "admin_type", "change_kind", "changed_fields", "before", "after", "reason", "row_version"],
+            "properties": {
+              "change_id": {"$ref": "#/$defs/id"},
+              "at": {"type": "string", "format": "date-time"},
+              "actor_user_id": {"$ref": "#/$defs/id"},
+              "admin_type": {"enum": ["super", "partner"]},
+              "change_kind": {"enum": ["created", "updated"]},
+              "changed_fields": {"type": "array", "items": {"$ref": "#/$defs/changed_field"}, "uniqueItems": true},
+              "before": {"oneOf": [{"$ref": "#/$defs/audited_state"}, {"type": "null"}]},
+              "after": {"$ref": "#/$defs/audited_state"},
+              "reason": {"$ref": "#/$defs/reason"},
+              "row_version": {"type": "integer", "minimum": 1}
+            }
+          }
+        }
+      }
+    },
+    "error_code": {
+      "description": "Top-level error codes; table in the spec \u00a75.",
+      "enum": ["unauthenticated", "forbidden", "forbidden_scope", "not_found", "precondition_required", "if_match_invalid", "concurrency_conflict", "malformed_body", "validation_failed", "not_super_admin", "reason_required"]
+    },
+    "field_error_code": {
+      "description": "Per-field codes inside a 422 (spec \u00a75.2).",
+      "enum": ["required", "unknown_field", "type", "provider_kind_invalid", "display_name_invalid", "tenant_count", "tenant_id_format", "tenant_bound_elsewhere", "oidc_authority_format", "oidc_client_id_format", "secret_ref_required", "secret_ref_format", "field_not_allowed", "fallback_not_applicable", "partner_id_format", "name_invalid"]
+    },
+    "error_response": {
+      "description": "Every non-2xx body except 401 (no body, WWW-Authenticate only, as LD row 148 pattern). Never echoes submitted values (no secret_ref, no tenant ids).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error"],
+      "properties": {
+        "error": {"$ref": "#/$defs/error_code"},
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "code"],
+            "properties": {
+              "field": {"description": "JSON pointer-ish name, e.g. entra_allowed_tenant_ids/0 or login_config/secret_ref.", "type": "string", "minLength": 1},
+              "code": {"$ref": "#/$defs/field_error_code"}
+            }
+          }
+        },
+        "current_row_version": {"description": "409 only: lets the UI show the 'Someone else changed this setting' banner [SRC: mockup 09] and reload.", "type": "integer", "minimum": 1}
+      },
+      "allOf": [
+        {"if": {"properties": {"error": {"const": "validation_failed"}}}, "then": {"required": ["fields"]}, "else": {"not": {"required": ["fields"]}}},
+        {"if": {"properties": {"error": {"const": "concurrency_conflict"}}}, "then": {"required": ["current_row_version"]}, "else": {"not": {"required": ["current_row_version"]}}}
+      ]
+    }
+  }
+}
