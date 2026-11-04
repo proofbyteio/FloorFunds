@@ -122,29 +122,41 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         WriteDeniedAsync(AuditOutbox.Denied(Guid.CreateVersion7(), Now(), who.Id, who.RequestId, reason, targetPartner, location, attempted));
 
     /// <summary>The body as read: <see cref="TooLarge"/> = over 64 KiB by Content-Length (nothing read) or while reading (chunked or
-    /// unknown length: reading stops at the first buffer past the cap) [TLD 2026-11-04 9:28, P3-2]. Bytes is null when TooLarge.</summary>
-    readonly record struct ReadBody(byte[]? Bytes, bool TooLarge);
+    /// unknown length: reading stops at the first buffer past the cap) [TLD 2026-11-04 9:28, P3-2]. <see cref="TimedOut"/> = not fully
+    /// received within BodyReadTimeout [TLD 2026-11-04 9:53/10:02, P3-7]. Bytes is null when TooLarge or TimedOut.</summary>
+    readonly record struct ReadBody(byte[]? Bytes, bool TooLarge, bool TimedOut = false);
 
     /// <summary>Reads at most 64 KiB + one 8 KiB buffer. Reaching the end marks the body consumed (<see cref="RequestEnvelope"/>);
     /// a body left unread gets Connection: close and a bounded drain after the response, so the client sees the status, not a reset.</summary>
-    static async Task<ReadBody> ReadBodyAsync(HttpContext ctx)
+    async Task<ReadBody> ReadBodyAsync(HttpContext ctx)
     {
         var req = ctx.Request;
+        // Checked before the first read, so Expect: 100-continue over the cap never gets a 100 Continue [P3-8].
         if (req.ContentLength is > MaxBody) return new(null, true);
         using var ms = new MemoryStream();
-        var buf = new byte[8192];
-        int n;
-        while ((n = await req.Body.ReadAsync(buf)) > 0)
+        var (end, _) = await RequestEnvelope.ReadBoundedAsync(ctx, opt.BodyReadTimeout, MaxBody, seg => ms.Write(seg.Span));
+        switch (end)
         {
-            if (ms.Length + n > MaxBody) return new(null, true);
-            ms.Write(buf, 0, n);
+            case RequestEnvelope.BodyEnd.OverLimit: return new(null, true);
+            case RequestEnvelope.BodyEnd.TimedOut: return new(null, false, true);
+            case RequestEnvelope.BodyEnd.Failed: throw new BadHttpRequestException("request body read failed");
         }
         RequestEnvelope.MarkBodyRead(ctx);
         return new(ms.ToArray(), false);
     }
 
+    /// <summary>408 request_timeout [TLD 2026-11-04 9:53/10:02, P3-7]: ONE Warning line (request_id only, no exception), nothing
+    /// written. The body stays unread, so RequestEnvelope adds Connection: close; its drain does not log again.</summary>
+    Fail BodyTimeout(HttpContext ctx, Caller who)
+    {
+        log.LogWarning("admin-api request body not received within {Seconds} s: 408 request_timeout, request_id={RequestId}",
+            opt.BodyReadTimeout.TotalSeconds, who.RequestId);
+        RequestEnvelope.MarkWarned(ctx);
+        return Err(408, "request_timeout");
+    }
+
     /// <summary>For attributing a refusal only: any read problem (too large, aborted) = no body; never changes the answer.</summary>
-    static async Task<byte[]?> TryReadBodyAsync(HttpContext ctx)
+    async Task<byte[]?> TryReadBodyAsync(HttpContext ctx)
     {
         try { return (await ReadBodyAsync(ctx)).Bytes; }
         catch (Exception x) when (x is BadHttpRequestException or IOException or OperationCanceledException) { return null; }
@@ -333,6 +345,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             throw Err(403, "forbidden");
         }
         var read = await ReadBodyAsync(ctx);
+        // [TLD 2026-11-04 9:53/10:02, P3-7] an incomplete body is answered at once (before steps 3-6): nothing to evaluate, nothing written.
+        if (read.TimedOut) throw BodyTimeout(ctx, who);
         var body = ParseObject(read.Bytes);
         // Steps 3-4.
         if (loc is not { } location) throw Err(404, "not_found");
@@ -464,6 +478,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             throw Err(403, "forbidden");
         }
         var read = await ReadBodyAsync(ctx);
+        if (read.TimedOut) throw BodyTimeout(ctx, who); // P3-7, as PUT
         // Steps 3-4 (create: the body's partner_id). Needs the body, so oversize is 413 [TLD 2026-11-04 9:28, P3-2] and a non-object
         // body is 400 here (authorised callers only); neither writes anything.
         if (read.TooLarge) throw Err(413, "payload_too_large");

@@ -285,6 +285,57 @@ Branch `fix/db-kit-kf` off 3e12b8d (kept apart from P3). No migration, spec or a
 - **Mutation spot-checks** (restored after each; final run 323/0): `secret_ref` dropped from `ServerFilled` → FAILs (≥ 6 shown, create field_not_writable; output head-limited); startup `SecretRefAllowed(EntraSecretRef)` disabled → FAILs (≥ 6 shown, each startup refusal case); schema copy with `secret_ref` re-added to the write body and `secret_ref_required` in the enum → 18 FAILs in `check_v1_1_s2a.py`.
 - **Open (for TL)**: (q1) a changed `Entra:SecretRef` does not rewrite existing entra rows (as A-21) — OK? (q2) hide `secret {set, rotated_at}` from Partner Admin / org:V ("Super Admin GET may show")? (q3) confirm `secret_ref_format` removal. Evidence: `/tmp/sse-llc1/p3f-evidence.txt`.
 
+## P3 HTTP body handling — TLD 9:53/10:02 P3-7/P3-8/P3-9/P3-10 (commit B, on top of commit A 5db350a)
+
+Findings from SSE2's P3 review (`/tmp/sse2-fverify/S2A-P3-REVIEW.md`; the spec still cites the snapshot md5 bfaa2efb, the original is now c6f7258b, see OPEN below). TL decisions 9:53 and 10:02 AM PT:
+
+- **P3-7 [TLD 2026-11-04 9:53/10:02] 408 `request_timeout`.** It is an **S2a-only** top-level code: it is in `location-login-config.schema.json` `error_code` (next to `payload_too_large`) and in spec §5, in the same way as `payload_too_large` (TLD 9:28).
+  - **`contract/errors.md` stays frozen** (md5 1e97dae4d3da00c429d56c0f2f78464e). The general code waits for v1.1.
+  - `AdminApiOptions.BodyReadTimeout` sets the deadline for the whole body. It is a code default of 10 s (**DRAFT**), with no config key, and the validator requires (0, 60] s. The checks set it to 1 s.
+  - A body under 64 KiB that is not fully received in time gets 408 `{"error":"request_timeout"}`, `Connection: close` (the body is unread) and `X-Request-ID`.
+  - Nothing is written: no row and no event. It logs ONE Warning line, `admin-api request body not received within N s: 408 request_timeout, request_id=…`, with no exception object.
+  - On PUT the 408 is returned as soon as the read gives up, which is right after step 2 and before steps 3–6. The body is read once there, so this is an SSE reading, listed in OPEN. 401/403 still come first: an unpermitted slow body gets 403 plus the `not_admin` event, as before.
+- **P3-8 [TLD 2026-11-04 9:53/10:02] drain log and `Expect`.**
+  - **Root cause found:** the body reads before B cancelled Kestrel's request-body read with a `CancellationToken`. That left the reader "already in progress", and Kestrel then logged `InvalidOperationException: Reading is already in progress` at **Error with a stack trace**. It also closed the connection, by accident.
+  - Both reads (handler and drain) now go through `RequestEnvelope.ReadBoundedAsync`. It uses the `PipeReader` with a timer that calls `CancelPendingRead`, so no token is cancelled and the pipe stays consistent.
+  - A drain that reaches 2 s logs ONE Warning line (`admin-api body drain timed out after 2 s, N bytes discarded, request_id=…`), with no exception and no stack trace. It does not log if the request already logged its 408 line. It then calls `ctx.Abort()`, so the connection closes at the 2 s bound as before; the client has had 2 s to read the response.
+  - `Expect: 100-continue` with `Content-Length` over 64 KiB is refused by length before the first read. The client gets 413 immediately and never a `100 Continue`.
+  - An `Expect` request whose body was never read is not drained. There is no `Abort` there either: an abort right after `CompleteAsync` lost the response in a test run, giving a reset.
+- **P3-9 [TLD 2026-11-04 9:53/10:02]:** no code change. Backlog **V11-HTTPFRAMING** is added in spec §12, next to V11-AUDITRATE and V11-TIMING.
+- **P3-10 [TLD 2026-11-04 9:53/10:02]:** the dead global `k.Limits.MaxRequestBodySize = 1 << 20` is removed from `AdminApiHost.cs` (`AddServerHeader = false` is kept).
+  - The middleware still lifts the framework size limit per request, and now also the minimum body data rate (`IHttpMinRequestBodyDataRateFeature`), so only the API's deadline applies.
+  - Spec §3.3, §5.1 and §13 OQ-P3-9 no longer mention "Kestrel's 1 MiB". §5.1 no longer says "+ one 8 KiB buffer", because bytes already buffered past the cap are discarded and never parsed.
+- A body read that fails (reset, bad framing) still ends in 500, as before: `BadHttpRequestException` is caught in `Run`, and on the 403 attribution path it means no body.
+- **Checks (Admin.Api.Checks 339 → 360, section 7e, raw sockets, a second host with `BodyReadTimeout` 1 s and a Warning-level `CaptureLogger`):**
+  - P3-10: the Kestrel `MaxRequestBodySize` is the framework default; the `BodyReadTimeout` default is 10 s.
+  - 408 for a slow SA PUT and a slow PA POST: body, `Connection: close`, `X-Request-ID`, no reset, received at or after the deadline.
+  - Exactly one Warning line each, with no exception, no newline and no stack text; it names the PUT's `request_id`.
+  - Nothing written: no event, change rows, location count or row_version change.
+  - 401 (immediately) and 403 + `not_admin` for slow bodies, never 408; no 408 log for those.
+  - `Expect: 100-continue` + 8 MiB PUT and POST: 413 immediately, no `100 Continue` bytes, nothing logged or written.
+  - Drain timeout (401, declared 8 MiB, client stalls): closes at the 2 s bound with one Warning line and no stack.
+  - A normal GET still works afterwards, and there is no Error-level line.
+  - The `CaptureLogger` gained an optional minimum level and an `Entries` list (level, text, whether there is an exception). `Lines` is unchanged.
+  - Auth.Data.Checks stays at **162**. The crosscheck validates the 408 bodies against the schema.
+- **Spec checker** `check_v1_1_s2a.py` 328 → **345**: the 408 body is valid, fields and unknown codes are rejected, the enum has `request_timeout` once next to `payload_too_large`, errors.md has no `request_timeout`, plus spec pins (the §5 row, step 7, §5.1, V11-HTTPFRAMING in §12, the §13 rulings, Sources), no stale "Kestrel 1 MiB" / "8 KiB buffer" text, and the 408 row's position.
+- **Mutation spot-checks** (`/tmp/sse-llc1/c2/mut.sh`, run sequentially, each restored and its md5 verified):
+
+  | Mutation | Admin.Api.Checks | Auth.Data.Checks |
+  |---|---|---|
+  | MB1 no 408 (both throws removed) | 356/4 | 162/0 |
+  | MB2 the 408 does not mark warned, so it logs twice | 358/2 | 162/0 |
+  | MB3 `Expect` requests drained | 358/2 | 162/0 |
+  | MB4 global 1 MiB limit re-added | 359/1 | 162/0 |
+  | MB5 no `Content-Length` pre-check (so `Expect` gets a 100) | 356/4 | 162/0 |
+  | MB6 drain Warning carries an exception | 359/1 | 162/0 |
+
+- **Observation (not changed):** after an `Expect` 413 the server closes the connection about 6 s after the response, because Kestrel closes it itself (logged as INFO in the checks). The client already has the full 413 at once.
+- **OPEN (SSE, for TL):**
+  - Is the 10 s whole-body deadline the right value, and should it stay a code default with no config key?
+  - Is it right that PUT answers 408 before steps 3–6?
+  - The S2A-P3-REVIEW original md5 has changed (c6f7258b vs the cited bfaa2efb).
+- Evidence: `/tmp/sse-llc1/p3j-evidence.txt` (script `/tmp/sse-llc1/run/p3j-verify.sh`, a fresh copy of the template; k1 run for real with prefix `ff_kit_sseb1`).
+
 ## P3 C1 follow-up — TLD 10:02 Q1/Q2/Q3 + TLD 10:12 (commit A, on top of merge e159336)
 
 Review cited: SSE2 GO on db8f360, `/tmp/sse2-fverify/C1-db8f360-REVIEW.md` md5 2caa1aba7c5952c89c10b9eaa02ac429 (snapshot `/tmp/sse-llc1/C1-db8f360-REVIEW.snapshot.md`). **C1-2 is Info only [TLD 2026-11-04 10:12, confirmed directly]:** no traversal rejects were added; the ARN suffix stays opaque.

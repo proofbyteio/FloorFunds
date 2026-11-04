@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Server.Kestrel.Core.Features;
 using Npgsql;
 
 namespace Admin.Api;
@@ -22,7 +23,9 @@ public static class AdminApiHost
         // Request logs at Information would record paths per request; keep framework logs at Warning (no bodies, no headers).
         b.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
         if (extraLogger is not null) b.Logging.AddProvider(extraLogger);
-        b.WebHost.UseKestrel(k => { k.AddServerHeader = false; k.Limits.MaxRequestBodySize = 1 << 20; });
+        // No global body-size limit here [TLD 2026-11-04 10:02, P3-10]: the 1 MiB one was dead (lifted per request by RequestEnvelope;
+        // every read is bounded by the API).
+        b.WebHost.UseKestrel(k => { k.AddServerHeader = false; });
         if (opt.Urls.Length > 0) b.WebHost.UseUrls(opt.Urls);
         b.Services.AddSingleton(opt);
         b.Services.AddSingleton(ds);
@@ -66,24 +69,30 @@ public static class AdminApiHost
 /// 404; a client value is ignored [TLD 2026-11-04 9:04 OQ-P3-3, 9:20 name, 9:28 P3-4]. (2) A request body the handler did not read to
 /// the end (oversize 413, or a 401/403/404/405 that never needed it) [TLD 2026-11-04 9:28, P3-2]: the response gets Connection: close,
 /// is flushed, then at most 1 MiB / 2 s more is read and discarded, so the client receives the status and headers instead of a reset.
-/// Every read is bounded here or in LoginConfigApi.ReadBodyAsync (64 KiB), so Kestrel's own body limit is lifted per request (else a
-/// declared Content-Length over 1 MiB could not be drained at all).
+/// Every read is bounded here or in LoginConfigApi.ReadBodyAsync (64 KiB, BodyReadTimeout), so Kestrel's own body-size limit and
+/// minimum body data rate are lifted per request: one deadline (408 request_timeout, P3-7) instead of Kestrel's own abort.
+/// (3) [TLD 2026-11-04 9:53/10:02, P3-8] a drain that hits its 2 s bound logs ONE Warning line (request_id, bytes, no exception, no
+/// stack trace), unless the request already logged its Warning (408). A request with Expect: 100-continue whose body was never read
+/// is not drained at all: the client is waiting for us and has sent nothing, so no 100 Continue is ever produced.
 /// </summary>
 public static class RequestEnvelope
 {
     public const string Header = "X-Request-ID";
     public const int DrainMaxBytes = 1 << 20;
     static readonly TimeSpan DrainMaxTime = TimeSpan.FromSeconds(2);
-    static readonly object IdKey = new(), ReadKey = new();
+    static readonly object IdKey = new(), ReadKey = new(), WarnedKey = new();
 
     public static string Id(HttpContext ctx) => (string)ctx.Items[IdKey]!;
     public static void MarkBodyRead(HttpContext ctx) => ctx.Items[ReadKey] = true;
+    /// <summary>The request has logged its one Warning line (408); the drain stays silent.</summary>
+    public static void MarkWarned(HttpContext ctx) => ctx.Items[WarnedKey] = true;
 
     public static async Task InvokeAsync(HttpContext ctx, RequestDelegate next)
     {
         var id = Guid.CreateVersion7().ToString("D");
         ctx.Items[IdKey] = id;
         if (ctx.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit) limit.MaxRequestBodySize = null;
+        if (ctx.Features.Get<IHttpMinRequestBodyDataRateFeature>() is { } rate) rate.MinDataRate = null;
         var canHaveBody = ctx.Features.Get<IHttpRequestBodyDetectionFeature>()?.CanHaveBody ?? true;
         bool Unread() => canHaveBody && ctx.Items[ReadKey] is not true;
         ctx.Response.OnStarting(() =>
@@ -95,14 +104,47 @@ public static class RequestEnvelope
         await next(ctx);
         if (!Unread()) return;
         await ctx.Response.CompleteAsync();
-        using var cts = new CancellationTokenSource(DrainMaxTime);
-        var buf = new byte[16 * 1024];
-        long drained = 0;
+        // Expect: 100-continue and nothing read: the client waits for a 100 Continue and has sent no body bytes; nothing to drain [P3-8].
+        // (No Abort here: right after CompleteAsync the response may not be on the wire yet, and an abort would lose it.)
+        if (ctx.Request.Headers.Expect.Any(e => string.Equals(e, "100-continue", StringComparison.OrdinalIgnoreCase))) return;
+        var (end, drained) = await ReadBoundedAsync(ctx, DrainMaxTime, DrainMaxBytes, null);
+        if (end == BodyEnd.TimedOut && ctx.Items[WarnedKey] is not true)
+            ctx.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Admin.Api.RequestEnvelope")
+                .LogWarning("admin-api body drain timed out after {Seconds} s, {Bytes} bytes discarded, request_id={RequestId}",
+                    (int)DrainMaxTime.TotalSeconds, drained, id);
+        // After a timed-out drain the client has had DrainMaxTime to read the response: close now rather than let Kestrel keep the
+        // connection open. (Before P3-8 the cancelled read did this by accident, logging an Error with a stack trace.)
+        if (end == BodyEnd.TimedOut) ctx.Abort();
+    }
+
+    public enum BodyEnd { Complete, OverLimit, TimedOut, Failed }
+
+    /// <summary>
+    /// Reads the request body through its PipeReader, at most <paramref name="max"/> bytes and <paramref name="deadline"/> of wall time
+    /// [TLD 2026-11-04 9:53/10:02, P3-7/P3-8]. The deadline uses CancelPendingRead, not a cancellation token: a cancelled token leaves
+    /// Kestrel's body reader "already in progress" and Kestrel then logs an Error with a stack trace at the end of the request.
+    /// <paramref name="sink"/> receives each segment (null = discard). Never throws for a client fault (reset, bad framing): Failed.
+    /// </summary>
+    public static async Task<(BodyEnd End, long Bytes)> ReadBoundedAsync(HttpContext ctx, TimeSpan deadline, long max, Action<ReadOnlyMemory<byte>>? sink)
+    {
+        var reader = ctx.Request.BodyReader;
+        long total = 0;
+        using var timer = new CancellationTokenSource(deadline);
+        using var reg = timer.Token.Register(() => reader.CancelPendingRead());
         try
         {
-            int n;
-            while (drained < DrainMaxBytes && (n = await ctx.Request.Body.ReadAsync(buf, cts.Token)) > 0) drained += n;
+            while (true)
+            {
+                var r = await reader.ReadAsync();
+                if (r.IsCanceled) { reader.AdvanceTo(r.Buffer.Start); return (BodyEnd.TimedOut, total); }
+                var len = r.Buffer.Length;
+                if (total + len > max) { reader.AdvanceTo(r.Buffer.End); return (BodyEnd.OverLimit, total + len); }
+                if (sink is not null) foreach (var seg in r.Buffer) sink(seg);
+                total += len;
+                reader.AdvanceTo(r.Buffer.End);
+                if (r.IsCompleted) return (BodyEnd.Complete, total);
+            }
         }
-        catch (Exception x) when (x is BadHttpRequestException or IOException or OperationCanceledException) { }
+        catch (Exception x) when (x is BadHttpRequestException or IOException or OperationCanceledException) { return (BodyEnd.Failed, total); }
     }
 }

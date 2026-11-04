@@ -348,6 +348,22 @@ exp("spec 10:02: q1-q3 no longer listed as OPEN", ["stale"] if "**OPEN (SSE, for
 for _pin in ["**Config is read once at startup; changes apply after a restart, no hot reload [TLD 2026-11-04 10:12].**",
              "`EntraDeployment` is a plain carrier and does not validate", "**TLD 10:12 [TLD 2026-11-04 10:12]:**", "C1-2 (SSE2 review of db8f360) is Info only", "| TLD 10:12 |"]:
     exp("spec pin 10:12: " + _pin[:60], [] if _pin in spec else ["missing"], False)
+# ---- TLD 2026-11-04 9:53/10:02: SSE2 review P3-7 (408), P3-8 (drain log, Expect), P3-9 (V11-HTTPFRAMING), P3-10 (no global 1 MiB) ----
+exp("9:53 408 body {error: request_timeout} ok", errs(LLC, ER, {"error": "request_timeout"}), False)
+exp("9:53 request_timeout with fields rejected", errs(LLC, ER, {"error": "request_timeout", "fields": [{"field": "name", "code": "x"}]}), True)
+exp("9:53 unknown code timeout still rejected", errs(LLC, ER, {"error": "timeout"}), True)
+exp("9:53 schema: request_timeout listed once, next to payload_too_large", [] if (lambda e: e.count("request_timeout") == 1 and e.index("request_timeout") == e.index("payload_too_large") + 1)(S[LLC]["$defs"]["error_code"]["enum"]) else ["enum"], False)
+exp("9:53 frozen errors.md has no request_timeout (S2a-only code)", ["found"] if "request_timeout" in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "errors.md")).read() else [], False)
+for _pin in ["| 408 | `request_timeout` | step 7: body (under 64 KiB) not fully received within the read deadline (DRAFT 10 s); `Connection: close`; S2a-only code, frozen v1 `errors.md` unchanged, the general code waits for v1.1 [TLD 2026-11-04 9:53/10:02, P3-7] | none (nothing written) |",
+             "**Slow body [TLD 2026-11-04 9:53/10:02, P3-7]:**", "**Slow bodies, `Expect`, drain log [TLD 2026-11-04 9:53/10:02, P3-7/P3-8]:**",
+             "never a `100 Continue`", "ONE Warning log line (`request_id`, no exception, no stack trace)",
+             "There is no server-wide body-size limit [TLD 2026-11-04 9:53/10:02, P3-10]",
+             "**V11-HTTPFRAMING** (backlog, TLD 2026-11-04 9:53/10:02, SSE2 review P3-9; no S2a code change)",
+             "**P3-9** HTTP framing edge cases. **No code change: backlog V11-HTTPFRAMING** (§12).", "| TLD 9:53 / 10:02 (P3-7..P3-10) |"]:
+    exp("spec pin 9:53: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+exp("spec 9:53: V11-HTTPFRAMING in §12", [] if "V11-HTTPFRAMING" in spec.split("## 12.")[1].split("## 13.")[0] else ["missing"], False)
+exp("spec 9:53 P3-10: no 'Kestrel's 1 MiB' / 'Kestrel 1 MiB' / '8 KiB buffer' left", [k for k in ["Kestrel's 1 MiB", "Kestrel 1 MiB", "Kestrel's own 1 MiB", "8 KiB buffer"] if k in spec], False)
+exp("spec 9:53: the 408 row sits before 400 malformed_body in the §5 table", [] if spec.find("| 408 | `request_timeout`") < spec.find("| 400 | `malformed_body`") and spec.find("| 408 | `request_timeout`") > spec.find("| 413 | `payload_too_large`") else ["order"], False)
 exp("spec 10:12: no stale 'validated with the same rules and messages as the admin API'", ["stale"] if "validated with the same rules and messages as the admin API" in spec else [], False)
 exp("spec 10:02: access_rules example pins secret_visible_to super_admin", [] if EX["access_rules"].get("secret_visible_to") == ["super_admin"] else ["missing"], False)
 

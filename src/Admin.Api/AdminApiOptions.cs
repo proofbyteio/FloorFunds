@@ -33,6 +33,11 @@ public sealed record AdminApiOptions
     public required IReadOnlyList<SecurityKey> SigningKeys { get; init; }
     public required string AuditSchemaPath { get; init; }
     public string Urls { get; init; } = "";
+    /// <summary>
+    /// Whole-body read deadline [TLD 2026-11-04 9:53/10:02, P3-7]: a body (under the 64 KiB cap) not fully received in time gets
+    /// 408 request_timeout. Code default 10 s (DRAFT; no config key); the in-process checks set a short value.
+    /// </summary>
+    public TimeSpan BodyReadTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
     static readonly Regex AuthorityRe = new(@"^https://[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?::[0-9]{1,5})?\z", RegexOptions.CultureInvariant);
     static readonly Regex AccountRe = new(@"^[0-9]{12}\z", RegexOptions.CultureInvariant);
@@ -74,6 +79,7 @@ public sealed record AdminApiOptions
             throw new InvalidOperationException("config BackofficeAuth:JwksPath must hold at least one RSA signing key (RS256 only)");
         if (!File.Exists(AuditSchemaPath)) throw new InvalidOperationException("audit-events.schema.json not found (Audit:SchemaPath)");
         _ = new NpgsqlConnectionStringBuilder(ConnectionString);
+        if (BodyReadTimeout <= TimeSpan.Zero || BodyReadTimeout > TimeSpan.FromSeconds(60)) throw new InvalidOperationException("BodyReadTimeout must be in (0, 60] s");
         return this with { EntraClientId = cid.ToString("D") };
     }
 

@@ -521,7 +521,7 @@
       }
     },
     "error_code": {
-      "description": "Top-level error codes; table in the spec \u00a75. No forbidden_scope code: an out-of-scope location answers exactly like a missing one (404 not_found) [TLD 2026-11-04 7:39, OQ-S2a-3]. payload_too_large = 413, body over 64 KiB by Content-Length or while reading, authorised callers only, nothing written [TLD 2026-11-04 9:28, P3-2].",
+      "description": "Top-level error codes; table in the spec \u00a75. No forbidden_scope code: an out-of-scope location answers exactly like a missing one (404 not_found) [TLD 2026-11-04 7:39, OQ-S2a-3]. payload_too_large = 413, body over 64 KiB by Content-Length or while reading, authorised callers only, nothing written [TLD 2026-11-04 9:28, P3-2]. request_timeout = 408, a body under the cap not fully received within the read deadline, authorised callers only, nothing written; S2a-only, frozen v1 errors.md unchanged, the general code waits for v1.1 [TLD 2026-11-04 9:53/10:02, P3-7].",
       "enum": [
         "unauthenticated",
         "forbidden",
@@ -531,6 +531,7 @@
         "concurrency_conflict",
         "malformed_body",
         "payload_too_large",
+        "request_timeout",
         "validation_failed",
         "not_super_admin",
         "reason_required"

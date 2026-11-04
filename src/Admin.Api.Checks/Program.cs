@@ -1079,6 +1079,145 @@ try
         Ok("P3-4/P3-2: no events from 405/404 either", (await NewEvents()).Count == 0);
     }
 
+    // ================= 7e. 408 request_timeout (TLD 9:53/10:02 P3-7), drain Warning + Expect: 100-continue (P3-8), no global limit (P3-10) =================
+    {
+        var port3 = FreePort(port);
+        Console.WriteLine($"INFO body-timeout port {port3}");
+        var wlog = new CaptureLogger(LogLevel.Warning);
+        await using var app3 = await AdminApiHost.BuildAsync(Opts() with { Urls = $"http://127.0.0.1:{port3}", BodyReadTimeout = TimeSpan.FromSeconds(1) }, dir, extraLogger: wlog);
+        await app3.StartAsync();
+        var kopt = app3.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions>>().Value;
+        Ok("P3-10: no global Kestrel body limit set (MaxRequestBodySize is the framework default 30000000, not 1 MiB)", kopt.Limits.MaxRequestBodySize == 30_000_000, $"{kopt.Limits.MaxRequestBodySize}");
+        Ok("P3-7: BodyReadTimeout default is 10 s (code default, DRAFT)", new AdminApiOptions { ConnectionString = "x", EntraAuthority = "x", EntraClientId = "x", EntraSecretRef = "x", SecretAccountIds = new HashSet<string>(), SecretRegions = new HashSet<string>(), TokenIssuer = "x", SigningKeys = [], AuditSchemaPath = "x" }.BodyReadTimeout == TimeSpan.FromSeconds(10));
+        // Raw client: sends the head, then `first` body bytes, then stalls (never sends the rest) until the response is read.
+        // expect = send Expect: 100-continue and NO body bytes; any "HTTP/1.1 100" interim line is reported.
+        async Task<(int Status, Dictionary<string, string> H, string Body, string? ReadErr, long Ms, bool Saw100, long ClosedMs)> Stall(string method, string path, string? token,
+            long contentLength, int first, bool expect = false, string? ifMatch = null)
+        {
+            using var tcp = new TcpClient();
+            await tcp.ConnectAsync(IPAddress.Loopback, port3);
+            var st = tcp.GetStream();
+            var head = new StringBuilder($"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port3}\r\nContent-Type: application/json\r\nContent-Length: {contentLength}\r\n");
+            if (token is not null) head.Append($"Authorization: Bearer {token}\r\n");
+            if (ifMatch is not null) head.Append($"If-Match: {ifMatch}\r\n");
+            if (expect) head.Append("Expect: 100-continue\r\n");
+            head.Append("\r\n");
+            var sw = Stopwatch.StartNew();
+            await st.WriteAsync(Encoding.ASCII.GetBytes(head.ToString()));
+            if (!expect && first > 0) await st.WriteAsync(Encoding.ASCII.GetBytes("{\"name\":\"" + new string('a', first - 9)));
+            var acc = new List<byte>(); var buf = new byte[8192]; string? err = null; int status = 0; long ms = 0;
+            var h = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); var body = "";
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            try
+            {
+                int hdrEnd = -1;
+                while (hdrEnd < 0)
+                {
+                    var n = await st.ReadAsync(buf, cts.Token);
+                    if (n == 0) throw new IOException("EOF before headers");
+                    acc.AddRange(buf.AsSpan(0, n).ToArray());
+                    hdrEnd = Encoding.ASCII.GetString(acc.ToArray()).IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                }
+                ms = sw.ElapsedMilliseconds;
+                var lines = Encoding.ASCII.GetString(acc.ToArray(), 0, hdrEnd).Split("\r\n");
+                status = int.Parse(lines[0].Split(' ')[1]);
+                foreach (var l in lines.Skip(1)) { var i = l.IndexOf(':'); h[l[..i].Trim()] = l[(i + 1)..].Trim(); }
+                var want = h.TryGetValue("Content-Length", out var cl) ? int.Parse(cl) : 0;
+                while (acc.Count - (hdrEnd + 4) < want)
+                {
+                    var n = await st.ReadAsync(buf, cts.Token);
+                    if (n == 0) throw new IOException("EOF before body end");
+                    acc.AddRange(buf.AsSpan(0, n).ToArray());
+                }
+                body = Encoding.UTF8.GetString(acc.ToArray(), hdrEnd + 4, want);
+            }
+            catch (Exception x) when (x is IOException or SocketException or OperationCanceledException) { err = x.InnerException?.Message ?? x.Message; }
+            var sw2 = Stopwatch.StartNew();
+            try { using var c2 = new CancellationTokenSource(TimeSpan.FromSeconds(10)); int n; while (err is null && (n = await st.ReadAsync(buf, c2.Token)) > 0) acc.AddRange(buf.AsSpan(0, n).ToArray()); }
+            catch (Exception x) when (x is IOException or SocketException or OperationCanceledException) { }
+            var closedMs = sw2.ElapsedMilliseconds;
+            var saw100 = Encoding.ASCII.GetString(acc.ToArray()).Contains("HTTP/1.1 100", StringComparison.Ordinal);
+            if (status >= 400 && body.Length > 0) responsesForSchema.Add(("error_response", body));
+            if (h.TryGetValue(LoginConfigApi.RequestIdHeader, out var rid)) allCorr.Add(rid);
+            return (status, h, body, err, ms, saw100, closedMs);
+        }
+        // The warnings logged since `mark`; each must be one line, no exception object, no stack trace text.
+        List<CaptureLogger.Entry> WarnSince(int mark) => wlog.Entries.Skip(mark).ToList();
+        bool Clean(CaptureLogger.Entry e) => e.Level == LogLevel.Warning && !e.HasException && !e.Text.Contains('\n') && !e.Text.Contains(" at ");
+        async Task<List<CaptureLogger.Entry>> Settle(int mark) { await Task.Delay(300); return WarnSince(mark); }
+        bool Is408((int Status, Dictionary<string, string> H, string Body, string? ReadErr, long Ms, bool Saw100, long ClosedMs) x) =>
+            x.ReadErr is null && x.Status == 408 && x.Body == "{\"error\":\"request_timeout\"}" && x.H.GetValueOrDefault("Connection") == "close"
+            && IsCorr(x.H.GetValueOrDefault(LoginConfigApi.RequestIdHeader)) && x.Ms >= 900 && !x.Saw100;
+        var locs = await Count("location"); var changes = await Count("location_login_config_change"); var rvA1 = Rv(A1);
+        _ = await NewEvents();
+
+        var mark = wlog.Entries.Count;
+        var s = await Stall("PUT", Cfg(A1), SA, 4000, 100, ifMatch: $"\"{rvA1}\"");
+        var w = await Settle(mark);
+        Ok("P3-7: SA PUT, body under the limit sent slowly (100 of 4000 bytes, then stalls) -> 408 request_timeout after the deadline, Connection: close, X-Request-ID, no reset",
+            Is408(s), $"{s.Status} {s.Body} {s.ReadErr} {s.Ms} ms conn={s.H.GetValueOrDefault("Connection")}");
+        Ok("P3-7: the PUT 408 logs exactly ONE Warning line (request_id = the X-Request-ID, no exception, no stack trace); the drain does not log again",
+            w.Count == 1 && Clean(w[0]) && w[0].Text.Contains("request_id=" + s.H.GetValueOrDefault(LoginConfigApi.RequestIdHeader)) && w[0].Text.Contains("408 request_timeout"),
+            string.Join(" | ", w.Select(e => $"{e.Level} {e.Text}")));
+        Ok("P3-7: PUT 408 wrote nothing (no event, no change row, A1 row_version unchanged)",
+            (await NewEvents()).Count == 0 && await Count("location_login_config_change") == changes && Rv(A1) == rvA1);
+
+        mark = wlog.Entries.Count;
+        s = await Stall("POST", "/api/orgs/locations", PA, 6000, 2000);
+        w = await Settle(mark);
+        Ok("P3-7: PA POST, body under the limit sent slowly -> 408 request_timeout, Connection: close, X-Request-ID, no reset", Is408(s), $"{s.Status} {s.Body} {s.ReadErr} {s.Ms} ms");
+        Ok("P3-7: the POST 408 logs exactly ONE Warning line, no exception, no stack trace", w.Count == 1 && Clean(w[0]) && w[0].Text.Contains("408 request_timeout"),
+            string.Join(" | ", w.Select(e => $"{e.Level} {e.Text}")));
+        Ok("P3-7: POST 408 wrote nothing (no location, no event, no change row)",
+            (await NewEvents()).Count == 0 && await Count("location") == locs && await Count("location_login_config_change") == changes);
+
+        // 401/403 still come first with a slow body.
+        mark = wlog.Entries.Count;
+        s = await Stall("PUT", Cfg(A1), null, 4000, 100, ifMatch: $"\"{rvA1}\"");
+        Ok("P3-7 vs #8: unauthenticated slow PUT -> 401 at once (never 408), Connection: close, X-Request-ID, nothing written",
+            s.ReadErr is null && s.Status == 401 && s.Ms < 900 && s.H.GetValueOrDefault("Connection") == "close" && IsCorr(s.H.GetValueOrDefault(LoginConfigApi.RequestIdHeader))
+            && (await NewEvents()).Count == 0, $"{s.Status} {s.Ms} ms");
+        s = await Stall("PUT", Cfg(A1), CU, 4000, 100, ifMatch: $"\"{rvA1}\"");
+        Ok("P3-7 vs #8: unpermitted slow PUT -> 403 forbidden (never 408) + not_admin event (attempted none)",
+            s.ReadErr is null && s.Status == 403 && s.Body == "{\"error\":\"forbidden\"}" && Denied(await NewEvents(), "not_admin", A1, null, "update"), $"{s.Status} {s.Body}");
+        s = await Stall("POST", "/api/orgs/locations", NO, 6000, 2000);
+        Ok("P3-7 vs #8: unpermitted slow POST -> 403 forbidden (never 408) + not_admin event (partner unknown)",
+            s.ReadErr is null && s.Status == 403 && Denied(await NewEvents(), "not_admin", null, null, "create"), $"{s.Status} {s.Body}");
+        w = await Settle(mark);
+        Ok("P3-7 vs #8: the 401/403 slow-body requests log no 408 Warning", w.All(e => !e.Text.Contains("408")), string.Join(" | ", w.Select(e => e.Text)));
+
+        // P3-8: Expect: 100-continue + Content-Length over 64 KiB -> 413 at once, no 100 Continue, no drain, no log.
+        foreach (var (m, p, im) in new[] { ("PUT", Cfg(A1), (string?)$"\"{rvA1}\""), ("POST", "/api/orgs/locations", null) })
+        {
+            mark = wlog.Entries.Count;
+            var e = await Stall(m, p, SA, 8L << 20, 0, expect: true, ifMatch: im);
+            w = await Settle(mark);
+            Ok($"P3-8: SA {m} Expect: 100-continue + Content-Length 8 MiB -> 413 payload_too_large at once, NO 100 Continue, Connection: close, X-Request-ID",
+                e.ReadErr is null && e.Status == 413 && e.Body == "{\"error\":\"payload_too_large\"}" && !e.Saw100 && e.Ms < 900
+                && e.H.GetValueOrDefault("Connection") == "close" && IsCorr(e.H.GetValueOrDefault(LoginConfigApi.RequestIdHeader)) && e.ClosedMs < 10000,
+                $"{e.Status} saw100={e.Saw100} {e.Ms} ms closed {e.ClosedMs} ms");
+            Console.WriteLine($"INFO P3-8 Expect {m}: 413 after {e.Ms} ms, server closed {e.ClosedMs} ms after the response (no drain; Kestrel's own close)");
+            Ok($"P3-8: the {m} Expect 413 logs nothing (no drain) and writes nothing", w.Count == 0 && (await NewEvents()).Count == 0, string.Join(" | ", w.Select(x => x.Text)));
+        }
+        Ok("P3-8: Expect 413s wrote nothing (location count, change rows, A1 row_version unchanged)",
+            await Count("location") == locs && await Count("location_login_config_change") == changes && Rv(A1) == rvA1);
+
+        // P3-8: a drain that hits its 2 s bound logs once at Warning, no stack trace. A 401 leaves a declared 8 MiB body unread; the
+        // client then stalls (sends nothing), so the drain waits its full 2 s.
+        mark = wlog.Entries.Count;
+        s = await Stall("POST", "/api/orgs/locations", null, 8L << 20, 1000);
+        w = await Settle(mark);
+        Ok("P3-8: drain timeout (401, declared 8 MiB, client stalls) -> server closes after the 2 s drain bound",
+            s.ReadErr is null && s.Status == 401 && s.ClosedMs is >= 1500 and < 4000, $"{s.Status} closed {s.ClosedMs} ms");
+        Ok("P3-8: the drain timeout logs exactly ONE Warning line (request_id, no exception, no stack trace)",
+            w.Count == 1 && Clean(w[0]) && w[0].Text.Contains("drain timed out") && w[0].Text.Contains("request_id=" + s.H.GetValueOrDefault(LoginConfigApi.RequestIdHeader)),
+            string.Join(" | ", w.Select(e => $"{e.Level} {e.Text}")));
+        var keep3 = await new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port3}") }.SendAsync(new HttpRequestMessage(HttpMethod.Get, Cfg(A1)) { Headers = { { "Authorization", "Bearer " + SA } } });
+        Ok("P3-7/P3-8: a normal request after the 408s/413s still works (200)", (int)keep3.StatusCode == 200);
+        Ok("P3-7/P3-8: no Error-level log line from any of these requests", wlog.Entries.All(e => e.Level < LogLevel.Error), string.Join(" | ", wlog.Entries.Where(e => e.Level >= LogLevel.Error).Select(e => $"{e.ExType}: {e.Text}")));
+        await app3.StopAsync();
+    }
+
     // ================= 8. secrets never leave =================
     {
         Ok("secret: no response body contains an ARN or the FAKE secret names", allBodies.All(b => !b.Contains("arn:aws") && !b.Contains("FAKE-test-only") && !b.Contains("secretsmanager")));
@@ -1147,15 +1286,18 @@ sealed class TestDirectory(HashSet<Guid> readerLocations, Guid reader, Guid nobo
         : _interim.ResolveAsync(id, ct);
 }
 
-/// <summary>Captures the API's own log lines (formatted), so the checks can read the 500 error line [TLD 9:20].</summary>
-sealed class CaptureLogger : ILoggerProvider, ILogger
+/// <summary>Captures the API's own log lines (formatted), so the checks can read the 500 error line [TLD 9:20].
+/// From Warning when asked (P3-7/P3-8: one Warning line, no exception object, no stack trace).</summary>
+sealed class CaptureLogger(LogLevel min = LogLevel.Error) : ILoggerProvider, ILogger
 {
-    readonly List<string> _lines = new();
-    public IReadOnlyList<string> Lines { get { lock (_lines) return _lines.ToList(); } }
+    public sealed record Entry(LogLevel Level, string Text, bool HasException, string? ExType = null);
+    readonly List<Entry> _entries = new();
+    public IReadOnlyList<string> Lines { get { lock (_entries) return _entries.Select(e => e.Text).ToList(); } }
+    public IReadOnlyList<Entry> Entries { get { lock (_entries) return _entries.ToList(); } }
     public ILogger CreateLogger(string categoryName) => this;
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-    public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Error;
+    public bool IsEnabled(LogLevel logLevel) => logLevel >= min;
     public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-    { if (IsEnabled(logLevel)) lock (_lines) _lines.Add(formatter(state, exception)); }
+    { if (IsEnabled(logLevel)) lock (_entries) _entries.Add(new(logLevel, formatter(state, exception), exception is not null, exception?.GetType().Name)); }
     public void Dispose() { }
 }
