@@ -52,8 +52,13 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     static IResult Json(int status, JsonNode body) => Results.Text(body.ToJsonString(), "application/json; charset=utf-8", null, status);
 
+    /// <summary>Server-generated per request, on every response (incl. 401 and 500); never taken from the request [TLD 2026-11-04 9:04, OQ-P3-3].</summary>
+    public const string CorrelationHeader = "X-Correlation-Id";
+
     async Task<IResult> Run(HttpContext ctx, Func<Caller, Task<IResult>> f)
     {
+        var correlation = Guid.CreateVersion7().ToString("D");
+        ctx.Response.Headers[CorrelationHeader] = correlation;
         ctx.Response.Headers.CacheControl = "no-store";
         try
         {
@@ -69,7 +74,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         catch (Exception x)
         {
             // Fail closed: nothing committed. Log the type/SQLSTATE only: messages and DETAIL lines can carry row values.
-            log.LogError("admin-api request failed: {Type} {SqlState}", x.GetType().Name, (x as PostgresException)?.SqlState);
+            log.LogError("admin-api request failed: {Type} {SqlState} correlation_id={CorrelationId}", x.GetType().Name, (x as PostgresException)?.SqlState, correlation);
             return Results.StatusCode(500);
         }
     }
@@ -109,11 +114,13 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         await tx.CommitAsync();
     }
 
-    Task DenyAsync(Caller who, string reason, Guid targetPartner, Guid? location, IEnumerable<string> attempted) =>
+    Task DenyAsync(Caller who, string reason, Guid? targetPartner, Guid? location, IEnumerable<string> attempted) =>
         WriteDeniedAsync(AuditOutbox.Denied(Guid.CreateVersion7(), Now(), who.Id, reason, targetPartner, location, attempted));
 
+    /// <summary>Null = too large (over 64 KiB by Content-Length or while reading). Never lets Kestrel's 1 MiB limit surface as 413.</summary>
     static async Task<byte[]?> ReadBodyAsync(HttpRequest req)
     {
+        if (req.ContentLength is > MaxBody) return null;
         using var ms = new MemoryStream();
         var buf = new byte[8192];
         int n;
@@ -123,6 +130,13 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             ms.Write(buf, 0, n);
         }
         return ms.ToArray();
+    }
+
+    /// <summary>For attributing a refusal only: any read problem (too large, aborted, Kestrel limit) = no body; never changes the answer.</summary>
+    static async Task<byte[]?> TryReadBodyAsync(HttpRequest req)
+    {
+        try { return await ReadBodyAsync(req); }
+        catch (Exception x) when (x is BadHttpRequestException or IOException or OperationCanceledException) { return null; }
     }
 
     /// <summary>Step 7. Null = not a JSON object (or too large, duplicate keys, too deep).</summary>
@@ -291,16 +305,15 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     public Task<IResult> PutAsync(HttpContext ctx, string id) => Run(ctx, async who =>
     {
-        var raw = await ReadBodyAsync(ctx.Request);
-        var body = ParseObject(raw);
         var loc = ParseId(id);
-        // Step 2.
+        // Step 2, decided before the body is read [TLD 2026-11-04 9:04, OQ-P3-8]; the body is read afterwards only to name the attempted fields.
         if (!who.IsAdmin || !who.Grant.LoginMethodWrite)
         {
             if (loc is { } l0 && await LocationPartnerAsync(l0) is { } p0)
-                await DenyAsync(who, "not_admin", p0, l0, LoginConfigValidator.AttemptedFields(body));
+                await DenyAsync(who, "not_admin", p0, l0, LoginConfigValidator.AttemptedFields(ParseObject(await TryReadBodyAsync(ctx.Request))));
             throw Err(403, "forbidden");
         }
+        var body = ParseObject(await ReadBodyAsync(ctx.Request));
         // Steps 3-4.
         if (loc is not { } location) throw Err(404, "not_found");
         var real = await LocationPartnerAsync(location) ?? throw Err(404, "not_found");
@@ -417,12 +430,18 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     public Task<IResult> PostAsync(HttpContext ctx) => Run(ctx, async who =>
     {
-        var raw = await ReadBodyAsync(ctx.Request);
-        var body = ParseObject(raw);
-        // Step 2. No not_admin event on create: scope.partner_id is not trustworthy yet and the envelope rule needs
-        // scope.location_ids >= 1 without admin_type, which a create cannot have (OQ-P3-2).
-        if (!who.IsAdmin || !who.Grant.LoginMethodWrite || !who.Grant.OrgCreateEdit) throw Err(403, "forbidden");
-        // Steps 3-4 (create: the body's partner_id). Needs the body, so a non-object body is 400 here.
+        // Step 2, decided before the body is read [TLD 2026-11-04 9:04, OQ-P3-8]: a 403 never depends on the body (never 400/413).
+        // The refused create is still audited [TLD 2026-11-04 9:04, OQ-P3-2]: location_id null, target partner = the body's partner_id
+        // when the body yields a valid one, else target.id / scope.partner_id absent (OQ-P3-10).
+        if (!who.IsAdmin || !who.Grant.LoginMethodWrite || !who.Grant.OrgCreateEdit)
+        {
+            var b0 = ParseObject(await TryReadBodyAsync(ctx.Request));
+            var lc0 = b0 is { } o0 && o0.TryGetProperty("login_config", out var l0) ? l0 : (JsonElement?)null;
+            await DenyAsync(who, "not_admin", b0 is { } ob ? LoginConfigValidator.BodyPartner(ob) : null, null, LoginConfigValidator.AttemptedFields(lc0));
+            throw Err(403, "forbidden");
+        }
+        var body = ParseObject(await ReadBodyAsync(ctx.Request));
+        // Steps 3-4 (create: the body's partner_id). Needs the body, so a non-object body is 400 here (authorised callers only).
         if (body is not { } o) throw Err(400, "malformed_body");
         var bodyPartner = LoginConfigValidator.BodyPartner(o);
         if (who.IsPartnerAdmin && bodyPartner is { } bp && bp != who.Id.PartnerId)

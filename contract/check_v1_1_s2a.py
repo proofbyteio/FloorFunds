@@ -50,7 +50,7 @@ for name, schema, kind, body in blocks:
     if kind == "request":
         real = [p for p, k, v in walk(inst) if isinstance(v, str) and ARN.search(v) and ":000000000000:" not in v]
         exp(f"example {name} uses only fake ARNs (account 000000000000)", real, False)
-names_needed = {"get_200_entra", "get_200_entra_restricted", "err_404", "access_rules", "put_req_pa_db_to_entra", "put_req_sa_mfa_off", "put_req_entra_to_db", "post_req_create_db", "post_201_db", "changes_200", "err_409", "err_422", "err_403_not_super_admin", "ev_changed_pa_upgrade", "ev_changed_sa_mfa_off", "ev_changed_created", "ev_denied_not_super_admin", "ev_denied_forbidden_scope", "ev_denied_tenant_bound_sa_create"}
+names_needed = {"get_200_entra", "get_200_entra_restricted", "err_404", "access_rules", "put_req_pa_db_to_entra", "put_req_sa_mfa_off", "put_req_entra_to_db", "post_req_create_db", "post_201_db", "changes_200", "err_409", "err_422", "err_403_not_super_admin", "ev_changed_pa_upgrade", "ev_changed_sa_mfa_off", "ev_changed_created", "ev_denied_not_super_admin", "ev_denied_forbidden_scope", "ev_denied_tenant_bound_sa_create", "ev_denied_not_admin_create"}
 exp("all required examples present", sorted(names_needed - EX.keys()), False)
 
 # ---- 2. no response/event schema declares secret_ref ----
@@ -215,7 +215,7 @@ exp("denied update without location_ids rejected", errs(AE, None, m(den, scope__
 exp("denied reason not_location_admin rejected", errs(AE, None, m(den, details__reason="not_location_admin")), True)
 exp("denied wrong_partner rejected on llc (now forbidden_scope)", errs(AE, None, m(wp, details__reason="wrong_partner")), True)
 exp("denied forbidden_scope by super rejected", errs(AE, None, m(wp, admin_type="super", details__actor_partner_id=DEL)), True)
-exp("denied forbidden_scope on create ok", errs(AE, None, m(wp, details__operation="create", target={"type": "partner", "id": "7d3f6c1e-2b4a-4c8e-9f10-1a2b3c4d5e6f"}, scope={"partner_id": "7d3f6c1e-2b4a-4c8e-9f10-1a2b3c4d5e6f", "location_ids": []})), False)
+exp("denied forbidden_scope on create ok", errs(AE, None, m(wp, details__operation="create", details__location_id=None, target={"type": "partner", "id": "7d3f6c1e-2b4a-4c8e-9f10-1a2b3c4d5e6f"}, scope={"partner_id": "7d3f6c1e-2b4a-4c8e-9f10-1a2b3c4d5e6f", "location_ids": []})), False)
 exp("denied reason out_of_range (v1 only) rejected on llc", errs(AE, None, m(den, details__reason="out_of_range")), True)
 exp("denied setting other rejected", errs(AE, None, m(den, details__setting="LoginService:Session:AbsoluteLifetime")), True)
 exp("denied outcome success rejected", errs(AE, None, m(den, outcome="success")), True)
@@ -247,6 +247,33 @@ exp("login.failed reason with upper case still rejected", errs(AE, None, m(lf, d
 _lfr = S[AE]["$defs"]["auth.login.failed"]["properties"]["details"]["properties"]["reason"]
 exp("login.failed reason lists not_location_user (examples + description)", [] if ("not_location_user" in _lfr["examples"] and "not_location_user" in _lfr["description"]) else ["missing"], False)
 for _pin in ["### 7.4 `not_location_user` on `auth.login.failed`", "**Trust boundary [TLD 2026-11-04 8:44, K4].**", "**V11-RLSROLES**", "`SecretRef:AllowedAccountIds`", "`updated_by`, `updated_at` (and `partner_id` in a PUT body)"]:
+    exp("spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+
+# ---- 9. TLD 2026-11-04 9:04 (OQ-P3-2): refused create audited with details.location_id null; null refused everywhere else ----
+na = EX["ev_denied_not_admin_create"]; L = "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8"; P = "7d3f6c1e-2b4a-4c8e-9f10-1a2b3c4d5e6f"
+exp("9:04 not_admin create (no admin_type, scope [], location_id null) ok", errs(AE, None, na), False)
+exp("9:04 not_admin create, partner unknown (target.id + scope.partner_id both absent) ok", errs(AE, None, m(na, target={"type": "partner"}, scope={"location_ids": []})), False)
+exp("9:04 not_admin create, target.id without scope.partner_id rejected", errs(AE, None, m(na, scope={"location_ids": []})), True)
+exp("9:04 not_admin create, scope.partner_id without target.id rejected", errs(AE, None, m(na, target={"type": "partner"})), True)
+exp("9:04 not_admin create without details.location_id rejected", errs(AE, None, m(na, details__location_id=DEL)), True)
+exp("9:04 not_admin create with a location_id rejected", errs(AE, None, m(na, details__location_id=L)), True)
+exp("9:04 not_admin create with scope.location_ids [L] rejected", errs(AE, None, m(na, scope={"partner_id": P, "location_ids": [L]})), True)
+exp("9:04 not_admin create without scope.location_ids rejected", errs(AE, None, m(na, scope={"partner_id": P})), True)
+exp("9:04 not_admin create with admin_type rejected", errs(AE, None, m(na, admin_type="partner")), True)
+exp("9:04 null exemption only for operation create (update + null + scope []) rejected", errs(AE, None, m(na, details__operation="update", target={"type": "location_login_config", "id": L})), True)
+exp("9:04 null exemption only for this setting (v1 config) rejected", errs(AE, None, m(na, details__setting="LoginService:Session:AbsoluteLifetime")), True)
+exp("9:04 null exemption only for change_denied (provider.changed) rejected", errs(AE, None, m(na, event_type="auth.provider.changed", outcome="success")), True)
+exp("9:04 admin create denial (tenant_bound) without partner rejected", errs(AE, None, m(tb, target={"type": "partner"}, scope={"location_ids": []})), True)
+exp("9:04 admin create denial with location_id rejected", errs(AE, None, m(tb, details__location_id=L)), True)
+exp("9:04 update denial with location_id null rejected", errs(AE, None, m(den, details__location_id=None)), True)
+exp("9:04 update denial without location_id rejected", errs(AE, None, m(den, details__location_id=DEL)), True)
+exp("9:04 update not_admin (no admin_type) + location_id null + scope [] rejected", errs(AE, None, m(den, admin_type=DEL, details__reason="not_admin", details__actor_partner_id=DEL, details__location_id=None, scope__location_ids=[])), True)
+exp("9:04 provider.changed location_id null rejected", errs(AE, None, m(chg, details__location_id=None)), True)
+exp("9:04 provider.changed no admin_type + scope [] + location_id null rejected", errs(AE, None, m(chg, admin_type=DEL, details__location_id=None, scope__location_ids=[])), True)
+exp("9:04 v1 config denial + details.location_id null rejected", errs(AE, None, m(v1, details__location_id=None)), True)
+exp("9:04 v1 config denial with scope [] still rejected (envelope rule kept)", errs(AE, None, m(v1, scope__location_ids=[])), True)
+exp("9:04 login.failed with scope [] still rejected (envelope rule kept)", errs(AE, None, m(lf, scope__location_ids=[])), True)
+for _pin in ["**Refused create [TLD 2026-11-04 9:04, OQ-P3-2]:**", "**Correlation id [TLD 2026-11-04 9:04, OQ-P3-3]:**", "**Order [TLD 2026-11-04 9:04, OQ-P3-8]:**", "OQ-P3-10"]:
     exp("spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
 
 print("v1.1-S2a checks: %d passed, %d failed" % (PASSES[0], len(FAIL)), "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)

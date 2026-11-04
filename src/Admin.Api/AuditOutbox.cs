@@ -20,7 +20,7 @@ public sealed class AuditOutbox(JsonSchemaLite schema)
     };
 
     static JsonObject Envelope(Guid eventId, string type, string outcome, DateTimeOffset at, AdminIdentity actor, bool withAdminType,
-        string targetType, Guid targetId, string action, Guid scopePartner, Guid[] scopeLocations, JsonObject details)
+        string targetType, Guid? targetId, string action, Guid? scopePartner, Guid[] scopeLocations, JsonObject details)
     {
         var e = new JsonObject
         {
@@ -30,9 +30,14 @@ public sealed class AuditOutbox(JsonSchemaLite schema)
         if (withAdminType) e["admin_type"] = actor.AdminType;
         e["actor"] = new JsonObject { ["user_id"] = actor.UserId.ToString("D") };
         e["source"] = new JsonObject { ["service"] = "backoffice-api" };
-        e["target"] = new JsonObject { ["type"] = targetType, ["id"] = targetId.ToString("D") };
+        var target = new JsonObject { ["type"] = targetType };
+        if (targetId is { } t) target["id"] = t.ToString("D");
+        e["target"] = target;
         e["action"] = action;
-        e["scope"] = new JsonObject { ["partner_id"] = scopePartner.ToString("D"), ["location_ids"] = Arr(scopeLocations.Select(l => l.ToString("D"))) };
+        var scope = new JsonObject();
+        if (scopePartner is { } sp) scope["partner_id"] = sp.ToString("D");
+        scope["location_ids"] = Arr(scopeLocations.Select(l => l.ToString("D")));
+        e["scope"] = scope;
         e["details"] = details;
         return e;
     }
@@ -48,16 +53,19 @@ public sealed class AuditOutbox(JsonSchemaLite schema)
 
     /// <summary>
     /// auth.config.change_denied, location_login_config branch (§7.2). not_admin carries no admin_type and no actor_partner_id.
-    /// Update: target location_login_config/location, scope [location]. Create: target partner/partner, scope [].
+    /// Update: target location_login_config/location, scope [location], details.location_id = location.
+    /// Create: target partner/partner, scope [], details.location_id null [TLD 2026-11-04 9:04, OQ-P3-2]. targetPartner is null only for
+    /// a not_admin create whose body gave no valid partner_id: then target.id and scope.partner_id are both absent (OQ-P3-10).
     /// </summary>
-    public static JsonObject Denied(Guid eventId, DateTimeOffset at, AdminIdentity actor, string reason, Guid targetPartner, Guid? location,
+    public static JsonObject Denied(Guid eventId, DateTimeOffset at, AdminIdentity actor, string reason, Guid? targetPartner, Guid? location,
         IEnumerable<string> attempted)
     {
         var isAdmin = reason != "not_admin";
+        if (targetPartner is null && (isAdmin || location is not null)) throw new InvalidOperationException("denied event without a target partner");
         var d = new JsonObject
         {
-            ["setting"] = "location_login_config", ["operation"] = location is null ? "create" : "update", ["reason"] = reason,
-            ["attempted_fields"] = Arr(attempted.Distinct()),
+            ["setting"] = "location_login_config", ["operation"] = location is null ? "create" : "update",
+            ["location_id"] = location?.ToString("D"), ["reason"] = reason, ["attempted_fields"] = Arr(attempted.Distinct()),
         };
         if (isAdmin && actor.AdminType == "partner") d["actor_partner_id"] = actor.PartnerId!.Value.ToString("D");
         return location is { } l

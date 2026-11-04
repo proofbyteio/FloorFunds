@@ -183,6 +183,8 @@ var CU = Token("partner", U_CU, P_A);   // custom role carrying the write permis
 
 // ---------- HTTP ----------
 var allBodies = new List<string>();
+var allCorr = new List<string?>();
+bool IsCorr(string? v) => v is not null && Guid.TryParseExact(v, "D", out var g) && g.Version == 7;
 var responsesForSchema = new List<(string def, string body)>();
 async Task<R> Send(HttpMethod m, string path, string? token, string? body = null, string? ifMatch = null, Action<HttpRequestMessage>? edit = null)
 {
@@ -196,7 +198,9 @@ async Task<R> Send(HttpMethod m, string path, string? token, string? body = null
     allBodies.Add(text);
     if ((int)res.StatusCode is >= 400 and < 500 and not 401 && text.Length > 0) responsesForSchema.Add(("error_response", text));
     string? H(string k) => res.Headers.TryGetValues(k, out var v) ? string.Join(",", v) : res.Content.Headers.TryGetValues(k, out var cv) ? string.Join(",", cv) : null;
-    return new R((int)res.StatusCode, text, H("ETag"), H("Location"), H("WWW-Authenticate"), H("Cache-Control"), H("Server"));
+    var r = new R((int)res.StatusCode, text, H("ETag"), H("Location"), H("WWW-Authenticate"), H("Cache-Control"), H("Server"), H(LoginConfigApi.CorrelationHeader));
+    allCorr.Add(r.Corr);
+    return r;
 }
 Task<R> Get(string path, string? tok) => Send(HttpMethod.Get, path, tok);
 Task<R> Put(Guid loc, string? tok, object body, string? ifMatch) => Send(HttpMethod.Put, $"/api/orgs/locations/{loc:D}/login-config", tok, J(body), ifMatch);
@@ -221,11 +225,19 @@ async Task<List<JsonObject>> NewEvents()
         if (seen.Add(r.GetGuid(0))) { var e = Obj(r.GetString(1)); list.Add(e); allEvents.Add(e); }
     return list;
 }
+var schemaCases = new List<(string n, JsonObject doc)>();
 var lite = JsonSchemaLite.Load(await File.ReadAllTextAsync(schemaPath));
 bool Valid(JsonObject e) => lite.Validate(e).Count == 0;
-bool Denied(List<JsonObject> evs, string reason, Guid targetId, string? adminType, string op, params string[] attempted) =>
+// targetId null = a not_admin create whose body gave no valid partner_id: target.id and scope.partner_id both absent (OQ-P3-10).
+// details.location_id: the location on update, JSON null on create [TLD 9:04, OQ-P3-2].
+bool Denied(List<JsonObject> evs, string reason, Guid? targetId, string? adminType, string op, params string[] attempted) =>
     evs.Count == 1 && Valid(evs[0]) && (string)evs[0]["event_type"]! == "auth.config.change_denied" && (string)evs[0]["details"]!["reason"]! == reason
-    && (string)evs[0]["target"]!["id"]! == targetId.ToString("D") && (string?)evs[0]["admin_type"] == adminType
+    && (string?)evs[0]["target"]!["id"] == targetId?.ToString("D")
+    && (op != "create" || (string?)evs[0]["scope"]!["partner_id"] == targetId?.ToString("D"))
+    && evs[0]["details"]!.AsObject().ContainsKey("location_id")
+    && (op == "create" ? evs[0]["details"]!["location_id"] is null && evs[0]["scope"]!["location_ids"]!.AsArray().Count == 0
+                       : (string?)evs[0]["details"]!["location_id"] == targetId?.ToString("D"))
+    && (string?)evs[0]["admin_type"] == adminType
     && (string)evs[0]["details"]!["operation"]! == op
     && evs[0]["details"]!["attempted_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(attempted);
 
@@ -389,11 +401,42 @@ try
         Ok("create: duplicate keys -> 400 malformed_body", Err(r, 400, "malformed_body"));
         r = await Send(HttpMethod.Post, "/api/orgs/locations", SA, "{\"name\":\"" + new string('a', 70_000) + "\"}");
         Ok("create: body over 64 KiB -> 400 malformed_body", Err(r, 400, "malformed_body"));
+        // TLD 9:04 #2: a refused create is audited (location_id null, target = body partner_id). #8: the 403 is decided before the body.
         foreach (var (n, t) in new[] { ("reader", RD), ("no role", NO), ("custom role", CU) })
         {
             r = await Post(t, Create(P_A, "x", DbCfg()));
-            Ok($"create: {n} -> 403 forbidden, no event (OQ-P3-2)", Err(r, 403, "forbidden") && (await NewEvents()).Count == 0);
+            Ok($"create: {n} -> 403 forbidden + not_admin event (target partner A, location_id null, no admin_type/actor_partner_id)", Err(r, 403, "forbidden")
+                && Denied(await NewEvents(), "not_admin", P_A, null, "create", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"));
         }
+        r = await Post(RD, Create(P_B, "x", EntraCfg(T3, Arn("rd"))));
+        Ok("create: reader naming partner B -> 403 + not_admin event targeting partner B (from the body)", Err(r, 403, "forbidden")
+            && Denied(await NewEvents(), "not_admin", P_B, null, "create", "provider_kind", "display_name", "entra_allowed_tenant_ids", "secret_ref", "allow_db_fallback", "mfa_required"));
+        var bigName = new string('a', 2 * 1024 * 1024);
+        var unreadable = new (string n, Func<HttpContent> body)[]
+        {
+            ("malformed JSON", () => new StringContent("{\"partner_id\":", Encoding.UTF8, "application/json")),
+            ("non-object", () => new StringContent("[1,2]", Encoding.UTF8, "application/json")),
+            ("duplicate keys", () => new StringContent(J(Create(P_A, "x", DbCfg()))[..^1] + ",\"partner_id\":\"" + P_B + "\"}", Encoding.UTF8, "application/json")),
+            ("partner_id not a uuid", () => new StringContent(J(new Dictionary<string, object?> { ["partner_id"] = "nope", ["name"] = "x" }), Encoding.UTF8, "application/json")),
+            ("over 64 KiB", () => new StringContent(J(Create(P_A, new string('a', 70_000), DbCfg())), Encoding.UTF8, "application/json")),
+            ("over 1 MiB (Kestrel limit)", () => new StringContent(J(Create(P_A, bigName, DbCfg())), Encoding.UTF8, "application/json")),
+            ("over 1 MiB chunked", () => { var c = new StreamContent(new MemoryStream(Encoding.UTF8.GetBytes(J(Create(P_A, bigName, DbCfg()))))); return c; }),
+        };
+        foreach (var (n, body) in unreadable)
+        {
+            void Body(HttpRequestMessage q) { q.Content = body(); if (n.EndsWith("chunked")) q.Headers.TransferEncodingChunked = true; }
+            r = await Send(HttpMethod.Post, "/api/orgs/locations", null, edit: Body);
+            Ok($"create #8: unauthenticated + {n} -> 401 (never 400/413), no body, no event", r.Status == 401 && r.Body.Length == 0 && r.WwwAuth == "Bearer" && (await NewEvents()).Count == 0, $"{r.Status}");
+            r = await Send(HttpMethod.Post, "/api/orgs/locations", NO, edit: Body);
+            Ok($"create #8: no permission + {n} -> 403 forbidden (never 400/413) + not_admin event, partner unknown (OQ-P3-10)", Err(r, 403, "forbidden")
+                && Denied(await NewEvents(), "not_admin", null, null, "create"), $"{r.Status} {r.Body}");
+            r = await Send(HttpMethod.Put, Cfg(A1), CU, ifMatch: "\"1\"", edit: Body);
+            Ok($"put #8: no permission + {n} -> 403 forbidden (never 400/413) + not_admin event (attempted none)", Err(r, 403, "forbidden")
+                && Denied(await NewEvents(), "not_admin", A1, null, "update"), $"{r.Status} {r.Body}");
+        }
+        r = await Send(HttpMethod.Post, "/api/orgs/locations", SA, "{\"name\":\"" + bigName + "\"}");
+        Ok("create: SA body over 1 MiB -> 400 malformed_body (handler cap; never 413/500)", Err(r, 400, "malformed_body"), $"{r.Status}");
+        Ok("create: oversized SA body writes no event", (await NewEvents()).Count == 0);
         Ok("create: none of the refused creates added a location", await Count("location") == 3);
     }
 
@@ -546,6 +589,10 @@ try
         // Scope.
         var miss = await Put(missing, PA, DbCfg(), "\"1\"");
         Ok("put: missing location -> 404, no event", Err(miss, 404, "not_found") && (await NewEvents()).Count == 0);
+        var miss2 = await Put(missing, SA, DbCfg(), "\"1\"");
+        Ok("put: SA missing location -> 404, no event (TLD 9:04 #2)", Err(miss2, 404, "not_found") && (await NewEvents()).Count == 0);
+        miss2 = await Put(missing, RD, DbCfg(), "\"1\"");
+        Ok("put: reader on a missing location -> 403, no event (TLD 9:04 #2)", Err(miss2, 403, "forbidden") && (await NewEvents()).Count == 0);
         r = await Put(B1, PA, DbCfg(), "\"1\"");
         Ok("put: PA other partner -> 404 identical body + forbidden_scope event", Err(r, 404, "not_found") && r.Body == miss.Body
             && Denied(await NewEvents(), "forbidden_scope", B1, "partner", "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"));
@@ -665,6 +712,7 @@ try
         await using var app2 = await AdminApiHost.BuildAsync(Opts(schema: rejectAll) with { Urls = $"http://127.0.0.1:{port2}" }, dir);
         await app2.StartAsync();
         using var h2 = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port2}") };
+        var corr500 = new List<string?>();
         async Task<(int, string)> S2(HttpMethod m, string path, string tok, string body, string? im = null)
         {
             using var q = new HttpRequestMessage(m, path) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
@@ -673,6 +721,7 @@ try
             using var res = await h2.SendAsync(q);
             var t = await res.Content.ReadAsStringAsync();
             allBodies.Add(t);
+            if ((int)res.StatusCode == 500) corr500.Add(res.Headers.TryGetValues(LoginConfigApi.CorrelationHeader, out var cv) ? string.Join(",", cv) : null);
             return ((int)res.StatusCode, t);
         }
         var before = (await Count("location"), await Count("location_login_config_change"), Rv(A1));
@@ -682,9 +731,55 @@ try
         Ok("fail closed: update with outbox failure -> 500, no body", st == 500 && bd.Length == 0);
         (st, _) = await S2(HttpMethod.Put, Cfg(B1), PA, J(DbCfg()), "\"1\"");
         Ok("fail closed: denied-event write failure -> 500 (OQ)", st == 500);
+        (st, bd) = await S2(HttpMethod.Post, "/api/orgs/locations", NO, J(Create(P_A, "Doomed", DbCfg())));
+        Ok("fail closed: refused-create event write failure -> 500, no body (never dropped silently, TLD 9:04 #4)", st == 500 && bd.Length == 0);
+        Ok("fail closed #3: every 500 has no body and an X-Correlation-Id (UUIDv7), all distinct", corr500.Count == 4 && corr500.All(IsCorr) && corr500.Distinct().Count() == 4,
+            string.Join(",", corr500));
         Ok("fail closed: nothing saved (locations, change rows, row_version, outbox)", (await Count("location"), await Count("location_login_config_change"), Rv(A1)) == before && (await NewEvents()).Count == 0);
         await app2.StopAsync();
         File.Delete(rejectAll);
+    }
+
+    // ================= 7b. correlation id (TLD 9:04 #3) =================
+    {
+        var r = await Send(HttpMethod.Get, Cfg(A1), SA, edit: q => q.Headers.TryAddWithoutValidation(LoginConfigApi.CorrelationHeader, "client-chosen"));
+        Ok("correlation: server-generated, a client-sent X-Correlation-Id is not echoed", r.Status == 200 && IsCorr(r.Corr) && r.Corr != "client-chosen", r.Corr);
+        Ok("correlation: every API response so far carried a distinct UUIDv7 X-Correlation-Id (200/201/4xx/401)", allCorr.Count > 100 && allCorr.All(IsCorr) && allCorr.Distinct().Count() == allCorr.Count, $"{allCorr.Count}");
+    }
+
+    // ================= 7c. schema: location_id null only for a refused create (TLD 9:04 #2) =================
+    {
+        var createDen = allEvents.First(e => (string)e["event_type"]! == "auth.config.change_denied" && (string)e["details"]!["operation"]! == "create" && e["admin_type"] is null && e["target"]!["id"] is not null);
+        var updateDen = allEvents.First(e => (string)e["event_type"]! == "auth.config.change_denied" && (string)e["details"]!["operation"]! == "update" && e["admin_type"] is not null);
+        var fsCreate = allEvents.First(e => (string?)e["details"]!["reason"] == "forbidden_scope" && (string)e["details"]!["operation"]! == "create");
+        var changed = allEvents.First(e => (string)e["event_type"]! == "auth.provider.changed");
+        JsonObject Mut(JsonObject e, Action<JsonObject> f) { var c = e.DeepClone().AsObject(); f(c); return c; }
+        var cases = new (string n, JsonObject doc, bool valid)[]
+        {
+            ("not_admin create, location_id null, scope [] (the one exemption)", createDen, true),
+            ("forbidden_scope create, location_id null", fsCreate, true),
+            ("not_admin create, partner unknown (no target.id, no scope.partner_id)", Mut(createDen, e => { e["target"]!.AsObject().Remove("id"); e["scope"]!.AsObject().Remove("partner_id"); }), true),
+            ("not_admin create, target.id without scope.partner_id", Mut(createDen, e => e["scope"]!.AsObject().Remove("partner_id")), false),
+            ("not_admin create, scope.partner_id without target.id", Mut(createDen, e => e["target"]!.AsObject().Remove("id")), false),
+            ("not_admin create without details.location_id", Mut(createDen, e => e["details"]!.AsObject().Remove("location_id")), false),
+            ("not_admin create with a location_id", Mut(createDen, e => e["details"]!["location_id"] = A1.ToString("D")), false),
+            ("not_admin create with scope.location_ids [A1]", Mut(createDen, e => e["scope"]!["location_ids"] = new JsonArray(A1.ToString("D"))), false),
+            ("not_admin create relabelled update (location_id null)", Mut(createDen, e => { e["details"]!["operation"] = "update"; e["action"] = "update"; }), false),
+            ("not_admin create relabelled auth.provider.changed", Mut(createDen, e => e["event_type"] = "auth.provider.changed"), false),
+            ("not_admin create relabelled v1 config setting", Mut(createDen, e => e["details"]!["setting"] = "LoginService:Session:AbsoluteLifetime"), false),
+            ("forbidden_scope create without target.id/scope.partner_id (admins always name the partner)", Mut(fsCreate, e => { e["target"]!.AsObject().Remove("id"); e["scope"]!.AsObject().Remove("partner_id"); }), false),
+            ("forbidden_scope create with a location_id", Mut(fsCreate, e => e["details"]!["location_id"] = A1.ToString("D")), false),
+            ("change_denied update with location_id null", Mut(updateDen, e => e["details"]!["location_id"] = null), false),
+            ("change_denied update without location_id", Mut(updateDen, e => e["details"]!.AsObject().Remove("location_id")), false),
+            ("change_denied update without admin_type, scope [], location_id null", Mut(updateDen, e => { e.Remove("admin_type"); e["details"]!["reason"] = "not_admin"; e["details"]!.AsObject().Remove("actor_partner_id"); e["details"]!["location_id"] = null; e["scope"]!["location_ids"] = new JsonArray(); }), false),
+            ("auth.provider.changed with location_id null", Mut(changed, e => e["details"]!["location_id"] = null), false),
+            ("auth.provider.changed no admin_type + scope [] + location_id null", Mut(changed, e => { e.Remove("admin_type"); e["details"]!["location_id"] = null; e["scope"]!["location_ids"] = new JsonArray(); }), false),
+        };
+        foreach (var (n, doc, valid) in cases)
+        {
+            Ok($"schema 9:04: {n} -> {(valid ? "valid" : "refused")}", Valid(doc) == valid, string.Join("; ", lite.Validate(doc)));
+            schemaCases.Add((n, doc));
+        }
     }
 
     // ================= 8. secrets never leave =================
@@ -718,6 +813,7 @@ try
             var m9 = e.DeepClone().AsObject(); m9["details"]!["secret_ref"] = Arn("leak"); Add(m9, $"ev{k}-secret");
             k++;
         }
+        foreach (var (n, doc) in schemaCases) Add(doc, "schema904: " + n);
         await File.WriteAllLinesAsync(Path.Combine(outDir, "corpus.jsonl"), corpus);
         await File.WriteAllLinesAsync(Path.Combine(outDir, "responses.jsonl"), responsesForSchema.Select(x => new JsonObject { ["def"] = x.def, ["body"] = JsonNode.Parse(x.body) }.ToJsonString()));
         Console.WriteLine($"INFO corpus {corpus.Count} docs, {responsesForSchema.Count} responses -> {outDir}");
@@ -740,7 +836,7 @@ return fail == 0 ? exitCode : 1;
 
 static string Base64Url(string s) => Base64UrlEncoder.Encode(s);
 
-sealed record R(int Status, string Body, string? ETag, string? Location, string? WwwAuth, string? CacheControl, string? Server);
+sealed record R(int Status, string Body, string? ETag, string? Location, string? WwwAuth, string? CacheControl, string? Server, string? Corr = null);
 
 /// <summary>Interim token roles for admins; injected non-admin callers (org:V reader, no role, custom role) for §6 rows 4-5.</summary>
 sealed class TestDirectory(HashSet<Guid> readerLocations, Guid reader, Guid nobody, Guid custom) : IAdminDirectory

@@ -152,6 +152,16 @@ Lock files (locked mode): `Auth.Data` `6d686c7ecd199bae7b9a16a4c416315f`; `Auth.
   - OQ-P3-8: POST parses the body before the scope check (the partner comes from the body).
   - OQ-P3-9: unknown keys are echoed in `fields[].field` only if they match `^[A-Za-z0-9_.-]{1,64}$`, otherwise `*`; body cap 64 KiB (Kestrel 1 MiB); duplicate JSON keys → 400 malformed_body.
 
+## P3 rulings applied (TL 9:04 AM PT, "TLD 9:04"; on top of 5a2d032)
+
+- **OQ-P3-2 CHANGED**: a refused create is audited. `auth.config.change_denied` (location_login_config branch) now carries a required `details.location_id`: the location on update, JSON `null` on create. `not_admin` on create → event with target `{type: partner, id: <body partner_id>}`, scope `{partner_id, location_ids: []}`, no `admin_type` / `actor_partner_id`. Schema (narrowest): one exemption from the envelope rule "no `admin_type` → `scope.location_ids` ≥ 1", only for change_denied + location_login_config + create + `location_id: null`, and that branch then requires `location_ids: []`; null is refused for every other event (update denials, `auth.provider.changed`, v1 `config` branch; tests in `check_v1_1_s2a.py` §9 and `Admin.Api.Checks` §7c, both validators agree in the crosscheck). A PUT to a missing location: still 404 (admin) / 403 (non-admin), no event.
+- **OQ-P3-10 (NEW, OPEN for TL)**: a `not_admin` create whose body yields no valid `partner_id` (malformed / too large / duplicate keys / non-UUID) is still audited (never dropped), with `target.id` and `scope.partner_id` both absent (schema allows this only for create + not_admin, and only both together). Alternative if TL prefers: drop to an error log line instead, or require a readable partner.
+- **OQ-P3-8**: POST and PUT decide 401 and 403 before reading the body; the body is then read (64 KiB cap, any read error = no body) only for `attempted_fields` and the create target partner. `Content-Length` > 64 KiB is refused before reading, so Kestrel's 1 MiB limit never surfaces (no 413, no 500); authorised oversize → 400 `malformed_body`.
+- **OQ-P3-3**: every response carries `X-Correlation-Id` (server-generated UUIDv7; a client value is ignored); 500 has no body; the error log line carries the same id. Header name is SSE's choice (spec §5.1 says "TL to confirm").
+- **OQ-P3-4**: unchanged (fail closed); new test: a refused-create event that cannot be written → 500, nothing saved.
+- **OQ-P3-1**: interim OK; **V11-ROLESTORE** logged in spec §12. OQ-P3-5/6/7/9: OK as implemented.
+- Tests: `Admin.Api.Checks` **266 passed, 0 failed** (was 218); crosscheck 458 docs / 0 disagreements, 100 responses; `check_v1_1_s2a.py` 238 passed. Mutation spot-check (Content-Length guard off; not_admin create event skipped; correlation header removed on 500; body parsed before the 403) → each caught (1, ≥6, 1 and ≥6 failing checks); source restored, md5 unchanged.
+
 ## Decisions (this slice)
 
 - Project names: `Login.Abstractions` (mandated by F9). The data project will be `src/Auth.Data` (matches the `auth` schema; shared by the admin API and the login service, so not `Login.*`).

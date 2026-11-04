@@ -112,8 +112,14 @@
       },
       "allOf": [
         {
-          "description": "Without admin_type: scope.location_ids required, ≥1 item [TL Decision 2026-11-02 8:29 PM; TL Decision 2026-11-02 8:31 PM]",
-          "if": { "not": { "required": ["admin_type"]}},
+          "description": "Without admin_type: scope.location_ids required, ≥1 item [TL Decision 2026-11-02 8:29 PM; TL Decision 2026-11-02 8:31 PM]. Single exemption [TLD 2026-11-04 9:04, OQ-P3-2]: a refused location create (auth.config.change_denied, setting location_login_config, operation create, details.location_id null), which has no location yet; its branch then requires scope.location_ids [].",
+          "if": { "not": { "anyOf": [
+            { "required": ["admin_type"]},
+            { "required": ["event_type", "details"], "properties": {
+                "event_type": { "const": "auth.config.change_denied" },
+                "details": { "required": ["setting", "operation", "location_id"], "properties": {
+                  "setting": { "const": "location_login_config" }, "operation": { "const": "create" }, "location_id": { "const": null } } } } }
+          ]}},
           "then": { "required": ["scope"], "properties": { "scope": { "required": ["location_ids"], "properties": { "location_ids": { "minItems": 1}}}}}
         }
       ]
@@ -468,23 +474,23 @@
       ]
     },
     "auth.config.change_denied.location_login_config": {
-      "description": "v1.1 S2a. Refused location login config create/update [TL Decision, S2a brief: 'refusals emit a denied event'] [Confirmed DEC-098: Partner Admin downgrade -> denied, reason not_super_admin]. target = the location (update) or the partner (create, no location yet). scope.partner_id = the TARGET's partner (ASSUMPTION A-6); actor_partner_id = the Partner Admin's own partner. Details closed: field NAMES only, never values (no secret_ref, no tenant id). Reasons: not_admin (no admin_type / permission not held by a built-in admin role), forbidden_scope (Partner Admin, other partner's location or partner; the client sees 404 not_found [TLD 2026-11-04 7:39, OQ-S2a-3]), not_super_admin (Partner Admin downgrade), tenant_bound_elsewhere (tenant already used by another partner's location; Super Admin too).",
+      "description": "v1.1 S2a. Refused location login config create/update [TL Decision, S2a brief: 'refusals emit a denied event'] [Confirmed DEC-098: Partner Admin downgrade -> denied, reason not_super_admin]. target = the location (update) or the partner (create, no location yet; details.location_id null) [TLD 2026-11-04 9:04, OQ-P3-2]. scope.partner_id = the TARGET's partner (ASSUMPTION A-6); actor_partner_id = the Partner Admin's own partner. Details closed: field NAMES only, never values (no secret_ref, no tenant id). Reasons: not_admin (no admin_type / permission not held by a built-in admin role), forbidden_scope (Partner Admin, other partner's location or partner; the client sees 404 not_found [TLD 2026-11-04 7:39, OQ-S2a-3]), not_super_admin (Partner Admin downgrade), tenant_bound_elsewhere (tenant already used by another partner's location; Super Admin too).",
       "required": ["actor", "target", "scope"],
       "properties": {
         "event_type": { "const": "auth.config.change_denied" },
         "outcome": { "const": "denied" },
         "actor": { "required": ["user_id"], "properties": { "user_id": { "$ref": "#/$defs/id" } } },
         "target": {
-          "required": ["type", "id"],
+          "required": ["type"],
           "properties": { "type": { "enum": ["location_login_config", "partner"] }, "id": { "$ref": "#/$defs/id" } }
         },
-        "scope": { "required": ["partner_id"] },
         "details": {
-          "required": ["setting", "operation", "reason", "attempted_fields"],
+          "required": ["setting", "operation", "location_id", "reason", "attempted_fields"],
           "additionalProperties": false,
           "properties": {
             "setting": { "const": "location_login_config" },
             "operation": { "enum": ["create", "update"] },
+            "location_id": { "description": "The location (update) or null (create: no location yet) [TLD 2026-11-04 9:04, OQ-P3-2]. Null is allowed on this branch only, and only with operation create.", "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
             "reason": { "description": "forbidden_scope replaces S2a wrong_partner [TLD 2026-11-04 7:39, OQ-S2a-3]: the client gets 404 not_found, the attempt is still audited.", "enum": ["not_admin", "forbidden_scope", "not_super_admin", "tenant_bound_elsewhere"] },
             "attempted_fields": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/login_config_field" } },
             "actor_partner_id": { "$ref": "#/$defs/id" }
@@ -493,8 +499,17 @@
       },
       "allOf": [
         { "if": { "required": ["details"], "properties": { "details": { "required": ["operation"], "properties": { "operation": { "const": "create" } } } } },
-          "then": { "properties": { "target": { "properties": { "type": { "const": "partner" } } } } },
-          "else": { "properties": { "target": { "properties": { "type": { "const": "location_login_config" } } }, "scope": { "required": ["location_ids"], "properties": { "location_ids": { "minItems": 1, "maxItems": 1 } } } } } },
+          "then": { "properties": { "target": { "properties": { "type": { "const": "partner" } } }, "details": { "properties": { "location_id": { "const": null } } },
+                    "scope": { "required": ["location_ids"], "properties": { "location_ids": { "maxItems": 0 } } } } },
+          "else": { "properties": { "target": { "required": ["id"], "properties": { "type": { "const": "location_login_config" } } }, "details": { "properties": { "location_id": { "$ref": "#/$defs/id" } } },
+                    "scope": { "required": ["partner_id", "location_ids"], "properties": { "location_ids": { "minItems": 1, "maxItems": 1 } } } } } },
+        { "description": "target.id and scope.partner_id are required, except on a refused create by a non-admin whose body gave no valid partner_id: then BOTH are absent (never one without the other) [TLD 2026-11-04 9:04, OQ-P3-2/-8; OQ-P3-10].",
+          "if": { "required": ["details"], "properties": { "details": { "required": ["operation", "reason"], "properties": { "operation": { "const": "create" }, "reason": { "const": "not_admin" } } } } },
+          "then": { "oneOf": [
+            { "properties": { "target": { "required": ["id"] }, "scope": { "required": ["partner_id"] } } },
+            { "properties": { "target": { "not": { "required": ["id"] } }, "scope": { "not": { "required": ["partner_id"] }, "properties": { "location_ids": { "maxItems": 0 } } } } }
+          ]},
+          "else": { "properties": { "target": { "required": ["id"] }, "scope": { "required": ["partner_id"] } } } },
         { "if": { "required": ["details"], "properties": { "details": { "required": ["reason"], "properties": { "reason": { "const": "not_admin" } } } } },
           "then": { "not": { "required": ["admin_type"] } },
           "else": { "required": ["admin_type"] } },
