@@ -80,8 +80,8 @@ ent = EX["put_req_pa_db_to_entra"]; db = EX["put_req_entra_to_db"]; view = EX["g
 exp("view + secret_ref rejected", errs(LLC, VIEW, m(view, secret_ref=FAKE)), True)
 exp("view secret + value rejected", errs(LLC, VIEW, m(view, secret={"set": True, "rotated_at": None, "value": FAKE})), True)
 exp("view secret set=false with rotated_at rejected", errs(LLC, VIEW, m(view, secret={"set": False, "rotated_at": "2026-10-30T17:05:00Z"})), True)
-exp("error + secret_ref rejected", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "secret_ref", "code": "secret_ref_format"}], "secret_ref": FAKE}), True)
-exp("error field entry + value rejected", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "secret_ref", "code": "secret_ref_format", "value": FAKE}]}), True)
+exp("error + secret_ref rejected", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "secret_ref", "code": "field_not_writable"}], "secret_ref": FAKE}), True)
+exp("error field entry + value rejected", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "secret_ref", "code": "field_not_writable", "value": FAKE}]}), True)
 chg = EX["ev_changed_pa_upgrade"]; den = EX["ev_denied_not_super_admin"]
 AE = "audit-events.schema.json"
 exp("provider.changed details + secret_ref rejected", errs(AE, None, m(chg, details__secret_ref=FAKE)), True)
@@ -101,9 +101,18 @@ for k, v in [("oidc_authority", "https://login.microsoftonline.com"), ("oidc_cli
     exp(f"PUT entra body with {k}={v!r} rejected (field_not_writable)", errs(LLC, W, m(ent, **{k: v})), True)
     exp(f"PUT database body with {k}={v!r} rejected (field_not_writable)", errs(LLC, W, m(db, **{k: v})), True)
     exp(f"create body login_config with {k}={v!r} rejected (field_not_writable)", errs(LLC, CR, m(EX["post_req_create_db"], **{"login_config__" + k: v})), True)
-exp("entra secret_ref absent ok (keep current)", errs(LLC, W, m(ent, secret_ref=DEL)), False)
-exp("entra secret_ref null rejected", errs(LLC, W, m(ent, secret_ref=None)), True)
-exp("secret_ref not ARN rejected", errs(LLC, W, m(ent, secret_ref="my-client-secret")), True)
+# TLD 2026-11-04 9:49 (D-51): secret_ref is server-filled from Entra:SecretRef; any secret_ref key in a body is rejected (field_not_writable)
+exp("entra body without secret_ref ok (tenant only) [TLD 9:49]", errs(LLC, W, m(ent, secret_ref=DEL)), False)
+exp("entra example has no secret_ref key [TLD 9:49]", ["present"] if "secret_ref" in ent or "secret_ref" in db else [], False)
+for v in [FAKE, "arn:aws:secretsmanager:us-west-2:111111111111:secret:FAKE-x", "my-client-secret", None, 42, "", {"arn": FAKE}]:
+    exp(f"9:49 PUT entra body with secret_ref={v!r:.40} rejected", errs(LLC, W, m(ent, secret_ref=v)), True)
+    exp(f"9:49 PUT database body with secret_ref={v!r:.40} rejected", errs(LLC, W, m(db, secret_ref=v)), True)
+    exp(f"9:49 create login_config with secret_ref={v!r:.40} rejected", errs(LLC, CR, m(EX["post_req_create_db"], login_config__secret_ref=v)), True)
+exp("9:49 field codes have no secret_ref_required / secret_ref_format", ["present"] if {"secret_ref_required", "secret_ref_format"} & set(L["field_error_code"]["enum"]) else [], False)
+exp("9:49 error with secret_ref_required rejected", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "login_config/secret_ref", "code": "secret_ref_required"}]}), True)
+exp("9:49 error secret_ref field_not_writable ok", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "login_config/secret_ref", "code": "field_not_writable"}]}), False)
+exp("9:49 login_config_write declares no secret_ref", ["declares"] if "secret_ref" in json.dumps({k: v for k, v in L["login_config_write"].items() if k != "description"}) else [], False)
+exp("9:49 no secret_ref_input $def left", ["present"] if "secret_ref_input" in L else [], False)
 for bad in ["http://login.microsoftonline.com", "https://login.microsoftonline.com/", "https://login.microsoftonline.com/9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d/v2.0", "https://login.microsoftonline.com?x=1", "https://user@login.microsoftonline.com", "login.microsoftonline.com"]:
     exp(f"super view oidc_authority {bad!r} rejected (deployment value rule)", errs(LLC, VIEW, m(view, oidc_authority=bad)), True)
 exp("super view oidc_authority with port ok", errs(LLC, VIEW, m(view, oidc_authority="https://login.example.test:8443")), False)
@@ -118,9 +127,8 @@ exp("restricted view = super view minus oidc keys", [] if rview == {k: v for k, 
 exp("restricted view + secret_ref rejected", errs(LLC, RV, m(rview, secret_ref=FAKE)), True)
 exp("provider_kind other rejected", errs(LLC, W, m(ent, provider_kind="saml")), True)
 exp("database + tenant rejected", errs(LLC, W, m(db, entra_allowed_tenant_ids=["9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"])), True)
-exp("database + secret_ref string rejected", errs(LLC, W, m(db, secret_ref=FAKE)), True)
 exp("database + allow_db_fallback true rejected (A-16)", errs(LLC, W, m(db, allow_db_fallback=True)), True)
-exp("database secret_ref absent ok (schema; server checks current secret)", errs(LLC, W, m(db, secret_ref=DEL)), False)
+exp("database without secret_ref ok (server clears it)", errs(LLC, W, m(db, secret_ref=DEL)), False)
 for k in ["provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"]:
     exp(f"PUT missing {k} rejected (no silent clearing)", errs(LLC, W, m(ent, **{k: DEL})), True)
 exp("PUT + row_version in body rejected (If-Match only)", errs(LLC, W, m(ent, row_version=7)), True)
@@ -166,7 +174,10 @@ exp("access_rules history + other partner rejected", errs(LLC, AR, m(ar, history
 exp("access_rules history org_v 200 rejected", errs(LLC, AR, m(ar, history_refused__org_v_reader=200)), True)
 exp("access_rules oidc visible to partner rejected", errs(LLC, AR, m(ar, oidc_fields_visible_to=["super_admin", "partner_admin_own_partner"])), True)
 exp("access_rules reason 1..500 rejected", errs(LLC, AR, m(ar, reason_trimmed_length={"min": 1, "max": 500})), True)
-exp("access_rules config key rename rejected", errs(LLC, AR, m(ar, server_filled_config_keys={"oidc_authority": "Entra:Instance", "oidc_client_id": "Entra:ClientId"})), True)
+exp("access_rules config key rename rejected", errs(LLC, AR, m(ar, server_filled_config_keys={"oidc_authority": "Entra:Instance", "oidc_client_id": "Entra:ClientId", "secret_ref": "Entra:SecretRef"})), True)
+exp("9:49 access_rules secret_ref config key rename rejected", errs(LLC, AR, m(ar, server_filled_config_keys={"oidc_authority": "Entra:Authority", "oidc_client_id": "Entra:ClientId", "secret_ref": "Entra:ClientSecret"})), True)
+exp("9:49 access_rules without secret_ref config key rejected", errs(LLC, AR, m(ar, server_filled_config_keys={"oidc_authority": "Entra:Authority", "oidc_client_id": "Entra:ClientId"})), True)
+exp("9:49 access_rules server_filled_fields without secret_ref rejected", errs(LLC, AR, m(ar, server_filled_fields=["oidc_authority", "oidc_client_id"])), True)
 
 # ---- 5. auth.provider.changed v1.1 rules ----
 sa = EX["ev_changed_sa_mfa_off"]; cre = EX["ev_changed_created"]
@@ -304,6 +315,16 @@ for _pin in ["| 413 | `payload_too_large` | step 7: body over 64 KiB by `Content
 exp("spec 9:28: malformed_body row no longer claims the 64 KiB case", ["stale"] if "| 400 `malformed_body`; no event |" in spec else [], False)
 exp("spec 9:28: V11-AUDITRATE / V11-TIMING in §12, not under Still OPEN", [] if all(k in spec.split("## 12.")[1].split("## 13.")[0] for k in ["V11-AUDITRATE", "V11-TIMING"])
     and not any(k in _open[0] for k in ["P3-5", "P3-6", "AUDITRATE", "TIMING"]) else ["misplaced"], False)
+
+# ---- 12. TLD 2026-11-04 9:49 (D-51): secret_ref from deployment config, V11-ACTORNAME, resolver note ----
+for _pin in ["**`secret_ref` [TLD 2026-11-04 9:49, D-51] (TL 7:40 D-51 ruling: one app registration per deployment):**", "deployment config key **`Entra:SecretRef`**",
+             "Missing or invalid → it refuses to start, **exit 2**, the message names the key only", "**SSE2 resolver note [TLD 2026-11-04 9:49, D-51]:**",
+             "SSE2's `ISecretResolver` (`src/Login.Entra/Contracts/HostHooks.cs`, SSE2-owned, unchanged)", "**V11-ACTORNAME** (backlog, [TLD 2026-11-04 9:49, D-51])",
+             "| TLD 9:49 |", "Entra on create needs only the tenant id", "\"Microsoft app connection: set / rotated <date>\", never the value"]:
+    exp("spec pin 9:49: " + _pin[:60], [] if _pin in spec else ["missing"], False)
+exp("spec 9:49: no secret_ref_required / secret_ref_format rule row left", ["stale"] if any(f"| `{c}` |" in spec for c in ["secret_ref_required", "secret_ref_format"]) else [], False)
+exp("spec 9:49: V11-ACTORNAME in §12", [] if "V11-ACTORNAME" in spec.split("## 12.")[1].split("## 13.")[0] else ["missing"], False)
+exp("spec 9:49: no request example carries secret_ref", ["present"] if any("secret_ref" in v for k, v in EX.items() if k.startswith(("put_req", "post_req"))) else [], False)
 
 print("v1.1-S2a checks: %d passed, %d failed" % (PASSES[0], len(FAIL)), "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)

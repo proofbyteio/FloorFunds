@@ -45,6 +45,13 @@ async Task<T> OScalar<T>(string sql, params object?[] ps)
     foreach (var p in ps) cmd.Parameters.Add(new NpgsqlParameter { Value = p ?? DBNull.Value });
     return (T)(await cmd.ExecuteScalarAsync())!;
 }
+async Task OExec(string sql, params object?[] ps) // owner-side fixture edit (test rows only)
+{
+    await using var c = await ownerDs.OpenConnectionAsync();
+    await using var cmd = new NpgsqlCommand(sql, c);
+    foreach (var p in ps) cmd.Parameters.Add(new NpgsqlParameter { Value = p ?? DBNull.Value });
+    if (await cmd.ExecuteNonQueryAsync() != 1) throw new InvalidOperationException("fixture edit hit != 1 row");
+}
 async Task<long> Count(string table) => await OScalar<long>($"SELECT count(*) FROM auth.{table}");
 string[] Tables = ["audit_outbox", "location_login_config_change", "location_login_config", "location"];
 foreach (var t in Tables)
@@ -65,6 +72,8 @@ const string ClientId = "5f0c3e1a-00cc-4000-8000-0000000000cc"; // SSE2-FAKE-TES
 const string Authority = "https://login.microsoftonline.com";
 const string Issuer = "https://admin-login.test.invalid";
 string Arn(string name, string region = "us-west-2", string acct = "000000000000") => $"arn:aws:secretsmanager:{region}:{acct}:secret:FAKE-test-only/{name}-AbCdEf";
+// The deployment's one app-registration secret reference, Entra:SecretRef [TLD 2026-11-04 9:49, D-51]. Fake account 000000000000.
+string DeployArn = Arn("deploy/app-reg");
 
 // ---------- keys, options ----------
 using var rsa = RSA.Create(2048);
@@ -75,7 +84,7 @@ var otherKey = new RsaSecurityKey(otherRsa) { KeyId = "p3-test" };
 var schemaPath = Path.Combine(AppContext.BaseDirectory, "contract", "audit-events.schema.json");
 AdminApiOptions Opts(string? cs = null, string? schema = null) => new()
 {
-    ConnectionString = cs ?? adminCs, EntraAuthority = Authority, EntraClientId = ClientId.ToUpperInvariant(),
+    ConnectionString = cs ?? adminCs, EntraAuthority = Authority, EntraClientId = ClientId.ToUpperInvariant(), EntraSecretRef = DeployArn,
     SecretAccountIds = new HashSet<string> { "000000000000" }, SecretRegions = new HashSet<string> { "us-west-2" },
     TokenIssuer = Issuer, SigningKeys = [publicKey], AuditSchemaPath = schema ?? schemaPath,
 };
@@ -97,6 +106,21 @@ Refuses("startup: empty SecretRef:AllowedAccountIds refused", o => o with { Secr
 Refuses("startup: bad account id refused", o => o with { SecretAccountIds = new HashSet<string> { "12345" } }, "AllowedAccountIds");
 Refuses("startup: empty SecretRef:AllowedRegions refused", o => o with { SecretRegions = new HashSet<string>() }, "AllowedRegions");
 Refuses("startup: bad region refused", o => o with { SecretRegions = new HashSet<string> { "US-WEST-2" } }, "AllowedRegions");
+// TLD 2026-11-04 9:49 (D-51): Entra:SecretRef validated against the allowlists at startup; the refusal names the key, never the value.
+foreach (var (n, bad) in new[] { ("empty", ""), ("not an ARN", "my-client-secret"), ("account outside allowlist", Arn("x", acct: "111122223333")),
+                                  ("region outside allowlist", Arn("x", region: "eu-west-1")), ("partition aws-cn", "arn:aws-cn:secretsmanager:us-west-2:000000000000:secret:FAKE-x"),
+                                  ("service ssm", "arn:aws:ssm:us-west-2:000000000000:secret:FAKE-x"), ("trailing newline", DeployArn + "\n"),
+                                  ("over 2048 chars", "arn:aws:secretsmanager:us-west-2:000000000000:secret:FAKE-" + new string('a', 2048)) })
+{
+    try { (Opts() with { EntraSecretRef = bad }).Validated(); Ok($"startup: Entra:SecretRef {n} refused", false, "accepted"); }
+    catch (InvalidOperationException e)
+    {
+        Ok($"startup: Entra:SecretRef {n} refused, key named, value/account/region not echoed", e.Message.Contains("config Entra:SecretRef", StringComparison.Ordinal)
+            && !e.Message.Contains("arn:") && !e.Message.Contains("FAKE") && !e.Message.Contains("111122223333") && !e.Message.Contains("eu-west-1") && !e.Message.Contains("client-secret"), e.Message);
+    }
+}
+Ok("startup: Entra:SecretRef in the allowlist accepted (unchanged)", Opts().Validated().EntraSecretRef == DeployArn);
+Ok("startup: AdminApiOptions.ToString prints neither Entra:SecretRef nor the connection string", !Opts().ToString().Contains("arn:") && !Opts().ToString().Contains(adminCs));
 Refuses("startup: no signing keys refused", o => o with { SigningKeys = [] }, "JwksPath");
 Refuses("startup: symmetric signing key refused", o => o with { SigningKeys = [new SymmetricSecurityKey(new byte[32])] }, "JwksPath");
 Refuses("startup: missing audit schema refused", o => o with { AuditSchemaPath = "/nonexistent/audit.json" }, "audit-events");
@@ -114,7 +138,7 @@ await Check("startup: schema with an unknown keyword refused", async () =>
     finally { File.Delete(p); }
 });
 // The real entry point (Program.cs): invalid config -> exit 2 and "admin-api refused to start", value not echoed.
-await Check("startup: Admin.Api process exits 2 on invalid Entra:Authority, value not echoed", async () =>
+async Task<(int code, string err)> RunAdminApi(Action<IDictionary<string, string?>> edit)
 {
     var dll = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "Admin.Api", "bin", "Debug", "net10.0", "Admin.Api.dll");
     var jwks = Path.Combine(Path.GetTempPath(), $"p3-jwks-{Guid.NewGuid():N}.json");
@@ -124,19 +148,39 @@ await Check("startup: Admin.Api process exits 2 on invalid Entra:Authority, valu
     {
         var psi = new ProcessStartInfo("dotnet", [dll]) { RedirectStandardError = true, RedirectStandardOutput = true };
         psi.Environment["ADMIN_API_CONNECTION_STRING"] = adminCs;
-        psi.Environment["Entra__Authority"] = "https://evil.example/SECRETPATH";
+        psi.Environment["Entra__Authority"] = Authority;
         psi.Environment["Entra__ClientId"] = ClientId;
+        psi.Environment["Entra__SecretRef"] = DeployArn;
         psi.Environment["SecretRef__AllowedAccountIds"] = "000000000000";
         psi.Environment["SecretRef__AllowedRegions"] = "us-west-2";
         psi.Environment["BackofficeAuth__Issuer"] = Issuer;
         psi.Environment["BackofficeAuth__JwksPath"] = jwks;
         psi.Environment["Urls"] = "http://127.0.0.1:1"; // never reached
+        edit(psi.Environment);
         using var p = Process.Start(psi)!;
         var err = await p.StandardError.ReadToEndAsync();
+        var outp = await p.StandardOutput.ReadToEndAsync();
         await p.WaitForExitAsync();
-        return p.ExitCode == 2 && err.Contains("admin-api refused to start: config Entra:Authority") && !err.Contains("SECRETPATH");
+        return (p.ExitCode, err + outp);
     }
     finally { File.Delete(jwks); }
+}
+await Check("startup: Admin.Api process exits 2 on invalid Entra:Authority, value not echoed", async () =>
+{
+    var (code, err) = await RunAdminApi(e => e["Entra__Authority"] = "https://evil.example/SECRETPATH");
+    return code == 2 && err.Contains("admin-api refused to start: config Entra:Authority") && !err.Contains("SECRETPATH");
+});
+foreach (var (n, v) in new[] { ("account outside allowlist", Arn("procx", acct: "111122223333")), ("region outside allowlist", Arn("procx", region: "eu-west-1")), ("not an ARN", "my-client-secret-PROCX") })
+    await Check($"startup: Admin.Api process exits 2 on Entra:SecretRef {n} (TLD 9:49), value not echoed", async () =>
+    {
+        var (code, err) = await RunAdminApi(e => e["Entra__SecretRef"] = v);
+        return code == 2 && err.Contains("admin-api refused to start: config Entra:SecretRef") && !err.Contains("PROCX") && !err.Contains("procx")
+            && !err.Contains("111122223333") && !err.Contains("eu-west-1") && !err.Contains("arn:");
+    });
+await Check("startup: Admin.Api process exits 2 on missing Entra:SecretRef (TLD 9:49)", async () =>
+{
+    var (code, err) = await RunAdminApi(e => e.Remove("Entra__SecretRef"));
+    return code == 2 && err.Contains("admin-api refused to start: config Entra:SecretRef");
 });
 
 // ---------- port ----------
@@ -249,16 +293,12 @@ Dictionary<string, object?> DbCfg(string display = "Riverbend Casino", bool mfa 
     ["provider_kind"] = "database", ["display_name"] = display, ["entra_allowed_tenant_ids"] = Array.Empty<string>(),
     ["allow_db_fallback"] = false, ["mfa_required"] = mfa,
 }, extra);
-Dictionary<string, object?> EntraCfg(Guid tenant, string? secret, bool fallback = false, bool mfa = true, string display = "Riverbend Casino")
+// TLD 2026-11-04 9:49 (D-51): an Entra body carries only the tenant; secret_ref comes from Entra:SecretRef.
+Dictionary<string, object?> EntraCfg(Guid tenant, bool fallback = false, bool mfa = true, string display = "Riverbend Casino") => new()
 {
-    var d = new Dictionary<string, object?>
-    {
-        ["provider_kind"] = "entra", ["display_name"] = display, ["entra_allowed_tenant_ids"] = new[] { tenant.ToString("D") },
-        ["allow_db_fallback"] = fallback, ["mfa_required"] = mfa,
-    };
-    if (secret is not null) d["secret_ref"] = secret;
-    return d;
-}
+    ["provider_kind"] = "entra", ["display_name"] = display, ["entra_allowed_tenant_ids"] = new[] { tenant.ToString("D") },
+    ["allow_db_fallback"] = fallback, ["mfa_required"] = mfa,
+};
 static Dictionary<string, object?> Merge(Dictionary<string, object?> d, object? extra)
 {
     if (extra is Dictionary<string, object?> x) foreach (var (k, v) in x) d[k] = v;
@@ -337,7 +377,7 @@ try
         Ok("create: change row 'created' row_version 1", await OScalar<long>("SELECT count(*) FROM auth.location_login_config_change WHERE location_id=$1 AND change_kind='created' AND row_version=1", A1) == 1);
     }
 
-    var rB1 = await Post(SA, Create(P_B, "North Valley Cage 1", EntraCfg(T1, Arn("nv-main"))));
+    var rB1 = await Post(SA, Create(P_B, "North Valley Cage 1", EntraCfg(T1)));
     var B1 = rB1.Status == 201 ? LocOf(rB1) : Guid.Empty;
     Ok("create: SA entra in partner B -> 201", rB1.Status == 201, rB1.Body);
     ForSchema("login_config_view_super", rB1);
@@ -349,7 +389,7 @@ try
         Ok("create: SA event lists oidc_* and secret_ref in changed_fields, no value",
             ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["admin_type"]! == "super"
             && ev[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["provider_kind", "display_name", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret_ref", "mfa_required"]));
-        Ok("create: secret_ref stored (owner read) but write-only", await OScalar<string>("SELECT secret_ref FROM auth.location_login_config WHERE location_id=$1", B1) == Arn("nv-main"));
+        Ok("create: entra body with only the tenant -> secret_ref stored = Entra:SecretRef (owner read; TLD 9:49, D-51)", await OScalar<string>("SELECT secret_ref FROM auth.location_login_config WHERE location_id=$1", B1) == DeployArn);
     }
     {
         var r = await Post(PA, Create(P_B, "Sneaky", DbCfg()));
@@ -362,17 +402,17 @@ try
         var r = await Post(PA, Create(P_A, "No MFA", DbCfg(mfa: false)));
         Ok("create: PA mfa_required=false -> 403 not_super_admin", Err(r, 403, "not_super_admin"));
         Ok("create: not_super_admin event (attempted mfa_required)", Denied(await NewEvents(), "not_super_admin", P_A, "partner", "create", "mfa_required"));
-        r = await Post(PA, Create(P_A, "Fallback", EntraCfg(T2, Arn("a-fb"), fallback: true)));
+        r = await Post(PA, Create(P_A, "Fallback", EntraCfg(T2, fallback: true)));
         Ok("create: PA allow_db_fallback=true -> 403 not_super_admin + event", Err(r, 403, "not_super_admin")
             && Denied(await NewEvents(), "not_super_admin", P_A, "partner", "create", "allow_db_fallback"));
     }
     Guid A2;
     {
-        var r = await Post(SA, Create(P_A, "Fallback Cage", EntraCfg(T2, Arn("a-fb"), fallback: true)));
+        var r = await Post(SA, Create(P_A, "Fallback Cage", EntraCfg(T2, fallback: true)));
         Ok("create: SA fallback without reason -> 400 reason_required, no event", Err(r, 400, "reason_required") && (await NewEvents()).Count == 0);
-        r = await Post(SA, Create(P_A, "Fallback Cage", With(EntraCfg(T2, Arn("a-fb"), fallback: true), "reason", "  short  ")));
+        r = await Post(SA, Create(P_A, "Fallback Cage", With(EntraCfg(T2, fallback: true), "reason", "  short  ")));
         Ok("create: SA reason under 10 after trim -> 422 login_config/reason reason_length", HasField(r, "login_config/reason", "reason_length"));
-        r = await Post(SA, Create(P_A, "Fallback Cage", With(EntraCfg(T2, Arn("a-fb"), fallback: true), "reason", "   Pilot fallback per OPS-77   ")));
+        r = await Post(SA, Create(P_A, "Fallback Cage", With(EntraCfg(T2, fallback: true), "reason", "   Pilot fallback per OPS-77   ")));
         A2 = r.Status == 201 ? LocOf(r) : Guid.Empty;
         var ev = await NewEvents();
         Ok("create: SA fallback + reason -> 201, reason stored trimmed in event and change row", r.Status == 201 && ev.Count == 1 && Valid(ev[0])
@@ -388,14 +428,22 @@ try
         Ok("create: partner_id_format, name_invalid, slug/row_version/created_by unknown_field (all collected)",
             HasField(r, "partner_id", "partner_id_format") && HasField(r, "name", "name_invalid") && HasField(r, "slug", "unknown_field")
             && HasField(r, "row_version", "unknown_field") && HasField(r, "created_by", "unknown_field"), r.Body);
-        r = await Post(SA, Create(P_A, "x", EntraCfg(T3, null)));
-        Ok("create: entra without secret_ref -> secret_ref_required", HasField(r, "login_config/secret_ref", "secret_ref_required"));
-        r = await Post(SA, Create(P_A, "x", With(With(EntraCfg(T3, Arn("x")), "oidc_authority", "https://evil.invalid"), "oidc_client_id", ClientId)));
+        // TLD 2026-11-04 9:49 (D-51): secret_ref in a create body, any value, -> 422 field_not_writable, value never echoed.
+        foreach (var (n, v) in new (string, object?)[] { ("allowed ARN", Arn("create-x")), ("other account ARN", Arn("create-x", acct: "111122223333")), ("null", null), ("number", 42), ("plain string", "client-secret-CRX") })
+        {
+            r = await Post(SA, Create(P_A, "x", With(EntraCfg(T3), "secret_ref", v)));
+            Ok($"create: entra login_config + secret_ref {n} -> 422 login_config/secret_ref field_not_writable, not echoed", HasField(r, "login_config/secret_ref", "field_not_writable")
+                && !r.Body.Contains("arn:") && !r.Body.Contains("FAKE") && !r.Body.Contains("CRX") && !r.Body.Contains("111122223333"), r.Body);
+        }
+        r = await Post(SA, Create(P_A, "x", With(DbCfg(), "secret_ref", null)));
+        Ok("create: database login_config + secret_ref null -> 422 field_not_writable", HasField(r, "login_config/secret_ref", "field_not_writable"), r.Body);
+        Ok("create: no secret_ref_required code exists any more", !r.Body.Contains("secret_ref_required"));
+        r = await Post(SA, Create(P_A, "x", With(With(EntraCfg(T3), "oidc_authority", "https://evil.invalid"), "oidc_client_id", ClientId)));
         Ok("create: oidc_* in login_config -> field_not_writable (both)", HasField(r, "login_config/oidc_authority", "field_not_writable") && HasField(r, "login_config/oidc_client_id", "field_not_writable"));
         r = await Post(SA, Create(P_A, "x", "not an object"));
         Ok("create: login_config not an object -> login_config type", HasField(r, "login_config", "type"));
         Ok("create: field errors write no event", (await NewEvents()).Count == 0);
-        r = await Post(SA, Create(P_A, "Tenant thief", EntraCfg(T1, Arn("thief"))));
+        r = await Post(SA, Create(P_A, "Tenant thief", EntraCfg(T1)));
         Ok("create: SA tenant bound to partner B -> 422 tenant_bound_elsewhere", HasField(r, "login_config/entra_allowed_tenant_ids/0", "tenant_bound_elsewhere"));
         Ok("create: tenant_bound_elsewhere event (super, target partner A)", Denied(await NewEvents(), "tenant_bound_elsewhere", P_A, "super", "create", "entra_allowed_tenant_ids"));
         r = await Send(HttpMethod.Post, "/api/orgs/locations", SA, "[1,2]");
@@ -411,7 +459,7 @@ try
             Ok($"create: {n} -> 403 forbidden + not_admin event (target partner A, location_id null, no admin_type/actor_partner_id)", Err(r, 403, "forbidden")
                 && Denied(await NewEvents(), "not_admin", P_A, null, "create", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"));
         }
-        r = await Post(RD, Create(P_B, "x", EntraCfg(T3, Arn("rd"))));
+        r = await Post(RD, Create(P_B, "x", With(EntraCfg(T3), "secret_ref", Arn("rd"))));
         Ok("create: reader naming partner B -> 403 + not_admin event targeting partner B (from the body)", Err(r, 403, "forbidden")
             && Denied(await NewEvents(), "not_admin", P_B, null, "create", "provider_kind", "display_name", "entra_allowed_tenant_ids", "secret_ref", "allow_db_fallback", "mfa_required"));
         var bigName = new string('a', 2 * 1024 * 1024);
@@ -502,38 +550,47 @@ try
         Ok("put: provider_kind_invalid, display_name_invalid, type x3", HasField(r, "provider_kind", "provider_kind_invalid") && HasField(r, "display_name", "display_name_invalid")
             && HasField(r, "entra_allowed_tenant_ids", "type") && HasField(r, "allow_db_fallback", "type") && HasField(r, "mfa_required", "type"), r.Body);
         r = await Put(A1, PA, new Dictionary<string, object?>(), "\"1\"");
-        Ok("put: empty object -> required on every editable key", new[] { "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required" }.All(k => HasField(r, k, "required")) && !HasField(r, "secret_ref", "required"));
+        Ok("put: empty object -> required on every editable key (not secret_ref)", new[] { "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required" }.All(k => HasField(r, k, "required")) && !r.Body.Contains("secret_ref"));
         r = await Put(A1, PA, new Dictionary<string, object?> { ["provider_kind"] = "database", ["display_name"] = " x ", ["entra_allowed_tenant_ids"] = new[] { T3.ToString() }, ["secret_ref"] = Arn("x"), ["allow_db_fallback"] = true, ["mfa_required"] = true }, "\"1\"");
-        Ok("put: database + tenant/secret -> field_not_allowed; fallback -> fallback_not_applicable", HasField(r, "entra_allowed_tenant_ids", "field_not_allowed") && HasField(r, "secret_ref", "field_not_allowed") && HasField(r, "allow_db_fallback", "fallback_not_applicable"));
-        r = await Put(A1, PA, new Dictionary<string, object?> { ["provider_kind"] = "entra", ["display_name"] = "x", ["entra_allowed_tenant_ids"] = new[] { T3.ToString(), T2.ToString() }, ["secret_ref"] = Arn("x"), ["allow_db_fallback"] = false, ["mfa_required"] = true }, "\"1\"");
+        Ok("put: database + tenant -> field_not_allowed; secret_ref -> field_not_writable (TLD 9:49); fallback -> fallback_not_applicable", HasField(r, "entra_allowed_tenant_ids", "field_not_allowed") && HasField(r, "secret_ref", "field_not_writable") && !HasField(r, "secret_ref", "field_not_allowed") && HasField(r, "allow_db_fallback", "fallback_not_applicable") && !r.Body.Contains("arn:"), r.Body);
+        r = await Put(A1, PA, new Dictionary<string, object?> { ["provider_kind"] = "entra", ["display_name"] = "x", ["entra_allowed_tenant_ids"] = new[] { T3.ToString(), T2.ToString() }, ["allow_db_fallback"] = false, ["mfa_required"] = true }, "\"1\"");
         Ok("put: entra with 2 tenants -> tenant_count", HasField(r, "entra_allowed_tenant_ids", "tenant_count"));
-        r = await Put(A1, PA, EntraCfg(Guid.Empty, Arn("x")), "\"1\"");
+        r = await Put(A1, PA, EntraCfg(Guid.Empty), "\"1\"");
         Ok("put: nil tenant -> tenant_id_format", HasField(r, "entra_allowed_tenant_ids/0", "tenant_id_format"));
-        r = await Put(A1, PA, With(EntraCfg(T3, null), "entra_allowed_tenant_ids", new[] { "{" + T3 + "}" }), "\"1\"");
-        Ok("put: braced tenant -> tenant_id_format; switch to entra without secret -> secret_ref_required", HasField(r, "entra_allowed_tenant_ids/0", "tenant_id_format") && HasField(r, "secret_ref", "secret_ref_required"));
-        r = await Put(A1, PA, With(EntraCfg(T3, null), "secret_ref", 42), "\"1\"");
-        Ok("put: secret_ref number -> type", HasField(r, "secret_ref", "type"));
-        r = await Put(A1, PA, With(EntraCfg(T3, Arn("x")), "reason", new string('r', 501)), "\"1\"");
+        r = await Put(A1, PA, With(EntraCfg(T3), "entra_allowed_tenant_ids", new[] { "{" + T3 + "}" }), "\"1\"");
+        Ok("put: braced tenant -> tenant_id_format; switch to entra with only the tenant -> no secret_ref error (TLD 9:49)", HasField(r, "entra_allowed_tenant_ids/0", "tenant_id_format") && !r.Body.Contains("secret_ref"));
+        r = await Put(A1, PA, With(EntraCfg(T3), "secret_ref", 42), "\"1\"");
+        Ok("put: secret_ref number -> field_not_writable (not type)", HasField(r, "secret_ref", "field_not_writable") && !HasField(r, "secret_ref", "type"));
+        r = await Put(A1, PA, With(EntraCfg(T3), "reason", new string('r', 501)), "\"1\"");
         Ok("put: reason 501 chars -> reason_length (also on a non-downgrade)", HasField(r, "reason", "reason_length"));
-        r = await Put(A1, PA, With(EntraCfg(T3, Arn("x")), "reason", " " + new string('r', 500) + new string(' ', 1499)), "\"1\"");
+        r = await Put(A1, PA, With(EntraCfg(T3), "reason", " " + new string('r', 500) + new string(' ', 1499)), "\"1\"");
         Ok("put: reason 500 after trim (2000 raw) accepted by validation", r.Status == 200, r.Body);
+        Ok("put: db -> entra (tenant only) stores secret_ref = Entra:SecretRef (TLD 9:49)", r.Status == 200 && (bool)Obj(r.Body)["secret"]!["set"]!
+            && await OScalar<string>("SELECT secret_ref FROM auth.location_login_config WHERE location_id=$1", A1) == DeployArn, r.Body);
         // That PUT applied (db -> entra T3). Put it back to database for the next steps.
-        r = await Put(A1, PA, With(DbCfg(), "secret_ref", null), "\"2\"");
-        Ok("put: entra -> database with secret_ref null -> 200, oidc cleared, secret not set", r.Status == 200 && r.ETag == "\"3\"" && (bool)Obj(r.Body)["secret"]!["set"]! == false
-            && await OScalar<long>("SELECT count(*) FROM auth.location_login_config WHERE location_id=$1 AND oidc_authority IS NULL AND oidc_client_id IS NULL AND secret_ref IS NULL", A1) == 1, r.Body);
         await NewEvents();
+        r = await Put(A1, PA, DbCfg(), "\"2\"");
+        Ok("put: entra -> database (no secret_ref in body) -> 200, oidc + secret cleared by the server (TLD 9:49)", r.Status == 200 && r.ETag == "\"3\"" && (bool)Obj(r.Body)["secret"]!["set"]! == false
+            && await OScalar<long>("SELECT count(*) FROM auth.location_login_config WHERE location_id=$1 AND oidc_authority IS NULL AND oidc_client_id IS NULL AND secret_ref IS NULL", A1) == 1, r.Body);
+        var evDb = await NewEvents();
+        Ok("put: entra -> database event changed_fields lists secret_ref (cleared), no value", evDb.Count == 1 && Valid(evDb[0])
+            && evDb[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["provider_kind", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret_ref"])
+            && !evDb[0].ToJsonString().Contains("arn:"), evDb.Count > 0 ? evDb[0].ToJsonString() : "none");
 
-        // K4 allowlist: out-of-allowlist account / region -> 422 secret_ref_format, never echoed.
-        foreach (var (n, arn) in new[] { ("account", Arn("x", acct: "111122223333")), ("region", Arn("x", region: "eu-west-1")), ("partition", "arn:aws-cn:secretsmanager:us-west-2:000000000000:secret:FAKE-x"), ("service", "arn:aws:ssm:us-west-2:000000000000:secret:FAKE-x") })
+        // TLD 2026-11-04 9:49 (D-51): any secret_ref in a PUT body -> 422 field_not_writable, value never echoed (the allowlist is startup-only now).
+        foreach (var (n, v) in new (string, object?)[] { ("allowed ARN", Arn("x")), ("account outside allowlist", Arn("x", acct: "111122223333")), ("region outside allowlist", Arn("x", region: "eu-west-1")),
+                                                         ("partition aws-cn", "arn:aws-cn:secretsmanager:us-west-2:000000000000:secret:FAKE-x"), ("null", null), ("empty", ""), ("object", new { arn = Arn("x") }) })
         {
-            r = await Put(A1, PA, EntraCfg(T3, arn), "\"3\"");
-            Ok($"put K4: secret_ref {n} outside allowlist -> 422 secret_ref_format, value/account/region not echoed",
-                HasField(r, "secret_ref", "secret_ref_format") && !r.Body.Contains("111122223333") && !r.Body.Contains("eu-west-1") && !r.Body.Contains("arn:") && !r.Body.Contains("FAKE"), r.Body);
+            r = await Put(A1, PA, With(EntraCfg(T3), "secret_ref", v), "\"3\"");
+            Ok($"put: entra body + secret_ref {n} -> 422 field_not_writable, value/account/region not echoed",
+                HasField(r, "secret_ref", "field_not_writable") && !r.Body.Contains("111122223333") && !r.Body.Contains("eu-west-1") && !r.Body.Contains("arn:") && !r.Body.Contains("FAKE"), r.Body);
         }
-        Ok("put K4: allowlist refusals change nothing", Rv(A1) == 3 && (await NewEvents()).Count == 0);
+        r = await Put(A1, SA, With(DbCfg(), "secret_ref", null), "\"3\"");
+        Ok("put: SA database body + secret_ref null -> 422 field_not_writable", HasField(r, "secret_ref", "field_not_writable"), r.Body);
+        Ok("put: secret_ref refusals change nothing, no event", Rv(A1) == 3 && (await NewEvents()).Count == 0);
 
         // Spec example: PA database -> entra with a secret (applies immediately, oidc_* server-filled).
-        r = await Put(A1, PA, EntraCfg(T3, Arn("llc/riverbend")), "\"3\"");
+        r = await Put(A1, PA, EntraCfg(T3), "\"3\"");
         Ok("put: PA db -> entra -> 200, ETag \"4\", restricted view", r.Status == 200 && r.ETag == "\"4\"" && !Obj(r.Body).ContainsKey("oidc_authority") && (bool)Obj(r.Body)["secret"]!["set"]!, r.Body);
         ForSchema("login_config_view_restricted", r);
         var ev = await NewEvents();
@@ -541,51 +598,52 @@ try
             ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["action"]! == "update" && (long)ev[0]["details"]!["row_version"]! == 4
             && ev[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["provider_kind", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret_ref"])
             && (string)ev[0]["details"]!["before"]!["provider_kind"]! == "database" && !ev[0].ToJsonString().Contains("arn:"), ev.Count > 0 ? ev[0].ToJsonString() : "none");
-        Ok("put: oidc_* filled from config in the row", await OScalar<string>("SELECT oidc_client_id FROM auth.location_login_config WHERE location_id=$1", A1) == ClientId);
+        Ok("put: oidc_* and secret_ref filled from config in the row", await OScalar<string>("SELECT oidc_client_id FROM auth.location_login_config WHERE location_id=$1", A1) == ClientId
+            && await OScalar<string>("SELECT secret_ref FROM auth.location_login_config WHERE location_id=$1", A1) == DeployArn);
 
         // Downgrades.
-        r = await Put(A1, PA, EntraCfg(T3, null, mfa: false), "\"4\"");
+        r = await Put(A1, PA, EntraCfg(T3, mfa: false), "\"4\"");
         Ok("put: PA mfa off -> 403 not_super_admin", Err(r, 403, "not_super_admin"));
         Ok("put: not_super_admin event (attempted mfa_required, actor_partner_id)", Denied(ev = await NewEvents(), "not_super_admin", A1, "partner", "update", "mfa_required")
             && (string?)ev[0]["details"]!["actor_partner_id"] == P_A.ToString());
-        r = await Put(A1, PA, EntraCfg(T3, null, fallback: true), "\"4\"");
+        r = await Put(A1, PA, EntraCfg(T3, fallback: true), "\"4\"");
         Ok("put: PA fallback on -> 403 not_super_admin + event", Err(r, 403, "not_super_admin") && Denied(await NewEvents(), "not_super_admin", A1, "partner", "update", "allow_db_fallback"));
         Ok("put: refused downgrades change nothing", Rv(A1) == 4);
-        r = await Put(A1, SA, EntraCfg(T3, null, mfa: false), "\"4\"");
+        r = await Put(A1, SA, EntraCfg(T3, mfa: false), "\"4\"");
         Ok("put: SA mfa off, no reason -> 400 reason_required, no event", Err(r, 400, "reason_required") && (await NewEvents()).Count == 0);
-        r = await Put(A1, SA, With(EntraCfg(T3, null, mfa: false), "reason", "            "), "\"4\"");
+        r = await Put(A1, SA, With(EntraCfg(T3, mfa: false), "reason", "            "), "\"4\"");
         Ok("put: SA mfa off, whitespace reason -> 400 reason_required", Err(r, 400, "reason_required"));
-        r = await Put(A1, SA, With(EntraCfg(T3, null, mfa: false), "reason", "Client's Entra conditional access already enforces MFA; ticket OPS-1234"), "\"4\"");
+        r = await Put(A1, SA, With(EntraCfg(T3, mfa: false), "reason", "Client's Entra conditional access already enforces MFA; ticket OPS-1234"), "\"4\"");
         Ok("put: SA mfa off + reason -> 200 super view", r.Status == 200 && (bool)Obj(r.Body)["mfa_required"]! == false && Obj(r.Body).ContainsKey("oidc_authority"));
         ForSchema("login_config_view_super", r);
         ev = await NewEvents();
         Ok("put: SA downgrade event admin_type super + reason", ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["admin_type"]! == "super" && (string?)ev[0]["details"]!["reason"] is { Length: > 10 });
-        r = await Put(A1, PA, EntraCfg(T3, null, mfa: false, display: "Riverbend Casino East"), "\"5\"");
+        r = await Put(A1, PA, EntraCfg(T3, mfa: false, display: "Riverbend Casino East"), "\"5\"");
         Ok("put: PA edits display_name while mfa already off (unchanged field is not a downgrade) -> 200", r.Status == 200, r.Body);
-        r = await Put(A1, PA, EntraCfg(T3, null, mfa: true, display: "Riverbend Casino East"), "\"6\"");
+        r = await Put(A1, PA, EntraCfg(T3, mfa: true, display: "Riverbend Casino East"), "\"6\"");
         Ok("put: PA upgrade mfa back on -> 200", r.Status == 200 && (bool)Obj(r.Body)["mfa_required"]!);
-        r = await Put(A2, PA, EntraCfg(T2, null, fallback: false), "\"1\"");
+        r = await Put(A2, PA, EntraCfg(T2, fallback: false), "\"1\"");
         Ok("put: PA upgrade fallback off -> 200", r.Status == 200 && (bool)Obj(r.Body)["allow_db_fallback"]! == false, r.Body);
         await NewEvents();
 
-        // Rotation and no-op.
-        var rot0 = await OScalar<DateTime>("SELECT max(at) FROM auth.location_login_config_change WHERE location_id=$1 AND 'secret_ref' = ANY(changed_fields)", A1);
-        await Task.Delay(20);
-        r = await Put(A1, PA, EntraCfg(T3, Arn("llc/riverbend-v2"), display: "Riverbend Casino East"), "\"7\"");
+        // Entra -> Entra keeps the stored secret_ref (A-21 analogue, TLD 9:49) even if the row differs from Entra:SecretRef; and no-op.
+        await OExec("UPDATE auth.location_login_config SET secret_ref = $2 WHERE location_id = $1", A1, Arn("llc/pre-d51-row"));
+        var rot0 = (string?)Obj((await Get(Cfg(A1), SA)).Body)["secret"]!["rotated_at"];
+        r = await Put(A1, PA, EntraCfg(T3, display: "Riverbend Casino North"), "\"7\"");
         ev = await NewEvents();
-        Ok("put: rotation -> changed_fields [secret_ref] only, rotated_at advances", r.Status == 200 && ev.Count == 1
-            && ev[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["secret_ref"])
-            && DateTime.Parse((string)Obj(r.Body)["secret"]!["rotated_at"]!, null, System.Globalization.DateTimeStyles.AdjustToUniversal) > rot0, r.Body);
-        r = await Put(A1, PA, EntraCfg(T3, null, display: "  Riverbend Casino East  "), "\"8\"");
+        Ok("put: entra -> entra edit -> changed_fields [display_name] only, stored secret_ref kept, rotated_at unchanged", r.Status == 200 && ev.Count == 1
+            && ev[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["display_name"])
+            && (string?)Obj(r.Body)["secret"]!["rotated_at"] == rot0 && rot0 is not null
+            && await OScalar<string>("SELECT secret_ref FROM auth.location_login_config WHERE location_id=$1", A1) == Arn("llc/pre-d51-row"), r.Body);
+        await OExec("UPDATE auth.location_login_config SET secret_ref = $2 WHERE location_id = $1", A1, DeployArn);
+        r = await Put(A1, PA, EntraCfg(T3, display: "  Riverbend Casino North  "), "\"8\"");
         Ok("put: no-op (trimmed same values) -> 200, row_version unchanged, no event (OQ-P3-6)", r.Status == 200 && r.ETag == "\"8\"" && Rv(A1) == 8 && (await NewEvents()).Count == 0);
-        r = await Put(A1, PA, DbCfg(), "\"8\"");
-        Ok("put: entra (secret set) -> database without secret_ref null -> field_not_allowed", HasField(r, "secret_ref", "field_not_allowed"));
 
         // Tenant rule (Super Admin too).
-        r = await Put(A1, SA, EntraCfg(T1, null), "\"8\"");
+        r = await Put(A1, SA, EntraCfg(T1), "\"8\"");
         Ok("put: SA tenant bound to partner B -> 422 tenant_bound_elsewhere", HasField(r, "entra_allowed_tenant_ids/0", "tenant_bound_elsewhere"));
         Ok("put: tenant_bound_elsewhere event (super)", Denied(await NewEvents(), "tenant_bound_elsewhere", A1, "super", "update", "entra_allowed_tenant_ids"));
-        r = await Put(A2, SA, EntraCfg(T3, null), "\"2\"");
+        r = await Put(A2, SA, EntraCfg(T3), "\"2\"");
         Ok("put: tenant on another location of the SAME partner is allowed", r.Status == 200, r.Body);
         await NewEvents();
 
@@ -732,7 +790,7 @@ try
         var before = (await Count("location"), await Count("location_login_config_change"), Rv(A1));
         var (st, bd) = await S2(HttpMethod.Post, "/api/orgs/locations", SA, J(Create(P_A, "Doomed", DbCfg())));
         Ok("fail closed: create with outbox failure -> 500, no body", st == 500 && bd.Length == 0);
-        (st, bd) = await S2(HttpMethod.Put, Cfg(A1), PA, J(EntraCfg(T3, null, display: "Doomed")), $"\"{Rv(A1)}\"");
+        (st, bd) = await S2(HttpMethod.Put, Cfg(A1), PA, J(EntraCfg(T3, display: "Doomed")), $"\"{Rv(A1)}\"");
         Ok("fail closed: update with outbox failure -> 500, no body", st == 500 && bd.Length == 0);
         (st, _) = await S2(HttpMethod.Put, Cfg(B1), PA, J(DbCfg()), "\"1\"");
         Ok("fail closed: denied-event write failure -> 500 (OQ)", st == 500);

@@ -25,7 +25,7 @@ in this folder (plan §3.1). The stand-in and the real OpenIddict service implem
 | `standin-control.md` | Stand-in control API on the separate control listener (reset, clock, PCs, fake agent, users/TOTP, faults, audit) and fixtures [TL Decision 2026-11-02, CR-05] |
 | `ui-driver.md` | How tests drive the stand-in sign-in UI: form fields, test ids, assertable strings [TL Decision 2026-11-02, CR-05] |
 | `v1.1-S2a-location-login-config.md` | v1.1 S2a: location login config API (screen 9), check order, errors, role × scope matrix, events, DDL intent, RO/RW grants, readers, deferred, OPEN/ASSUMPTION register |
-| `location-login-config.schema.json` | v1.1 S2a: JSON Schema for the location login config request/response bodies (secret_ref write-only) |
+| `location-login-config.schema.json` | v1.1 S2a: JSON Schema for the location login config request/response bodies (secret_ref server-filled from deployment config `Entra:SecretRef`, never in a body or response [TLD 2026-11-04 9:49, D-51]) |
 | `check_v1_1_s2a.py` | v1.1 S2a contract test (run: `/tmp/sse-d0/venv/bin/python contract/check_v1_1_s2a.py`; exit 0 = all pass) |
 | `check_schemas.py` | Schema self-check with positive and negative samples (run: `/tmp/sse-d0/venv/bin/python contract/check_schemas.py`; exit 0 = all pass) |
 | `OPEN-QUESTIONS.md` | Every point the sources don't state (OQ-n), for the Tech Lead to answer or relay |

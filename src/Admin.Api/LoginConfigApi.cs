@@ -19,7 +19,7 @@ sealed record LlcRow(Guid LocationId, Guid PartnerId, string Slug, string Name, 
     string? OidcAuthority, string? OidcClientId, bool SecretSet, bool AllowDbFallback, bool MfaRequired, long RowVersion,
     Guid CreatedBy, DateTime CreatedAt, Guid UpdatedBy, DateTime UpdatedAt, DateTime? RotatedAt)
 {
-    public CurrentConfig Current => new(ProviderKind, Tenants, SecretSet, AllowDbFallback, MfaRequired);
+    public CurrentConfig Current => new(ProviderKind, Tenants, AllowDbFallback, MfaRequired);
     public JsonObject State => AuditOutbox.State(ProviderKind, Tenants, AllowDbFallback, MfaRequired);
 }
 
@@ -370,8 +370,10 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         }
         if (down.Count > 0 && n!.Reason is null) throw Err(400, "reason_required");
 
-        // Step 11: new state; the server owns oidc_* (A-21: Entra -> Entra keeps the stored values).
+        // Step 11: new state; the server owns oidc_* and secret_ref (A-21: Entra -> Entra keeps the stored values;
+        // TLD 2026-11-04 9:49, D-51: secret_ref is Entra:SecretRef, set on a switch to entra, cleared on a switch to database).
         var entra = n!.ProviderKind == "entra";
+        var keepSecret = entra && row.ProviderKind == "entra";
         var (authority, clientId) = !entra ? (null, null)
             : row.ProviderKind == "entra" ? (row.OidcAuthority, row.OidcClientId) : (opt.EntraAuthority, opt.EntraClientId);
         var changed = new List<string>();
@@ -380,7 +382,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         if (!n.Tenants.SequenceEqual(row.Tenants)) changed.Add("entra_allowed_tenant_ids");
         if (authority != row.OidcAuthority) changed.Add("oidc_authority");
         if (clientId != row.OidcClientId) changed.Add("oidc_client_id");
-        if (n.Secret == SecretChange.Replace || (n.Secret == SecretChange.Clear && row.SecretSet)) changed.Add("secret_ref");
+        if (entra ? !keepSecret : row.SecretSet) changed.Add("secret_ref");
         if (n.AllowDbFallback != row.AllowDbFallback) changed.Add("allow_db_fallback");
         if (n.MfaRequired != row.MfaRequired) changed.Add("mfa_required");
         if (changed.Count == 0)
@@ -405,8 +407,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             up.Parameters.Add(new() { Value = n.Tenants });
             up.Parameters.Add(new() { Value = (object?)authority ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
             up.Parameters.Add(new() { Value = (object?)clientId ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
-            up.Parameters.Add(new() { Value = n.Secret == SecretChange.Keep });
-            up.Parameters.Add(new() { Value = (object?)n.SecretValue ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+            up.Parameters.Add(new() { Value = keepSecret });
+            up.Parameters.Add(new() { Value = entra ? opt.EntraSecretRef : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
             up.Parameters.Add(new() { Value = n.AllowDbFallback });
             up.Parameters.Add(new() { Value = n.MfaRequired });
             up.Parameters.Add(new() { Value = who.Id.UserId });
@@ -514,7 +516,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             ins.Parameters.Add(new() { Value = cfg.Tenants });
             ins.Parameters.Add(new() { Value = entra ? opt.EntraAuthority : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
             ins.Parameters.Add(new() { Value = entra ? opt.EntraClientId : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
-            ins.Parameters.Add(new() { Value = (object?)cfg.SecretValue ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+            ins.Parameters.Add(new() { Value = entra ? opt.EntraSecretRef : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text }); // TLD 9:49, D-51
             ins.Parameters.Add(new() { Value = cfg.AllowDbFallback });
             ins.Parameters.Add(new() { Value = cfg.MfaRequired });
             ins.Parameters.Add(new() { Value = who.Id.UserId });
@@ -524,8 +526,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         // changed_fields on create: vs the column defaults (OQ-P3-7).
         var changed = new List<string> { "provider_kind", "display_name" };
         if (cfg.Tenants.Length > 0) changed.Add("entra_allowed_tenant_ids");
-        if (entra) { changed.Add("oidc_authority"); changed.Add("oidc_client_id"); }
-        if (cfg.SecretValue is not null) changed.Add("secret_ref");
+        if (entra) { changed.Add("oidc_authority"); changed.Add("oidc_client_id"); changed.Add("secret_ref"); }
         if (cfg.AllowDbFallback) changed.Add("allow_db_fallback");
         changed.Add("mfa_required");
         var cf = changed.ToArray();

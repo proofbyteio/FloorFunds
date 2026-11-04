@@ -5,19 +5,13 @@ namespace Admin.Api;
 
 public sealed record FieldError(string Field, string Code);
 
-public enum SecretChange { Keep, Replace, Clear }
-
 /// <summary>The current stored row, as the validator needs it (null on create).</summary>
-public sealed record CurrentConfig(string ProviderKind, Guid[] Tenants, bool SecretSet, bool AllowDbFallback, bool MfaRequired);
+public sealed record CurrentConfig(string ProviderKind, Guid[] Tenants, bool AllowDbFallback, bool MfaRequired);
 
 /// <summary>A validated login_config_write. Values are already normalised (trimmed, lower-case uuids).</summary>
 public sealed record LoginConfigInput(
-    string ProviderKind, string DisplayName, Guid[] Tenants, SecretChange Secret, string? SecretValue,
-    bool AllowDbFallback, bool MfaRequired, string? Reason, IReadOnlyList<string> PresentConfigFields)
-{
-    /// <summary>Never print the secret (records print every member by default).</summary>
-    public override string ToString() => $"LoginConfigInput({ProviderKind}, secret={Secret})";
-}
+    string ProviderKind, string DisplayName, Guid[] Tenants,
+    bool AllowDbFallback, bool MfaRequired, string? Reason, IReadOnlyList<string> PresentConfigFields);
 
 public sealed record CreateInput(Guid PartnerId, string Name, LoginConfigInput Config);
 
@@ -27,8 +21,12 @@ public sealed record CreateInput(Guid PartnerId, string Name, LoginConfigInput C
 /// </summary>
 public static class LoginConfigValidator
 {
-    public static readonly string[] WriteKeys = ["provider_kind", "display_name", "entra_allowed_tenant_ids", "secret_ref", "allow_db_fallback", "mfa_required", "reason"];
-    public static readonly string[] ServerFilled = ["oidc_authority", "oidc_client_id"];
+    public static readonly string[] WriteKeys = ["provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required", "reason"];
+    /// <summary>
+    /// Server-filled from deployment config; any of these keys in a client body (any value, null included) -> 422 field_not_writable,
+    /// field NAME only, the value is never echoed. secret_ref joined oidc_* at TLD 2026-11-04 9:49 (D-51: one app registration per deployment).
+    /// </summary>
+    public static readonly string[] ServerFilled = ["oidc_authority", "oidc_client_id", "secret_ref"];
     /// <summary>login_config_field names (audit-events.schema.json) a body may carry; used for attempted_fields.</summary>
     static readonly string[] AuditFieldNames = ["provider_kind", "display_name", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret_ref", "allow_db_fallback", "mfa_required"];
     static readonly Regex UuidRe = new(@"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z", RegexOptions.CultureInvariant);
@@ -108,25 +106,6 @@ public static class LoginConfigValidator
             }
         }
 
-        var secret = SecretChange.Keep; string? secretValue = null; bool secretShapeOk = true;
-        if (Get("secret_ref") is { } sr)
-        {
-            if (sr.ValueKind == JsonValueKind.Null) secret = SecretChange.Clear;
-            else if (sr.ValueKind != JsonValueKind.String) { errs.Add(new(prefix + "secret_ref", "type")); secretShapeOk = false; }
-            else if (!opt.SecretRefAllowed(sr.GetString()!)) { errs.Add(new(prefix + "secret_ref", "secret_ref_format")); secretShapeOk = false; }
-            else { secret = SecretChange.Replace; secretValue = sr.GetString(); }
-        }
-        if (secretShapeOk && kind == "entra")
-        {
-            if (secret == SecretChange.Clear) errs.Add(new(prefix + "secret_ref", "field_not_allowed"));
-            else if (secret == SecretChange.Keep && !(current?.SecretSet ?? false)) errs.Add(new(prefix + "secret_ref", "secret_ref_required"));
-        }
-        else if (secretShapeOk && kind == "database")
-        {
-            if (secret == SecretChange.Replace) errs.Add(new(prefix + "secret_ref", "field_not_allowed"));
-            else if (secret == SecretChange.Keep && (current?.SecretSet ?? false)) errs.Add(new(prefix + "secret_ref", "field_not_allowed"));
-        }
-
         bool? fallback = null, mfa = null;
         if (Get("allow_db_fallback") is { } fb)
         {
@@ -157,7 +136,7 @@ public static class LoginConfigValidator
         if (kind == "entra" && tenantsOk) boundCandidates = tenants.ToArray();
         if (errs.Count > before) return null;
         var present = AttemptedFields(o);
-        return new LoginConfigInput(kind!, display!, tenants.ToArray(), secret, secretValue, fallback!.Value, mfa!.Value, reason, present);
+        return new LoginConfigInput(kind!, display!, tenants.ToArray(), fallback!.Value, mfa!.Value, reason, present);
     }
 
     public static CreateInput? ValidateCreate(JsonElement o, AdminApiOptions opt, List<FieldError> errs, out Guid[] boundCandidates)
