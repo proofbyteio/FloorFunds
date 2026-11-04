@@ -61,3 +61,11 @@ M list
 step "C3 seed + checks on script-applied DB"
 psql -X -q -v ON_ERROR_STOP=1 -f ../db/seed/s2a-test-app-user.sql
 C
+step "C4 K3: re-run the checks on the same DB (they clean up after themselves)"
+C | tail -1
+step "C5 K3: leftover row -> checks refuse cleanly (rc 3), nothing written; then removed"
+q "insert into auth.location values ('5f0c3e1a-00ee-4000-8000-0000000000e9','5f0c3e1a-0001-4000-8000-000000000001','zz-k3-leftover','K3 probe (SSE2-FAKE-TEST-ONLY)')" >/dev/null
+set +e; C >/tmp/sse-llc1/run/k3-refuse.out 2>&1; rc=$?; set -e
+echo "rc=$rc; $(grep -c '^PASS\|^FAIL' /tmp/sse-llc1/run/k3-refuse.out) checks ran; $(grep -o 'refuse: [^(]*' /tmp/sse-llc1/run/k3-refuse.out | head -1)"
+q "delete from auth.location where location_id='5f0c3e1a-00ee-4000-8000-0000000000e9'" >/dev/null
+[[ $rc -eq 3 ]] || { echo "UNEXPECTED rc"; exit 1; }

@@ -231,11 +231,13 @@ await using (var c = await ownerDs.OpenConnectionAsync())
             if (rr.GetBoolean(1) != want || rr.GetBoolean(2) != want) rls.Add(rr.GetString(0));
         }
     Ok("RLS: ENABLE+FORCE on exactly location, location_login_config, location_login_config_change", rls.Count == 0, string.Join(",", rls));
-    Ok("RLS: policy set == spec (owner/admin/login per table; no login policy on change)",
+    // K2 (SSE2 d787f76 review): the owner role is read from pg_database, not assumed equal to the DB name (kit --role != --db).
+    var dbOwner = await Scalar<string>(c, null, "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()");
+    Ok($"RLS: policy set == spec (owner {dbOwner} from pg_database/admin/login per table; no login policy on change)",
         await Scalar<string>(c, null, "SELECT string_agg(tablename || ':' || policyname || ':' || cmd || ':' || array_to_string(roles, '+'), ' ' ORDER BY tablename, policyname) FROM pg_policies WHERE schemaname='auth'")
-        == $"location:location_admin:ALL:{adminRole} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbName} " +
-           $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbName} " +
-           $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbName}");
+        == $"location:location_admin:ALL:{adminRole} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbOwner} " +
+           $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbOwner} " +
+           $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbOwner}");
 }
 
 // ================= 3. seed == SI1 fixtures =================
@@ -262,6 +264,39 @@ await using (var c = await ownerDs.OpenConnectionAsync())
 }
 
 // ================= 4. checks-only data (SSE2-FAKE-TEST-ONLY) =================
+// K3 (SSE2 d787f76 review): the checks commit their own rows and count exact row sets, so they need the post-seed state:
+// refuse cleanly (rc 3, before writing anything) when any business/check row is present, and delete their own rows at the
+// end (finally), so a re-run on the same DB passes. A crash mid-run leaves rows -> the next run refuses (reset: update 0, update, seed).
+const string StateSql = """
+    SELECT (SELECT count(*) FROM auth.location) + (SELECT count(*) FROM auth.location_login_config)
+         + (SELECT count(*) FROM auth.location_login_config_change) + (SELECT count(*) FROM auth.external_login)
+         + (SELECT count(*) FROM auth.user_location) + (SELECT count(*) FROM auth.session) + (SELECT count(*) FROM auth.oidc_replay)
+         + (SELECT count(*) FROM auth.audit_outbox) + (SELECT count(*) FROM auth.app_user WHERE user_id::text LIKE '%-000000000c7_')
+    """;
+await using (var c = await ownerDs.OpenConnectionAsync())
+{
+    var leftover = await Scalar<long>(c, null, StateSql);
+    if (leftover != 0)
+    {
+        Console.Error.WriteLine($"refuse: {dbName} is not in the post-seed state ({leftover} rows in auth location/config/change/link/session/replay/outbox tables or checks-only users), e.g. from an interrupted run. Reset it (runner update 0, update, seed) or use a fresh kit DB.");
+        return 3;
+    }
+}
+async Task CleanupCheckData()
+{
+    await using var c = await ownerDs.OpenConnectionAsync();
+    await using var tx = await c.BeginTransactionAsync();
+    var locs = new[] { L_PCI, L_NV, Guid.Parse("5f0c3e1a-00ee-4000-8000-0000000000e1") }; // = LX
+    await Exec(c, tx, "DELETE FROM auth.user_location WHERE location_id = ANY($1)", locs);
+    await Exec(c, tx, "DELETE FROM auth.external_login WHERE subject = ANY($1)", new[] { S1, S2, S3, S9 });
+    await Exec(c, tx, "DELETE FROM auth.app_user WHERE user_id = ANY($1)", new[] { U_DIS, U_LCK });
+    await Exec(c, tx, "DELETE FROM auth.location_login_config_change WHERE location_id = ANY($1)", locs);
+    await Exec(c, tx, "DELETE FROM auth.location_login_config WHERE location_id = ANY($1)", locs);
+    await Exec(c, tx, "DELETE FROM auth.location WHERE location_id = ANY($1)", locs);
+    await tx.CommitAsync();
+}
+try
+{
 await using (var c = await ownerDs.OpenConnectionAsync())
 await using (var tx = await c.BeginTransactionAsync())
 {
@@ -612,6 +647,17 @@ await Check("F8: in-flight cancellation (pg_sleep) -> OperationCanceledException
     using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
     await using var cmd = new NpgsqlCommand("SELECT pg_sleep(5)", c);
     try { await cmd.ExecuteNonQueryAsync(cts.Token); return false; } catch (OperationCanceledException) { return true; }
+});
+
+}
+finally
+{
+    await CleanupCheckData();
+}
+await Check("K3: cleanup -> DB back in the post-seed state (re-runnable)", async () =>
+{
+    await using var c = await ownerDs.OpenConnectionAsync();
+    return await Scalar<long>(c, null, StateSql) == 0;
 });
 
 Console.WriteLine($"\n{pass} passed, {fail} failed");
