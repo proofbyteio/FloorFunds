@@ -63,6 +63,14 @@ static class UiHost
         var l5 = await Create(partnerA, xName, new { provider_kind = "database", display_name = xDname, entra_allowed_tenant_ids = Array.Empty<string>(),
             allow_db_fallback = false, mfa_required = true, reason = xReason });
         readerLocations.Add(Id(l5));
+        // SSE2 5842c444 L1-L3: L6 keeps its hostile display_name (nobody saves it), its name STARTS with a javascript: URL (L2), and name,
+        // display_name and reason carry typed HTML entities that must be stored and shown as typed (L3).
+        string x6Name = "javascript:window.__xss=1 </title><img src=x onerror=window.__xss=1> &lt;b&gt; &amp;amp; ${7*7} `x`",
+            x6Dname = "</textarea><svg onload=window.__xss=1> &lt;i&gt; &#60;svg&#62; javascript:window.__xss=1",
+            x6Reason = "javascript:window.__xss=1 &lt;img src=x onerror=window.__xss=1&gt; &#60;svg onload=window.__xss=1&#62; <iframe srcdoc=\"<script>window.__xss=1</script>\"></iframe> <object data=javascript:window.__xss=1>";
+        var l6 = await Create(partnerA, x6Name, new { provider_kind = "database", display_name = x6Dname, entra_allowed_tenant_ids = Array.Empty<string>(),
+            allow_db_fallback = false, mfa_required = true, reason = x6Reason });
+        readerLocations.Add(Id(l6));
         async Task<JsonObject> Probe(string label, object body)
         {
             using var req = new HttpRequestMessage(HttpMethod.Post, "/api/orgs/locations")
@@ -70,9 +78,15 @@ static class UiHost
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", personas["sa"].Token);
             using var res = await api.SendAsync(req);
             var fields = new JsonArray();
-            if (JsonNode.Parse(await res.Content.ReadAsStringAsync()) is JsonObject eb && eb["fields"] is JsonArray fa)
+            var raw = await res.Content.ReadAsStringAsync();
+            JsonNode? parsed; try { parsed = raw.Length == 0 ? null : JsonNode.Parse(raw); } catch (JsonException) { parsed = null; }
+            if (parsed is JsonObject eb && eb["fields"] is JsonArray fa)
                 foreach (var f in fa) fields.Add($"{(string?)f?["field"]}:{(string?)f?["code"]}");
-            return new JsonObject { ["probe"] = label, ["status"] = (int)res.StatusCode, ["fields"] = fields };
+            var o = new JsonObject { ["probe"] = label, ["status"] = (int)res.StatusCode, ["fields"] = fields };
+            if (parsed is JsonObject eo && eo["fields"] is null && (string?)eo["code"] is { } top) o["code"] = top; // a refusal with no field list
+            if (parsed is null) o["body"] = raw.Length == 0 ? "(empty)" : "(not JSON)";
+            if (res.StatusCode == HttpStatusCode.Created && parsed is JsonObject cb) o["location_id"] = (string?)cb["location_id"];
+            return o;
         }
         var probes = new JsonArray
         {
@@ -86,6 +100,51 @@ static class UiHost
             await Probe("provider_kind = <script>", new { partner_id = partnerA.ToString("D"), name = "UI XSS probe 5", login_config = new { provider_kind = xp[1], display_name = "UI Casino A",
                 entra_allowed_tenant_ids = Array.Empty<string>(), allow_db_fallback = false, mfa_required = true } }),
         };
+        // SSE2 5842c444 L5: hostile length / trim probes on name, display_name and reason (Partner B, so Partner A's pages are unchanged).
+        // The e2e asserts the observed status / field:code and, for a 201, what was stored; the API is not changed.
+        const string hx = "<img src=x onerror=window.__xss=1>"; // 34 ASCII runes
+        static string Fill(string unit, int runes) { var sb = new StringBuilder(); var u = unit.EnumerateRunes().ToArray(); for (var i = 0; i < runes; i++) sb.Append(u[i % u.Length].ToString()); return sb.ToString(); }
+        const string devil = "\U0001F608"; // 1 rune, 2 UTF-16 units, 4 UTF-8 bytes
+        var lenSent = new JsonArray();
+        async Task LenProbe(string label, string? name = null, string? dname = null, string? reason = null, bool sendReason = false)
+        {
+            var nm = name ?? $"UI len probe {lenSent.Count + 1}";
+            object cfg = sendReason
+                ? new { provider_kind = "database", display_name = dname ?? "UI Casino B", entra_allowed_tenant_ids = Array.Empty<string>(), allow_db_fallback = false, mfa_required = true, reason }
+                : new { provider_kind = "database", display_name = dname ?? "UI Casino B", entra_allowed_tenant_ids = Array.Empty<string>(), allow_db_fallback = false, mfa_required = true };
+            var r = await Probe(label, new { partner_id = partnerB.ToString("D"), name = nm, login_config = cfg });
+            r["sent_name"] = nm; r["sent_display_name"] = dname ?? "UI Casino B"; if (sendReason) r["sent_reason"] = reason;
+            lenSent.Add(r);
+        }
+        await LenProbe("name: 200 runes (hostile)", name: Fill(hx, 200));
+        await LenProbe("name: 201 runes (hostile)", name: Fill(hx, 201));
+        await LenProbe("name: 200 astral runes (400 UTF-16 units)", name: Fill(devil, 200));
+        await LenProbe("name: 201 astral runes", name: Fill(devil, 201));
+        await LenProbe("name: hostile padded with spaces/tab/newline", name: "  \t" + hx + " \n ");
+        await LenProbe("name: 200 hostile runes + 3 spaces of padding", name: " " + Fill(hx, 200) + "  ");
+        await LenProbe("name: whitespace only", name: " \t\n ");
+        await LenProbe("name: empty", name: "");
+        await LenProbe("name: interior newline", name: hx + "\n" + hx);
+        await LenProbe("name: NBSP / U+3000 padding", name: "\u00A0\u3000" + hx + "\u3000\u00A0");
+        await LenProbe("name: zero-width space padding (U+200B)", name: "\u200B" + hx + "\u200B");
+        await LenProbe("display_name: 100 runes (hostile)", dname: Fill(hx, 100));
+        await LenProbe("display_name: 101 runes (hostile)", dname: Fill(hx, 101));
+        await LenProbe("display_name: 100 astral runes", dname: Fill(devil, 100));
+        await LenProbe("display_name: hostile padded with spaces", dname: "   " + hx + "   ");
+        await LenProbe("display_name: whitespace only", dname: "   ");
+        await LenProbe("display_name: interior tab", dname: "<svg\tonload=window.__xss=1>");
+        await LenProbe("reason: 9 runes, padded", reason: "  " + Fill(hx, 9) + "  ", sendReason: true);
+        await LenProbe("reason: 10 runes", reason: Fill(hx, 10), sendReason: true);
+        await LenProbe("reason: 500 runes (hostile)", reason: Fill(hx, 500), sendReason: true);
+        await LenProbe("reason: 501 runes (hostile)", reason: Fill(hx, 501), sendReason: true);
+        await LenProbe("reason: 250 astral runes (500 UTF-16 units)", reason: Fill(devil, 250), sendReason: true);
+        await LenProbe("reason: 251 astral runes (502 UTF-16 units)", reason: Fill(devil, 251), sendReason: true);
+        await LenProbe("reason: 500 astral runes", reason: Fill(devil, 500), sendReason: true);
+        await LenProbe("reason: 10 runes + 1990 spaces (2000 raw)", reason: Fill(hx, 10) + new string(' ', 1990), sendReason: true);
+        await LenProbe("reason: 10 runes + 1991 spaces (2001 raw)", reason: Fill(hx, 10) + new string(' ', 1991), sendReason: true);
+        await LenProbe("reason: whitespace only", reason: "      ", sendReason: true);
+        await LenProbe("reason: empty string", reason: "", sendReason: true);
+        await LenProbe("reason: interior newlines", reason: hx + "\n\n" + hx, sendReason: true);
 
         // ---- static + proxy host ----
         var b = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [] });
@@ -137,7 +196,8 @@ static class UiHost
             ["partner_a"] = partnerA.ToString("D"), ["partner_b"] = partnerB.ToString("D"),
             ["l1"] = Id(l1).ToString("D"), ["l2"] = Id(l2).ToString("D"), ["l3"] = Id(l3).ToString("D"), ["l4"] = Id(l4).ToString("D"),
             ["t_free"] = tenants[2].ToString("D"), ["t_taken"] = tenants[1].ToString("D"),
-            ["l5"] = Id(l5).ToString("D"), ["xss"] = new JsonObject { ["name"] = xName, ["display_name"] = xDname, ["reason"] = xReason, ["probes"] = probes },
+            ["l5"] = Id(l5).ToString("D"), ["xss"] = new JsonObject { ["name"] = xName, ["display_name"] = xDname, ["reason"] = xReason, ["probes"] = probes,
+                ["l6"] = Id(l6).ToString("D"), ["name6"] = x6Name, ["display_name6"] = x6Dname, ["reason6"] = x6Reason, ["len"] = lenSent.DeepClone() },
             ["users"] = new JsonObject(personas.Where(kv => kv.Value.Token.Length > 0).Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)JsonValue.Create(Sub(kv.Value.Token))))),
         };
         Console.WriteLine("UIHOST " + info.ToJsonString());
@@ -158,25 +218,40 @@ static class UiHost
             await using (var cmd = new NpgsqlCommand("SELECT count(*) FROM auth.location", c)) summary["locations"] = (long)(await cmd.ExecuteScalarAsync())!;
             // TLD 14:18 (A): the stores keep the hostile text byte-for-byte (UTF-8 hex), no server-side HTML escaping anywhere.
             var x = new JsonObject();
-            async Task<JsonArray> Hex(string sql)
+            async Task<JsonArray> Hex(string sql, Guid? loc = null)
             {
                 var a = new JsonArray();
-                await using var cmd = new NpgsqlCommand(sql, c); cmd.Parameters.Add(new() { Value = Id(l5) });
+                await using var cmd = new NpgsqlCommand(sql, c); cmd.Parameters.Add(new() { Value = loc ?? Id(l5) });
                 await using var r = await cmd.ExecuteReaderAsync(); while (await r.ReadAsync()) a.Add(r.IsDBNull(0) ? null : r.GetString(0));
                 return a;
             }
-            x["location_name_hex"] = await Hex("SELECT encode(convert_to(name, 'UTF8'), 'hex') FROM auth.location WHERE location_id = $1");
-            x["display_name_hex"] = await Hex("SELECT encode(convert_to(display_name, 'UTF8'), 'hex') FROM auth.location_login_config WHERE location_id = $1");
-            x["change_reason_hex"] = await Hex("SELECT encode(convert_to(reason, 'UTF8'), 'hex') FROM auth.location_login_config_change WHERE location_id = $1 ORDER BY row_version");
-            x["outbox_reason_hex"] = await Hex("SELECT encode(convert_to(envelope->'details'->>'reason', 'UTF8'), 'hex') FROM auth.audit_outbox "
-                + "WHERE event_type = 'auth.provider.changed' AND envelope->'details'->>'location_id' = $1::text ORDER BY (envelope->'details'->>'row_version')::bigint");
-            await using (var cmd = new NpgsqlCommand(
-                """
-                SELECT (SELECT count(*) FROM auth.location WHERE name ~ '&(lt|gt|quot|amp|apos|#[0-9x])')
-                     + (SELECT count(*) FROM auth.location_login_config WHERE display_name ~ '&(lt|gt|quot|amp|apos|#[0-9x])')
-                     + (SELECT count(*) FROM auth.location_login_config_change WHERE reason ~ '&(lt|gt|quot|amp|apos|#[0-9x])')
-                     + (SELECT count(*) FROM auth.audit_outbox WHERE envelope::text ~ '&(lt|gt|quot|amp|apos|#[0-9x])')
-                """, c)) x["html_entity_rows"] = (long)(await cmd.ExecuteScalarAsync())!;
+            const string qName = "SELECT encode(convert_to(name, 'UTF8'), 'hex') FROM auth.location WHERE location_id = $1",
+                qDname = "SELECT encode(convert_to(display_name, 'UTF8'), 'hex') FROM auth.location_login_config WHERE location_id = $1",
+                qReason = "SELECT encode(convert_to(reason, 'UTF8'), 'hex') FROM auth.location_login_config_change WHERE location_id = $1 ORDER BY row_version",
+                qOutbox = "SELECT encode(convert_to(envelope->'details'->>'reason', 'UTF8'), 'hex') FROM auth.audit_outbox "
+                    + "WHERE event_type = 'auth.provider.changed' AND envelope->'details'->>'location_id' = $1::text ORDER BY (envelope->'details'->>'row_version')::bigint";
+            x["location_name_hex"] = await Hex(qName);
+            x["display_name_hex"] = await Hex(qDname);
+            x["change_reason_hex"] = await Hex(qReason);
+            x["outbox_reason_hex"] = await Hex(qOutbox);
+            // L6 (SSE2 5842c444 L1/L2/L3): never saved after create, so its hostile display_name and typed entities are byte-checked.
+            var x6 = new JsonObject { ["location_name_hex"] = await Hex(qName, Id(l6)), ["display_name_hex"] = await Hex(qDname, Id(l6)),
+                ["change_reason_hex"] = await Hex(qReason, Id(l6)), ["outbox_reason_hex"] = await Hex(qOutbox, Id(l6)) };
+            x["l6"] = x6;
+            // L5 probes that were accepted: what was stored (hex), so trimming is observed, not assumed.
+            var len = new JsonArray();
+            foreach (var pr in lenSent)
+            {
+                var o = new JsonObject { ["probe"] = (string?)pr!["probe"] };
+                if ((string?)pr["location_id"] is { } lid)
+                {
+                    var g = Guid.Parse(lid);
+                    o["name_hex"] = await Hex(qName, g); o["display_name_hex"] = await Hex(qDname, g);
+                    o["change_reason_hex"] = await Hex(qReason, g); o["outbox_reason_hex"] = await Hex(qOutbox, g);
+                }
+                len.Add(o);
+            }
+            x["len"] = len;
             summary["xss"] = x;
         }
         Console.WriteLine("UIHOST-DB " + summary.ToJsonString());

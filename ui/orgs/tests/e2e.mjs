@@ -265,29 +265,38 @@ await step("XSS hostile API text", async () => {
   // the location name, display_name and the create reason; the probes put them in fields the API must refuse.
   const X = H.xss, loc = H.l5;
   console.log("INFO xss probes " + JSON.stringify(X.probes));
-  ok("XSS probes: the API refuses the payloads in UUID / enum / server-only fields (422, field named), validation unchanged",
-    X.probes.length === 5 && X.probes.every(p => p.status === 422 && p.fields.length >= 1), X.probes);
+  // SSE2 5842c444 L4: each refusal names the exact field and code (observed in p4f), not just "some field".
+  const probeWant = [["tenant id = javascript: URL", "login_config/entra_allowed_tenant_ids/0:tenant_id_format"],
+    ["tenant id = <img onerror>", "login_config/entra_allowed_tenant_ids/0:tenant_id_format"], ["partner_id = <svg onload>", "partner_id:partner_id_format"],
+    ["oidc_authority = javascript: URL (only link-like field)", "login_config/oidc_authority:field_not_writable"], ["provider_kind = <script>", "login_config/provider_kind:provider_kind_invalid"]];
+  ok("XSS probes: the API refuses the payloads in UUID / enum / server-only fields: 422 with exactly the expected field:code each, validation unchanged",
+    X.probes.length === probeWant.length && probeWant.every(([label, fc], i) => X.probes[i].probe === label && X.probes[i].status === 422
+      && JSON.stringify(X.probes[i].fields) === JSON.stringify([fc])), X.probes);
+  console.log("INFO xss len probes " + JSON.stringify(X.len.map(p => ({ probe: p.probe, status: p.status, fields: p.fields, code: p.code, body: p.body }))));
   // A clean page of the same kind is the baseline for img/svg/script and attribute counts.
   const dom = () => ev(`(() => { const all = [...document.querySelectorAll("*")];
     return { img: document.querySelectorAll("img").length, svg: document.querySelectorAll("svg").length, script: document.querySelectorAll("script").length,
       iframe: document.querySelectorAll("iframe,object,embed").length,
       on: all.filter(e => [...e.attributes].some(a => /^on/i.test(a.name))).map(e => e.tagName),
       js: all.filter(e => [...e.attributes].some(a => /^\\s*javascript:/i.test(a.value))).map(e => e.tagName + " " + [...e.attributes].map(a => a.name).join(",")),
+      attrX: all.filter(e => [...e.attributes].some(a => /__xss/.test(a.name + "=" + a.value))).map(e => e.tagName + " " + [...e.attributes].map(a => a.name).join(",")),
       xss: typeof window.__xss, anchors: document.querySelectorAll("a").length }; })()`);
   await open(page("sa", H.l4)); const base = await dom();
   ok("XSS baseline (clean SA view): 0 img/svg/iframe, 1 script (the module), no on* attribute, no javascript: value", base.img === 0 && base.svg === 0 && base.script === 1
-    && base.iframe === 0 && base.on.length === 0 && base.js.length === 0 && base.xss === "undefined", base);
+    && base.iframe === 0 && base.on.length === 0 && base.js.length === 0 && base.attrX.length === 0 && base.xss === "undefined", base);
   const clean = async (label) => { await sleep(300); const d = await dom();
-    ok(`XSS ${label}: window.__xss undefined, no extra img/svg/script/iframe/a, no on* attribute, no javascript: attribute`, d.xss === "undefined" && d.img === 0 && d.svg === 0
-      && d.script === 1 && d.iframe === 0 && d.on.length === 0 && d.js.length === 0 && d.anchors === base.anchors, d); };
+    // SSE2 5842c444 L2: attrX = any attribute whose name or value carries a payload (href, title, aria-label, src ...), so a name
+    // moved into an attribute fails here and on the javascript: scan, not only on the anchor count.
+    ok(`XSS ${label}: window.__xss undefined, no extra img/svg/script/iframe/a, no on* attribute, no javascript: attribute, no payload in any attribute`, d.xss === "undefined" && d.img === 0 && d.svg === 0
+      && d.script === 1 && d.iframe === 0 && d.on.length === 0 && d.js.length === 0 && d.attrX.length === 0 && d.anchors === base.anchors, d); };
   const p0 = problems.length;
-  const lit = async (label, persona) => {
-    ok(`XSS ${label}: name literal in title, breadcrumb and document.title (textContent)`, await txt("#title") === `Sign-in method: ${X.name}`.replace(/\s+/g, " ")
-      && await ev(`document.querySelector("#bc-location").textContent`) === X.name && await ev(`document.title`) === `Sign-in method: ${X.name}`,
-      [await ev(`document.querySelector("#title").textContent`), await ev(`document.title`)]);
+  const lit = async (label, name = X.name) => {
+    ok(`XSS ${label}: name literal in title, breadcrumb and document.title (textContent, exact)`, await ev(`document.querySelector("#title").textContent`) === `Sign-in method: ${name}`
+      && await ev(`document.querySelector("#bc-location").textContent`) === name && await ev(`document.title`) === `Sign-in method: ${name}`,
+      [await ev(`document.querySelector("#title").textContent`), await ev(`document.querySelector("#bc-location").textContent`), await ev(`document.title`)]);
   };
   await open(page("sa", loc));
-  await lit("SA view", "sa");
+  await lit("SA view");
   let r = await rows();
   ok("XSS SA view: history reason cell = the payload text, literally; Who = SA actor id", r.length === 1 && r[0][2] === H.users.sa && r[0][3].endsWith(`. Reason: ${X.reason}`), r);
   await clean("SA view");
@@ -296,7 +305,7 @@ await step("XSS hostile API text", async () => {
     && await ev(`document.querySelector("#dname").value`) === X.display_name);
   await clean("SA edit");
   await open(page("pa", loc));
-  await lit("PA view", "pa");
+  await lit("PA view");
   ok("XSS PA view: history reason literal", (await rows())[0]?.[3].endsWith(`. Reason: ${X.reason}`), await rows());
   await clean("PA view");
   await click("#btn-change");
@@ -310,6 +319,27 @@ await step("XSS hostile API text", async () => {
   ok("XSS org:V view: view-only chip, name literal, history hidden", await txt("#role-chip-text") === "View only (org:V)" && await ev(`document.querySelector("#bc-location").textContent`) === X.name
     && await ev(`document.title`) === `Sign-in method: ${X.name}` && !(await vis("#card-history")));
   await clean("org:V view");
+  // ---- L6 (SSE2 5842c444 L1/L2/L3): the name starts with javascript:, the display_name is hostile and never overwritten, and all three
+  // free-text fields carry typed HTML entities that must be shown as typed (not decoded, not double-shown).
+  const L6 = H.xss.l6, n6 = X.name6, d6 = X.display_name6, r6 = X.reason6;
+  ok("XSS L6 seed: name starts with javascript:, every field carries a typed entity", n6.startsWith("javascript:") && [n6, d6, r6].every(t => /&(lt|amp|#60);/.test(t)));
+  for (const persona of ["sa", "pa"]) {
+    const who = persona.toUpperCase();
+    await open(page(persona, L6));
+    await lit(`L6 ${who} view`, n6);
+    const r6rows = await rows();
+    ok(`XSS L6 ${who} view: history reason cell = the hostile reason with typed entities, literally (one row, SA)`, r6rows.length === 1 && r6rows[0][2] === H.users.sa
+      && r6rows[0][3].endsWith(`. Reason: ${r6}`), r6rows);
+    await clean(`L6 ${who} view`);
+    await click("#btn-change");
+    // L1: byte-for-byte, before any save could overwrite it (nobody saves L6).
+    ok(`XSS L6 ${who} edit: #dname value = the hostile display_name exactly; #lname value = the name exactly`, await ev(`document.querySelector("#dname").value`) === d6
+      && await ev(`document.querySelector("#lname").value`) === n6, [await ev(`document.querySelector("#dname").value`), await ev(`document.querySelector("#lname").value`)]);
+    await clean(`L6 ${who} edit`);
+  }
+  await open(page("rd", L6));
+  await lit("L6 org:V view", n6);
+  await clean("L6 org:V view");
   ok("XSS: no CSP violation, exception or console error/warning on the hostile pages", problems.length === p0, problems.slice(p0));
   H.xssPaJs = js;
 });
@@ -327,15 +357,62 @@ const D = dbm ? JSON.parse(dbm[1]) : null;
 ok("real PG: the host reported its DB summary", D !== null);
 if (D) {
   ok("real PG: org:V reader wrote no change row (F-A3)", !(H.users.rd in D.changes_by_actor), D.changes_by_actor);
-  ok("real PG: change rows = 5 seeds (L1-L4 + hostile L5) + PA edit + SA downgrade + PA conflict PUT + SA create + PA create + PA hostile save", D.changes_by_actor[H.users.sa] === 7 && D.changes_by_actor[H.users.pa] === 4, D.changes_by_actor);
-  ok("real PG: 7 locations (refused creates and XSS probes added none)", D.locations === 7, D.locations);
+  const lenOk = (H.xss.len ?? []).filter(p => p.status === 201).length;
+  ok(`real PG: change rows = 6 seeds (L1-L4 + hostile L5, L6) + ${lenOk} accepted length probes + PA edit + SA downgrade + PA conflict PUT + SA create + PA create + PA hostile save`,
+    D.changes_by_actor[H.users.sa] === 8 + lenOk && D.changes_by_actor[H.users.pa] === 4, D.changes_by_actor);
+  ok(`real PG: ${8 + lenOk} locations (refused creates and XSS probes added none; ${lenOk} accepted length probes)`, D.locations === 8 + lenOk, D.locations);
   // TLD 2026-11-04 14:18 (A): stored byte-for-byte, no server-side HTML escaping; the page is the only place the text is made safe.
   const hex = (s) => Buffer.from(s, "utf8").toString("hex"), x = D.xss ?? {};
   ok("real PG (A): auth.location.name = the hostile name, byte-for-byte (UTF-8)", JSON.stringify(x.location_name_hex) === JSON.stringify([hex(H.xss.name)]), x.location_name_hex);
   ok("real PG (A): display_name = the javascript: text the Partner Admin saved, byte-for-byte", JSON.stringify(x.display_name_hex) === JSON.stringify([hex(H.xssPaJs ?? "")]), x.display_name_hex);
   ok("real PG (A): change history reason = the hostile reason byte-for-byte (create row), null on the PA save", JSON.stringify(x.change_reason_hex) === JSON.stringify([hex(H.xss.reason), null]), x.change_reason_hex);
   ok("real PG (A): outbox auth.provider.changed details.reason = the hostile reason byte-for-byte, null on the PA save", JSON.stringify(x.outbox_reason_hex) === JSON.stringify([hex(H.xss.reason), null]), x.outbox_reason_hex);
-  ok("real PG (A): no HTML entity (&lt; &gt; &quot; &amp; &apos; &#) in location, config, change or outbox rows", x.html_entity_rows === 0, x.html_entity_rows);
+  // SSE2 5842c444 L3: the old global "no entity in any row" check is gone (it would fail on a user who types "&lt;"). Instead each field
+  // must hold exactly the typed entities that were sent: no server-side encoding (more entities) and no decoding (fewer).
+  const ents = (t) => (t.match(/&(lt|gt|quot|amp|apos|#[0-9]+|#x[0-9a-f]+);/gi) ?? []).length;
+  const unhex = (h) => h == null ? null : Buffer.from(h, "hex").toString("utf8");
+  const x6 = x.l6 ?? {};
+  ok("real PG (L1): L6 display_name = the hostile display_name, byte-for-byte (never overwritten)", JSON.stringify(x6.display_name_hex) === JSON.stringify([hex(H.xss.display_name6)]), x6.display_name_hex);
+  ok("real PG (L2): L6 name (javascript: first) byte-for-byte", JSON.stringify(x6.location_name_hex) === JSON.stringify([hex(H.xss.name6)]), x6.location_name_hex);
+  ok("real PG (L2): L6 change reason and outbox reason (javascript: first) byte-for-byte", JSON.stringify(x6.change_reason_hex) === JSON.stringify([hex(H.xss.reason6)])
+    && JSON.stringify(x6.outbox_reason_hex) === JSON.stringify([hex(H.xss.reason6)]), [x6.change_reason_hex, x6.outbox_reason_hex]);
+  const entPairs = [["L5 name", x.location_name_hex?.[0], H.xss.name], ["L5 change reason", x.change_reason_hex?.[0], H.xss.reason], ["L5 outbox reason", x.outbox_reason_hex?.[0], H.xss.reason],
+    ["L6 name", x6.location_name_hex?.[0], H.xss.name6], ["L6 display_name", x6.display_name_hex?.[0], H.xss.display_name6],
+    ["L6 change reason", x6.change_reason_hex?.[0], H.xss.reason6], ["L6 outbox reason", x6.outbox_reason_hex?.[0], H.xss.reason6]];
+  ok("real PG (L3): per field, the stored text holds exactly as many HTML entities as were typed (L5: 0; L6: the typed ones)",
+    entPairs.every(([, h, sent]) => h != null && ents(unhex(h)) === ents(sent)) && ents(H.xss.name6) === 3 && ents(H.xss.display_name6) === 4 && ents(H.xss.reason6) === 4,
+    entPairs.map(([f, h, sent]) => [f, ents(sent), h == null ? null : ents(unhex(h))]));
+  // SSE2 5842c444 L5: observed behaviour, asserted exactly (not a spec guess). [label, status, field:code list]; a 201 must store the
+  // sent text trimmed (JS trim() = the same set .NET Trim() removed here: space, tab, LF, NBSP, U+3000; U+200B is kept), reason "" -> null.
+  const N = "name:name_invalid", DN = "login_config/display_name:display_name_invalid", RL = "login_config/reason:reason_length";
+  const lenWant = [["name: 200 runes (hostile)", 201], ["name: 201 runes (hostile)", 422, [N]], ["name: 200 astral runes (400 UTF-16 units)", 201],
+    ["name: 201 astral runes", 422, [N]], ["name: hostile padded with spaces/tab/newline", 201], ["name: 200 hostile runes + 3 spaces of padding", 201],
+    ["name: whitespace only", 422, [N]], ["name: empty", 422, [N]], ["name: interior newline", 422, [N]], ["name: NBSP / U+3000 padding", 201],
+    ["name: zero-width space padding (U+200B)", 201], ["display_name: 100 runes (hostile)", 201], ["display_name: 101 runes (hostile)", 422, [DN]],
+    ["display_name: 100 astral runes", 201], ["display_name: hostile padded with spaces", 201], ["display_name: whitespace only", 422, [DN]],
+    ["display_name: interior tab", 201], ["reason: 9 runes, padded", 422, [RL]], ["reason: 10 runes", 201], ["reason: 500 runes (hostile)", 201],
+    ["reason: 501 runes (hostile)", 422, [RL]],
+    ["reason: 250 astral runes (500 UTF-16 units)", 201],
+    // PRODUCT BUG (flagged, not fixed): the API counts code points (<= 500 accepted) but the outbox schema pattern [\s\S]{8,498} counts UTF-16
+    // units, so the envelope check throws and the request fails closed with 500 (nothing stored: see the location / change counts).
+    ["reason: 251 astral runes (502 UTF-16 units)", 500], ["reason: 500 astral runes", 500],
+    ["reason: 10 runes + 1990 spaces (2000 raw)", 201], ["reason: 10 runes + 1991 spaces (2001 raw)", 422, [RL]],
+    ["reason: whitespace only", 201], ["reason: empty string", 201], ["reason: interior newlines", 201]];
+  const L = H.xss.len ?? [], XL = x.len ?? [];
+  ok("L5 length/trim probes: every probe has exactly the observed status and field:code", L.length === lenWant.length
+    && lenWant.every(([label, st, f = []], i) => L[i].probe === label && L[i].status === st && JSON.stringify(L[i].fields) === JSON.stringify(f)),
+    L.map((p, i) => [p.probe, p.status, p.fields, lenWant[i]?.[1]]));
+  const tr = (t) => t.trim();
+  const stored = L.map((p, i) => p.status !== 201 ? null : [p.probe, JSON.stringify(XL[i]?.name_hex) === JSON.stringify([hex(tr(p.sent_name))]),
+    JSON.stringify(XL[i]?.display_name_hex) === JSON.stringify([hex(tr(p.sent_display_name))]),
+    JSON.stringify(XL[i]?.change_reason_hex) === JSON.stringify([p.sent_reason == null || tr(p.sent_reason) === "" ? null : hex(tr(p.sent_reason))]),
+    JSON.stringify(XL[i]?.outbox_reason_hex) === JSON.stringify([p.sent_reason == null || tr(p.sent_reason) === "" ? null : hex(tr(p.sent_reason))])]).filter(Boolean);
+  ok("L5 accepted probes: name, display_name, change reason and outbox reason stored = the sent text trimmed, byte-for-byte (whitespace-only / empty reason -> null)",
+    stored.length === lenWant.filter(w => w[1] === 201).length && stored.every(r => r.slice(1).every(Boolean)), stored.filter(r => !r.slice(1).every(Boolean)));
+  ok("L5 failed-closed probes (500) stored nothing", L.filter(p => p.status === 500).every(p => p.location_id === undefined) && XL.every((o, i) => L[i].status === 201 || o.name_hex === undefined));
+  console.log("INFO len stored " + JSON.stringify((x.len ?? []).map((o, i) => ({ probe: o.probe, status: H.xss.len[i].status,
+    name: o.name_hex ? [...unhex(o.name_hex[0])].length : undefined, display_name: o.display_name_hex ? [...unhex(o.display_name_hex[0])].length : undefined,
+    reason: o.change_reason_hex ? o.change_reason_hex.map(h => h == null ? null : [...unhex(h)].length) : undefined }))));
   ok("real PG: no auth.provider.changed by the reader", !(`auth.provider.changed ${H.users.rd}` in D.events_by_type_actor), D.events_by_type_actor);
   console.log("INFO db " + JSON.stringify(D));
 }
