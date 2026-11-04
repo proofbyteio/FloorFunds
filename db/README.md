@@ -39,7 +39,15 @@ Check that it works: `psql --version` should show 17.x.
 same four steps. A second run on the same names is refused unless you add
 `--force` / `-Force` (see "What the kit will and will not touch" below).
 
-1. **Owner role + database** (as a Postgres superuser): a login role (default
+0. **Admin connection must be a PostgreSQL superuser** (e.g. `postgres`). The
+   read-only preflight checks this first and refuses (exit code 5, no
+   `--force` override, nothing changed, no password hashed) when the admin
+   connection's role is not a superuser: `Refused: the admin connection must be
+   a PostgreSQL superuser (e.g. postgres); <user> is not.` Why: the role step
+   locks `pg_authid` and `pg_auth_members` (only a superuser may lock system
+   catalogs), and the role checks and changes (attributes, memberships, the kit
+   marker on roles) need it too. `CREATEROLE` + `CREATEDB` is not enough.
+1. **Owner role + database** (as that superuser): a login role (default
    `floorfunds_dev`) and a database it owns. CONNECT is revoked from PUBLIC.
 2. **App roles** (as a superuser; spec §8.2): `<db>_admin_api` (the admin API)
    and `<db>_login` (the login service). Both are plain login roles: no
@@ -79,14 +87,30 @@ Options:
   - the owner role or an app role is a superuser (even if it carries the marker);
   - the owner role, an app role or the database already exists **without** the marker (someone else's object);
   - the `--role` role owns any database other than `--db`;
-  - `--db` exists but is owned by someone other than `--role`.
+  - `--db` exists but is owned by someone other than `--role`;
+  - the owner role or an app role has `BYPASSRLS`, `CREATEROLE`, `CREATEDB` or `REPLICATION` (the kit creates its roles with none of them, and they need none);
+  - the owner role or an app role is a member, directly or through other roles, of any role other than this run's own kit-marked roles (for example `pg_read_all_data`, `pg_write_server_files`, any `pg_*` role, a superuser or `BYPASSRLS` role, an unmarked role, or another kit install's role). The kit grants no role memberships, so any membership was added by someone else;
+  - the preflight's output does not end with its end marker (empty or cut-off output is a refusal, not a pass).
 
   `--force` / `-Force` never overrides these.
 - If the kit's own objects already exist, a run without `--force` stops with exit code 5 and changes nothing.
-- The kit never runs `ALTER ROLE` on a role it did not create and never changes a database's owner. `db/kit/role.sql` and `db/kit/database.sql` re-check the marker in the same statement they act in, so an object that changes between the preflight and the change is still refused.
-- A password containing a newline or carriage return is refused (exit code 2) before anything runs.
+- The kit never runs `ALTER ROLE` on a role it did not create and never changes a database's owner. The changing SQL re-checks after the preflight:
+  - `db/kit/role.sql`: one `DO` block (one statement, one transaction) checks the role and then creates it and marks it, or alters it. It alters only a marked, non-superuser role with none of the attributes and memberships above. Otherwise it raises an error and changes nothing.
+  - `db/kit/database.sql`: PostgreSQL does not allow `CREATE DATABASE` or `DROP DATABASE` inside a transaction or a `DO` block, so they cannot share a statement with their check. Before `DROP`, a `DO` block checks the database (marked, owned by `--role`, which is not a superuser, and not a template), and the `DROP` itself is generated only for a database that still matches those conditions. After `CREATE`, one `DO` block re-checks the new database (owner `--role`, not a template, no comment yet) and then marks it and sets `CONNECT` in one transaction. If that re-check fails, the database is left unmarked, so every later run refuses it.
+  - `db/kit/role.sql` first takes `LOCK TABLE pg_catalog.pg_authid, pg_catalog.pg_auth_members IN SHARE MODE` (KF-B; needs a superuser, which the kit's admin connection is; `lock_timeout` 30 s). A concurrent, still uncommitted `GRANT`/`REVOKE` or `CREATE`/`ALTER`/`DROP ROLE` holds a conflicting lock, so the kit waits for it to commit and then checks what it did. Tested: an uncommitted `GRANT pg_read_all_data` to a kit role makes the kit wait and then refuse (exit 5); without the lock the same test ends in exit 0 with the membership present.
+  - What is left: the `CREATE DATABASE` / `DROP DATABASE` statements cannot share a transaction with their checks, so a concurrent superuser could swap in a different database with the same name between them. That needs superuser rights, which can already do anything to the server. Role checks are no longer exposed to this race (the lock above).
+- A password containing a newline or carriage return, or any character other than printable ASCII (space to `~`), is refused (exit code 2) before anything runs.
+- Passwords never reach the server (KF-A): setup.sh (perl, Digest::SHA) and setup.ps1 (.NET) compute a SCRAM-SHA-256 verifier (4096 iterations, random 16-byte salt, the format libpq produces), and only that verifier is sent; `db/kit/role.sql` refuses anything else. The ASCII rule keeps the verifier identical to what a client computes at login (SASLprep changes nothing for ASCII). Errors inside the role step are re-raised as `floorfunds-kit: <step> failed (<SQLSTATE>)` with psql `SHOW_CONTEXT never` and `VERBOSITY terse`.
+- Server log: with the default `log_min_error_statement = error`, PostgreSQL logs the failing statement for every error. The kit's statements carry no password (the role step passes the verifier through a transaction-local setting, and the `DO` text holds only names), so a logged statement shows no password and no verifier. Tested by forcing an error inside the role step in both scripts and searching the server log after the run's start offset for the unique password.
 - Exit codes: 0 done; 2 bad arguments or password; 3 psql not found; 4 migrations or seed failed; 5 refused, or a kit guard stopped a change.
-- Tests: `db/tests/k1-kit-tests.sh` (engineers' box: needs `sudo -u postgres` and pwsh). It runs every refusal against both scripts, first with a stub psql that touches no database (including `postgres`, `template0/1`, `ff_sse`, `ff_sse2` with `--force --drop`), then live on scratch `ff_kit_k1*` objects that it creates and drops.
+- Tests: `db/tests/k1-kit-tests.sh` (engineers' box: needs `sudo -u postgres` and pwsh). It runs every refusal against both scripts, first with a stub psql that touches no database (including `postgres`, `template0/1`, `ff_sse`, `ff_sse2` with `--force --drop`), then live on scratch objects that it creates and drops. Every scratch name is built from one prefix (`KIT_TEST_PREFIX`, default `ff_kit_kf`), and cleanup removes everything with that prefix.
+
+**Known limits** (read before you rely on the kit)
+- `db/setup.ps1` has been tested only with pwsh 7.6.9 **on Linux**. It has never been run on Windows.
+- Package signature revocation (NuGet warning NU3018) could not be checked on the engineers' box, because it cannot reach the certificate revocation servers. Re-check it on a machine with normal network access before release, starting from an empty NuGet cache.
+- Scope of the KF1/KF2 fixes: they cover the three roles this run names (`--role`, `<db>_admin_api`, `<db>_login`) and the one `--db`. They check both what those roles are members of and (KF-C) which roles outside the kit are members of them. They do not remove memberships or attributes, they refuse instead. They do not close the window between `CREATE`/`DROP DATABASE` and their checks (see above).
+- The verifier is not a password, but anyone who reads it (`pg_authid`, a statement log with `log_statement = all`, or `psql` history) could attempt an offline guessing attack. Use long random passwords.
+- The admin connection must be a superuser (step 0): the role lock on `pg_authid`/`pg_auth_members` and the role checks need it. A non-superuser admin, even with `CREATEROLE` and `CREATEDB`, is refused up front by the preflight (exit 5, nothing changed); there is no non-superuser mode.
 
 **Windows**: `db/setup.ps1` (needs PowerShell 7, and psql on PATH, e.g. `C:\Program Files\PostgreSQL\17\bin`).
 ```
