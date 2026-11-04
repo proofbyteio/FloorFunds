@@ -53,28 +53,36 @@ public class ReleaseGuardTests
         Assert.True(c != 0, o);
     }
 
-    static string GitRepo()
+    // TLD-S2B-01 (TL 7:27 AM PT 2026-11-04): the only allowed remote is origin = FloorFunds (fetch and push). Throwaway /tmp repo;
+    // nothing is ever pushed or fetched (the pre-push hook below refuses everything).
+    const string FloorFunds = "https://github.com/proofbyteio/FloorFunds.git";
+    static string GitRepo(bool withOrigin = true)
     {
         var d = Tmp();
-        foreach (var a in new[] { "init -q", "-c user.name=t -c user.email=t@local.invalid commit -q --allow-empty -m init" })
+        var args = new List<string> { "init -q", "-c user.name=t -c user.email=t@local.invalid commit -q --allow-empty -m init" };
+        if (withOrigin) args.Add("remote add origin " + FloorFunds);
+        foreach (var a in args)
             Process.Start(new ProcessStartInfo("git", a) { WorkingDirectory = d })!.WaitForExit();
         File.WriteAllText(Path.Combine(d, ".git", "hooks", "pre-push"), "#!/bin/sh\nexit 1\n");
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(Path.Combine(d, ".git", "hooks", "pre-push"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return d;
     }
 
-    [Fact]
-    public void TOOL05_check_no_remote_passes_on_local_only_repo()
+    // TOOL05 flipped for TLD-S2B-01 (was SI1 "passes on local-only repo"): exactly origin=FloorFunds PASSES, no remote FAILS.
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void TOOL05_check_no_remote_passes_only_on_floorfunds_origin(bool withOrigin, bool expectPass)
     {
-        var (c, o) = Run("check-no-remote.sh", $"\"{GitRepo()}\"");
-        Assert.True(c == 0, o);
+        var (c, o) = Run("check-no-remote.sh", $"\"{GitRepo(withOrigin)}\"");
+        Assert.True((c == 0) == expectPass, $"withOrigin={withOrigin} exit={c}\n{o}");
     }
 
     [Theory]
-    [InlineData("remote add origin https://example.invalid/x.git")]
+    [InlineData("remote set-url origin https://example.invalid/x.git")]
     [InlineData("config credential.helper store")]
-    [InlineData("config remote.pushDefault origin")]
-    public void TOOL06_check_no_remote_fails_on_remote_or_credential_helper(string gitArgs)
+    [InlineData("remote add other https://example.invalid/y.git")]
+    public void TOOL06_check_no_remote_fails_on_other_remote_url_or_credential_helper(string gitArgs)
     {
         var d = GitRepo();
         Process.Start(new ProcessStartInfo("git", gitArgs) { WorkingDirectory = d })!.WaitForExit();
