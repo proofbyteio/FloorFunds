@@ -393,9 +393,10 @@ if (D) {
     ["display_name: interior tab", 201], ["reason: 9 runes, padded", 422, [RL]], ["reason: 10 runes", 201], ["reason: 500 runes (hostile)", 201],
     ["reason: 501 runes (hostile)", 422, [RL]],
     ["reason: 250 astral runes (500 UTF-16 units)", 201],
-    // PRODUCT BUG (flagged, not fixed): the API counts code points (<= 500 accepted) but the outbox schema pattern [\s\S]{8,498} counts UTF-16
-    // units, so the envelope check throws and the request fails closed with 500 (nothing stored: see the location / change counts).
-    ["reason: 251 astral runes (502 UTF-16 units)", 500], ["reason: 500 astral runes", 500],
+    // F-ASTRAL [TLD 2026-11-04 15:03] (was a 500: the outbox pattern counted UTF-16 units): JsonSchemaLite now matches "pattern" over code
+    // points, so 251/300/500 astral runes are accepted and stored byte-for-byte, and 501 is the API's own 422 reason_length.
+    ["reason: 251 astral runes (502 UTF-16 units)", 201], ["reason: 300 astral runes", 201], ["reason: 500 astral runes", 201],
+    ["reason: 501 astral runes", 422, [RL]],
     ["reason: 10 runes + 1990 spaces (2000 raw)", 201], ["reason: 10 runes + 1991 spaces (2001 raw)", 422, [RL]],
     ["reason: whitespace only", 201], ["reason: empty string", 201], ["reason: interior newlines", 201]];
   const L = H.xss.len ?? [], XL = x.len ?? [];
@@ -409,7 +410,8 @@ if (D) {
     JSON.stringify(XL[i]?.outbox_reason_hex) === JSON.stringify([p.sent_reason == null || tr(p.sent_reason) === "" ? null : hex(tr(p.sent_reason))])]).filter(Boolean);
   ok("L5 accepted probes: name, display_name, change reason and outbox reason stored = the sent text trimmed, byte-for-byte (whitespace-only / empty reason -> null)",
     stored.length === lenWant.filter(w => w[1] === 201).length && stored.every(r => r.slice(1).every(Boolean)), stored.filter(r => !r.slice(1).every(Boolean)));
-  ok("L5 failed-closed probes (500) stored nothing", L.filter(p => p.status === 500).every(p => p.location_id === undefined) && XL.every((o, i) => L[i].status === 201 || o.name_hex === undefined));
+  ok("L5 (F-ASTRAL): no probe failed with a 500, and every refused probe stored nothing", L.length > 0 && L.every(p => p.status !== 500)
+    && L.filter(p => p.status !== 201).every(p => p.location_id === undefined) && XL.every((o, i) => L[i].status === 201 || o.name_hex === undefined));
   console.log("INFO len stored " + JSON.stringify((x.len ?? []).map((o, i) => ({ probe: o.probe, status: H.xss.len[i].status,
     name: o.name_hex ? [...unhex(o.name_hex[0])].length : undefined, display_name: o.display_name_hex ? [...unhex(o.display_name_hex[0])].length : undefined,
     reason: o.change_reason_hex ? o.change_reason_hex.map(h => h == null ? null : [...unhex(h)].length) : undefined }))));

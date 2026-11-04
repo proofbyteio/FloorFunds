@@ -64,7 +64,11 @@ public sealed class JsonSchemaLite
                     if (Resolve(r) is null) throw new InvalidOperationException($"unresolvable $ref '{r}' at {path}");
                     break;
                 case "pattern":
-                    GetRegex(val!.GetValue<string>());
+                    var pat = val!.GetValue<string>();
+                    // F-ASTRAL [TLD 2026-11-04 15:03]: patterns run over code points (see PatternInput), so a pattern that names a
+                    // surrogate or U+FFFF (the stand-in) could not mean what it says: refuse the schema (fail closed).
+                    if (SurrogateOrStandIn.IsMatch(pat)) throw new InvalidOperationException($"pattern at {path} names a surrogate or U+FFFF (unsupported)");
+                    GetRegex(pat);
                     break;
                 case "format":
                     var f = val!.GetValue<string>();
@@ -77,6 +81,27 @@ public sealed class JsonSchemaLite
                     break;
             }
         }
+    }
+
+    static readonly Regex SurrogateOrStandIn = new(@"[\uD800-\uDFFF\uFFFF]|\\u[dD][89a-fA-F]|\\u[fF]{4}|\\[pP]\{Cs\}", RegexOptions.CultureInvariant);
+
+    /// <summary>F-ASTRAL [TLD 2026-11-04 15:03]: JSON Schema matches "pattern" over code points (like minLength/maxLength here and the
+    /// API's own rune counts); .NET Regex sees UTF-16 units, so "{8,498}" counted an astral character twice. Each surrogate pair is
+    /// matched as ONE stand-in character, U+FFFF (a noncharacter: not \s, so \S, ".", [\s\S] and negated classes take it as one
+    /// character, as they would the code point). Patterns that name a surrogate or U+FFFF are refused at load (Compile).</summary>
+    internal static string PatternInput(string s)
+    {
+        int i = 0;
+        while (i < s.Length - 1 && !char.IsSurrogatePair(s[i], s[i + 1])) i++;
+        if (i >= s.Length - 1) return s;
+        var sb = new System.Text.StringBuilder(s.Length);
+        sb.Append(s, 0, i);
+        for (; i < s.Length; i++)
+        {
+            if (i < s.Length - 1 && char.IsSurrogatePair(s[i], s[i + 1])) { sb.Append('\uFFFF'); i++; }
+            else sb.Append(s[i]);
+        }
+        return sb.ToString();
     }
 
     Regex GetRegex(string p)
@@ -174,7 +199,7 @@ public sealed class JsonSchemaLite
                     if (kind == JsonValueKind.String && CodePoints(inst!.GetValue<string>()) > val!.GetValue<int>()) Fail("too long");
                     break;
                 case "pattern":
-                    if (kind == JsonValueKind.String && !GetRegex(val!.GetValue<string>()).IsMatch(inst!.GetValue<string>())) Fail("pattern mismatch");
+                    if (kind == JsonValueKind.String && !GetRegex(val!.GetValue<string>()).IsMatch(PatternInput(inst!.GetValue<string>()))) Fail("pattern mismatch");
                     break;
                 case "minimum":
                     if (kind == JsonValueKind.Number && Num(inst!) < Num(val!)) Fail("below minimum");

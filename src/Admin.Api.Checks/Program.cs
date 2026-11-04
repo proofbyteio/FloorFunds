@@ -263,7 +263,9 @@ var dir = new TestDirectory(readerLocations, U_RD, U_NO, U_CU);
 
 var port = FreePort();
 Console.WriteLine($"INFO port {port}");
-var app = await AdminApiHost.BuildAsync(Opts() with { Urls = $"http://127.0.0.1:{port}" }, dir);
+// F-ASTRAL [TLD 2026-11-04 15:03]: the main API's Error log, so 7g can show no request failed (no InvalidOperationException out of the outbox).
+var mainLog = new CaptureLogger();
+var app = await AdminApiHost.BuildAsync(Opts() with { Urls = $"http://127.0.0.1:{port}" }, dir, extraLogger: mainLog);
 await app.StartAsync();
 using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
 
@@ -1444,6 +1446,229 @@ try
             w4.Count == 1 && w4[0].Text.Contains("408 request_timeout") && !w4[0].HasException && (await NewEvents()).Count == 0
             && await Count("location_login_config_change") == changes && Rv(A1) == rvA1, string.Join(" | ", w4.Select(e => e.Text)));
         await app4.StopAsync();
+    }
+
+    // ================= 7g. F-ASTRAL + B1 [TLD 2026-11-04 15:03] =================
+    // F-ASTRAL: JsonSchemaLite matches "pattern" over code points, so a reason the API accepts (10..500 code points after trim) is
+    // never refused by the envelope check (before the fix: 251+ astral characters -> outbox InvalidOperationException -> empty 500).
+    // B1: a required reason (DEC-096 fallback on, DEC-098 MFA off; spec §4 step 10) that is absent/null/empty/whitespace-only -> the
+    // existing 400 reason_required; where the reason is optional, blank is stored as null (spec §3.2 "Reason", OQ-S2a-7).
+    {
+        var logMark = mainLog.Entries.Count;
+        string Rep(string u, int n) => string.Concat(Enumerable.Repeat(u, n));
+        const string Devil = "\U0001F608"; // 1 code point, 2 UTF-16 units, 4 UTF-8 bytes
+        static string Hex(string? x) => x is null ? "null" : Convert.ToHexString(Encoding.UTF8.GetBytes(x)).ToLowerInvariant();
+        // Direct JsonSchemaLite unit checks (code points, as JSON Schema defines and Python jsonschema does).
+        var unit = JsonSchemaLite.Load("""{"type":"object","properties":{"r":{"type":"string","pattern":"^\\s*\\S[\\s\\S]{8,498}\\S\\s*$"},"t":{"type":"string","pattern":"^.{3}$"}}}""");
+        JsonObject U(string? r = null, string? t = null) { var o = new JsonObject(); if (r is not null) o["r"] = r; if (t is not null) o["t"] = t; return o; }
+        Ok("F-ASTRAL unit: reason pattern accepts 10, 251, 300 and 500 astral code points", new[] { 10, 251, 300, 500 }.All(n => unit.Validate(U(r: Rep(Devil, n))).Count == 0));
+        Ok("F-ASTRAL unit: reason pattern refuses 9 and 501 astral code points", new[] { 9, 501 }.All(n => unit.Validate(U(r: Rep(Devil, n))).Count > 0));
+        Ok("F-ASTRAL unit: BMP boundaries unchanged (9 no, 10 yes, 500 yes, 501 no)", unit.Validate(U(r: Rep("x", 9))).Count > 0 && unit.Validate(U(r: Rep("x", 10))).Count == 0
+            && unit.Validate(U(r: Rep("x", 500))).Count == 0 && unit.Validate(U(r: Rep("x", 501))).Count > 0);
+        Ok("F-ASTRAL unit: '.' takes one astral code point as one character ('^.{3}$': 3 astral yes, 2 or 4 no; mixed 'a' + astral + 'b' yes)",
+            unit.Validate(U(t: Rep(Devil, 3))).Count == 0 && unit.Validate(U(t: Rep(Devil, 2))).Count > 0 && unit.Validate(U(t: Rep(Devil, 4))).Count > 0 && unit.Validate(U(t: "a" + Devil + "b")).Count == 0);
+        bool Refused(string pat) { try { JsonSchemaLite.Load("{\"type\":\"string\",\"pattern\":" + JsonSerializer.Serialize(pat) + "}"); return false; } catch (InvalidOperationException) { return true; } }
+        Ok("F-ASTRAL unit: a pattern naming a surrogate or U+FFFF (the stand-in) is refused at load, fail closed", Refused(@"^\uD83D") && Refused(@"[\u0000-\uFFFF]") && Refused("\uFFFF") && Refused(@"\p{Cs}") && !Refused(@"^\S+$"));
+
+        // API: SA updates (display_name change, not a downgrade) on a fresh partner-B location, reasons given, then a create.
+        var rC = await Post(SA, Create(P_B, "F-ASTRAL probe", DbCfg()));
+        var LF = rC.Status == 201 ? LocOf(rC) : Guid.Empty;
+        await NewEvents();
+        var shown = new List<string>();
+        int k = 0;
+        async Task<bool> Accepted(string label, string reason)
+        {
+            var rv = Rv(LF);
+            var r = await Put(LF, SA, With(DbCfg(display: $"F-ASTRAL {k++}"), "reason", reason), $"\"{rv}\"");
+            var ev = await NewEvents();
+            var want = reason.Trim();
+            var hist = await Get(Cfg(LF) + "/changes", SA);
+            var top = hist.Status == 200 ? Obj(hist.Body)["items"]!.AsArray()[0] : null;
+            var rowHex = await OScalar<string>("SELECT coalesce(encode(convert_to(reason,'UTF8'),'hex'), '<SQL NULL>') FROM auth.location_login_config_change WHERE location_id=$1 ORDER BY at DESC, change_id LIMIT 1", LF);
+            var obHex = await OScalar<string>("SELECT coalesce(encode(convert_to(envelope->'details'->>'reason','UTF8'),'hex'), '<SQL NULL>') FROM auth.audit_outbox WHERE envelope->'target'->>'id' = $1 ORDER BY occurred_at DESC LIMIT 1", LF.ToString("D"));
+            var ok = r.Status == 200 && ev.Count == 1 && Valid(ev[0]) && (string?)ev[0]["details"]!["reason"] == want
+                && (string?)top?["reason"] == want && rowHex == Hex(want) && obHex == Hex(want);
+            shown.Add($"{label}: {r.Status}");
+            Ok($"F-ASTRAL change path (audit-events L374): {label} -> 200; history, change row and outbox details.reason = the sent reason trimmed, byte-for-byte (UTF-8 hex)", ok,
+                $"{r.Status} ev={ev.Count} row={rowHex?.Length} ob={obHex?.Length} want={Hex(want).Length}");
+            return ok;
+        }
+        async Task RefusedLen(string label, string reason)
+        {
+            var rv = Rv(LF); var ch = await Count("location_login_config_change");
+            var r = await Put(LF, SA, With(DbCfg(display: $"F-ASTRAL {k++}"), "reason", reason), $"\"{rv}\"");
+            shown.Add($"{label}: {r.Status}");
+            Ok($"F-ASTRAL change path (audit-events L374): {label} -> 422 validation_failed, exactly reason:reason_length; nothing written", r.Status == 422
+                && Obj(r.Body)["fields"]!.AsArray().Select(f => $"{f!["field"]}:{f["code"]}").SequenceEqual(["reason:reason_length"])
+                && (await NewEvents()).Count == 0 && Rv(LF) == rv && await Count("location_login_config_change") == ch, r.Body);
+        }
+        await Accepted("249 astral + 3 ASCII (252 code points, 501 UTF-16 units)", Rep(Devil, 249) + "abc");
+        await Accepted("251 astral", Rep(Devil, 251));
+        await Accepted("300 astral", Rep(Devil, 300));
+        await Accepted("500 astral (1000 UTF-16 units, 2000 UTF-8 bytes)", Rep(Devil, 500));
+        await Accepted("499 BMP + 1 astral (500 code points, 501 UTF-16 units)", Rep("r", 499) + Devil);
+        await Accepted("500 astral padded with spaces (trimmed)", "   " + Rep(Devil, 500) + "  ");
+        await RefusedLen("501 astral", Rep(Devil, 501));
+        await RefusedLen("9 astral", Rep(Devil, 9));
+        await Accepted("BMP 10", Rep("b", 10));
+        await Accepted("BMP 500", Rep("b", 500));
+        await RefusedLen("BMP 9", Rep("b", 9));
+        await RefusedLen("BMP 501", Rep("b", 501));
+        {
+            var r = await Post(SA, Create(P_B, "F-ASTRAL create", With(DbCfg(), "reason", Rep(Devil, 300))));
+            var ev = await NewEvents();
+            var lc = r.Status == 201 ? LocOf(r) : Guid.Empty;
+            Ok("F-ASTRAL change path (audit-events L374): create with a 300-astral reason -> 201; event and change row reason byte-for-byte", r.Status == 201 && ev.Count == 1 && Valid(ev[0])
+                && (string?)ev[0]["details"]!["reason"] == Rep(Devil, 300)
+                && await OScalar<string>("SELECT coalesce(encode(convert_to(reason,'UTF8'),'hex'), '<SQL NULL>') FROM auth.location_login_config_change WHERE location_id=$1", lc) == Hex(Rep(Devil, 300)), $"{r.Status}");
+            r = await Post(SA, Create(P_B, "F-ASTRAL create 501", With(DbCfg(), "reason", Rep(Devil, 501))));
+            Ok("F-ASTRAL change path (audit-events L374): create with a 501-astral reason -> 422, exactly login_config/reason:reason_length", r.Status == 422
+                && Obj(r.Body)["fields"]!.AsArray().Select(f => $"{f!["field"]}:{f["code"]}").SequenceEqual(["login_config/reason:reason_length"]) && (await NewEvents()).Count == 0, r.Body);
+        }
+        // Downgrade path [TLD 2026-11-04 15:10 (1)]: the envelope's downgrade_rule (contract/audit-events.schema.json L393, read only)
+        // carries the same reason pattern; probed on an MFA-off update (true -> false) and an MFA-off create (vs "none", A-5).
+        // Unit: Unicode code points, per spec L131 "10–500 characters after trimming" (OQ-S2a-7).
+        var rG = await Post(SA, Create(P_B, "F-ASTRAL downgrade probe", DbCfg()));
+        var LG = rG.Status == 201 ? LocOf(rG) : Guid.Empty;
+        await NewEvents();
+        var downCases = new (string label, string reason, bool ok)[]
+        {
+            ("BMP 10", Rep("d", 10), true), ("BMP 500", Rep("d", 500), true), ("BMP 9", Rep("d", 9), false), ("BMP 501", Rep("d", 501), false),
+            ("249 astral + 3 ASCII (252 code points, 501 UTF-16 units)", Rep(Devil, 249) + "abc", true), ("251 astral", Rep(Devil, 251), true),
+            ("300 astral", Rep(Devil, 300), true), ("500 astral", Rep(Devil, 500), true), ("499 BMP + 1 astral", Rep("d", 499) + Devil, true),
+            ("501 astral", Rep(Devil, 501), false), ("500 code points mixed, padded", "  " + Rep(Devil + "d", 250) + " ", true),
+        };
+        foreach (var (dl, reason, okWant) in downCases)
+        {
+            var want = reason.Trim();
+            // update: MFA back on first (an upgrade, no reason), then MFA off with the reason.
+            var up = await Put(LG, SA, DbCfg(), $"\"{Rv(LG)}\"");
+            await NewEvents();
+            var rv = Rv(LG); var ch = await Count("location_login_config_change");
+            var r = await Put(LG, SA, With(DbCfg(mfa: false), "reason", reason), $"\"{rv}\"");
+            var ev = await NewEvents();
+            shown.Add($"downgrade update {dl}: {r.Status}");
+            if (okWant)
+            {
+                var hist = await Get(Cfg(LG) + "/changes", SA);
+                var top = hist.Status == 200 ? Obj(hist.Body)["items"]!.AsArray()[0] : null;
+                var rowHex = await OScalar<string>("SELECT coalesce(encode(convert_to(reason,'UTF8'),'hex'), '<SQL NULL>') FROM auth.location_login_config_change WHERE location_id=$1 ORDER BY at DESC, change_id LIMIT 1", LG);
+                var obHex = await OScalar<string>("SELECT coalesce(encode(convert_to(envelope->'details'->>'reason','UTF8'),'hex'), '<SQL NULL>') FROM auth.audit_outbox WHERE envelope->'target'->>'id' = $1 ORDER BY occurred_at DESC LIMIT 1", LG.ToString("D"));
+                Ok($"F-ASTRAL downgrade path (audit-events L393): update MFA off, {dl} -> 200; history, change row and outbox details.reason = sent trimmed, byte-for-byte",
+                    up.Status == 200 && r.Status == 200 && ev.Count == 1 && Valid(ev[0]) && (bool?)ev[0]["details"]!["after"]!["mfa_required"] == false
+                    && (string?)ev[0]["details"]!["reason"] == want && (string?)top?["reason"] == want && rowHex == Hex(want) && obHex == Hex(want), $"{up.Status}/{r.Status} ev={ev.Count}");
+            }
+            else
+                Ok($"F-ASTRAL downgrade path (audit-events L393): update MFA off, {dl} -> 422 exactly reason:reason_length; nothing written", up.Status == 200 && r.Status == 422
+                    && Obj(r.Body)["fields"]!.AsArray().Select(f => $"{f!["field"]}:{f["code"]}").SequenceEqual(["reason:reason_length"])
+                    && ev.Count == 0 && Rv(LG) == rv && await Count("location_login_config_change") == ch, r.Body);
+            // create: MFA off on create = a downgrade vs "none" (A-5).
+            var locs = await Count("location");
+            var rc = await Post(SA, Create(P_B, $"F-ASTRAL downgrade create {k++}", With(DbCfg(mfa: false), "reason", reason)));
+            var evc = await NewEvents();
+            shown.Add($"downgrade create {dl}: {rc.Status}");
+            if (okWant)
+                Ok($"F-ASTRAL downgrade path (audit-events L393): create MFA off, {dl} -> 201; event and change row reason byte-for-byte", rc.Status == 201 && evc.Count == 1 && Valid(evc[0])
+                    && (string?)evc[0]["details"]!["reason"] == want
+                    && await OScalar<string>("SELECT coalesce(encode(convert_to(reason,'UTF8'),'hex'), '<SQL NULL>') FROM auth.location_login_config_change WHERE location_id=$1", LocOf(rc)) == Hex(want), $"{rc.Status}");
+            else
+                Ok($"F-ASTRAL downgrade path (audit-events L393): create MFA off, {dl} -> 422 exactly login_config/reason:reason_length; nothing written", rc.Status == 422
+                    && Obj(rc.Body)["fields"]!.AsArray().Select(f => $"{f!["field"]}:{f["code"]}").SequenceEqual(["login_config/reason:reason_length"])
+                    && evc.Count == 0 && await Count("location") == locs, rc.Body);
+        }
+        Console.WriteLine("INFO F-ASTRAL " + string.Join("; ", shown));
+
+        // B1 probe: every blank form on every required-reason action (SA; a PA downgrade is 403 before the reason rule, step 9).
+        var blanks = new (string label, object? v, bool send)[]
+        {
+            ("absent", null, false), ("null", null, true), ("\"\"", "", true), ("spaces", "            ", true), ("tab/CR/LF/space", "\t\r\n \t\r\n ", true),
+            ("NBSP x12", Rep("\u00A0", 12), true), ("U+3000 x12", Rep("\u3000", 12), true), ("U+2028/U+2029/U+0085 mix", "\u2028\u2029\u0085\u2028\u2029\u0085\u2028\u2029\u0085\u2028", true),
+        };
+        Dictionary<string, object?> WithBlank(Dictionary<string, object?> cfg, (string label, object? v, bool send) b) => b.send ? With(cfg, "reason", b.v) : cfg;
+        Guid T4 = Guid.Parse("5f0c3e1a-00fa-4000-8000-00000000fa14"), T5 = Guid.Parse("5f0c3e1a-00fa-4000-8000-00000000fa15");
+        var b1 = new List<string>();
+        var rDb = await Post(SA, Create(P_B, "B1 db", DbCfg()));
+        var rEn = await Post(SA, Create(P_B, "B1 entra", EntraCfg(T4)));
+        Guid LD = rDb.Status == 201 ? LocOf(rDb) : Guid.Empty, LE = rEn.Status == 201 ? LocOf(rEn) : Guid.Empty;
+        await NewEvents();
+        var actions = new (string label, Func<(string, object?, bool), Task<R>> send)[]
+        {
+            ("create, MFA off (DEC-098)", b => Post(SA, Create(P_B, "B1 new", WithBlank(DbCfg(mfa: false), b)))),
+            ("create, fallback on (DEC-096)", b => Post(SA, Create(P_B, "B1 new", WithBlank(EntraCfg(T5, fallback: true), b)))),
+            ("create, MFA off + fallback on", b => Post(SA, Create(P_B, "B1 new", WithBlank(EntraCfg(T5, fallback: true, mfa: false), b)))),
+            ("update, MFA off (DEC-098)", b => Put(LD, SA, WithBlank(DbCfg(mfa: false), b), "\"1\"")),
+            ("update, fallback on (DEC-096)", b => Put(LE, SA, WithBlank(EntraCfg(T4, fallback: true), b), "\"1\"")),
+            ("update, MFA off + fallback on", b => Put(LE, SA, WithBlank(EntraCfg(T4, fallback: true, mfa: false), b), "\"1\"")),
+        };
+        foreach (var (al, send) in actions)
+        {
+            var before = (await Count("location"), await Count("location_login_config_change"), Rv(LD), Rv(LE));
+            var got = new List<string>();
+            foreach (var bl in blanks) { var r = await send(bl); got.Add($"{bl.label}={r.Status}:{(r.Status >= 400 ? Obj(r.Body)["error"] : "")}"); }
+            b1.Add($"{al} [{string.Join(", ", got)}]");
+            Ok($"B1: {al}: every blank reason (absent, null, \"\", spaces, tab/CR/LF, NBSP, U+3000, U+2028/2029/0085) -> 400 reason_required; no event, nothing written",
+                got.All(g => g.EndsWith("=400:reason_required")) && (await NewEvents()).Count == 0
+                && (await Count("location"), await Count("location_login_config_change"), Rv(LD), Rv(LE)) == before, string.Join(", ", got));
+        }
+        // Optional reason (not a downgrade): blank -> accepted, stored as null (spec §3.2 "Reason"; recorded, unchanged).
+        {
+            var nulls = new List<string>();
+            foreach (var bl in blanks)
+            {
+                var r = await Put(LD, SA, WithBlank(DbCfg(display: "B1 optional " + bl.label), bl), $"\"{Rv(LD)}\"");
+                var ev = await NewEvents();
+                var row = await OScalar<string>("SELECT coalesce(reason, '<SQL NULL>') FROM auth.location_login_config_change WHERE location_id=$1 ORDER BY at DESC, change_id LIMIT 1", LD);
+                nulls.Add($"{bl.label}={r.Status}/{(row == "<SQL NULL>" ? "null" : "text")}/{(ev.Count == 1 && ev[0]["details"]!["reason"] is null ? "null" : "?")}");
+            }
+            b1.Add($"optional (update display_name, no downgrade) [{string.Join(", ", nulls)}]");
+            Ok("B1: optional reason (display_name update, no downgrade): every blank form -> 200, change row and event reason null", nulls.All(n => n.EndsWith("=200/null/null")), string.Join(", ", nulls));
+            // TLD 15:10 (2): a plain create (MFA on, fallback off) with a missing, empty or whitespace-only reason -> 201, reason null (spec L131).
+            var plain = new List<string>();
+            foreach (var (pl, cfgP) in new (string, Dictionary<string, object?>)[] { ("absent", DbCfg()), ("\"\"", With(DbCfg(), "reason", "")), ("whitespace-only", With(DbCfg(), "reason", "   \t ")) })
+            {
+                var r2 = await Post(SA, Create(P_B, "B1 optional create " + pl, cfgP));
+                var ev2 = await NewEvents();
+                var row2 = r2.Status == 201 ? await OScalar<string>("SELECT coalesce(reason, '<SQL NULL>') FROM auth.location_login_config_change WHERE location_id=$1", LocOf(r2)) : "?";
+                plain.Add($"{pl}={r2.Status}/{(row2 == "<SQL NULL>" ? "null" : row2)}/{(ev2.Count == 1 && ev2[0]["details"]!["reason"] is null ? "null" : "?")}");
+            }
+            b1.Add($"plain create (MFA on, fallback off) [{string.Join(", ", plain)}]");
+            Ok("B1: plain create (MFA on, fallback off): missing, \"\" and whitespace-only reason -> 201, change row and event reason null (spec L131)", plain.All(x => x.EndsWith("=201/null/null")), string.Join(", ", plain));
+        }
+        // Invisible but not whitespace (U+200B, U+FEFF): .NET Trim keeps them, so ten of them are a 10-character reason. Recorded (OQ), not changed.
+        {
+            var r = await Put(LD, SA, With(DbCfg(mfa: false), "reason", Rep("\u200B", 10)), $"\"{Rv(LD)}\"");
+            await NewEvents();
+            b1.Add($"MFA off with 10 x U+200B -> {r.Status}");
+            Ok("B1 (observed, OQ): MFA off with a reason of 10 x U+200B (not whitespace) is not a 500", r.Status is 200 or 400 or 422, $"{r.Status}");
+        }
+        // OQ-S2a-14 / OQ-S2a-15 (pending Mohanraj via TL): observed and logged only; the API is not changed.
+        {
+            var obs = new List<string>();
+            var r = await Put(LD, SA, With(DbCfg(display: "\u200BCasino ZW\u200B"), "reason", null), $"\"{Rv(LD)}\"");
+            await NewEvents();
+            obs.Add($"display_name U+200B padding -> {r.Status}, stored hex {await OScalar<string>("SELECT encode(convert_to(display_name,'UTF8'),'hex') FROM auth.location_login_config WHERE location_id=$1", LD)}");
+            r = await Post(SA, Create(P_B, "\u200BB1 zw name\u200B", DbCfg()));
+            await NewEvents();
+            obs.Add($"name U+200B padding -> {r.Status}" + (r.Status == 201 ? $", stored hex {await OScalar<string>("SELECT encode(convert_to(name,'UTF8'),'hex') FROM auth.location WHERE location_id=$1", LocOf(r))}" : ""));
+            r = await Put(LD, SA, With(DbCfg(display: "Casino\tTab"), "reason", null), $"\"{Rv(LD)}\"");
+            await NewEvents();
+            obs.Add($"display_name interior tab -> {r.Status}");
+            r = await Put(LD, SA, With(DbCfg(display: "Casino\nNewline"), "reason", null), $"\"{Rv(LD)}\"");
+            await NewEvents();
+            obs.Add($"display_name interior newline -> {r.Status}" + (r.Status >= 400 ? $" {Obj(r.Body)["error"]}" : ""));
+            r = await Post(SA, Create(P_B, "B1 name\nnewline", DbCfg()));
+            await NewEvents();
+            obs.Add($"name interior newline -> {r.Status}" + (r.Status >= 400 ? $" {Obj(r.Body)["error"]}" : ""));
+            r = await Post(SA, Create(P_B, "B1 name\ttab", DbCfg()));
+            await NewEvents();
+            obs.Add($"name interior tab -> {r.Status}" + (r.Status >= 400 ? $" {Obj(r.Body)["error"]}" : ""));
+            foreach (var o in obs) Console.WriteLine("INFO OQ-S2a-14/15 " + o);
+            Ok("OQ-S2a-14/15 observations ran without a 500 (behaviour recorded, not asserted; pending Mohanraj via TL)", obs.All(o => !o.Contains("-> 500")), string.Join("; ", obs));
+        }
+        foreach (var l in b1) Console.WriteLine("INFO B1 " + l);
+        var errs7g = mainLog.Entries.Skip(logMark).ToList();
+        Ok("F-ASTRAL/B1: no request in 7g failed (no Error log line, no InvalidOperationException out of the outbox, no 500)",
+            errs7g.Count == 0 && !shown.Any(x => x.EndsWith(": 500")), string.Join(" | ", errs7g.Select(e => $"{e.ExType}: {e.Text}")));
     }
 
     // ================= 8. secrets never leave =================

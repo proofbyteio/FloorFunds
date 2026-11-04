@@ -139,7 +139,9 @@ static class UiHost
         await LenProbe("reason: 501 runes (hostile)", reason: Fill(hx, 501), sendReason: true);
         await LenProbe("reason: 250 astral runes (500 UTF-16 units)", reason: Fill(devil, 250), sendReason: true);
         await LenProbe("reason: 251 astral runes (502 UTF-16 units)", reason: Fill(devil, 251), sendReason: true);
+        await LenProbe("reason: 300 astral runes", reason: Fill(devil, 300), sendReason: true); // F-ASTRAL [TLD 2026-11-04 15:03]
         await LenProbe("reason: 500 astral runes", reason: Fill(devil, 500), sendReason: true);
+        await LenProbe("reason: 501 astral runes", reason: Fill(devil, 501), sendReason: true); // F-ASTRAL [TLD 2026-11-04 15:03]
         await LenProbe("reason: 10 runes + 1990 spaces (2000 raw)", reason: Fill(hx, 10) + new string(' ', 1990), sendReason: true);
         await LenProbe("reason: 10 runes + 1991 spaces (2001 raw)", reason: Fill(hx, 10) + new string(' ', 1991), sendReason: true);
         await LenProbe("reason: whitespace only", reason: "      ", sendReason: true);
