@@ -37,7 +37,9 @@ var adminCs = Env("ADMIN_API_CONNECTION_STRING");
 var loginCs = Env("LOGIN_CONNECTION_STRING"); // <db>_login, read-only: the login readers (TLD 10:02 Q1 restart check)
 if (new[] { ownerCs, adminCs, loginCs }.Any(cs => new NpgsqlConnectionStringBuilder(cs).Database != dbName))
 { Console.Error.WriteLine("refuse: every connection string's Database must equal AUTH_CHECKS_DB"); return 2; }
-var outDir = args.Length > 0 ? args[0] : null;
+// S2a P4 (F-A3): `--ui-host <ui/orgs dir>` runs the TEST-ONLY screen-9 host for ui/orgs/tests/e2e.mjs instead of the checks (UiHost.cs).
+var uiDir = args.Length > 1 && args[0] == "--ui-host" ? args[1] : null;
+var outDir = uiDir is null && args.Length > 0 ? args[0] : null;
 
 await using var ownerDs = NpgsqlDataSource.Create(ownerCs);
 async Task<T> OScalar<T>(string sql, params object?[] ps)
@@ -389,6 +391,13 @@ long Rv(Guid loc) => OScalar<long>("SELECT row_version FROM auth.location_login_
 int exitCode = 1;
 try
 {
+    if (uiDir is not null)
+    {
+        var personas = new Dictionary<string, UiHost.Persona>
+        { ["sa"] = new(SA, "super"), ["pa"] = new(PA, "partner"), ["pb"] = new(PB, "partner"), ["rd"] = new(RD, "partner"), ["anon"] = new("", "partner") };
+        exitCode = await UiHost.RunAsync(uiDir, port, FreePort(port), personas, readerLocations, P_A, P_B, [T1, T2, T3], ownerDs);
+        goto uiHostDone; // leaves the try: the finally below stops the API and empties the tables
+    }
     var missing = Guid.Parse("5f0c3e1a-0bad-4000-8000-00000000dead");
 
     // ================= 1. authentication (step 1): 401, no body, WWW-Authenticate: Bearer, no event =================
@@ -1492,6 +1501,7 @@ finally
     foreach (var t in Tables) left += await Count(t);
     Ok("cleanup: auth.audit_outbox, change, llc, location empty again", left == 0);
 }
+uiHostDone:
 Console.WriteLine($"{pass} passed, {fail} failed");
 return fail == 0 ? exitCode : 1;
 
