@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # FloorFunds dev DB setup (see db/README.md). Never prints a password. Exit: 0 ok, 2 bad args, 3 psql missing,
-# 4 migrations failed, 5 refused (nothing changed) or a kit SQL guard aborted.
+# 4 migrations failed, 5 refused (nothing changed) or a kit SQL guard aborted (earlier steps may have completed; see db/README.md, I-1).
 #   0. read-only preflight (db/kit/preflight.sql) BEFORE any change: refuses postgres/template DBs, superusers,
 #      and any existing role or DB the kit did not create (no 'floorfunds-kit' marker); --force never overrides
 #      that; nor kit roles with BYPASSRLS/CREATEROLE/CREATEDB/REPLICATION or any role membership outside the kit
@@ -34,6 +34,8 @@ usage() {
 Usage: db/setup.sh [--db NAME] [--role NAME] [--password PW] [--host H] [--port P] [--admin-host H]
                    [--superuser-cmd "CMD"] [--force] [--drop] [--no-migrate] [--migrations FILE] [--seed]
   Owner password: --password, else env FF_DB_PASSWORD, else prompted (hidden).
+  WARNING (I-3): --password PW puts the password in this process's argv, visible in the process list (ps)
+  and in your shell history. Prefer the hidden prompt, or env FF_DB_PASSWORD.
   App-role passwords (<db>_admin_api, <db>_login): env FF_ADMIN_API_PASSWORD and
                    FF_LOGIN_PASSWORD, else prompted (hidden).
   --superuser-cmd  command that runs psql as a Postgres superuser

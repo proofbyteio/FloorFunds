@@ -10,6 +10,7 @@
 -- roles need none (db/migrations.sql grants only object privileges), so any membership was added by someone else.
 -- TLD 9:19: refused first of all when the admin connection (current_user) is not a superuser.
 -- KF-C: likewise refused when a role outside this run's kit-marked roles is a member OF a kit role.
+-- KF-G (TLD 9:42): and when two of this run's kit roles are members of each other: no pg_auth_members row may involve a kit role.
 -- Kit objects carry COMMENT ... IS 'floorfunds-kit' (shared description). Unmarked = not created by the kit.
 BEGIN TRANSACTION READ ONLY;
 WITH RECURSIVE want(name) AS (VALUES (:'role'), (:'api_role'), (:'login_role')),
@@ -53,6 +54,9 @@ SELECT line FROM (
   UNION ALL
   SELECT 11, 'REFUSE role ' || g.rolname || ' is a member of kit role ' || ri.name || ' (KF-C: no role outside the kit may belong to a kit role)'
     FROM ri JOIN pg_auth_members m ON m.roleid = ri.oid JOIN pg_roles g ON g.oid = m.member WHERE m.member NOT IN (SELECT oid FROM kit)
+  UNION ALL
+  SELECT 12, 'REFUSE role ' || g.rolname || ' is a member of kit role ' || ri.name || ' (KF-G: the kit uses no role memberships, not even between its own roles)'
+    FROM ri JOIN pg_auth_members m ON m.roleid = ri.oid JOIN pg_roles g ON g.oid = m.member WHERE m.member IN (SELECT oid FROM kit)
   UNION ALL
   SELECT 7, 'EXISTS role ' || name FROM ri WHERE oid IS NOT NULL
   UNION ALL

@@ -63,6 +63,13 @@ BEGIN
   IF bad IS NOT NULL THEN
     RAISE EXCEPTION 'floorfunds-kit: refusing to alter role %: role(s) outside the kit are members of it: %', r, bad;
   END IF;
+  -- KF-G (TLD 9:42): the kit grants no memberships, so no pg_auth_members row may involve this role at all,
+  -- not even with another kit role (e.g. GRANT <p>_owner TO <p>_login would let the login role SET ROLE to the owner).
+  SELECT string_agg(format('%s in %s', pg_get_userbyid(m.member), pg_get_userbyid(m.roleid)), ', ' ORDER BY m.member, m.roleid)
+    INTO bad FROM pg_auth_members m WHERE m.member = a.oid OR m.roleid = a.oid;
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'floorfunds-kit: refusing to alter role %: it has role memberships (the kit uses none): %', r, bad;
+  END IF;
   BEGIN  -- KF-A: as above
     EXECUTE format('ALTER ROLE %I LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD %L', r, p);
   EXCEPTION WHEN OTHERS THEN

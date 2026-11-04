@@ -15,8 +15,11 @@
     3. db/migrations.sql applied AS THE OWNER (idempotent; the only way schema
        and tables are created). Skip with -NoMigrate.
     4. optional TEST-ONLY seed db/seed/*.sql (-Seed; SSE2-FAKE-TEST-ONLY data)
+  WARNING (I-3): -Password/-AdminApiPassword/-LoginPassword given on the command line (e.g. via
+  ConvertTo-SecureString -AsPlainText) put the password in argv, visible in the process list and in
+  shell history. Prefer the hidden prompts, or env FF_DB_PASSWORD / FF_ADMIN_API_PASSWORD / FF_LOGIN_PASSWORD.
   Exit: 0 ok, 2 bad args, 3 psql missing, 4 migrations failed, 5 refused
-  (nothing changed) or a kit SQL guard aborted.
+  (nothing changed) or a kit SQL guard aborted (earlier steps may have completed; see db/README.md, I-1).
   Tested only with pwsh 7.6.9 on Linux; Windows (incl. the TCP admin login) untested.
 .EXAMPLE
   ./db/setup.ps1                      # floorfunds_dev, prompts for passwords
