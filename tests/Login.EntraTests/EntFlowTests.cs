@@ -165,6 +165,47 @@ public class EntFlowTests
         Assert.Equal(sa, Shape(b));
     }
 
+    // TLD 8:31 Q2: distinct audit reasons stay, but the user-facing response is byte-identical for these refusals.
+    // Normalised away only: Date, per-request ids, Set-Cookie values (name + attributes kept).
+    static string Wire(Env.Flow f)
+    {
+        var skip = new[] { "date:", "request-id:", "x-request-id:", "traceparent:", "x-correlation-id:" };
+        var h = f.FinalHeaders!.Where(x => !skip.Any(s => x.StartsWith(s, StringComparison.Ordinal)))
+            .Select(x => x.StartsWith("set-cookie:", StringComparison.Ordinal) ? System.Text.RegularExpressions.Regex.Replace(x, @"^set-cookie: ([^=]+)=[^;]*", "set-cookie: $1=<v>") : x)
+            // the OIDC handler puts the per-request nonce/correlation id in the cookie NAME; mask that id only
+            .Select(x => System.Text.RegularExpressions.Regex.Replace(x, @"^set-cookie: (\.AspNetCore\.(?:Correlation|OpenIdConnect\.Nonce))\.[^=]+=", "set-cookie: $1.<id>="))
+            .Order(StringComparer.Ordinal);
+        return $"{(int)f.FinalStatus}\n{string.Join("\n", h)}\n\n{Convert.ToHexString(f.FinalBytes!)}";
+    }
+
+    [Fact] public async Task ENT_04g_refusals_are_byte_identical_to_the_user()
+    {
+        var cases = new (string name, Action<Env> arrange, string reason)[]
+        {
+            ("unknown_subject", e => e.Fake.NextUser = new FakeUser { Oid = Guid.NewGuid() }, "bad_credentials"),
+            ("partner_mismatch", e => e.Store.Mutate(d => { d.Users.RemoveAll(u => u.UserId == e.UserA); d.Users.Add(new(e.UserA, OtherPartner, "active", null)); }), "not_location_user"),
+            ("unassigned", e => e.Store.Mutate(d => d.Assignments.RemoveAll(a => a.UserId == e.UserA && a.LocationId == Env.LocA)), "not_location_user"),
+            ("locked", e => e.Store.Mutate(d => { d.Users.RemoveAll(u => u.UserId == e.UserA); d.Users.Add(new(e.UserA, Env.PartnerId, "active", DateTimeOffset.UtcNow.AddHours(1))); }), "locked"),
+            ("disabled", e => e.Store.Mutate(d => { d.Users.RemoveAll(u => u.UserId == e.UserA); d.Users.Add(new(e.UserA, Env.PartnerId, "disabled", null)); }), "bad_credentials"),
+        };
+        var wires = new List<(string, string)>();
+        foreach (var (name, arrange, reason) in cases)
+        {
+            var e = await Env.StartAsync();
+            try
+            {
+                arrange(e);
+                var f = await e.SignInAsync("loc-a");
+                Assert.Equal(HttpStatusCode.ServiceUnavailable, f.FinalStatus);
+                Assert.Empty(e.Host.Sessions);
+                Assert.Equal(reason, Assert.Single(e.Failed).Reason); // audit stays distinct (internal, admin-only)
+                wires.Add((name, Wire(f)));
+            }
+            finally { await e.DisposeAsync(); }
+        }
+        foreach (var (name, w) in wires.Skip(1)) Assert.True(w == wires[0].Item2, $"{name} differs from {wires[0].Item1}:\n{w}\n---\n{wires[0].Item2}");
+    }
+
     // 7e0350b (SSE2 N1): UserStatus {Unknown=0, Active=1, Disabled=2}; default is Unknown and MaySignIn is false.
     public static TheoryData<string> NonActive => new() { "default", "unknown" };
 

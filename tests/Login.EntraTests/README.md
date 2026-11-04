@@ -38,3 +38,9 @@ match+assigned signs in; no partner ids leaked), ENT_04f (mismatch vs unassigned
   `bad_credentials`/`user_status_unknown`. `FixtureUser.RawStatus` (test-only) injects raw values.
 - Tests: ENT_09u x2 (default, Unknown), ENT_19 (SecretReference never in logs/audit/ToString/JSON). Fixture refs are now
   `arn:sse2-fake-test-only:secret:ref-{a,b,c}-9q7z` so leaks are greppable.
+
+## ENT_04g (TLD 8:31 Q2)
+
+Audit reasons stay distinct (internal, admin-only), but the user-facing response is byte-identical for unknown subject,
+not_location_user (partner mismatch, unassigned), locked and disabled: status, headers and body bytes. Normalised only:
+Date, request ids, Set-Cookie values, and the per-request id in the OIDC Correlation/Nonce cookie *names*.

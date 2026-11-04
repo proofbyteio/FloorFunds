@@ -146,7 +146,8 @@ public sealed class Env : IAsyncDisposable
         await Fake.DisposeAsync();
     }
 
-    public sealed record Flow(HttpStatusCode FinalStatus, string FinalBody, string? AuthorizeUrl, List<string> Hops, CookieContainer Jar);
+    public sealed record Flow(HttpStatusCode FinalStatus, string FinalBody, string? AuthorizeUrl, List<string> Hops, CookieContainer Jar,
+        byte[]? FinalBytes = null, IReadOnlyList<string>? FinalHeaders = null);
 
     /// <summary>Browser-like flow: /l/{slug} → fake authorize → callback → result. No auto-redirect; every hop recorded.</summary>
     public async Task<Flow> SignInAsync(string slug, Func<string, string>? tamperCallback = null, CookieContainer? jar = null)
@@ -168,7 +169,9 @@ public sealed class Env : IAsyncDisposable
                 if (next.StartsWith(HostUrl + "/signin-entra") && tamperCallback is not null) next = tamperCallback(next);
                 url = next; continue;
             }
-            return new(r.StatusCode, await r.Content.ReadAsStringAsync(), authorize, hops, jar);
+            var bytes = await r.Content.ReadAsByteArrayAsync();
+            var hdrs = r.Headers.Concat(r.Content.Headers).SelectMany(kv => kv.Value.Select(v => kv.Key.ToLowerInvariant() + ": " + v)).ToList();
+            return new(r.StatusCode, System.Text.Encoding.UTF8.GetString(bytes), authorize, hops, jar, bytes, hdrs);
         }
         throw new InvalidOperationException("too many redirects");
     }
