@@ -215,3 +215,30 @@ docs/plans/, docs/BUILD-LOG.md        (mine)
 | **Total** | | **25 h ≈ 3.1 working days** (range 20–34 h; +50% if §g Q3 means a real OpenIddict host) | **25** |
 
 Risks: the per-request configuration manager hook in the ASP.NET Core 10 handler (§a.2), and the timing of SSE's interfaces (§f).
+
+## S2b TL rulings (TL approved the plan at 7:27 AM PT, Wed Nov 4, 2026; recorded by SSE2 as TLD-S2B-xx, never DEC)
+| ID | Ruling |
+|---|---|
+| TLD-S2B-01 | Remote rule changed: Mohanraj approved pushing to proofbyteio/FloorFunds. **Only TL pushes**, and only there (a pre-push hook enforces it). SSE2 never pushes and never changes the remote or credentials; a read-only `git fetch` is OK. `tools/check-no-remote.sh` passes only if the remotes are exactly origin=https://github.com/proofbyteio/FloorFunds.git (fetch and push). |
+| TLD-S2B-02 | Packages: exactly `Microsoft.AspNetCore.Authentication.OpenIdConnect [10.0.14]` and `Microsoft.IdentityModel.Validators [8.19.2]`, nothing else new. The whole IdentityModel graph stays on 8.19.2. nuget.org only, lock file, package source mapping, no NU3018 suppression. |
+| TLD-S2B-03 | "Down" approved as in §c. Timeout 5 s, configurable, no inline retry. JWKS: the framework ConfigurationManager cache; a last-good copy ≤24 h old counts as available (**interim**). |
+| TLD-S2B-04 | Ownership: SSE2 owns `src/Login.Entra`, `tests/Login.FakeEntra` (port 18093) and `tests/Login.EntraTests`. Stand-in hooks and ui/ pieces go as a patch file (docs/ or /tmp) for SSE to approve and commit. Login.Entra is self-contained, with no stand-in dependency (it must move to R1 unchanged). |
+| TLD-S2B-05 | Branch `feat/entra-signin` off main 9ccfcbe, only if `git status` is clean; otherwise report, never force. S2b docs stay on sse2/tests-docs (`docs/plans/S2B-ENTRA-PLAN.md`, this log). |
+| TLD-S2B-06 | Link users on (issuer, tid, oid). Never on email, upn or preferred_username. (Plan §g Q6.) |
+| TLD-S2B-07 | No `offline_access`. (Q10) |
+| TLD-S2B-08 | Cage locations: `prompt=login` + `max_age=0`. The `auth_time` optional claim is required and checked server-side, ≤5 min for the hand-off. The server check is authoritative. (Q11) |
+| TLD-S2B-09 | New `reason` values are v1.1, under **V11-ENTRA-FALLBACK**. Within v1, existing reasons only. (Q12, Q19) |
+| TLD-S2B-10 | Storage and grants per SSE's P1 spec. TL has told SSE to add the external-login lookup and the location-assignment check. Until they land: draft interfaces plus fixture-backed implementations, with the assumption logged. (Q13) |
+| TLD-S2B-11 | acrs/c1: next slice. (Q14) |
+| TLD-S2B-12 | Audit carries only the mapped amr (closed enum). Entra's raw amr is never logged. (Q15) |
+| TLD-S2B-13 | Drop `rsa`. (Q16) |
+| TLD-S2B-14 | The account picker at Entra sign-out is OK for now; `logout_hint` is next slice. (Q17) |
+| TLD-S2B-15 | No browser-side database sign-in link; fallback is decided by the server only. (Q18) |
+| TLD-S2B-16 | (TL 7:25, relayed by SSE) No config row → **fail closed**. (Q5) |
+| TLD-S2B-17 | (TL 7:25) Use `GetBySlugAsync` with `auth.location`. |
+| TLD-S2B-18 | (TL 7:25) Authority = base URL + `/{tid}/v2.0`, **exactly one tenant per location**. (Q8) |
+| TLD-S2B-19 | (TL 7:25) `SecretRef` is opaque. (Q7) |
+| TLD-S2B-20 | (TL 7:25) `mfa_required` means amr must map to `mfa`, otherwise refuse. (Q9) |
+| TLD-S2B-21 | (TL 7:25) RowVersion goes on events in v1.1. |
+| TLD-S2B-22 | DB: local Postgres 17, `ff_sse2`. Schema only from SSE's EF migration; the fixture reader until it lands (plan step 8 waits). |
+Still open from plan §g: Q1 (resolved by TLD-S2B-05), Q3 (stand-in vs real service: Login.Entra is self-contained per TLD-S2B-04, hooks via patch), Q20 (resolved by TLD-S2B-02).
