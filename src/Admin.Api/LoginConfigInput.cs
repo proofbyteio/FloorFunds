@@ -1,0 +1,206 @@
+using System.Text.Json;
+using System.Text.RegularExpressions;
+
+namespace Admin.Api;
+
+public sealed record FieldError(string Field, string Code);
+
+public enum SecretChange { Keep, Replace, Clear }
+
+/// <summary>The current stored row, as the validator needs it (null on create).</summary>
+public sealed record CurrentConfig(string ProviderKind, Guid[] Tenants, bool SecretSet, bool AllowDbFallback, bool MfaRequired);
+
+/// <summary>A validated login_config_write. Values are already normalised (trimmed, lower-case uuids).</summary>
+public sealed record LoginConfigInput(
+    string ProviderKind, string DisplayName, Guid[] Tenants, SecretChange Secret, string? SecretValue,
+    bool AllowDbFallback, bool MfaRequired, string? Reason, IReadOnlyList<string> PresentConfigFields)
+{
+    /// <summary>Never print the secret (records print every member by default).</summary>
+    public override string ToString() => $"LoginConfigInput({ProviderKind}, secret={Secret})";
+}
+
+public sealed record CreateInput(Guid PartnerId, string Name, LoginConfigInput Config);
+
+/// <summary>
+/// §5.2 field validation, ALL errors collected, deterministic order. Never copies a submitted VALUE into an error
+/// (field names only; unknown keys are named only when they look like plain identifiers).
+/// </summary>
+public static class LoginConfigValidator
+{
+    public static readonly string[] WriteKeys = ["provider_kind", "display_name", "entra_allowed_tenant_ids", "secret_ref", "allow_db_fallback", "mfa_required", "reason"];
+    public static readonly string[] ServerFilled = ["oidc_authority", "oidc_client_id"];
+    /// <summary>login_config_field names (audit-events.schema.json) a body may carry; used for attempted_fields.</summary>
+    static readonly string[] AuditFieldNames = ["provider_kind", "display_name", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret_ref", "allow_db_fallback", "mfa_required"];
+    static readonly Regex UuidRe = new(@"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z", RegexOptions.CultureInvariant);
+    static readonly Regex TrimmedRe = new(@"^\S(?:.*\S)?\z", RegexOptions.CultureInvariant);
+    static readonly Regex SafeKeyRe = new(@"^[A-Za-z0-9_.-]{1,64}\z", RegexOptions.CultureInvariant);
+
+    public static bool TryUuid(JsonElement e, out Guid g)
+    {
+        g = default;
+        return e.ValueKind == JsonValueKind.String && e.GetString() is { } s && UuidRe.IsMatch(s) && Guid.TryParse(s, out g);
+    }
+
+    static int Runes(string s) => s.EnumerateRunes().Count();
+
+    /// <summary>Body keys that are login_config_field names (names only), for attempted_fields of a denied event.</summary>
+    public static List<string> AttemptedFields(JsonElement? obj)
+    {
+        if (obj is not { ValueKind: JsonValueKind.Object } o) return [];
+        var keys = o.EnumerateObject().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+        return AuditFieldNames.Where(keys.Contains).ToList();
+    }
+
+    static string KeyName(string prefix, string key) => prefix + (SafeKeyRe.IsMatch(key) ? key : "*");
+
+    public static LoginConfigInput? ValidateWrite(JsonElement o, string prefix, CurrentConfig? current, AdminApiOptions opt, List<FieldError> errs, out Guid[] boundCandidates)
+    {
+        int before = errs.Count;
+        boundCandidates = [];
+        foreach (var p in o.EnumerateObject())
+        {
+            if (WriteKeys.Contains(p.Name)) continue;
+            if (ServerFilled.Contains(p.Name)) errs.Add(new(prefix + p.Name, "field_not_writable"));
+            else errs.Add(new(KeyName(prefix, p.Name), "unknown_field"));
+        }
+        JsonElement? Get(string k) => o.TryGetProperty(k, out var v) ? v : null;
+        void Req(string k) { if (Get(k) is null) errs.Add(new(prefix + k, "required")); }
+        foreach (var k in new[] { "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required" }) Req(k);
+
+        string? kind = null;
+        if (Get("provider_kind") is { } pk)
+        {
+            if (pk.ValueKind != JsonValueKind.String) errs.Add(new(prefix + "provider_kind", "type"));
+            else if (pk.GetString() is "database" or "entra") kind = pk.GetString();
+            else errs.Add(new(prefix + "provider_kind", "provider_kind_invalid"));
+        }
+
+        string? display = null;
+        if (Get("display_name") is { } dn)
+        {
+            if (dn.ValueKind != JsonValueKind.String) errs.Add(new(prefix + "display_name", "type"));
+            else
+            {
+                var t = dn.GetString()!.Trim();
+                if (Runes(t) is < 1 or > 100 || !TrimmedRe.IsMatch(t)) errs.Add(new(prefix + "display_name", "display_name_invalid"));
+                else display = t;
+            }
+        }
+
+        var tenants = new List<Guid>();
+        bool tenantsOk = false;
+        if (Get("entra_allowed_tenant_ids") is { } ta)
+        {
+            if (ta.ValueKind != JsonValueKind.Array) errs.Add(new(prefix + "entra_allowed_tenant_ids", "type"));
+            else
+            {
+                tenantsOk = true;
+                int i = 0;
+                foreach (var e in ta.EnumerateArray())
+                {
+                    var f = $"{prefix}entra_allowed_tenant_ids/{i++}";
+                    if (e.ValueKind != JsonValueKind.String) { errs.Add(new(f, "type")); tenantsOk = false; }
+                    else if (!TryUuid(e, out var g) || g == Guid.Empty) { errs.Add(new(f, "tenant_id_format")); tenantsOk = false; }
+                    else tenants.Add(g);
+                }
+                if (kind == "entra" && i != 1) { errs.Add(new(prefix + "entra_allowed_tenant_ids", "tenant_count")); tenantsOk = false; }
+                if (kind == "database" && i != 0) { errs.Add(new(prefix + "entra_allowed_tenant_ids", "field_not_allowed")); tenantsOk = false; }
+            }
+        }
+
+        var secret = SecretChange.Keep; string? secretValue = null; bool secretShapeOk = true;
+        if (Get("secret_ref") is { } sr)
+        {
+            if (sr.ValueKind == JsonValueKind.Null) secret = SecretChange.Clear;
+            else if (sr.ValueKind != JsonValueKind.String) { errs.Add(new(prefix + "secret_ref", "type")); secretShapeOk = false; }
+            else if (!opt.SecretRefAllowed(sr.GetString()!)) { errs.Add(new(prefix + "secret_ref", "secret_ref_format")); secretShapeOk = false; }
+            else { secret = SecretChange.Replace; secretValue = sr.GetString(); }
+        }
+        if (secretShapeOk && kind == "entra")
+        {
+            if (secret == SecretChange.Clear) errs.Add(new(prefix + "secret_ref", "field_not_allowed"));
+            else if (secret == SecretChange.Keep && !(current?.SecretSet ?? false)) errs.Add(new(prefix + "secret_ref", "secret_ref_required"));
+        }
+        else if (secretShapeOk && kind == "database")
+        {
+            if (secret == SecretChange.Replace) errs.Add(new(prefix + "secret_ref", "field_not_allowed"));
+            else if (secret == SecretChange.Keep && (current?.SecretSet ?? false)) errs.Add(new(prefix + "secret_ref", "field_not_allowed"));
+        }
+
+        bool? fallback = null, mfa = null;
+        if (Get("allow_db_fallback") is { } fb)
+        {
+            if (fb.ValueKind is JsonValueKind.True or JsonValueKind.False) fallback = fb.GetBoolean();
+            else errs.Add(new(prefix + "allow_db_fallback", "type"));
+            if (kind == "database" && fallback == true) errs.Add(new(prefix + "allow_db_fallback", "fallback_not_applicable"));
+        }
+        if (Get("mfa_required") is { } mr)
+        {
+            if (mr.ValueKind is JsonValueKind.True or JsonValueKind.False) mfa = mr.GetBoolean();
+            else errs.Add(new(prefix + "mfa_required", "type"));
+        }
+
+        string? reason = null;
+        if (Get("reason") is { } rs && rs.ValueKind != JsonValueKind.Null)
+        {
+            if (rs.ValueKind != JsonValueKind.String) errs.Add(new(prefix + "reason", "type"));
+            else
+            {
+                var raw = rs.GetString()!;
+                var t = raw.Trim();
+                if (Runes(raw) > 2000 || (t.Length > 0 && Runes(t) is < 10 or > 500)) errs.Add(new(prefix + "reason", "reason_length"));
+                else if (t.Length > 0) reason = t;
+            }
+        }
+
+        // tenant_bound_elsewhere needs the DB; the caller checks these (well-formed, exactly one, entra) alongside the rest.
+        if (kind == "entra" && tenantsOk) boundCandidates = tenants.ToArray();
+        if (errs.Count > before) return null;
+        var present = AttemptedFields(o);
+        return new LoginConfigInput(kind!, display!, tenants.ToArray(), secret, secretValue, fallback!.Value, mfa!.Value, reason, present);
+    }
+
+    public static CreateInput? ValidateCreate(JsonElement o, AdminApiOptions opt, List<FieldError> errs, out Guid[] boundCandidates)
+    {
+        boundCandidates = [];
+        int before = errs.Count;
+        foreach (var p in o.EnumerateObject())
+            if (p.Name is not ("partner_id" or "name" or "login_config")) errs.Add(new(KeyName("", p.Name), "unknown_field"));
+        Guid partner = default; string? name = null; LoginConfigInput? cfg = null;
+        if (!o.TryGetProperty("partner_id", out var pid)) errs.Add(new("partner_id", "required"));
+        else if (pid.ValueKind != JsonValueKind.String) errs.Add(new("partner_id", "type"));
+        else if (!TryUuid(pid, out partner) || partner == Guid.Empty) errs.Add(new("partner_id", "partner_id_format"));
+        if (!o.TryGetProperty("name", out var nm)) errs.Add(new("name", "required"));
+        else if (nm.ValueKind != JsonValueKind.String) errs.Add(new("name", "type"));
+        else
+        {
+            var t = nm.GetString()!.Trim();
+            if (Runes(t) is < 1 or > 200 || !TrimmedRe.IsMatch(t)) errs.Add(new("name", "name_invalid"));
+            else name = t;
+        }
+        if (!o.TryGetProperty("login_config", out var lc)) errs.Add(new("login_config", "required"));
+        else if (lc.ValueKind != JsonValueKind.Object) errs.Add(new("login_config", "type"));
+        else cfg = ValidateWrite(lc, "login_config/", null, opt, errs, out boundCandidates);
+        return errs.Count > before || cfg is null ? null : new CreateInput(partner, name!, cfg);
+    }
+
+    /// <summary>Partner id from a create body when it is well formed (scope check, §4 step 3-4 on create).</summary>
+    public static Guid? BodyPartner(JsonElement? o) =>
+        o is { ValueKind: JsonValueKind.Object } b && b.TryGetProperty("partner_id", out var p) && TryUuid(p, out var g) && g != Guid.Empty ? g : null;
+
+    /// <summary>Rejects duplicate keys anywhere (a duplicate could make two readers see two different values).</summary>
+    public static bool HasDuplicateKeys(JsonElement e)
+    {
+        switch (e.ValueKind)
+        {
+            case JsonValueKind.Object:
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var p in e.EnumerateObject()) { if (!seen.Add(p.Name) || HasDuplicateKeys(p.Value)) return true; }
+                return false;
+            case JsonValueKind.Array:
+                foreach (var x in e.EnumerateArray()) if (HasDuplicateKeys(x)) return true;
+                return false;
+            default: return false;
+        }
+    }
+}
