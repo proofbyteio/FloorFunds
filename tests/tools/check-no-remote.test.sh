@@ -34,4 +34,8 @@ d=$(mk); git -C "$d" config core.hooksPath /tmp; t CNR17-hookspath fail "$d"
 d=$(mk); rm "$d/.git/hooks/pre-push"; t CNR18-no-hook fail "$d"
 d=$(mk); printf '#!/bin/sh\nexit 0\n' > "$d/.git/hooks/pre-push"; t CNR19-hook-allows-all fail "$d"
 d=$(mk); chmod -x "$d/.git/hooks/pre-push"; t CNR20-hook-not-exec fail "$d"
+wt() { local d w; d=$(mk); git -C "$d" -c user.name=t -c user.email=t@local.invalid commit -q --allow-empty -m init
+  w="$d-wt"; git -C "$d" worktree add -q --detach "$w"; echo "$d $w"; }
+read d w < <(wt); t CNR21-linked-worktree pass "$w"; rm -rf "$d"
+read d w < <(wt); rm "$d/.git/hooks/pre-push"; t CNR22-linked-worktree-no-hook fail "$w"; rm -rf "$d"
 echo "check-no-remote tests: $pass pass, $failc fail"; [[ $failc -eq 0 ]]

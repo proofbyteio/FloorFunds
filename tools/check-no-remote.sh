@@ -15,7 +15,8 @@ repo="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 bad=0
 fail() { echo "FAIL: $*"; bad=1; }
 git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || { echo "FAIL: '$repo' is not a git repo"; exit 2; }
-gitdir="$(cd "$repo" && cd "$(git rev-parse --git-dir)" && pwd)"
+# hooks live in the COMMON git dir (a linked worktree has its own --git-dir without hooks/); git runs hooks from there too.
+gitdir="$(cd "$repo" && cd "$(git rev-parse --git-common-dir)" && pwd)"
 g() { git -C "$repo" "$@"; }
 
 remotes="$(g remote)"
