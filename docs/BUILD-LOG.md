@@ -1150,3 +1150,70 @@ Review done ~09:00 PT, Nov 4 2026. Review md5 382cfd6c. **Status: NO-GO on 81aff
   - TL fix: send SCRAM verifiers instead of cleartext, keep the exception handler, and add a leak test.
 - **KF-B:** README fix.
 - **KF-C:** add the refusal.
+
+## 2026-11-04 11:05 PT — S2b C1: deployment-level Entra config (SSE2; feat/entra-signin 5f08d0d, 67ff44e, 101fb14)
+
+Sources: TLD 9:50, TLD 10:12, D-51; SSE 06dc8ac (`Auth.Data/EntraDeployment.cs`, `Auth.Data/Readers.cs`); TL F1/F3/F5 (10:59 PT).
+Status: 5f08d0d second-reviewed by SSE (GO) and accepted by TL; 67ff44e accepted by TL; 101fb14 (F1) new. Nothing pushed.
+
+- **5f08d0d (C1).** Tests, fixtures and docs only (`src/Login.Entra/Fixtures`, `tests/Login.EntraTests`). No Login.Entra
+  production code, no Login.Abstractions, no contract/ change.
+  - `FixtureDeployment` (Authority, ClientId, SecretRef) on `EntraFixture.Deployment`. On every read the store fills
+    entra rows from it and nulls all three for database rows (the same rule as SSE's reader). Tests can change it via `Mutate`.
+  - `WithoutSecret` and the per-location authority/client/secret parameters of `FixtureConfig.Build` are removed.
+  - Harness: one deployment client id, ref `arn:sse2-fake-test-only:secret:deployment-9q7z`, and one secret generated per
+    run (SSE2-FAKE-TEST-ONLY).
+  - ENT_19, ENT_CFG_01 and ENT_CFG_01b updated with the same intent; CFG_01 now also asserts `why=client_missing` and the fill.
+    New: ENT_CFG_03/03b/03c (a changed secret ref + secret, client id or authority reaches the next request; no cache)
+    and ENT_CFG_04 (no deployment ref → `client_missing` at request time; the resolver is not called).
+  - The 8 xUnit1051 warnings that were already there are fixed.
+- **Config changes apply after a restart.** SSE's reader snapshots `EntraDeployment` at startup; there is no hot-reload.
+- **67ff44e (README).** A future stand-in Entra fixture JSON needs a top-level `"deployment"` object
+  (`authority`, `clientId`, `secretRef`; web JSON defaults). Per-location `oidcAuthority`/`oidcClientId`/`secretRef` are
+  ignored. No such JSON is committed. f76d18a's stand-in uses `FixtureEntraStore` and never constructs
+  `NpgsqlLocationLoginConfigReader`, so no stand-in patch was needed (none written).
+- **101fb14 (F1, Low).** After `Mutate` changes the deployment, ENT_CFG_03 reads loc-db by id and by slug and asserts
+  that `OidcAuthority`, `OidcClientId` and `SecretRef` are all null.
+- **Mutations** (temporary edits, reverted; `git diff -- src/Login.Entra` empty afterwards; filter `*ENT_CFG_0*`, 7 tests):
+  - M1: pin the first SecretRef → CFG_03 fails.
+  - M2: reuse the last good ref → CFG_04 and CFG_01 fail.
+  - M3: drop the null-ref `client_missing` check → CFG_04 and CFG_01 fail.
+  - M4: cache the resolved secret → CFG_03 fails (+01b, 03c, 04).
+  - M5: pin the first ClientId → CFG_03b fails (+03, 03c, 04).
+  - M6: pin the first authority → CFG_03c fails (+01).
+  - M7 (F1): database rows take the deployment values after `Mutate` (`ProviderKind == Entra || Mutated`) → CFG_03 fails
+    on the new `Assert.Null`. Against 67ff44e's test, CFG_03 survives M7 (passes), so F1 closes a real gap.
+  - The extra failures in brackets come from the mutants' static state leaking between tests in one process.
+- **F3 (process).** `/tmp/s2b-c1/mutations.txt` now records the mutated code (git diff) for every mutation, not only the
+  result. M1–M6 are backfilled, regenerated from the unchanged `mutate.py`. `run-mut.sh` writes the diff automatically.
+- **F5 backlog: V11-FIXTURE-SPLIT.** Move `src/Login.Entra/Fixtures/` (FixtureEntraStore, FixtureConfig,
+  FixtureDeployment, the test resolver) out of the production Login.Entra DLL into a test-only or stand-in-only
+  assembly, so production builds do not ship fixture types. Not done; this is a backlog item for v1.1.
+- **HO17 / SI1 setup fix (finding, Low, mine).**
+  - The SI1 runner (`/tmp/sse2-ent-ho/si1-run.sh`) is not committed. It never set `LOGIN_STANDIN_LOG`.
+  - My 08:19–08:29 runs (f76d18a plain, +2ae2f1d, +e856c8c: 553/469/0/84) inherited, from my shell (the
+    `/tmp/sse2-work/env*.sh` pattern), `LOGIN_STANDIN_LOG=/tmp/sse2-ent-ho/si1/standin.log`. That file was frozen at 08:06
+    (335436 chars), so HO17 "passed" against a stale log and proved nothing for those runs.
+  - The 10:48 C1 run started from a clean shell, so HO17 skipped (553/468/0/85).
+  - Fix (in /tmp; md5 0479ead6): `LOGIN_STANDIN_LOG=$D/standin-$TAG.log` (this run's stand-in stdout). The runner aborts
+    unless that file is fd 1 of the stand-in pid. The port base is now a parameter.
+- **Results.**
+  - Build: locked restore; Release with 0 warnings and 0 errors.
+  - ENT at 101fb14: **82/0/0**. ENT at 67ff44e: 82/0/0.
+  - Overlay f76d18a + 5f08d0d: ENT 82/0/0, and the stand-in builds.
+  - SI1: f76d18a stand-in + 5f08d0d, tests d974ae6, ports 18140–18142, results `/tmp/sse2-ent-ho/si1/results-c1b`:
+    **553/469/0/84**. HO17 passes against the live log (`standin-c1b.log`, 149222 chars; all 9 values absent).
+    The pending set is identical to the baseline. 101fb14/67ff44e change only `tests/Login.EntraTests`, which SI1 does not run.
+  - check-no-remote: PASS.
+- **The 84 pending tests, all by design; 0 are caused by setup:**
+  - 81 `PENDING` tests are waiting on open rulings or contract text: CR-05 ×54, CR-12 ×5, CR-13 ×4, CR-25 ×3,
+    OQ-SSE2-11/12/15/17/19-20/22/42/44/57 and OQ-40 ×15.
+  - SK14 is a static `[Fact(Skip=…)]` (its reason text predates the stand-in).
+  - SEC63 is DEFERRED to S2 (it needs the real service).
+  - KIT08 is a self-test that is only meaningful with the target unset.
+  - TOOL08 (no remote on /tmp clones) is an accepted environment-only failure; it did not occur here because SI1 ran in a git worktree.
+- Other notes:
+  - feat/entra-signin's `src/Auth.Data.Checks/Program.cs` still uses the old reader constructor. It is outside my
+    directories, and merging 06dc8ac fixes it.
+  - SSE's Admin.Api.Checks holds 18130/18131 (pid 379898), so I used 18140–18142.
+  - contract/ differs from 06dc8ac in 5 files (reported to TL; not edited).
