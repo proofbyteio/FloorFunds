@@ -1217,3 +1217,71 @@ Status: 5f08d0d second-reviewed by SSE (GO) and accepted by TL; 67ff44e accepted
     directories, and merging 06dc8ac fixes it.
   - SSE's Admin.Api.Checks holds 18130/18131 (pid 379898), so I used 18140–18142.
   - contract/ differs from 06dc8ac in 5 files (reported to TL; not edited).
+
+## SSE2, Wed Nov 4, 11:03–11:15 AM PT: tools/si1-run.sh committed; HO17 correction for earlier SI1 baselines
+
+TL ruling 11:03 PT. Base 49a619c on sse2/tests-docs; worktree /tmp/sse2-td-buildlog (mine). No push, no remote change.
+
+- **tools/si1-run.sh (new).** Derived from my /tmp runner (md5 0479ead6). Usage: `tools/si1-run.sh [-h] TAG [OVERLAY_REF|none]`.
+  - No machine paths and no fixed ports. Settings: `SI1_REPO` (default: this repo), `SI1_STANDIN_REF` (f76d18a),
+    `SI1_TESTS_REF` (HEAD), `SI1_PORT_BASE` (18140; only 18090–18197 accepted; 8080/8081 always refused),
+    `SI1_WORK_DIR` (default `mktemp -d`), `SI1_RESULTS_DIR`, `SI1_STANDIN_LOG`, `SI1_MOCKUPS_DIR`, `DOTNET_ROOT`.
+  - Loopback URLs only (127.0.0.1). No secrets. It writes its own loopback test allowlist and an empty client-key dir.
+    It reads no env files and prints none.
+  - Guards kept: `tools/check-ports.sh free` before the stand-in starts and `mine` after it starts. The run aborts (exit 7)
+    unless `LOGIN_STANDIN_LOG` is fd 1 of the live stand-in pid. An EXIT trap stops the stand-in and removes the worktree.
+    A results dir that is not empty is refused.
+  - shellcheck 0.11.0 (venv under /tmp, not committed): clean.
+- **Verification run with this script.** Command: `SI1_WORK_DIR=/tmp/s2b-c1/si1c SI1_MOCKUPS_DIR=<mockups> tools/si1-run.sh td1 101fb14`.
+  - Inputs: stand-in f76d18a, overlay 101fb14, tests 49a619c (tests/tools/README identical to d974ae6).
+  - Ports 18140–18142 were free per `ss`; 18130/18131 were avoided. Run 11:05–11:10 PT.
+  - **553/469/0/84**, rc=0. The per-check table is identical to results-c1b.
+  - HO17 passes against the live log: `/tmp/s2b-c1/si1c/standin-td1.log`, 189037 chars, token rc 200.
+  - Evidence: results `Login.SecurityTests.xml` md5 c1428dc3f1634e2143cdefd7696f3fdb; stdout `/tmp/s2b-c1/si1c-td1.out`
+    md5 d9a2d32f03c080f2e6206658a448ae89.
+  - Afterwards: the stand-in was stopped, the worktree removed, and the ports free.
+- **CORRECTION: HO17 in SI1 runs before 2026-11-04 11:03 PT.** No runner before then checked that `LOGIN_STANDIN_LOG`
+  was the output of the stand-in under test. Wherever HO17 shows Pass in those runs, the pass is **unproven**. HO17 is
+  unproven in every SI1 baseline and every SI1 GO in this log before this entry, including the 553/469/0/84 runs at
+  08:19–08:29 today and the SI1 GO for 10a1ca4/3feb66c on Nov 2 (including the "secret values absent from standin.log" claim).
+  - Method: I grepped /tmp/sse2-ent-ho, /tmp/sse2-si1rev, /tmp/sse2-fverify, /tmp/sse2-work, /tmp/sse2-si1-8aab98a and
+    /tmp/sse2-si1-9b7efc9-r2 for result XML containing HO17. For each file I compared the HO17 start time and logged char
+    count with the named log's current mtime and size. Script: /tmp/s2b-c1/ho17-scan.py; output: /tmp/s2b-c1/ho17-scan.tsv.
+    Times are PT.
+  - **(a) Proven stale. The log is older than the run and unchanged since, so HO17 passed vacuously.** All three read
+    `/tmp/sse2-ent-ho/si1/standin.log` (mtime 08:06:35, 335436 chars). These are the 553/469/0/84 baselines.
+    - results-plain/Login.SecurityTests.xml 7eb318b811690032c0cbb5c235a9cd38 (08:18); stdout si1-plain.out 62dc090fdee80c41ee8232bafc48c5a9
+    - results-partner/Login.SecurityTests.xml 53522e382639f0aaed9ebb272eeea4f5 (08:20); si1-partner.out a51c827f4427267e7f846128cc0e9b82
+    - results-n2/Login.SecurityTests.xml 808b36de93c7ba8038ec4e3987ea8921 (08:26); si1-n2.out 97b0bd88af3be7f58e081256b81c6114
+  - **(b) Unproven; I can't verify these either way.** HO17 read a file that was still being written after the run (its
+    char count is below the file's final size), which fits a live stand-in. Nothing tied that file to the stand-in under test.
+    - /tmp/sse2-ent-ho/si1/results/Login.SecurityTests.xml dee98ec99c3cc683cec817a5d63605b3 (08:05; standin.log 154525 chars); si1.out 329617bb90a1aa950a7aa7fa712beb4d
+    - /tmp/sse2-si1rev/mine-export1/results 79b6efd04c28fb8809fabe7f70862c6f (08:00), mine-results cc5dec3ee24224fd41aa79f526857f5b (08:02),
+      mine-results2 884a4272d1fdd0fed22844e11d0c841b (08:04), mine-results3 658986aeea50046e49683f3d62ce43f0 (08:15),
+      mine-results4 03a8de4c10606c7013e7b86f9b190a4b (08:32). All read /tmp/sse2-si1rev/mine/standin.log. results2/3/4 each read
+      exactly 50449 chars (the file is now 208437 chars, 08:34). That fits a stand-in restarted per run, but I can't verify it.
+    - /tmp/sse2-work/full-s2b-db441f6 73fcc19c01511a17e4861dba1607ecb9 (07:54) and full-s2b-7ed08dd b3fe717246ea8f90105abf6cdd79576b
+      (07:57; the S2b 553/469/0/84 regression baseline). Both read /tmp/sse2-si1-9b7efc9-r2/standin.log. That dir's pid file is
+      dated 07:56:51, after the db441f6 run started, so the log db441f6 read may belong to an earlier stand-in process.
+    - Nov 2: ho-10a1ca4.xml 101b0dd3a79ebe57dd26a16d0a7beabf (21:59), full-10a1ca4 c0dff845eb66296a9530b2112a72443b (22:03),
+      full2-10a1ca4 ecfdf5ef6fd8618ca849df4c79b66207 (22:12; GO 547/460/0/87), full-3feb66c f2d826a9b6ed016616a105fe2dd69670 (22:16),
+      full2-3feb66c d467c86ca80ae1cc0957474d2f5f7be7 (22:24; GO 552/468/0/84), full-9b7efc9 6791f9ee6ce6eb483465df6e9388e6e0 (22:39),
+      full2-9b7efc9 a9ee78a036b6f4a529153cceef1a2000 (22:46; baseline 552/468/0/84). Within each stand-in dir the counts grow
+      from run to run, which fits a live log, but this is unproven.
+    - /tmp/sse2-work/sec-10a1ca4-pre.xml a7496566f0d9a3b9b5049c781a065c56 (Nov 2 21:52). Pass, but that test version logged no
+      path, so which file it read can't be verified.
+  - **(c) Not affected (not a pass).**
+    - HO17 Fail, a real finding later fixed at 10a1ca4: ho.xml 8a39a9ef9cb1aaa09cb12ed6daaf63f4 (Nov 2 21:30),
+      sec-8aab98a.xml e4a080a165345faf3f8d34d60c5279fb (21:34), full-8aab98a/Login.SecurityTests.xml and
+      /tmp/sse2-work/Login.SecurityTests.xml 80ceab6616e6dfe562c2a0588f087e41 (21:37).
+    - Skip: sec-f630a8d.xml 802d00f115b932e15a01c5d624e5b172 (Nov 2 21:38; pending OQ-SSE2-53) and
+      /tmp/sse2-ent-ho/si1/results-c1 9e3844a6e00b6241c967862ed9abafc0 (10:50 today; `LOGIN_STANDIN_LOG` unset).
+    - results-c1b 0a7abe15f95a4e3bb77fc1b190a189ca (10:56) ran before 11:03, but under the fd-1 guard (/tmp runner 0479ead6).
+      Its HO17 read the live `standin-c1b.log`.
+  - Searched, no HO17 result found: /tmp/sse2-fverify (reviews and source copies only), /tmp/sse2-si1-8aab98a and
+    /tmp/sse2-si1-9b7efc9-r2 (stand-in dirs, no result XML). SSE's own evidence (for example /tmp/sse-d0) was not examined;
+    those are SSE's trees.
+  - **Runs from before a stand-in log existed would have skipped, not passed.** Since 21449f9, HO17 does
+    `if (log is null || !File.Exists(log)) Assert.Skip("PENDING: …")`. An unset variable or a missing file gives a skip
+    (results-c1 is that case). A vacuous pass needs an older file that already exists. That is what happened in (a).
+- check-no-remote: see the commit report.
