@@ -1,4 +1,5 @@
 #Requires -Version 7.0
+
 <#
 .SYNOPSIS
   FloorFunds dev DB setup (PowerShell port of db/setup.sh).

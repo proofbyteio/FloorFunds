@@ -361,5 +361,11 @@ done
 cleanup
 ok "cleanup: no ${P}* DB or role left" "$([[ $(q "SELECT (SELECT count(*) FROM pg_database WHERE datname LIKE '$PL%') + (SELECT count(*) FROM pg_roles WHERE rolname LIKE '$PL%')") == 0 ]] && echo 1 || echo 0)"
 rm -rf "$T"
+# I-6 (TLD 9:5x): Get-Help must render the comment-based help, incl. the I-3 -Password warning
+gh=$(pwsh -NoProfile -NonInteractive -c "Get-Help '$DBDIR/setup.ps1' -Full" 2>&1)
+ok "I-6 [ps1] Get-Help shows SYNOPSIS" "$([[ $gh == *SYNOPSIS* ]] && echo 1 || echo 0)"
+ok "I-6 [ps1] Get-Help shows the I-3 -Password argv warning" "$([[ $gh == *'WARNING (I-3)'* ]] && echo 1 || echo 0)"
+ok "I-6 [ps1] Get-Help shows the examples" "$([[ $gh == *'EXAMPLE 1'* ]] && echo 1 || echo 0)"
+
 echo; echo "$pass passed, $fail failed"
 [[ $fail == 0 ]]
