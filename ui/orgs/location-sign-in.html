@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- S2a P4 stand-in page: screen 9 (location sign-in method). Ported from UX mockup 09-location-method.html md5
+     90d2a8fa0052d5496f8fc4c274bc779c (D-103; snapshot /tmp/sse-llc1/09-location-method.90d2a8fa.snapshot.html), theme.css aaae47e3.
+     orgs.css: the D-102 Request ID line only (theme.css stays a verbatim copy).
+     Self-contained, API-only (spec §11). Chrome is app-agnostic (OQ-S2a-1 open): no product name, no app rail, no sign-out.
+     The host mounts this folder at /ui/orgs/ and serves this file for /orgs/{partner_id}/locations/{location_id}/sign-in and
+     /orgs/{partner_id}/locations/new. Host-set attributes on <body>: data-api-base (default /api), data-admin-type
+     (super|partner; only picks the create layout, the API decides every permission). No inline script or style. -->
+<title>Location sign-in method</title>
+<link rel="stylesheet" href="/ui/orgs/theme.css">
+<link rel="stylesheet" href="/ui/orgs/orgs.css">
+<script type="module" src="/ui/orgs/js/llc-page.mjs"></script>
+</head>
+<body data-api-base="/api" data-admin-type="" data-testid="screen-location-sign-in" data-state="loading">
+<a class="skip-link" href="#main">Skip to content</a>
+<div>
+<div>
+<header class="topbar">
+<nav class="breadcrumb" aria-label="Breadcrumb"><ol>
+<li>Organisations</li>
+<li><span class="mono" id="bc-partner" data-testid="bc-partner"></span></li>
+<li id="bc-location" hidden></li>
+<li aria-current="page" id="bc-page">Sign-in method</li>
+</ol></nav>
+<span class="topbar__spacer"></span>
+<span class="chip chip--nowrap" id="role-chip" data-testid="role-chip" hidden><span aria-hidden="true">🛡</span> <span id="role-chip-text"></span></span>
+</header>
+<main id="main" class="main"><div class="main__inner">
+
+<h1 id="title" data-testid="title">Sign-in method</h1>
+
+<div class="banner banner--info" role="status" id="banner-loading" data-testid="banner-loading"><span class="banner__icon" aria-hidden="true">i</span><div><span class="banner__title">Loading…</span></div></div>
+<div class="banner banner--info" role="status" id="banner-viewonly" data-testid="banner-viewonly" hidden><span class="banner__icon" aria-hidden="true">i</span><div><span class="banner__title">You can view this setting but not change it.</span> Ask a Super Admin or your Partner Admin.</div></div>
+<div class="banner banner--success" role="status" id="banner-saved" data-testid="banner-saved" hidden tabindex="-1"><span class="banner__icon" aria-hidden="true">✓</span><div><span class="banner__title">Saved. The new sign-in method is on.</span> People already signed in at <span id="saved-loc"></span> stay signed in until their session ends.</div></div>
+<div class="banner banner--error" role="alert" id="banner-conflict" data-testid="error-area" data-error="concurrency_conflict" hidden tabindex="-1"><span class="banner__icon" aria-hidden="true">⚠</span><div><span class="banner__title">Someone else changed this setting while you were editing.</span> Your changes were not saved. <a href="" id="conflict-reload" data-testid="conflict-reload">Reload to see the latest version</a>, then make your change again.<span class="request-id" data-request-id data-testid="request-id" hidden></span></div></div>
+<div class="banner banner--error" role="alert" id="banner-tenant" data-testid="error-area" data-error="tenant_bound_elsewhere" hidden tabindex="-1"><span class="banner__icon" aria-hidden="true">⚠</span><div><span class="banner__title">This tenant ID can't be used.</span> <a href="#tenant">It is already linked to another partner</a>.<span class="request-id" data-request-id data-testid="request-id" hidden></span></div></div>
+<div class="banner banner--error" role="alert" id="banner-error" data-testid="error-area" data-error="" hidden tabindex="-1"><span class="banner__icon" aria-hidden="true">⚠</span><div><span class="banner__title" id="banner-error-title"></span> <span id="banner-error-text"></span><span class="request-id" data-request-id data-testid="request-id" hidden></span></div></div>
+<div class="banner banner--warning" role="status" id="banner-downgrade" data-testid="banner-downgrade" hidden><span class="banner__icon" aria-hidden="true">!</span><div><span class="banner__title">This lowers sign-in security.</span> Turning off the second step or allowing backup sign-in needs a Super Admin and a written reason.</div></div>
+
+<section class="card" aria-labelledby="cur-h" id="card-current" data-testid="card-current" hidden>
+<h2 id="cur-h"><span id="cur-h-text">Current setting</span></h2>
+<dl class="kv-list">
+<dt>Sign-in method</dt><dd id="cur-method" data-testid="cur-method"></dd>
+<dt>Second step required</dt><dd id="cur-mfa" data-testid="cur-mfa"></dd>
+<dt>Backup sign-in</dt><dd id="cur-fallback" data-testid="cur-fallback"></dd>
+<dt>Last changed</dt><dd id="cur-changed" data-testid="cur-changed"></dd>
+</dl>
+<p class="action-row" id="row-change" hidden><button class="button button--primary" type="button" id="btn-change" data-testid="btn-change">Change sign-in method</button></p>
+</section>
+
+<section class="card" aria-labelledby="conn-h" id="card-connection" data-testid="card-connection" hidden>
+<h2 id="conn-h">Microsoft connection (set by the server)</h2>
+<dl class="kv-list">
+<dt>Microsoft sign-in address</dt><dd class="mono" id="conn-authority" data-testid="conn-authority"></dd>
+<dt>App registration</dt><dd class="mono" id="conn-client" data-testid="conn-client"></dd>
+<dt>Microsoft app connection</dt><dd id="conn-secret" data-testid="conn-secret"></dd>
+</dl>
+</section>
+
+<form novalidate class="card" id="form" data-testid="form" hidden>
+<div class="field" id="f-lname" hidden><label class="field__label" for="lname">Location name<span class="field__required" aria-hidden="true">*</span><span class="visually-hidden"> (required)</span></label><div class="field__hint" id="lname-hint">Shown to admins in the location list.</div><input class="field__input" id="lname" name="lname" type="text" aria-describedby="lname-hint" autocomplete="off"><div class="field__error" id="lname-err" hidden></div></div>
+
+<fieldset class="choice-group" aria-describedby="m-hint">
+<legend>Sign-in method<span class="field__required" aria-hidden="true">*</span><span class="visually-hidden"> (required)</span></legend>
+<div class="field__hint" id="m-hint">How people at this location sign in.</div>
+<div class="choice"><input type="radio" name="method" id="m-db" value="database"><label for="m-db" class="choice__text">Username and password + one-time code</label></div>
+<div class="choice"><input type="radio" name="method" id="m-entra" value="entra"><label for="m-entra" class="choice__text">Microsoft (Entra ID)</label></div>
+</fieldset>
+<div class="field"><label class="field__label" for="dname">Name shown on the sign-in page<span class="field__required" aria-hidden="true">*</span><span class="visually-hidden"> (required)</span></label><div class="field__hint" id="dname-hint">People see this after the link and network checks pass.</div><input class="field__input" id="dname" name="dname" type="text" aria-describedby="dname-hint" autocomplete="off"><div class="field__error" id="dname-err" hidden></div></div>
+<div class="field" id="f-tenant" hidden><label class="field__label" for="tenant">Microsoft tenant ID<span class="field__required" aria-hidden="true">*</span><span class="visually-hidden"> (required)</span></label><div class="field__hint" id="tenant-hint">The casino's Microsoft directory ID. Ask their IT team.</div><input class="field__input" id="tenant" name="tenant" type="text" aria-describedby="tenant-hint" autocomplete="off" spellcheck="false"><div class="field__error" id="tenant-err" hidden></div></div>
+
+<div class="choice" id="c-mfa"><input type="checkbox" id="mfa" aria-describedby="mfa-hint"><label for="mfa" class="choice__text">Require a second step (MFA)<span class="field__hint" id="mfa-hint"></span></label></div>
+<div class="choice" id="c-fallback"><input type="checkbox" id="fallback" aria-describedby="fb-hint"><label for="fallback" class="choice__text">Allow backup sign-in with username and password if Microsoft is down<span class="field__hint" id="fb-hint"></span></label></div>
+<div class="field__error" id="fallback-err" hidden></div>
+
+<div class="field" id="f-reason" hidden><label class="field__label" for="reason">Reason for lowering security<span class="field__required" aria-hidden="true">*</span><span class="visually-hidden"> (required)</span></label><div class="field__hint" id="reason-hint">Saved in the audit log.</div><textarea class="field__input" id="reason" name="reason" rows="3" aria-describedby="reason-hint"></textarea><div class="field__error" id="reason-err" hidden></div></div>
+
+<p class="action-row">
+<button class="button button--primary" type="submit" id="btn-save" data-testid="btn-save">Save</button>
+<button class="button button--secondary" type="button" id="btn-cancel" data-testid="btn-cancel">Cancel</button>
+</p>
+</form>
+
+<section class="card" aria-labelledby="aud-h" id="card-history" data-testid="card-history" hidden>
+<h2 id="aud-h">Change history</h2>
+<table class="data-table">
+<thead><tr><th scope="col">When (PT)</th><th scope="col">Event</th><th scope="col">Who</th><th scope="col">Details</th></tr></thead>
+<tbody id="history-rows"></tbody>
+</table>
+</section>
+</div></main>
+</div>
+</div>
+</body>
+</html>
