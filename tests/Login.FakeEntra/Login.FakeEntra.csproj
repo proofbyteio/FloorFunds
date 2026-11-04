@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <!-- TEST-ONLY fake Entra issuer (SSE2, S2b). Port 18093. No packages. Keys generated under /tmp, never committed. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode Condition="'$(EntraUnlock)' != 'true'">true</RestoreLockedMode>
+  </PropertyGroup>
+</Project>

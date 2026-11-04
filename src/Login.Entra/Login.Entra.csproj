@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- S2b Entra sign-in (SSE2). Self-contained: no reference to Login.StandIn (TLD-S2B-04), so it moves to R1 unchanged.
+       Exactly two new packages (TLD-S2B-02); IdentityModel graph pinned to 8.19.2. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Login.Entra</RootNamespace>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode Condition="'$(EntraUnlock)' != 'true'">true</RestoreLockedMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="[10.0.14]" />
+    <PackageReference Include="Microsoft.IdentityModel.Validators" Version="[8.19.2]" />
+  </ItemGroup>
+</Project>
