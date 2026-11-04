@@ -36,7 +36,8 @@ Check that it works: `psql --version` should show 17.x.
 ## 2. Create the roles and database, apply the migrations (one script)
 
 `db/setup.sh` (macOS / Linux) and `db/setup.ps1` (Windows, PowerShell 7) do the
-same four steps. Both are safe to run again.
+same four steps. A second run on the same names is refused unless you add
+`--force` / `-Force` (see "What the kit will and will not touch" below).
 
 1. **Owner role + database** (as a Postgres superuser): a login role (default
    `floorfunds_dev`) and a database it owns. CONNECT is revoked from PUBLIC.
@@ -67,14 +68,32 @@ Options:
 - `--admin-host H`: where the superuser psql connects. The default is the local socket.
 - `--superuser-cmd "CMD"`: the command that runs psql as a superuser. The default is `sudo -u postgres psql`.
 - `--no-migrate`, `--migrations FILE` (default `db/migrations.sql`), `--seed`.
-- `--drop`: drops and recreates **only** the named database (see step 7).
+- `--force`: allowed only on objects the kit itself created. Re-sets the three role passwords and re-applies the migrations (and the seed with `--seed`).
+- `--drop`: needs `--force`. Drops and recreates **only** the named database, and only if the kit created it and `--role` owns it (see step 7).
+
+**What the kit will and will not touch** (both scripts)
+- Every database and role the kit creates gets the comment `floorfunds-kit` (`COMMENT ON DATABASE/ROLE ... IS 'floorfunds-kit'`). That marker is how the kit recognises its own objects.
+- Before any SQL that changes anything, a read-only preflight (`db/kit/preflight.sql`) checks the names. The script stops with exit code **5** and a `Refused: ...` message, changing nothing, if:
+  - `--db` is `postgres`, `template0`, `template1` or any template database;
+  - a role name is `postgres` or starts with `pg_`;
+  - the owner role or an app role is a superuser (even if it carries the marker);
+  - the owner role, an app role or the database already exists **without** the marker (someone else's object);
+  - the `--role` role owns any database other than `--db`;
+  - `--db` exists but is owned by someone other than `--role`.
+
+  `--force` / `-Force` never overrides these.
+- If the kit's own objects already exist, a run without `--force` stops with exit code 5 and changes nothing.
+- The kit never runs `ALTER ROLE` on a role it did not create and never changes a database's owner. `db/kit/role.sql` and `db/kit/database.sql` re-check the marker in the same statement they act in, so an object that changes between the preflight and the change is still refused.
+- A password containing a newline or carriage return is refused (exit code 2) before anything runs.
+- Exit codes: 0 done; 2 bad arguments or password; 3 psql not found; 4 migrations or seed failed; 5 refused, or a kit guard stopped a change.
+- Tests: `db/tests/k1-kit-tests.sh` (engineers' box: needs `sudo -u postgres` and pwsh). It runs every refusal against both scripts, first with a stub psql that touches no database (including `postgres`, `template0/1`, `ff_sse`, `ff_sse2` with `--force --drop`), then live on scratch `ff_kit_k1*` objects that it creates and drops.
 
 **Windows**: `db/setup.ps1` (needs PowerShell 7, and psql on PATH, e.g. `C:\Program Files\PostgreSQL\17\bin`).
 ```
 ./db/setup.ps1                                   # floorfunds_dev; prompts for the passwords
-./db/setup.ps1 -Db floorfunds_dev -Role floorfunds_dev -Drop -Seed
+./db/setup.ps1 -Db floorfunds_dev -Role floorfunds_dev -Force -Drop -Seed   # rebuild the kit's own DB
 ```
-- Same options as setup.sh: `-Db`, `-Role`, `-Password`, `-AdminApiPassword`, `-LoginPassword` (SecureStrings; otherwise env `FF_DB_PASSWORD`, `FF_ADMIN_API_PASSWORD`, `FF_LOGIN_PASSWORD`; otherwise hidden prompts), `-Host`, `-Port`, `-AdminHost`, `-AdminUser`, `-Drop`, `-NoMigrate`, `-Migrations`, `-Seed`.
+- Same options as setup.sh: `-Db`, `-Role`, `-Password`, `-AdminApiPassword`, `-LoginPassword` (SecureStrings; otherwise env `FF_DB_PASSWORD`, `FF_ADMIN_API_PASSWORD`, `FF_LOGIN_PASSWORD`; otherwise hidden prompts), `-Host`, `-Port`, `-AdminHost`, `-AdminUser`, `-Force`, `-Drop`, `-NoMigrate`, `-Migrations`, `-Seed`.
 - The admin connection defaults to `psql -U postgres -h localhost`. The postgres password is read from `PGPASSWORD` if it is set; otherwise you are prompted. Use `-AdminHost ''` to connect through the local socket instead (Linux/macOS).
 - **Tested only with pwsh 7.6.9 on Linux**, installed from packages.microsoft.com (debian/13 trixie, prod) per TL's OK, run as the `postgres` OS user with `-AdminHost ''`. **Untested on Windows**: the Windows admin login over TCP with the postgres password, finding psql on PATH, and the EDB install directory.
 
@@ -141,7 +160,7 @@ no real data. Never load it into a database with real data.
 
 **Setup**: step 2, with `--seed` (`-Seed`) if you will run the checks.
 
-**Run the DB checks** (161 checks: schema, roles, grants, RLS, constraints, concurrency, readers). They write test rows
+**Run the DB checks** (162 checks: schema, roles, grants, RLS, constraints, concurrency, readers). They write test rows
 and change constraints inside rolled-back transactions, so use a **throwaway** database (e.g. `--db ff_kit_test`),
 never one with real data. Name it `ff_kit_<something>`: the checks take the target from `AUTH_CHECKS_DB`,
 refuse any name other than `ff_kit_*` (or the engineers' `ff_sse` / `ff_sse2`), and refuse if a connection string points elsewhere.
@@ -153,11 +172,14 @@ export LOGIN_CONNECTION_STRING='Host=127.0.0.1;Port=5432;Database=ff_kit_test;Us
 cd src
 AUTH_CHECKS_DB=ff_kit_test dotnet run --project Auth.Data.Checks -- Login.StandIn/fixtures.json
 ```
-Expected last line: `161 passed, 0 failed`. Other checks (no database needed), from `src/`:
+Expected last line: `162 passed, 0 failed`. The checks delete the rows they add, so they can be run again on
+the same database. They first check that the database is in the state the seed leaves it in; if it is not
+(for example, leftover rows from an earlier interrupted run), they stop with exit code 3 and change nothing.
+Rebuild it with `--force --drop --seed`. Other checks (no database needed), from `src/`:
 ```
 dotnet run --project Login.Abstractions.Checks        # expect: 52 passed, 0 failed
 ```
-Then drop the throwaway database (as a superuser): `DROP DATABASE ff_kit_test WITH (FORCE);` and, if you like,
+Then drop the throwaway database (as a superuser; the kit has no "delete" command): `DROP DATABASE ff_kit_test WITH (FORCE);` and, if you like,
 `DROP ROLE ff_kit_test_admin_api, ff_kit_test_login, ff_kit_test;`.
 
 **Run the app**: the admin API (S2a P3) instructions are added with that code.
@@ -166,9 +188,11 @@ The SI1 login stand-in (`src/Login.StandIn`) does not use this database.
 ## 7. Drop and rebuild
 
 ```
-./db/setup.sh --drop          # add --db/--role/--superuser-cmd/--seed as in step 2
+./db/setup.sh --force --drop          # add --db/--role/--superuser-cmd/--seed as in step 2
+./db/setup.ps1 -Force -Drop
 ```
-This drops **only** the named database (using `DROP DATABASE ... WITH (FORCE)`,
+This works only on a database the kit created (it carries the `floorfunds-kit` marker) and that `--role` owns.
+Anything else is refused (exit code 5). It drops **only** the named database (using `DROP DATABASE ... WITH (FORCE)`,
 which disconnects active sessions), recreates it, and re-applies the migrations
 (and the seed with `--seed`). The roles are kept.
 

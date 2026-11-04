@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# FloorFunds dev DB setup (see db/README.md). Idempotent. Never prints a password.
-#   1. owner login role + a database it owns (superuser step)
+# FloorFunds dev DB setup (see db/README.md). Never prints a password. Exit: 0 ok, 2 bad args, 3 psql missing,
+# 4 migrations failed, 5 refused (nothing changed) or a kit SQL guard aborted.
+#   0. read-only preflight (db/kit/preflight.sql) BEFORE any change: refuses postgres/template DBs, superusers,
+#      and any existing role or DB the kit did not create (no 'floorfunds-kit' marker); --force never overrides
+#      that. Re-running on the kit's own (marked) objects needs --force (K1, TL 8:32).
+#   1. owner login role + a database it owns (superuser step; created objects are marked 'floorfunds-kit')
 #   2. the two S2a app roles <db>_admin_api and <db>_login (superuser step; spec §8.2)
 #   3. db/migrations.sql applied AS THE OWNER (idempotent script from the EF runner;
 #      the only way schema/tables are created) — skip with --no-migrate
@@ -20,13 +24,14 @@ HOST=127.0.0.1
 PORT=5432
 ADMIN_HOST=""   # empty = local Unix socket (peer auth for sudo -u postgres)
 DROP=0
+FORCE=0
 SUPERUSER_CMD_DEFAULT="sudo -u postgres psql"
 SUPERUSER_CMD="$SUPERUSER_CMD_DEFAULT"
 
 usage() {
   cat <<USAGE
 Usage: db/setup.sh [--db NAME] [--role NAME] [--password PW] [--host H] [--port P] [--admin-host H]
-                   [--superuser-cmd "CMD"] [--drop] [--no-migrate] [--migrations FILE] [--seed]
+                   [--superuser-cmd "CMD"] [--force] [--drop] [--no-migrate] [--migrations FILE] [--seed]
   Owner password: --password, else env FF_DB_PASSWORD, else prompted (hidden).
   App-role passwords (<db>_admin_api, <db>_login): env FF_ADMIN_API_PASSWORD and
                    FF_LOGIN_PASSWORD, else prompted (hidden).
@@ -34,7 +39,13 @@ Usage: db/setup.sh [--db NAME] [--role NAME] [--password PW] [--host H] [--port 
                    (default: "$SUPERUSER_CMD_DEFAULT"; macOS Homebrew: "psql").
   --host           host written into the connection string (default 127.0.0.1)
   --admin-host     host the superuser psql connects to (default: local socket)
-  --drop           drop and recreate ONLY the named database.
+  --force          proceed when the kit's own (marked) DB/roles already exist: re-set their
+                   passwords and grants. Never acts on objects the kit did not create.
+  --drop           drop and recreate ONLY the named database; needs --force, and only a
+                   kit-marked DB owned by --role is ever dropped.
+  Always refused (even with --force): --db postgres/template0/template1 or any template DB,
+  any superuser role, any existing role or DB without the kit marker, a DB owned by
+  another role, a kit role that owns another DB. Exit 5, before anything is changed.
   --no-migrate     stop after the roles; do not apply db/migrations.sql
   --migrations F   script to apply (default: db/migrations.sql next to this file)
   --seed           also load db/seed/*.sql (TEST-ONLY fake data; never on a real DB)
@@ -51,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     --admin-host) ADMIN_HOST="$2"; shift 2 ;;
     --superuser-cmd) SUPERUSER_CMD="$2"; shift 2 ;;
     --drop) DROP=1; shift ;;
+    --force) FORCE=1; shift ;;
     --no-migrate) MIGRATE=0; shift ;;
     --migrations) MIGRATIONS="$2"; shift 2 ;;
     --seed) SEED=1; shift ;;
@@ -72,6 +84,16 @@ if [[ "$MIGRATE" -eq 1 ]]; then
   command -v psql >/dev/null || { echo "psql not found on PATH (needed to apply migrations as the owner)" >&2; exit 3; }
 fi
 [[ "$SEED" -eq 0 || "$MIGRATE" -eq 1 ]] || { echo "--seed needs the migrations (drop --no-migrate)" >&2; exit 2; }
+[[ "$DROP" -eq 0 || "$FORCE" -eq 1 ]] || { echo "Refused: --drop needs --force (and drops only a kit-marked DB owned by --role). Nothing was changed." >&2; exit 2; }
+KIT="$HERE/kit"
+for f in preflight.sql role.sql database.sql; do [[ -r "$KIT/$f" ]] || { echo "Kit SQL not found: $KIT/$f" >&2; exit 2; }; done
+# K1 hard refusals by name (no SQL at all): --force never overrides these.
+refuse() { echo "Refused: $1. Nothing was changed." >&2; exit 5; }
+case "$DB" in postgres|template0|template1) refuse "--db $DB is a system database" ;; esac
+for r in "$ROLE" "$ADMIN_API_ROLE" "$LOGIN_ROLE"; do
+  [[ "$r" != postgres ]] || refuse "role postgres is the bootstrap superuser"
+  [[ "$r" != pg_* ]] || refuse "role $r: the pg_ prefix is reserved"
+done
 
 ask() { # ask VAR "prompt": hidden prompt if VAR is empty
   local __v="$1"
@@ -80,10 +102,12 @@ ask() { # ask VAR "prompt": hidden prompt if VAR is empty
     [[ -n "$__in" ]] || { echo "Empty password refused" >&2; exit 2; }
     printf -v "$__v" '%s' "$__in"
   fi
+  # K5: a newline/CR would break the psql \set the password travels in.
+  [[ "${!__v}" != *$'\n'* && "${!__v}" != *$'\r'* ]] || { echo "Refused: the password for $3 contains a newline or carriage return. Nothing was changed." >&2; exit 2; }
 }
-ask PASSWORD "Password for role $ROLE"
-ask ADMIN_API_PASSWORD "Password for app role $ADMIN_API_ROLE"
-ask LOGIN_PASSWORD "Password for app role $LOGIN_ROLE"
+ask PASSWORD "Password for role $ROLE" "role $ROLE"
+ask ADMIN_API_PASSWORD "Password for app role $ADMIN_API_ROLE" "app role $ADMIN_API_ROLE"
+ask LOGIN_PASSWORD "Password for app role $LOGIN_ROLE" "app role $LOGIN_ROLE"
 
 # shellcheck disable=SC2206
 PSQL=($SUPERUSER_CMD)
@@ -96,36 +120,36 @@ run_psql() {
     -v db="$DB" -v role="$ROLE" "$@"
 }
 
-# upsert_role ROLE PASSWORD: plain login role (no superuser, no BYPASSRLS, no CREATEDB/CREATEROLE/REPLICATION).
+pw_set() { # psql quoted-variable escaping: ' -> '' and \ -> \\
+  printf '\\set %s %s\n' "$1" "'$(printf '%s' "$2" | sed "s/'/''/g; s/\\\\/\\\\\\\\/g")'"
+}
+
+# 0. K1 preflight: read-only, before anything is changed.
+echo "Preflight (read-only): $DB, $ROLE, $ADMIN_API_ROLE, $LOGIN_ROLE..."
+PRE="$(run_psql -tA -v api_role="$ADMIN_API_ROLE" -v login_role="$LOGIN_ROLE" -f - <"$KIT/preflight.sql")" \
+  || { echo "Preflight failed (see the psql error above). Nothing was changed." >&2; exit 5; }
+if grep -q '^REFUSE ' <<<"$PRE"; then
+  sed -n 's/^REFUSE /Refused: /p' <<<"$PRE" >&2
+  echo "Refused (--force never overrides this). Nothing was changed." >&2; exit 5
+fi
+if grep -q '^EXISTS ' <<<"$PRE" && [[ "$FORCE" -eq 0 ]]; then
+  sed -n 's/^EXISTS /Already exists (created by the kit): /p' <<<"$PRE" >&2
+  echo "Refused: re-run with --force to update the kit's own objects (add --drop to recreate the DB). Nothing was changed." >&2; exit 5
+fi
+
+# upsert_role ROLE PASSWORD: plain login role (no superuser, no BYPASSRLS, no CREATEDB/CREATEROLE/REPLICATION);
+# creates + marks it, or updates it only if it carries the kit marker (db/kit/role.sql).
 upsert_role() {
-  echo "Role $1: create or update..."
-  {
-    printf '\\set r %s\n' "'$1'"
-    printf '\\set pw %s\n' "'$(printf '%s' "$2" | sed "s/'/''/g; s/\\\\/\\\\\\\\/g")'"
-    cat <<'SQL'
-SELECT format('CREATE ROLE %I LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD %L', :'r', :'pw')
-  WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'r') \gexec
-SELECT format('ALTER ROLE %I LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD %L', :'r', :'pw') \gexec
-SQL
-  } | run_psql -f -
+  echo "Role $1: create or update (kit-marked only)..."
+  { printf '\\set r %s\n' "'$1'"; pw_set p "$2"; cat "$KIT/role.sql"; } | run_psql -f - \
+    || { echo "Role $1: kit SQL step aborted (see the psql error above)." >&2; exit 5; }
 }
 upsert_role "$ROLE" "$PASSWORD"
 
-if [[ "$DROP" -eq 1 ]]; then
-  echo "Dropping database $DB (only this database)..."
-  run_psql <<'SQL'
-SELECT format('DROP DATABASE IF EXISTS %I WITH (FORCE)', :'db') \gexec
-SQL
-fi
-
-echo "Database $DB: create if missing..."
-run_psql <<'SQL'
-SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'role')
-  WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db') \gexec
-SELECT format('ALTER DATABASE %I OWNER TO %I', :'db', :'role') \gexec
-SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', :'db') \gexec
-SELECT format('GRANT CONNECT ON DATABASE %I TO %I', :'db', :'role') \gexec
-SQL
+if [[ "$DROP" -eq 1 ]]; then echo "Dropping database $DB (only this database, only if kit-marked)..."; fi
+echo "Database $DB: create if missing (kit-marked only)..."
+run_psql -v drop="$DROP" -f - <"$KIT/database.sql" \
+  || { echo "Database $DB: kit SQL step aborted (see the psql error above)." >&2; exit 5; }
 
 # S2a app roles (spec §8.2). The migration grants CONNECT/USAGE/table rights to them and
 # RAISEs if either is missing or privileged.
