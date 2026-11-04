@@ -541,7 +541,7 @@
       }
     },
     "error_code": {
-      "description": "Top-level error codes; table in the spec \u00a75. No forbidden_scope code: an out-of-scope location answers exactly like a missing one (404 not_found) [TLD 2026-11-04 7:39, OQ-S2a-3].",
+      "description": "Top-level error codes; table in the spec \u00a75. No forbidden_scope code: an out-of-scope location answers exactly like a missing one (404 not_found) [TLD 2026-11-04 7:39, OQ-S2a-3]. payload_too_large = 413, body over 64 KiB by Content-Length or while reading, authorised callers only, nothing written [TLD 2026-11-04 9:28, P3-2].",
       "enum": [
         "unauthenticated",
         "forbidden",
@@ -550,6 +550,7 @@
         "if_match_invalid",
         "concurrency_conflict",
         "malformed_body",
+        "payload_too_large",
         "validation_failed",
         "not_super_admin",
         "reason_required"

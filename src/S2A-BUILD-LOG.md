@@ -172,6 +172,44 @@ Lock files (locked mode): `Auth.Data` `6d686c7ecd199bae7b9a16a4c416315f`; `Auth.
 - Mutation spot-check (event `correlation_id` ≠ request id; client header echoed; error log with another id) → 4, 3 and 1 failing checks; sources restored (md5 unchanged).
 - `rg -i "X-Correlation"` over `src/` and `contract/` (excluding bin/obj): 0 hits in `src/Admin.Api` and in the spec/schema; the only hits are negative tests (`Admin.Api.Checks` sends it and asserts it is never returned; `check_v1_1_s2a.py` asserts the spec has none) and this log.
 
+## P3 rulings applied (TL 9:28 AM PT, "TLD 9:28"; on top of 2e3869d)
+
+- **Input:** SSE2 gave GO on P3 (f986aaf..2e3869d). Review snapshot: `/tmp/sse-llc1/S2A-P3-REVIEW.snapshot.md`, md5 bfaa2efbe4ee6f41cca4447ac36d21ba. It is identical to `/tmp/sse2-fverify/S2A-P3-REVIEW.md` (TL cited bfaa2efb).
+- **P3-2 (413):** `ReadBodyAsync` reads at most 64 KiB + 1 and reports `TooLarge` when `Content-Length` or the bytes read exceed the cap. It never reads to the end of an oversize body.
+  - Order: 401/403 still come first. POST answers 413 right after the permission check (before scope). PUT answers 413 at §4 step 7, after 404/428/`if_match` 400/409 (P3-3: no change).
+  - The 413 response is `{"error":"payload_too_large"}`. The schema `error_code` enum gained this code. Nothing is written: no row and no event.
+- **Unread bodies:** handled by `RequestEnvelope` middleware.
+  - The per-request Kestrel limit is set to null because every API read is bounded; the global 1 MiB limit is kept.
+  - When a body may exist and was not read to EOF, the response carries `Connection: close`. After `next()`, the middleware completes the response, then drains at most 1 MiB within 2 s and swallows read errors. The client therefore receives the status and headers before the close, with no reset.
+  - This applies to any unread body, so 401/403/404/405/409 responses with an unread body also close.
+- **P3-4 (X-Request-ID):** the same middleware runs before routing and sets the header. Every response carries it, including 405 and an unrouted 404.
+  - The value is still a server UUIDv7; client values are ignored. `LoginConfigApi` reads it with `RequestEnvelope.Id(ctx)`, so it stays the audit `correlation_id` and the error-log `request_id`.
+- **Backlog (spec §12):** P3-5 is **V11-AUDITRATE** (rate-limit refused-create events). P3-6 is **V11-TIMING** (refused PUT timing difference). Neither is implemented.
+- **Tests:** `Admin.Api.Checks` 275 → **298**. The new tests use a raw-socket helper.
+  - 413 + `Connection: close` + `X-Request-ID` for: PUT declared 400 KB and 8 MiB; PUT chunked 8 MiB; POST declared 8 MiB; POST chunked 8 MiB and 200 KB; HttpClient chunked 300 KB. Each response is received with no read error.
+  - A trickle bound: the client keeps sending a declared 8 MiB; the server closes in under 4 s and reads less than 1 MiB (observed close at about 2.0 s).
+  - Nothing written: no events, location count, change rows and row_version are unchanged.
+  - Authentication and permission still come first: an unauthenticated chunked 8 MiB request gets 401. An unpermitted PUT declared 8 MiB and an unpermitted POST chunked 8 MiB get 403, each with its `not_admin` event.
+  - Other cases: 409 + close (P3-3); a follow-up GET 200.
+  - 405 (DELETE/PATCH/POST on mapped paths) and unrouted 404 (`/nope`, a nested unknown path, `/`, and an unrouted POST chunked 8 MiB that also closes). All carry distinct UUIDv7 `X-Request-ID` values and write no events.
+- **Other counts:** crosscheck 508 docs (107 valid / 401 invalid), 0 disagreements, 113 responses. `check_v1_1_s2a.py` 246 → **262** (9:28 §11: 413 body valid; spec pins for the 413 row, step 7, middleware, V11-AUDITRATE/V11-TIMING in §12, the review md5). `check_schemas.py` ALL PASS.
+- **Mutations** (one change each, sources restored, md5 verified):
+
+  | Mutation | Failing checks |
+  |---|---|
+  | no 413 on PUT | 3 |
+  | no 413 on POST | 7 |
+  | no close/drain | 10 |
+  | close but no drain | 1 (trickle test only; on loopback the close alone already avoids a reset) |
+  | unbounded drain | 1 (trickle) |
+  | middleware header removed | 26 |
+
+- **Open (interpretations, not guessed further):**
+  - On PUT, steps 3–6 still answer before 413. So an out-of-scope Partner Admin with an oversize body gets 404 and a `forbidden_scope` event with an empty attempted-fields list.
+  - `Connection: close` also applies to non-413 responses that leave a body unread.
+  - A client writing past 1 MiB or 2 s after the response sees its writes fail once it has the response.
+  - No 401/403-vs-413 conflict arose.
+
 ## Decisions (this slice)
 
 - Project names: `Login.Abstractions` (mandated by F9). The data project will be `src/Auth.Data` (matches the `auth` schema; shared by the admin API and the login service, so not `Login.*`).

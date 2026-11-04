@@ -289,5 +289,21 @@ _env = S[AE]["$defs"]["envelope"]; _ce = _env["properties"]["correlation_id"]
 exp("schema 9:20: correlation_id stays an optional string", [] if _ce == {"type": "string"} and "correlation_id" not in _env["required"] else [str(_ce)], False)
 exp("9:20 not_admin create with a correlation_id (UUIDv7) ok", errs(AE, None, m(EX["ev_denied_not_admin_create"], correlation_id="019a4f2e-7c10-7a3b-9c4d-5e6f7a8b9c10")), False)
 
+# ---- 11. TLD 2026-11-04 9:28: SSE2 review P3-2 (413), P3-4 (X-Request-ID middleware), P3-5/P3-6 backlog ----
+exp("9:28 413 body {error: payload_too_large} ok", errs(LLC, ER, {"error": "payload_too_large"}), False)
+exp("9:28 payload_too_large with fields rejected", errs(LLC, ER, {"error": "payload_too_large", "fields": [{"field": "name", "code": "x"}]}), True)
+exp("9:28 unknown code too_large still rejected", errs(LLC, ER, {"error": "too_large"}), True)
+for _pin in ["| 413 | `payload_too_large` | step 7: body over 64 KiB by `Content-Length` or while reading (chunked / unknown length); `Connection: close` [TLD 2026-11-04 9:28, P3-2] | none (nothing written) |",
+             "over 64 KiB → **413 `payload_too_large`**, `Connection: close`, nothing written (no row, no event) [TLD 2026-11-04 9:28, P3-2]",
+             "401/403 never 413 [TLD 2026-11-04 9:04, OQ-P3-8]", "**Oversize and unread bodies [TLD 2026-11-04 9:28, P3-2]:**",
+             "**[TLD 2026-11-04 9:28, P3-4]:** the header is set by middleware before routing", "405 wrong method on a mapped path, unrouted 404",
+             "**V11-AUDITRATE** (backlog, TLD 2026-11-04 9:28, SSE2 review P3-5)", "**V11-TIMING** (backlog, TLD 2026-11-04 9:28, SSE2 review P3-6)",
+             "**P3-3** stale `If-Match` checked before the oversize body (409). **TLD 9:28: no change.**", "md5 bfaa2efbe4ee6f41cca4447ac36d21ba",
+             "[TLD 2026-11-04 9:28] (TLD 9:28)"]:
+    exp("spec pin 9:28: " + _pin[:60], [] if _pin in spec else ["missing"], False)
+exp("spec 9:28: malformed_body row no longer claims the 64 KiB case", ["stale"] if "| 400 `malformed_body`; no event |" in spec else [], False)
+exp("spec 9:28: V11-AUDITRATE / V11-TIMING in §12, not under Still OPEN", [] if all(k in spec.split("## 12.")[1].split("## 13.")[0] for k in ["V11-AUDITRATE", "V11-TIMING"])
+    and not any(k in _open[0] for k in ["P3-5", "P3-6", "AUDITRATE", "TIMING"]) else ["misplaced"], False)
+
 print("v1.1-S2a checks: %d passed, %d failed" % (PASSES[0], len(FAIL)), "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)

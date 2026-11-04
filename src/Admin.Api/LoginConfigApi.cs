@@ -54,15 +54,15 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     /// <summary>
     /// Server-generated UUIDv7 per request, on every response (incl. 401 and 500); a client value is ignored, never echoed
-    /// [TLD 2026-11-04 9:04, OQ-P3-3]. Name as v1 errors.md L67 [TLD 2026-11-04 9:20]. The same value is the audit event's
+    /// [TLD 2026-11-04 9:04, OQ-P3-3]. Name as v1 errors.md L67 [TLD 2026-11-04 9:20]. Set by <see cref="RequestEnvelope"/>
+    /// middleware, so 405 and unrouted 404 carry it too [TLD 2026-11-04 9:28, P3-4]. The same value is the audit event's
     /// correlation_id and is in the 500 error log line.
     /// </summary>
-    public const string RequestIdHeader = "X-Request-ID";
+    public const string RequestIdHeader = RequestEnvelope.Header;
 
     async Task<IResult> Run(HttpContext ctx, Func<Caller, Task<IResult>> f)
     {
-        var requestId = Guid.CreateVersion7().ToString("D");
-        ctx.Response.Headers[RequestIdHeader] = requestId;
+        var requestId = RequestEnvelope.Id(ctx);
         ctx.Response.Headers.CacheControl = "no-store";
         try
         {
@@ -121,25 +121,32 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
     Task DenyAsync(Caller who, string reason, Guid? targetPartner, Guid? location, IEnumerable<string> attempted) =>
         WriteDeniedAsync(AuditOutbox.Denied(Guid.CreateVersion7(), Now(), who.Id, who.RequestId, reason, targetPartner, location, attempted));
 
-    /// <summary>Null = too large (over 64 KiB by Content-Length or while reading). Never lets Kestrel's 1 MiB limit surface as 413.</summary>
-    static async Task<byte[]?> ReadBodyAsync(HttpRequest req)
+    /// <summary>The body as read: <see cref="TooLarge"/> = over 64 KiB by Content-Length (nothing read) or while reading (chunked or
+    /// unknown length: reading stops at the first buffer past the cap) [TLD 2026-11-04 9:28, P3-2]. Bytes is null when TooLarge.</summary>
+    readonly record struct ReadBody(byte[]? Bytes, bool TooLarge);
+
+    /// <summary>Reads at most 64 KiB + one 8 KiB buffer. Reaching the end marks the body consumed (<see cref="RequestEnvelope"/>);
+    /// a body left unread gets Connection: close and a bounded drain after the response, so the client sees the status, not a reset.</summary>
+    static async Task<ReadBody> ReadBodyAsync(HttpContext ctx)
     {
-        if (req.ContentLength is > MaxBody) return null;
+        var req = ctx.Request;
+        if (req.ContentLength is > MaxBody) return new(null, true);
         using var ms = new MemoryStream();
         var buf = new byte[8192];
         int n;
         while ((n = await req.Body.ReadAsync(buf)) > 0)
         {
-            if (ms.Length + n > MaxBody) return null;
+            if (ms.Length + n > MaxBody) return new(null, true);
             ms.Write(buf, 0, n);
         }
-        return ms.ToArray();
+        RequestEnvelope.MarkBodyRead(ctx);
+        return new(ms.ToArray(), false);
     }
 
-    /// <summary>For attributing a refusal only: any read problem (too large, aborted, Kestrel limit) = no body; never changes the answer.</summary>
-    static async Task<byte[]?> TryReadBodyAsync(HttpRequest req)
+    /// <summary>For attributing a refusal only: any read problem (too large, aborted) = no body; never changes the answer.</summary>
+    static async Task<byte[]?> TryReadBodyAsync(HttpContext ctx)
     {
-        try { return await ReadBodyAsync(req); }
+        try { return (await ReadBodyAsync(ctx)).Bytes; }
         catch (Exception x) when (x is BadHttpRequestException or IOException or OperationCanceledException) { return null; }
     }
 
@@ -314,10 +321,11 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         if (!who.IsAdmin || !who.Grant.LoginMethodWrite)
         {
             if (loc is { } l0 && await LocationPartnerAsync(l0) is { } p0)
-                await DenyAsync(who, "not_admin", p0, l0, LoginConfigValidator.AttemptedFields(ParseObject(await TryReadBodyAsync(ctx.Request))));
+                await DenyAsync(who, "not_admin", p0, l0, LoginConfigValidator.AttemptedFields(ParseObject(await TryReadBodyAsync(ctx))));
             throw Err(403, "forbidden");
         }
-        var body = ParseObject(await ReadBodyAsync(ctx.Request));
+        var read = await ReadBodyAsync(ctx);
+        var body = ParseObject(read.Bytes);
         // Steps 3-4.
         if (loc is not { } location) throw Err(404, "not_found");
         var real = await LocationPartnerAsync(location) ?? throw Err(404, "not_found");
@@ -338,7 +346,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         var row = await LoadAsync(c, tx, location, who.IsPartnerAdmin ? who.Id.PartnerId!.Value : real, true) ?? throw Err(404, "not_found");
         // Step 6.
         if (row.RowVersion != expected) throw Err(409, "concurrency_conflict", b => b["current_row_version"] = row.RowVersion);
-        // Step 7.
+        // Step 7. Oversize = 413, nothing written (rolled back) [TLD 2026-11-04 9:28, P3-2]; steps 3-6 still answer first (P3-3: no change).
+        if (read.TooLarge) throw Err(413, "payload_too_large");
         if (body is not { } o) throw Err(400, "malformed_body");
         // Step 8.
         var errs = new List<FieldError>();
@@ -439,14 +448,16 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         // when the body yields a valid one, else target.id / scope.partner_id absent (OQ-P3-10).
         if (!who.IsAdmin || !who.Grant.LoginMethodWrite || !who.Grant.OrgCreateEdit)
         {
-            var b0 = ParseObject(await TryReadBodyAsync(ctx.Request));
+            var b0 = ParseObject(await TryReadBodyAsync(ctx));
             var lc0 = b0 is { } o0 && o0.TryGetProperty("login_config", out var l0) ? l0 : (JsonElement?)null;
             await DenyAsync(who, "not_admin", b0 is { } ob ? LoginConfigValidator.BodyPartner(ob) : null, null, LoginConfigValidator.AttemptedFields(lc0));
             throw Err(403, "forbidden");
         }
-        var body = ParseObject(await ReadBodyAsync(ctx.Request));
-        // Steps 3-4 (create: the body's partner_id). Needs the body, so a non-object body is 400 here (authorised callers only).
-        if (body is not { } o) throw Err(400, "malformed_body");
+        var read = await ReadBodyAsync(ctx);
+        // Steps 3-4 (create: the body's partner_id). Needs the body, so oversize is 413 [TLD 2026-11-04 9:28, P3-2] and a non-object
+        // body is 400 here (authorised callers only); neither writes anything.
+        if (read.TooLarge) throw Err(413, "payload_too_large");
+        if (ParseObject(read.Bytes) is not { } o) throw Err(400, "malformed_body");
         var bodyPartner = LoginConfigValidator.BodyPartner(o);
         if (who.IsPartnerAdmin && bodyPartner is { } bp && bp != who.Id.PartnerId)
         {

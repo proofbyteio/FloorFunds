@@ -403,7 +403,7 @@ try
         r = await Send(HttpMethod.Post, "/api/orgs/locations", SA, """{"partner_id":"x","partner_id":"y"}""");
         Ok("create: duplicate keys -> 400 malformed_body", Err(r, 400, "malformed_body"));
         r = await Send(HttpMethod.Post, "/api/orgs/locations", SA, "{\"name\":\"" + new string('a', 70_000) + "\"}");
-        Ok("create: body over 64 KiB -> 400 malformed_body", Err(r, 400, "malformed_body"));
+        Ok("create: body over 64 KiB -> 413 payload_too_large (TLD 9:28 P3-2)", Err(r, 413, "payload_too_large"), $"{r.Status}");
         // TLD 9:04 #2: a refused create is audited (location_id null, target = body partner_id). #8: the 403 is decided before the body.
         foreach (var (n, t) in new[] { ("reader", RD), ("no role", NO), ("custom role", CU) })
         {
@@ -438,7 +438,7 @@ try
                 && Denied(await NewEvents(), "not_admin", A1, null, "update"), $"{r.Status} {r.Body}");
         }
         r = await Send(HttpMethod.Post, "/api/orgs/locations", SA, "{\"name\":\"" + bigName + "\"}");
-        Ok("create: SA body over 1 MiB -> 400 malformed_body (handler cap; never 413/500)", Err(r, 400, "malformed_body"), $"{r.Status}");
+        Ok("create: SA body over 1 MiB -> 413 payload_too_large (handler cap, TLD 9:28 P3-2; never 400/500)", Err(r, 413, "payload_too_large"), $"{r.Status}");
         Ok("create: oversized SA body writes no event", (await NewEvents()).Count == 0);
         Ok("create: none of the refused creates added a location", await Count("location") == 3);
     }
@@ -811,6 +811,150 @@ try
             Ok($"schema 9:04: {n} -> {(valid ? "valid" : "refused")}", Valid(doc) == valid, string.Join("; ", lite.Validate(doc)));
             schemaCases.Add((n, doc));
         }
+    }
+
+    // ================= 7d. oversize -> 413 + Connection: close, no reset, nothing written (TLD 9:28 P3-2); X-Request-ID middleware (P3-4) =================
+    {
+        // Raw HTTP/1.1 client: the body is written by a separate task (errors ignored) while the response is read, so a reset
+        // before the status line/headers/body arrive is visible as an exception on the read side.
+        async Task<(int Status, Dictionary<string, string> H, string Body, string? ReadErr, long Sent, long ClosedMs)> Raw(string method, string path, string? token,
+            long size, bool chunked, string? ifMatch = null, int trickleMs = 0)
+        {
+            using var tcp = new TcpClient();
+            await tcp.ConnectAsync(IPAddress.Loopback, port);
+            var st = tcp.GetStream();
+            var head = new StringBuilder($"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\n");
+            if (token is not null) head.Append($"Authorization: Bearer {token}\r\n");
+            if (ifMatch is not null) head.Append($"If-Match: {ifMatch}\r\n");
+            head.Append(chunked ? "Transfer-Encoding: chunked\r\n" : $"Content-Length: {size}\r\n").Append("\r\n");
+            await st.WriteAsync(Encoding.ASCII.GetBytes(head.ToString()));
+            long sent = 0;
+            var writer = Task.Run(async () =>
+            {
+                var piece = Encoding.ASCII.GetBytes("{\"name\":\"" + new string('a', 16 * 1024 - 9));
+                var fill = Encoding.ASCII.GetBytes(new string('a', 16 * 1024));
+                try
+                {
+                    for (var first = true; sent < size; first = false)
+                    {
+                        var p = first ? piece : fill;
+                        var n = (int)Math.Min(trickleMs > 0 && sent >= 80 * 1024 ? 1024 : p.Length, size - sent);
+                        if (trickleMs > 0 && sent >= 80 * 1024) await Task.Delay(trickleMs);
+                        if (chunked) await st.WriteAsync(Encoding.ASCII.GetBytes($"{n:x}\r\n"));
+                        await st.WriteAsync(p.AsMemory(0, n));
+                        if (chunked) await st.WriteAsync("\r\n"u8.ToArray());
+                        sent += n;
+                    }
+                    if (chunked) await st.WriteAsync("0\r\n\r\n"u8.ToArray());
+                }
+                catch (Exception x) when (x is IOException or SocketException or ObjectDisposedException) { }
+            });
+            var acc = new List<byte>();
+            var buf = new byte[8192];
+            string? err = null;
+            int status = 0; var h = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); var body = "";
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            try
+            {
+                int hdrEnd = -1;
+                while (hdrEnd < 0)
+                {
+                    var n = await st.ReadAsync(buf, cts.Token);
+                    if (n == 0) throw new IOException("EOF before headers");
+                    acc.AddRange(buf.AsSpan(0, n).ToArray());
+                    hdrEnd = Encoding.ASCII.GetString(acc.ToArray()).IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                }
+                var lines = Encoding.ASCII.GetString(acc.ToArray(), 0, hdrEnd).Split("\r\n");
+                status = int.Parse(lines[0].Split(' ')[1]);
+                foreach (var l in lines.Skip(1)) { var i = l.IndexOf(':'); h[l[..i].Trim()] = l[(i + 1)..].Trim(); }
+                var want = h.TryGetValue("Content-Length", out var cl) ? int.Parse(cl) : 0;
+                while (acc.Count - (hdrEnd + 4) < want)
+                {
+                    var n = await st.ReadAsync(buf, cts.Token);
+                    if (n == 0) throw new IOException("EOF before body end");
+                    acc.AddRange(buf.AsSpan(0, n).ToArray());
+                }
+                body = Encoding.UTF8.GetString(acc.ToArray(), hdrEnd + 4, want);
+            }
+            catch (Exception x) when (x is IOException or SocketException or OperationCanceledException) { err = x.InnerException?.Message ?? x.Message; }
+            // After the response: how long until the server closes (EOF or reset) = the bounded drain.
+            var sw = Stopwatch.StartNew();
+            try { using var c2 = new CancellationTokenSource(TimeSpan.FromSeconds(10)); while (err is null && await st.ReadAsync(buf, c2.Token) > 0) { } }
+            catch (Exception x) when (x is IOException or SocketException or OperationCanceledException) { }
+            var closedMs = sw.ElapsedMilliseconds;
+            tcp.Close();
+            await Task.WhenAny(writer, Task.Delay(5000));
+            if (status >= 400 && body.Length > 0) responsesForSchema.Add(("error_response", body));
+            if (h.TryGetValue(LoginConfigApi.RequestIdHeader, out var rid)) allCorr.Add(rid);
+            return (status, h, body, err, sent, closedMs);
+        }
+        bool Is413(string n, (int Status, Dictionary<string, string> H, string Body, string? ReadErr, long Sent, long ClosedMs) x)
+        {
+            var ok = x.ReadErr is null && x.Status == 413 && x.Body == "{\"error\":\"payload_too_large\"}" && x.H.TryGetValue("Connection", out var c) && c == "close"
+                && IsCorr(x.H.GetValueOrDefault(LoginConfigApi.RequestIdHeader));
+            Console.WriteLine($"INFO 413 {n}: status {x.Status} err={x.ReadErr ?? "none"} client wrote {x.Sent} bytes, server closed {x.ClosedMs} ms after the response");
+            return ok;
+        }
+        var locs = await Count("location"); var changes = await Count("location_login_config_change"); var rvA1 = Rv(A1);
+        const long KiB400 = 400 * 1024, MiB8 = 8L << 20;
+        Ok("413: SA PUT declared Content-Length 400 KiB (current If-Match) -> 413 payload_too_large, Connection: close, X-Request-ID, no reset",
+            Is413("put declared 400K", await Raw("PUT", Cfg(A1), SA, KiB400, false, $"\"{rvA1}\"")));
+        Ok("413: PA PUT own location declared Content-Length 8 MiB -> 413, Connection: close, X-Request-ID, no reset",
+            Is413("put declared 8M", await Raw("PUT", Cfg(A1), PA, MiB8, false, $"\"{rvA1}\"")));
+        Ok("413: SA PUT chunked 8 MiB (no Content-Length) -> 413, Connection: close, X-Request-ID, no reset",
+            Is413("put chunked 8M", await Raw("PUT", Cfg(A1), SA, MiB8, true, $"\"{rvA1}\"")));
+        Ok("413: SA POST declared Content-Length 8 MiB -> 413, Connection: close, X-Request-ID, no reset",
+            Is413("post declared 8M", await Raw("POST", "/api/orgs/locations", SA, MiB8, false)));
+        Ok("413: PA POST chunked 8 MiB -> 413, Connection: close, X-Request-ID, no reset",
+            Is413("post chunked 8M", await Raw("POST", "/api/orgs/locations", PA, MiB8, true)));
+        Ok("413: SA POST chunked 200 KiB -> 413, Connection: close, X-Request-ID, no reset",
+            Is413("post chunked 200K", await Raw("POST", "/api/orgs/locations", SA, 200 * 1024, true)));
+        var slow = await Raw("POST", "/api/orgs/locations", SA, MiB8, false, trickleMs: 50);
+        Ok("413: bounded read: a client trickling the rest of a declared 8 MiB body still gets the 413 and the server closes within 4 s (drain <= 2 s)",
+            Is413("post declared 8M trickle", slow) && slow.ClosedMs < 4000 && slow.Sent < 1 << 20, $"{slow.ClosedMs} ms, {slow.Sent} bytes");
+        var hc = await Send(HttpMethod.Post, "/api/orgs/locations", SA, edit: q =>
+        {
+            q.Content = new StreamContent(new MemoryStream(Encoding.UTF8.GetBytes(J(Create(P_A, new string('a', 300_000), DbCfg())))));
+            q.Content.Headers.ContentType = new("application/json");
+            q.Headers.TransferEncodingChunked = true;
+        });
+        Ok("413: HttpClient chunked 300 KB POST -> 413 payload_too_large with X-Request-ID (no HttpRequestException)", Err(hc, 413, "payload_too_large") && IsCorr(hc.Corr), $"{hc.Status}");
+        Ok("413: nothing written by the oversize requests (0 outbox events, location count, change rows and A1 row_version unchanged)",
+            (await NewEvents()).Count == 0 && await Count("location") == locs && await Count("location_login_config_change") == changes && Rv(A1) == rvA1);
+        // TLD 9:04 #8 still first: the same oversize bodies from an unauthenticated / unpermitted caller -> 401 / 403, never 413.
+        var u = await Raw("POST", "/api/orgs/locations", null, MiB8, true);
+        Ok("413 vs #8: unauthenticated chunked 8 MiB -> 401 (never 413), Connection: close, X-Request-ID, no reset", u.ReadErr is null && u.Status == 401
+            && u.H.GetValueOrDefault("Connection") == "close" && IsCorr(u.H.GetValueOrDefault(LoginConfigApi.RequestIdHeader)) && (await NewEvents()).Count == 0, $"{u.Status} {u.ReadErr}");
+        var f = await Raw("PUT", Cfg(A1), CU, MiB8, false, $"\"{rvA1}\"");
+        Ok("413 vs #8: unpermitted PUT declared 8 MiB -> 403 forbidden (never 413) + not_admin event (attempted none), no reset", f.ReadErr is null && f.Status == 403
+            && f.Body == "{\"error\":\"forbidden\"}" && Denied(await NewEvents(), "not_admin", A1, null, "update"), $"{f.Status} {f.ReadErr}");
+        f = await Raw("POST", "/api/orgs/locations", NO, MiB8, true);
+        Ok("413 vs #8: unpermitted POST chunked 8 MiB -> 403 forbidden (never 413) + not_admin event (partner unknown), no reset", f.ReadErr is null && f.Status == 403
+            && Denied(await NewEvents(), "not_admin", null, null, "create"), $"{f.Status} {f.ReadErr}");
+        // P3-3 unchanged: steps 5-6 still answer before the size (stale If-Match + oversize -> 409).
+        var st409 = await Raw("PUT", Cfg(A1), SA, KiB400, false, "\"99\"");
+        Ok("P3-3 unchanged: stale If-Match + declared 400 KiB -> 409 concurrency_conflict, Connection: close, no reset", st409.ReadErr is null && st409.Status == 409
+            && st409.H.GetValueOrDefault("Connection") == "close" && (await NewEvents()).Count == 0, $"{st409.Status} {st409.ReadErr}");
+        var keep = await Send(HttpMethod.Get, Cfg(A1), SA);
+        Ok("413: a normal request after the 413s still works (200, ETag unchanged)", keep.Status == 200 && keep.ETag == $"\"{rvA1}\"");
+
+        // P3-4: X-Request-ID from middleware, so responses outside the handlers carry it too.
+        foreach (var m in new[] { HttpMethod.Delete, HttpMethod.Patch, HttpMethod.Post })
+        {
+            var x = await Send(m, Cfg(A1), SA, edit: q => q.Headers.TryAddWithoutValidation(LoginConfigApi.RequestIdHeader, "client-chosen"));
+            Ok($"P3-4: {m} on the login-config path -> 405 with a server UUIDv7 X-Request-ID (client value ignored)", x.Status == 405 && IsCorr(x.Corr) && x.Corr != "client-chosen", $"{x.Status} {x.Corr}");
+        }
+        var clientV7b = Guid.CreateVersion7().ToString("D");
+        foreach (var path in new[] { "/nope", "/api/orgs/locations/x/login-config/nope", "/" })
+        {
+            var x = await Send(HttpMethod.Get, path, null, edit: q => q.Headers.TryAddWithoutValidation(LoginConfigApi.RequestIdHeader, clientV7b));
+            Ok($"P3-4: unrouted GET {path} -> 404 with a server UUIDv7 X-Request-ID (client UUIDv7 ignored)", x.Status == 404 && IsCorr(x.Corr) && x.Corr != clientV7b, $"{x.Status} {x.Corr}");
+        }
+        var ur = await Raw("POST", "/nope", SA, MiB8, true);
+        Ok("P3-4: unrouted POST /nope chunked 8 MiB -> 404 with X-Request-ID, Connection: close, no reset", ur.ReadErr is null && ur.Status == 404
+            && IsCorr(ur.H.GetValueOrDefault(LoginConfigApi.RequestIdHeader)) && ur.H.GetValueOrDefault("Connection") == "close", $"{ur.Status} {ur.ReadErr}");
+        Ok("P3-4: every response (incl. 405/404/413/raw) carried a distinct UUIDv7 X-Request-ID", allCorr.All(IsCorr) && allCorr.Distinct().Count() == allCorr.Count, $"{allCorr.Count}");
+        Ok("P3-4/P3-2: no events from 405/404 either", (await NewEvents()).Count == 0);
     }
 
     // ================= 8. secrets never leave =================
