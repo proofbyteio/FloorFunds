@@ -1285,3 +1285,19 @@ TL ruling 11:03 PT. Base 49a619c on sse2/tests-docs; worktree /tmp/sse2-td-build
     `if (log is null || !File.Exists(log)) Assert.Skip("PENDING: …")`. An unset variable or a missing file gives a skip
     (results-c1 is that case). A vacuous pass needs an older file that already exists. That is what happened in (a).
 - check-no-remote: see the commit report.
+
+## SSE2, Wed Nov 4, 2026, 2:12–2:40 PM PT: P3 re-merge on feat/entra-signin (435b539); redaction incident note
+
+- **Redaction incident (TL accepted 2:12 PM PT).** During the 9c0967a review, the throwaway ff_scratchadm password of a
+  private loopback-only PG17 cluster (SSE2's own, not 5432) was printed unredacted once in SSE2's own tool output (a grep of
+  that cluster's server log). The cluster was stopped and deleted, so the password is dead; no project secret, kit DB or
+  shared role was exposed. Standing rule from now on: every secret, password or verifier is redacted in all tool output
+  (counts with `grep -c`, or values masked with sed). No value is recorded here.
+- **P3 merges on local feat/entra-signin (never pushed):**
+  - 3615338 = merge of 9c0967a onto 101fb14: discarded (P3 amended to 435b539, TLD 1:54 lock-target refusal rc 2).
+  - 0af94107 = `git reset --keep 101fb14` + `git merge --no-ff 435b539` (parents 101fb14, 435b539). P4 not merged.
+    Auth.Data.Checks/ and contract/ trees equal 435b539. Builds 0 warnings. ENT **82/0/0**.
+    SI1 (stand-in f76d18a, tests 9890aec, ports 18150–18152): **553/469/0/84**. check-no-remote: PASS.
+  - Review: `/tmp/sse2-fverify/RANGE-9c0967a-435b539-REVIEW.md`, GO, nothing above Low; P4 range-diff identical apart
+    from one doc-only BUILD-LOG bullet in 1a42e66.
+- **Backlog (per TL):** CSRF re-review OQ-S2a-1 once the cookie-based host lands.
