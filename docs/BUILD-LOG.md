@@ -1122,3 +1122,18 @@ Still open from plan §g: Q1 (resolved by TLD-S2B-05), Q3 (stand-in vs real serv
   - **Delta by test ID** (python diff of the result XMLs): +1 total and +1 pass, both from TOOL05 going from Fact to a 2-case Theory. TOOL06: 3 cases renamed or replaced (3 removed, 3 added, all pass). No test changed result. Pending set identical (84). No unexplained failures.
 - Stand-in stopped. Ports 18090–18093 are free. Export worktree removed. Results are in /tmp/sse2-work/full-s2b-7ed08dd.
 - The earlier 552/1/184 figure (7:49) came from the shared checkout's 7:44 binaries with no stand-in running (target unset → server tests pending), plus the old TOOL05. It is superseded by this run.
+
+### 2026-11-04 S2b Entra sign-in: hand-off, Abstractions merges, partner check (SSE2, 7:56–8:30 AM PT)
+- **ENT-HO on dcfd899** (SSE's stand-in-hooks base) plus the d44407a tests: **67/0/0**.
+- **d44407a:** ENT ports are configurable (`ENT_STANDIN_PORT`/`ENT_FAKEENTRA_PORT`, after SSE's 58 failures from a clash on 18090), local `global.json` (MTP runner), `tests/Login.EntraTests/README.md`.
+- **cee79a5:** merge of Abstractions 3f3fef9 (TL 7:56 ruling (a): take SSE's Abstractions by merge). **d43175a:** step 8, Login.Entra moved onto Login.Abstractions readers. ENT 69/0/0. The stand-in patch (md5 4285f7e6) was applied by SSE as f76d18a (13f58b9 = --no-ff merge of d43175a).
+- **2ae2f1d:** partner check (TLD 8:07 (a) refuse). **6402993:** `merge --no-ff 7e0350b` (S2a P2, N1–N3), clean. **e856c8c:** SecretRef as a non-positional `SecretReference` (`FixtureConfig`, `EntraLocation`, `ISecretResolver.ResolveAsync(SecretReference)`), `UserStatus.Unknown`; tests ENT_09u ×2 and ENT_19.
+- **TL decisions applied:** 7:56 merge (a); `ISecretResolver` stays a host hook in `Login.Entra/Contracts` (not in Abstractions), the stand-in gets a test-only resolver; 8:07 partner (a) refuse with the existing reason `not_location_user`.
+- **Check order** in `OnTokenValidated`: tenant/issuer → guest → token checks → auth_time → link lookup (none = `bad_credentials`/`unknown_subject`) → **membership** (partner non-null and equal to the location's AND `user_location` row; both always evaluated; one refusal `not_location_user`, no partner ids) → lock / disabled / status (only `UserStatus.Active`) → amr/MFA → success.
+- **Counts:**
+  - ENT: branch 2ae2f1d 74/0/0; branch e856c8c 77/0/0; f76d18a + 2ae2f1d overlay 74/0/0; f76d18a + e856c8c (+ Abstractions 7e0350b) overlay 77/0/0. The stand-in builds with locked restores in both overlays; no new stand-in patch needed.
+  - SI1 (this branch d974ae6, detached worktree, ports 18130–18132): f76d18a plain **553/469/0/84**; + 2ae2f1d 553/469/0/84; + e856c8c 553/469/0/84. Per-check tables are identical to the 7ed08dd baseline.
+  - Note: SI1 needs a git worktree, not a `git archive` export (archive gives 553/441/1/112: TOOL08 has no remote, FixtureSecretsTests has no git context).
+- **Questions sent to TL, both RESOLVED (TL 8:31 AM PT):**
+  - Q1 `not_location_user` under `auth.login.failed`: **yes**, v1.1 lists it as a known code; SSE is adding it to the contract (`audit-events.schema.json` today lists it only under `auth.app_access.denied`).
+  - Q2 audit-level oracle (`not_location_user` vs `bad_credentials`/`unknown_subject`): **keep the distinct audit reasons** (audit is internal, admin-only), but the **user-facing response MUST be byte-identical** for unknown subject, not_location_user (partner mismatch and unassigned), locked and disabled. Covered by ENT_04g on feat/entra-signin.
