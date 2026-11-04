@@ -45,7 +45,7 @@ public class EntFlowTests
         await using var e = await Env.StartAsync();
         e.Fake.NextUser = new FakeUser { Oid = e.OidA, TidOverride = EntraLocation.MsaTenant };
         Refused(await e.SignInAsync("loc-a"), e, "tenant_mismatch", "tenant");
-        var cfg = (await e.Store.GetAsync(Env.LocA, default))! with { EntraAllowedTenantIds = [EntraLocation.MsaTenant] };
+        var cfg = (await e.Store.GetAsync(Env.LocA, TestContext.Current.CancellationToken))! with { EntraAllowedTenantIds = [EntraLocation.MsaTenant] };
         Assert.Null(EntraLocation.TryCreate(cfg, true, out var why)); Assert.Equal("tenant_invalid", why);
     }
 
@@ -230,9 +230,12 @@ public class EntFlowTests
         await e.SignInAsync("loc-a"); // refused (mfa_missing)
         e.Store.Mutate(d => d.Assignments.Clear());
         await e.SignInAsync("loc-a"); // refused (not_location_user)
-        var cfg = FixtureConfig.Build(Env.LocA, Env.PartnerId, "x", ProviderKind.Entra, "x", [Guid.NewGuid()], "https://login.example.test", "cid", "arn:sse2-fake-test-only:secret:ref-a-9q7z", false, true);
+        // D-51: the ref is deployment-level; build the config through the same fill the store uses (no per-location ref).
+        var cfg = new FixtureDeployment { Authority = "https://login.example.test", ClientId = "cid", SecretRef = Env.DeploymentRef }
+            .Apply(FixtureConfig.Build(Env.LocA, Env.PartnerId, "x", ProviderKind.Entra, "x", [Guid.NewGuid()], false, true));
         var loc = EntraLocation.TryCreate(cfg, false, out _)!;
-        Assert.Equal("arn:sse2-fake-test-only:secret:ref-a-9q7z", loc.SecretRef.Reveal());
+        Assert.Equal(Env.DeploymentRef, loc.SecretRef.Reveal());
+        Assert.Equal(Env.DeploymentRef, e.Store.LastResolvedRef); // the sign-ins above resolved the same deployment ref
         var dump = string.Join("\n", e.Logs.Lines) + System.Text.Json.JsonSerializer.Serialize(e.Host.Audit)
             + cfg + System.Text.Json.JsonSerializer.Serialize(cfg) + loc + System.Text.Json.JsonSerializer.Serialize(loc) + cfg.SecretRef;
         Assert.True(e.Host.Audit.Count() >= 3);
@@ -252,7 +255,7 @@ public class EntFlowTests
         Signed(ok, e);
         using var h = new HttpClientHandler { AllowAutoRedirect = false, CookieContainer = ok.Jar };
         using var c = new HttpClient(h);
-        var again = await c.GetAsync(captured);
+        var again = await c.GetAsync(captured, TestContext.Current.CancellationToken);
         Assert.NotEqual(HttpStatusCode.OK, again.StatusCode);
         Assert.Single(e.Host.Sessions);
     }
@@ -428,7 +431,7 @@ public class EntFlowTests
         e.Fake.Failures["discovery"] = new FakeFailure(500);
         e.Fake.Failures["jwks"] = new FakeFailure(500);
         e.Fake.NextUser = new FakeUser { Oid = e.OidA };
-        await Task.Delay(1100);
+        await Task.Delay(1100, TestContext.Current.CancellationToken);
         Signed(await e.SignInAsync("loc-a"), e);
         Assert.Equal(2, e.Host.Sessions.Count);
     }
@@ -462,13 +465,13 @@ public class EntFlowTests
         Signed(f, e);
         using var h = new HttpClientHandler { AllowAutoRedirect = false, CookieContainer = f.Jar };
         using var c = new HttpClient(h);
-        var r = await c.GetAsync($"{e.HostUrl}/logout?location={Env.LocA}");
+        var r = await c.GetAsync($"{e.HostUrl}/logout?location={Env.LocA}", TestContext.Current.CancellationToken);
         Assert.Empty(e.Host.Sessions);
         var revokedAt = e.Host.Timeline.Single(t => t.What == "auth.session.revoked").At;
         var to = r.Headers.Location!.ToString();
         Assert.StartsWith($"{e.Fake.BaseUrl}/{Env.TenantA:D}/oauth2/v2.0/logout", to);
         Assert.DoesNotContain("id_token_hint", to); Assert.DoesNotContain("logout_hint", to);
-        await c.GetAsync(to);
+        await c.GetAsync(to, TestContext.Current.CancellationToken);
         var hit = e.Fake.Log.Single(l => l.Endpoint == "endsession");
         Assert.True(revokedAt < hit.At);
         Assert.Single(e.Host.Audit, a => a.EventType == "auth.session.revoked" && a.Reason == "sign_out");
@@ -482,7 +485,7 @@ public class EntFlowTests
         // new row_version → new config cache entry → no last-good copy
         e.Store.Mutate(d => { var i = d.Locations.FindIndex(l => l.Slug == "loc-a"); d.Locations[i] = d.Locations[i] with { Config = d.Locations[i].Config with { RowVersion = 2 } }; });
         using var c = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
-        var r = await c.GetAsync($"{e.HostUrl}/logout?location={Env.LocA}");
+        var r = await c.GetAsync($"{e.HostUrl}/logout?location={Env.LocA}", TestContext.Current.CancellationToken);
         Assert.Equal("/l/loc-a", r.Headers.Location!.ToString());
         Assert.Single(e.Host.Audit, a => a.EventType == "auth.session.revoked");
         Assert.True(e.LogHas("entra_endsession=skipped"));
@@ -503,11 +506,15 @@ public class EntFlowTests
         await using var e = await Env.StartAsync();
         var f = await e.SignInAsync("no-such-location");
         Assert.Equal(HttpStatusCode.ServiceUnavailable, f.FinalStatus); Assert.DoesNotContain("<form", f.FinalBody);
-        var c = (await e.Store.GetAsync(Env.LocA, default))!;
+        var c = (await e.Store.GetAsync(Env.LocA, TestContext.Current.CancellationToken))!;
         Assert.Null(EntraLocation.TryCreate(c, allowHttp: false, out var w1)); Assert.Equal("authority_not_https", w1);
         Assert.Null(EntraLocation.TryCreate(c with { EntraAllowedTenantIds = [Env.TenantA, Env.TenantB] }, true, out var w2)); Assert.Equal("tenant_count", w2);
         Assert.Null(EntraLocation.TryCreate(c with { OidcAuthority = "http://example.invalid" }, true, out var w3)); Assert.Equal("authority_not_https", w3);
-        Assert.Null(EntraLocation.TryCreate(FixtureConfig.WithoutSecret(c), true, out _));
+        Assert.Null(EntraLocation.TryCreate(c with { SecretRef = null }, true, out var w4)); Assert.Equal("client_missing", w4);
+        // D-51 fill: database locations get no authority, client id or secret ref; entra locations get the deployment's.
+        var db = (await e.Store.GetAsync(Env.LocDb, TestContext.Current.CancellationToken))!;
+        Assert.Null(db.OidcAuthority); Assert.Null(db.OidcClientId); Assert.Null(db.SecretRef);
+        Assert.Equal(e.Fake.BaseUrl, c.OidcAuthority); Assert.Equal(e.DeploymentClientId, c.OidcClientId); Assert.Equal(Env.DeploymentRef, c.SecretRef!.Reveal());
         Assert.Equal("https://login.microsoftonline.com/" + Env.TenantA.ToString("D") + "/v2.0",
             EntraLocation.TryCreate(c with { OidcAuthority = "https://login.microsoftonline.com/" }, false, out _)!.Authority);
         var prod = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder(new Microsoft.AspNetCore.Builder.WebApplicationOptions { EnvironmentName = "Production" });
@@ -518,10 +525,83 @@ public class EntFlowTests
     [Fact] public async Task ENT_CFG_01b_unresolvable_secret_fails_closed()
     {
         await using var e = await Env.StartAsync();
-        e.Store.Mutate(d => d.Secrets.Remove("arn:sse2-fake-test-only:secret:ref-a-9q7z"));
+        e.Store.Mutate(d => d.Secrets.Remove(Env.DeploymentRef)); // the deployment ref no longer resolves
         var f = await e.SignInAsync("loc-a");
         Assert.Equal(HttpStatusCode.ServiceUnavailable, f.FinalStatus); Assert.Empty(e.Host.Sessions);
         Assert.True(e.LogHas("detail=secret_unresolved"));
+    }
+
+    // TLD 10:12: Login.Entra caches nothing per location. A deployment ref/secret change (in production: a restart,
+    // since SSE's reader snapshots EntraDeployment at startup) must reach the very next request's resolver call.
+    [Fact] public async Task ENT_CFG_03_deployment_secret_ref_change_reaches_next_request()
+    {
+        await using var e = await Env.StartAsync();
+        Signed(await e.SignInAsync("loc-a"), e);
+        Assert.Equal(Env.DeploymentRef, e.Store.LastResolvedRef);
+        const string ref2 = "arn:sse2-fake-test-only:secret:rotated-9q7z";
+        var sec2 = Env.NewFakeSecret();
+        e.Store.Mutate(d => { d.Secrets.Remove(Env.DeploymentRef); d.Secrets[ref2] = sec2; d.Deployment.SecretRef = ref2; });
+        e.Fake.ClientSecrets[e.DeploymentClientId] = sec2; // the old secret is now invalid_client at the fake
+        e.Host.Sessions.Clear();
+        Signed(await e.SignInAsync("loc-a"), e);
+        Assert.Equal(ref2, e.Store.LastResolvedRef);
+        Assert.Equal(2, e.Store.ResolveCalls);
+        Assert.Single(e.Host.Sessions);
+    }
+
+    // Same for the deployment client id: the next authorize and token requests use the new one.
+    [Fact] public async Task ENT_CFG_03b_deployment_client_id_change_reaches_next_request()
+    {
+        await using var e = await Env.StartAsync();
+        Signed(await e.SignInAsync("loc-a"), e);
+        var cid2 = Guid.NewGuid().ToString("D");
+        e.Fake.ClientSecrets[cid2] = e.Fake.ClientSecrets[e.DeploymentClientId];
+        e.Fake.ClientSecrets.TryRemove(e.DeploymentClientId, out _);
+        e.Store.Mutate(d => d.Deployment.ClientId = cid2);
+        e.Host.Sessions.Clear();
+        Signed(await e.SignInAsync("loc-a"), e);
+        Assert.Equal(cid2, e.Fake.Log.Last(l => l.Endpoint == "authorize").Query["client_id"]);
+        Assert.Equal(cid2, e.Fake.Log.Last(l => l.Endpoint == "token").Query["client_id"]);
+    }
+
+    // Same for the deployment authority: the next request uses the new (here unreachable) authority and falls back,
+    // with no last-good copy of the old authority's metadata.
+    [Fact] public async Task ENT_CFG_03c_deployment_authority_change_reaches_next_request()
+    {
+        await using var e = await Env.StartAsync();
+        Signed(await e.SignInAsync("loc-a"), e);
+        var hits = e.Fake.Log.Count;
+        e.Store.Mutate(d => d.Deployment.Authority = "http://127.0.0.1:1"); // port 1: nothing listens (checked with ss)
+        var f = await e.SignInAsync("loc-a");
+        Assert.Equal(HttpStatusCode.OK, f.FinalStatus); Assert.Contains("FALLBACK", f.FinalBody);
+        Assert.True(e.LogHas("fallback_reason=DiscoveryFailed fallback=used"), string.Join("\n", e.Logs.Lines.Where(l => l.Contains("entra"))));
+        Assert.Equal(hits, e.Fake.Log.Count); // the old authority was not contacted
+    }
+
+    // TLD 10:12: client_missing is the request-time backstop. An entra location with no deployment ref (or client id)
+    // fails closed on the next request, even after an earlier success: no stale ref is reused, the resolver is not called.
+    [Fact] public async Task ENT_CFG_04_missing_deployment_ref_is_client_missing_at_request_time()
+    {
+        await using var e = await Env.StartAsync();
+        Signed(await e.SignInAsync("loc-a"), e);
+        e.Host.Sessions.Clear();
+        var hits = e.Fake.Log.Count; var calls = e.Store.ResolveCalls;
+        e.Store.Mutate(d => d.Deployment.SecretRef = null);
+        var f = await e.SignInAsync("loc-a");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, f.FinalStatus); Assert.DoesNotContain("<form", f.FinalBody);
+        Assert.Empty(e.Host.Sessions); Assert.Single(f.Hops);
+        Assert.True(e.LogHas($"entra.config_invalid location={Env.LocA} why=client_missing"), string.Join("\n", e.Logs.Lines.Where(l => l.Contains("entra"))));
+        Assert.Equal(hits, e.Fake.Log.Count); Assert.Equal(calls, e.Store.ResolveCalls);
+        // ref removed between challenge and callback: MessageReceived re-reads config and refuses before the resolver
+        e.Store.Mutate(d => d.Deployment.SecretRef = Env.DeploymentRef);
+        var g = await e.SignInAsync("loc-a", cb => { e.Store.Mutate(d => d.Deployment.SecretRef = null); return cb; });
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, g.FinalStatus); Assert.DoesNotContain("<form", g.FinalBody); Assert.Empty(e.Host.Sessions);
+        Assert.True(e.LogHas("detail=config:client_missing")); // config:* refusals are logged (v1_reason=(no audit)), not audited
+        Assert.Equal(calls, e.Store.ResolveCalls);
+        // a blank deployment client id is the same backstop
+        e.Store.Mutate(d => { d.Deployment.SecretRef = Env.DeploymentRef; d.Deployment.ClientId = " "; });
+        var h = await e.SignInAsync("loc-a");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, h.FinalStatus); Assert.Single(h.Hops);
     }
 
     [Fact] public async Task ENT_CFG_02_row_version_change_between_challenge_and_callback_refused()
@@ -548,7 +628,7 @@ public class EntFlowTests
         Assert.NotEqual(HttpStatusCode.OK, f.FinalStatus);
         using var c = new HttpClient();
         var r = await c.PostAsync($"{e.Fake.BaseUrl}/{Env.TenantA:D}/oauth2/v2.0/token", new FormUrlEncodedContent(new Dictionary<string, string>
-            { ["grant_type"] = "authorization_code", ["code"] = code!, ["code_verifier"] = "wrong", ["client_id"] = "x" }));
+            { ["grant_type"] = "authorization_code", ["code"] = code!, ["code_verifier"] = "wrong", ["client_id"] = "x" }), TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
     }
 

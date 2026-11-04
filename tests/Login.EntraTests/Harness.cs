@@ -75,6 +75,11 @@ public sealed class Env : IAsyncDisposable
     public ListLogger Logs { get; } = new();
     public Guid UserA = Guid.NewGuid(), UserB = Guid.NewGuid();
     public Guid OidA = Guid.NewGuid(), OidB = Guid.NewGuid();
+    /// <summary>The deployment's secret ref (fake, SSE2-FAKE-TEST-ONLY; "9q7z" is the ENT_19 leak marker).</summary>
+    public const string DeploymentRef = "arn:sse2-fake-test-only:secret:deployment-9q7z";
+    public string DeploymentClientId { get; private set; } = "";
+    /// <summary>Generated per run, test-only; never a real secret.</summary>
+    public static string NewFakeSecret() => "fixture-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
     private WebApplication? _app;
 
     public static async Task<Env> StartAsync(Action<EntraOptions>? tweak = null, bool fakeUp = true, TimeProvider? clock = null)
@@ -84,18 +89,20 @@ public sealed class Env : IAsyncDisposable
         PortGuard.Check(FakePort);
         e.Fake = new FakeEntraServer(FakePort);
         if (fakeUp) await e.Fake.StartAsync();
-        string Sec() => "fixture-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(16)); // generated, test-only
-        string cidA = Guid.NewGuid().ToString("D"), cidB = Guid.NewGuid().ToString("D"), cidC = Guid.NewGuid().ToString("D");
+        static string Sec() => NewFakeSecret(); // generated, test-only
+        // One deployment-level client and secret ref for every entra location (TLD 9:50, TLD 10:12, D-51). SSE2-FAKE-TEST-ONLY.
+        e.DeploymentClientId = Guid.NewGuid().ToString("D");
         var f = new EntraFixture
         {
+            Deployment = new() { Authority = e.Fake.BaseUrl, ClientId = e.DeploymentClientId, SecretRef = DeploymentRef },
             Locations =
             [
-                new("loc-a", FixtureConfig.Build(LocA, PartnerId, "loc-a", ProviderKind.Entra, "A (SSE2-FAKE-TEST-ONLY)", [TenantA], authority: e.Fake.BaseUrl, clientId: cidA, secretRef: "arn:sse2-fake-test-only:secret:ref-a-9q7z", allowDbFallback: true, mfaRequired: true)),
-                new("loc-b", FixtureConfig.Build(LocB, PartnerId, "loc-b", ProviderKind.Entra, "B (SSE2-FAKE-TEST-ONLY)", [TenantA], authority: e.Fake.BaseUrl, clientId: cidB, secretRef: "arn:sse2-fake-test-only:secret:ref-b-9q7z", allowDbFallback: true, mfaRequired: false)),
-                new("loc-nofb", FixtureConfig.Build(LocNoFb, PartnerId, "loc-nofb", ProviderKind.Entra, "A2 no fallback", [TenantB], authority: e.Fake.BaseUrl, clientId: cidC, secretRef: "arn:sse2-fake-test-only:secret:ref-c-9q7z", allowDbFallback: false, mfaRequired: true)),
-                new("loc-db", FixtureConfig.Build(LocDb, PartnerId, "loc-db", ProviderKind.Database, "DB", [], authority: null, clientId: null, secretRef: null, allowDbFallback: false, mfaRequired: true)),
+                new("loc-a", FixtureConfig.Build(LocA, PartnerId, "loc-a", ProviderKind.Entra, "A (SSE2-FAKE-TEST-ONLY)", [TenantA], allowDbFallback: true, mfaRequired: true)),
+                new("loc-b", FixtureConfig.Build(LocB, PartnerId, "loc-b", ProviderKind.Entra, "B (SSE2-FAKE-TEST-ONLY)", [TenantA], allowDbFallback: true, mfaRequired: false)),
+                new("loc-nofb", FixtureConfig.Build(LocNoFb, PartnerId, "loc-nofb", ProviderKind.Entra, "A2 no fallback", [TenantB], allowDbFallback: false, mfaRequired: true)),
+                new("loc-db", FixtureConfig.Build(LocDb, PartnerId, "loc-db", ProviderKind.Database, "DB", [], allowDbFallback: false, mfaRequired: true)),
             ],
-            Secrets = new() { ["arn:sse2-fake-test-only:secret:ref-a-9q7z"] = Sec(), ["arn:sse2-fake-test-only:secret:ref-b-9q7z"] = Sec(), ["arn:sse2-fake-test-only:secret:ref-c-9q7z"] = Sec() },
+            Secrets = new() { [DeploymentRef] = Sec() },
         };
         var issA = $"{e.Fake.BaseUrl}/{TenantA:D}/v2.0";
         f.Links.Add(new(issA, TenantA, e.OidA, e.UserA, "same@fake.invalid"));
@@ -104,7 +111,7 @@ public sealed class Env : IAsyncDisposable
         f.Users.Add(new(e.UserB, PartnerId, "active", null));
         f.Assignments.Add(new(e.UserA, LocA));
         f.Assignments.Add(new(e.UserB, LocNoFb));
-        e.Fake.ClientSecrets[cidA] = f.Secrets["arn:sse2-fake-test-only:secret:ref-a-9q7z"]; e.Fake.ClientSecrets[cidB] = f.Secrets["arn:sse2-fake-test-only:secret:ref-b-9q7z"]; e.Fake.ClientSecrets[cidC] = f.Secrets["arn:sse2-fake-test-only:secret:ref-c-9q7z"];
+        e.Fake.ClientSecrets[e.DeploymentClientId] = f.Secrets[DeploymentRef];
         e.Store = new FixtureEntraStore(f);
         e.Fake.NextUser = new FakeUser { Oid = e.OidA };
 

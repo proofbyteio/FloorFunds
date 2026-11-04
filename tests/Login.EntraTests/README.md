@@ -31,13 +31,31 @@ match+assigned signs in; no partner ids leaked), ENT_04f (mismatch vs unassigned
 
 ## Abstractions 7e0350b (S2a P2, SSE2 N1-N3), merged by 6402993
 
-- `SecretRef` is a non-positional, `[JsonIgnore]` `SecretReference` (ToString `[redacted]`). `FixtureConfig.Build` sets it with
-  `{ SecretRef = ... }`; `WithoutSecret` is `c with { SecretRef = null }`. `EntraLocation.SecretRef` is the same type,
-  non-positional. `ISecretResolver.ResolveAsync(SecretReference)` is the only caller of `Reveal()`.
+- `SecretRef` is a non-positional, `[JsonIgnore]` `SecretReference` (ToString `[redacted]`). `EntraLocation.SecretRef` is the
+  same type, non-positional. `ISecretResolver.ResolveAsync(SecretReference)` is the only caller of `Reveal()`.
 - `UserStatus { Unknown=0, Active=1, Disabled=2 }`: only `UserStatus.Active` passes (no numeric casts); default/Unknown →
   `bad_credentials`/`user_status_unknown`. `FixtureUser.RawStatus` (test-only) injects raw values.
-- Tests: ENT_09u x2 (default, Unknown), ENT_19 (SecretReference never in logs/audit/ToString/JSON). Fixture refs are now
-  `arn:sse2-fake-test-only:secret:ref-{a,b,c}-9q7z` so leaks are greppable.
+- Tests: ENT_09u x2 (default, Unknown), ENT_19 (SecretReference never in logs/audit/ToString/JSON; the deployment ref
+  contains `9q7z` so a leak is greppable).
+
+## Deployment-level Entra config (TLD 9:50, TLD 10:12, D-51; S2b C1)
+
+- Authority, client id and secret ref are per deployment, not per location. Login.Entra binds no config key (no
+  `EntraOptions` binding; `EntraOptions` is handler tuning only) and keeps reading `SecretRef`, `OidcAuthority` and
+  `OidcClientId` from `ILocationLoginConfigReader`. SSE's `NpgsqlLocationLoginConfigReader` fills them from
+  `EntraDeployment` for entra locations and returns null for database locations (SSE 06dc8ac, `Auth.Data/Readers.cs`).
+- **Config changes apply after a restart.** SSE's reader snapshots `EntraDeployment` at startup; there is no hot-reload.
+- Login.Entra caches nothing per location; every request re-reads the config. `client_missing` (blank client id or null
+  ref) is the request-time backstop. The ref is opaque: nothing parses or path-handles its suffix (C1-2, info only).
+- Fixture: `EntraFixture.Deployment` (`FixtureDeployment`: Authority, ClientId, SecretRef) applies the same rule on every
+  `GetAsync`/`GetBySlugAsync` call and is mutable in tests via `Mutate`. `FixtureConfig.Build` no longer takes
+  authority/client/secret and `WithoutSecret` is gone. The harness has one deployment client id, one ref
+  `arn:sse2-fake-test-only:secret:deployment-9q7z` and one generated secret (SSE2-FAKE-TEST-ONLY), replacing
+  `ref-{a,b,c}`. A stand-in fixture JSON needs a `"deployment"` object; row-level oidc/secret fields are ignored.
+- Tests: ENT_CFG_01 (null ref → `client_missing`; database rows get nulls), ENT_CFG_01b (deployment ref unresolvable →
+  `secret_unresolved`), ENT_CFG_03/03b/03c (a changed ref+secret, client id or authority reaches the next request; no
+  cache), ENT_CFG_04 (no deployment ref → `client_missing` at request time, including between challenge and callback and
+  after an earlier success; resolver not called; blank client id too). Mutation proofs are in the commit message.
 
 ## ENT_04g (TLD 8:31 Q2)
 
