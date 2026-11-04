@@ -1137,3 +1137,16 @@ Still open from plan §g: Q1 (resolved by TLD-S2B-05), Q3 (stand-in vs real serv
 - **Questions sent to TL, both RESOLVED (TL 8:31 AM PT):**
   - Q1 `not_location_user` under `auth.login.failed`: **yes**, v1.1 lists it as a known code; SSE is adding it to the contract (`audit-events.schema.json` today lists it only under `auth.app_access.denied`).
   - Q2 audit-level oracle (`not_location_user` vs `bad_credentials`/`unknown_subject`): **keep the distinct audit reasons** (audit is internal, admin-only), but the **user-facing response MUST be byte-identical** for unknown subject, not_location_user (partner mismatch and unassigned), locked and disabled. Covered by ENT_04g on feat/entra-signin.
+
+## 2026-11-04 09:04 PT — SSE2 review of 81affe1 (fix/db-kit-kf); TL ruling 09:04 PT
+
+Review done ~09:00 PT, Nov 4 2026. Review md5 382cfd6c. **Status: NO-GO on 81affe1.** SSE2 will re-verify when SSE resubmits.
+
+- **KF-A (Medium):** role.sql's DO block printed the cleartext `ALTER ROLE ... PASSWORD` to psql stderr and to the Postgres
+  server log on error. The SSE2 repro left ONE line in `/var/log/postgresql/postgresql-17-main.log`. That line holds the password of an
+  `ff_kit_sse2f_*` scratch role. The role has been dropped, and the password was generated, scratch-only and never reused. The password is not
+  recorded here. Exact log-line timestamp: NOT captured, because the log is root-only (Permission denied) and SSE2 did not escalate.
+  Per the TL ruling, the log is **NOT edited**.
+  - TL fix: send SCRAM verifiers instead of cleartext, keep the exception handler, and add a leak test.
+- **KF-B:** README fix.
+- **KF-C:** add the refusal.
