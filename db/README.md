@@ -39,7 +39,15 @@ Check that it works: `psql --version` should show 17.x.
 same four steps. A second run on the same names is refused unless you add
 `--force` / `-Force` (see "What the kit will and will not touch" below).
 
-1. **Owner role + database** (as a Postgres superuser): a login role (default
+0. **Admin connection must be a PostgreSQL superuser** (e.g. `postgres`). The
+   read-only preflight checks this first and refuses (exit code 5, no
+   `--force` override, nothing changed, no password hashed) when the admin
+   connection's role is not a superuser: `Refused: the admin connection must be
+   a PostgreSQL superuser (e.g. postgres); <user> is not.` Why: the role step
+   locks `pg_authid` and `pg_auth_members` (only a superuser may lock system
+   catalogs), and the role checks and changes (attributes, memberships, the kit
+   marker on roles) need it too. `CREATEROLE` + `CREATEDB` is not enough.
+1. **Owner role + database** (as that superuser): a login role (default
    `floorfunds_dev`) and a database it owns. CONNECT is revoked from PUBLIC.
 2. **App roles** (as a superuser; spec §8.2): `<db>_admin_api` (the admin API)
    and `<db>_login` (the login service). Both are plain login roles: no
@@ -102,7 +110,7 @@ Options:
 - Package signature revocation (NuGet warning NU3018) could not be checked on the engineers' box, because it cannot reach the certificate revocation servers. Re-check it on a machine with normal network access before release, starting from an empty NuGet cache.
 - Scope of the KF1/KF2 fixes: they cover the three roles this run names (`--role`, `<db>_admin_api`, `<db>_login`) and the one `--db`. They check both what those roles are members of and (KF-C) which roles outside the kit are members of them. They do not remove memberships or attributes, they refuse instead. They do not close the window between `CREATE`/`DROP DATABASE` and their checks (see above).
 - The verifier is not a password, but anyone who reads it (`pg_authid`, a statement log with `log_statement = all`, or `psql` history) could attempt an offline guessing attack. Use long random passwords.
-- The role lock needs the kit's admin connection to be a superuser; a non-superuser admin cannot lock system catalogs.
+- The admin connection must be a superuser (step 0): the role lock on `pg_authid`/`pg_auth_members` and the role checks need it. A non-superuser admin, even with `CREATEROLE` and `CREATEDB`, is refused up front by the preflight (exit 5, nothing changed); there is no non-superuser mode.
 
 **Windows**: `db/setup.ps1` (needs PowerShell 7, and psql on PATH, e.g. `C:\Program Files\PostgreSQL\17\bin`).
 ```

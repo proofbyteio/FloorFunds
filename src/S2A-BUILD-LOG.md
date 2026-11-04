@@ -178,6 +178,23 @@ Branch `fix/db-kit-kf` off 3e12b8d (kept apart from P3). No migration, spec or a
 - **Results:** k1-kit-tests 169/0 (was 134; +35 new). DB checks 162/162 on every scratch run. Spec v1.1-S2a 201/201 and v1-d4 ALL PASS. Abstractions 52/52. Release build 0 warnings and 0 errors. Scratch objects were cleaned up to 0.
 - **Open:** the CREATE/DROP DATABASE window. The ALTER-path EXECUTE error is not forced by a test (hard to trigger once the lock is held), but it is wrapped the same way. setup.ps1 has never run on Windows. NU3018.
 
+## TLD 9:19: superuser-only admin connection (commit after 7dff464)
+
+- **Decision:** TL chose option (a): keep the pg_authid/pg_auth_members SHARE lock and require a superuser admin connection.
+- **What:** `db/kit/preflight.sql` now emits a first line (kind 0), `REFUSE the admin connection must be a PostgreSQL superuser (e.g. postgres); <current_user> is not.`, whenever `current_user` lacks rolsuper.
+  - Both scripts print it as `Refused: …` and exit 5. `--force`/`-Force` doesn't override it.
+  - It fires before any change step and before any password is hashed (hashing happens only in the role step).
+- **Why:** only a superuser may lock system catalogs. The role checks and changes also assume one, so a CREATEROLE/CREATEDB admin would fail part-way or be weaker.
+- **Tests:**
+  - Stub case: sh and ps1 each get rc 5 with the message, and the only psql call is the read-only preflight.
+  - Live case: a scratch admin `ff_kit_kfadm LOGIN CREATEROLE CREATEDB` runs over TCP, with and without --force --drop, on sh and ps1.
+    - Each run gets rc 5 with the message.
+    - DBs, roles, memberships and comments are unchanged (snap plus an md5 of pg_shdescription).
+    - No `ff_kit_kfna*` object was created, no change step message appeared, and no password or verifier is in the output.
+    - The admin role is dropped afterwards.
+- **README:** step 0 says the admin must be a superuser and why. The Known limits text now matches.
+- **Results:** see the commit message and `/tmp/sse-kf/evidence-kf3.txt`.
+
 ## Decisions (this slice)
 
 - Project names: `Login.Abstractions` (mandated by F9). The data project will be `src/Auth.Data` (matches the `auth` schema; shared by the admin API and the login service, so not `Login.*`).

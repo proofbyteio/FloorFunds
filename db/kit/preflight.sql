@@ -8,6 +8,7 @@
 -- REPLICATION, or when it is a member (directly or through other roles) of any role outside this run's kit-marked
 -- roles: pg_* roles, superuser/privileged roles, unmarked roles. The kit grants no role memberships at all and its
 -- roles need none (db/migrations.sql grants only object privileges), so any membership was added by someone else.
+-- TLD 9:19: refused first of all when the admin connection (current_user) is not a superuser.
 -- KF-C: likewise refused when a role outside this run's kit-marked roles is a member OF a kit role.
 -- Kit objects carry COMMENT ... IS 'floorfunds-kit' (shared description). Unmarked = not created by the kit.
 BEGIN TRANSACTION READ ONLY;
@@ -28,7 +29,11 @@ d AS (
          (shobj_description(oid, 'pg_database') IS NOT DISTINCT FROM 'floorfunds-kit') AS marked
   FROM pg_database WHERE datname = :'db')
 SELECT line FROM (
-  SELECT 1 AS k, 'REFUSE role ' || name || ' is a superuser' AS line FROM ri WHERE super
+  -- TLD 9:19: the admin connection must be a superuser (role.sql's catalog LOCK and the role checks need it).
+  SELECT 0 AS k, 'REFUSE the admin connection must be a PostgreSQL superuser (e.g. postgres); ' || current_user || ' is not.' AS line
+    FROM pg_roles WHERE rolname = current_user AND NOT rolsuper
+  UNION ALL
+  SELECT 1, 'REFUSE role ' || name || ' is a superuser' AS line FROM ri WHERE super
   UNION ALL
   SELECT 2, 'REFUSE role ' || name || ' exists but was not created by the kit (no floorfunds-kit marker)' FROM ri WHERE oid IS NOT NULL AND NOT marked
   UNION ALL

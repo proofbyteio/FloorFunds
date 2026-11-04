@@ -78,6 +78,8 @@ ok "stub: the --force run sent only guarded kit SQL (role.sql x3 marker guard, d
 export KIT_STUB_NO_END=1
 stub_case "KF3 empty preflight output (no end marker) with --force -> refused" 5 1 "preflight returned no end marker" "" -- --db ${P}z --role ${P}z --force --no-migrate
 stub_case "KF3 truncated preflight output (EXISTS lines, no end marker) with --force -> refused" 5 1 "preflight returned no end marker" "EXISTS role ${P}z${NL}EXISTS database ${P}z${NL}" -- --db ${P}z --role ${P}z --force --no-migrate
+# TLD 9:19: a non-superuser admin connection is refused by the preflight (script handling, stub).
+stub_case "TLD 9:19 non-superuser admin connection -> refused" 5 1 "Refused: the admin connection must be a PostgreSQL superuser .e.g. postgres.; ${P}adm is not." "REFUSE the admin connection must be a PostgreSQL superuser (e.g. postgres); ${P}adm is not.${NL}END floorfunds-kit-preflight${NL}" -- --db ${P}z --role ${P}z --force --no-migrate
 # KF-E: an END line ending in CR is not the end marker, in both scripts.
 CR=$'\r'
 stub_case "KF-E end marker ending in CR (CRLF) -> refused" 5 1 "preflight returned no end marker" "END floorfunds-kit-preflight${CR}${NL}" -- --db ${P}z --role ${P}z --force --no-migrate
@@ -298,6 +300,25 @@ for w in sh ps1; do
     "$([[ $grc == 0 && $mem == 1 && $rc != 0 && $el -ge 2 ]] && grep -q 'pg_read_all_data' "$T/out" && echo 1 || echo 0)" "rc=$rc grc=$grc mem=$mem el=${el}s $(tail -2 "$T/out" | tr '\n' ' ')"
   q "REVOKE pg_read_all_data FROM ${P}a_login" >/dev/null
 done
+
+
+# TLD 9:19: live non-superuser admin (CREATEROLE + CREATEDB is still not enough) -> rc 5 up front, nothing changed.
+ADMPW="adm-$(PW)"
+q "CREATE ROLE ${P}adm LOGIN CREATEROLE CREATEDB PASSWORD '$ADMPW'" >/dev/null 2>&1
+for w in sh ps1; do
+  for f in "" force; do
+    s0=$(snap); c0=$(q "SELECT md5(string_agg(coalesce(description,''), '|' ORDER BY objoid, classoid)) FROM pg_shdescription")
+    if [[ $w == sh ]]; then
+      PGPASSWORD="$ADMPW" bash "$DBDIR/setup.sh" --superuser-cmd "psql -h 127.0.0.1 -U ${P}adm" --db ${P}na --role ${P}na ${f:+--force --drop} --seed >"$T/out" 2>&1; rc=$?
+    else
+      PGPASSWORD="$ADMPW" pwsh -NoProfile -NonInteractive -File "$DBDIR/setup.ps1" -AdminHost 127.0.0.1 -AdminUser ${P}adm -Db ${P}na -Role ${P}na ${f:+-Force -Drop} -Seed >"$T/out" 2>&1; rc=$?
+    fi
+    ok "TLD 9:19 [$w] non-superuser admin ${P}adm (CREATEROLE CREATEDB)${f:+ with --force} -> rc 5, message, DBs/roles/comments unchanged, no change step ran" \
+      "$([[ $rc == 5 && $(snap) == "$s0" && $(q "SELECT md5(string_agg(coalesce(description,''), '|' ORDER BY objoid, classoid)) FROM pg_shdescription") == "$c0" && $(q "SELECT count(*) FROM pg_roles WHERE rolname LIKE '${PL}na%'") == 0 && $(q "SELECT count(*) FROM pg_database WHERE datname LIKE '${PL}na%'") == 0 ]] && grep -qF "Refused: the admin connection must be a PostgreSQL superuser (e.g. postgres); ${P}adm is not." "$T/out" && ! grep -Eq 'create or update|create if missing|Dropping|migrat' "$T/out" && echo 1 || echo 0)" "rc=$rc $(tail -2 "$T/out" | tr '\n' ' ')"
+    ok "TLD 9:19 [$w] no password in the output" "$(grep -qF -e "$ADMPW" -e "$FF_DB_PASSWORD" -e 'SCRAM-SHA-256$' "$T/out" && echo 0 || echo 1)"
+  done
+done
+q "DROP ROLE ${P}adm" >/dev/null
 
 cleanup
 ok "cleanup: no ${P}* DB or role left" "$([[ $(q "SELECT (SELECT count(*) FROM pg_database WHERE datname LIKE '$PL%') + (SELECT count(*) FROM pg_roles WHERE rolname LIKE '$PL%')") == 0 ]] && echo 1 || echo 0)"
