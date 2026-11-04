@@ -201,9 +201,13 @@
           "xunit.v3.runner.common": "[4.0.2]"
         }
       },
+      "login.abstractions": {
+        "type": "Project"
+      },
       "login.entra": {
         "type": "Project",
         "dependencies": {
+          "Login.Abstractions": "[1.0.0, )",
           "Microsoft.AspNetCore.Authentication.OpenIdConnect": "[10.0.14, 10.0.14]",
           "Microsoft.IdentityModel.Validators": "[8.19.2, 8.19.2]"
         }

@@ -10,6 +10,9 @@
     <RestoreLockedMode Condition="'$(EntraUnlock)' != 'true'">true</RestoreLockedMode>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../Login.Abstractions/Login.Abstractions.csproj" />
+  </ItemGroup>
+  <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="[10.0.14]" />
     <PackageReference Include="Microsoft.IdentityModel.Validators" Version="[8.19.2]" />

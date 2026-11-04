@@ -1,5 +1,5 @@
 // Host hooks: the only coupling between Login.Entra and its host (stand-in now, real service R1 later).
-using Login.Entra.Drafts;
+using Login.Abstractions;
 using Microsoft.AspNetCore.Http;
 namespace Login.Entra.Contracts;
 
@@ -14,7 +14,7 @@ public sealed record EntraAuditEvent(
     IReadOnlyList<string>? Amr,  // mapped, closed enum
     DateTimeOffset? AuthTime);
 
-public sealed record EntraSignInResult(Guid UserId, Guid PartnerId, Guid LocationId, Guid TenantId, Guid ObjectId,
+public sealed record EntraSignInResult(Guid UserId, Guid? PartnerId, Guid LocationId, Guid TenantId, Guid ObjectId,
     IReadOnlyList<string> Amr, DateTimeOffset AuthTime, string? ReturnUrl);
 
 public interface IEntraHost
@@ -27,4 +27,11 @@ public interface IEntraHost
     Task RenderErrorAsync(HttpContext http, Guid? locationId);
     /// <summary>Render the database sign-in form for this location (server-decided fallback, TLD-S2B-15).</summary>
     Task RenderDatabaseFormAsync(HttpContext http, LocationLoginConfig config, bool viaFallback);
+}
+
+/// <summary>Resolves the opaque SecretRef to the client secret (TLD-S2B-19). Host-provided.
+/// Not in Login.Abstractions (3f3fef9), so it stays a Login.Entra host hook.</summary>
+public interface ISecretResolver
+{
+    Task<string?> ResolveAsync(string secretRef, CancellationToken ct);
 }

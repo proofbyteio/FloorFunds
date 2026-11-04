@@ -1,5 +1,5 @@
 using Login.Entra.Contracts;
-using Login.Entra.Drafts;
+using Login.Abstractions;
 namespace Login.Entra;
 
 /// <summary>Validated Entra settings for one location. Authority = base + "/{tid}/v2.0", exactly one tenant (TLD-S2B-18).</summary>
@@ -12,7 +12,7 @@ public sealed record EntraLocation(LocationLoginConfig Config, Guid TenantId, st
     {
         why = "";
         if (c is null) { why = "config_missing"; return null; }
-        if (c.ProviderKind != LoginProviderKind.Entra) { why = "not_entra"; return null; }
+        if (c.ProviderKind != ProviderKind.Entra) { why = "not_entra"; return null; }
         if (c.EntraAllowedTenantIds is not { Count: 1 }) { why = "tenant_count"; return null; }
         var tid = c.EntraAllowedTenantIds[0];
         if (tid == Guid.Empty || tid == MsaTenant) { why = "tenant_invalid"; return null; }

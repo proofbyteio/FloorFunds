@@ -3,7 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using Login.Entra;
 using Login.Entra.Contracts;
-using Login.Entra.Drafts;
+using Login.Abstractions;
 using Login.Entra.Fixtures;
 using Login.FakeEntra;
 using Microsoft.AspNetCore.Builder;
@@ -90,18 +90,18 @@ public sealed class Env : IAsyncDisposable
         {
             Locations =
             [
-                new("loc-a", new(LocA, LoginProviderKind.Entra, "A (SSE2-FAKE-TEST-ONLY)", [TenantA], e.Fake.BaseUrl, cidA, "ref-a", true, true, 1)),
-                new("loc-b", new(LocB, LoginProviderKind.Entra, "B (SSE2-FAKE-TEST-ONLY)", [TenantA], e.Fake.BaseUrl, cidB, "ref-b", true, false, 1)),
-                new("loc-nofb", new(LocNoFb, LoginProviderKind.Entra, "A2 no fallback", [TenantB], e.Fake.BaseUrl, cidC, "ref-c", false, true, 1)),
-                new("loc-db", new(LocDb, LoginProviderKind.Database, "DB", [], null, null, null, false, true, 1)),
+                new("loc-a", FixtureConfig.Build(LocA, PartnerId, "loc-a", ProviderKind.Entra, "A (SSE2-FAKE-TEST-ONLY)", [TenantA], authority: e.Fake.BaseUrl, clientId: cidA, secretRef: "ref-a", allowDbFallback: true, mfaRequired: true)),
+                new("loc-b", FixtureConfig.Build(LocB, PartnerId, "loc-b", ProviderKind.Entra, "B (SSE2-FAKE-TEST-ONLY)", [TenantA], authority: e.Fake.BaseUrl, clientId: cidB, secretRef: "ref-b", allowDbFallback: true, mfaRequired: false)),
+                new("loc-nofb", FixtureConfig.Build(LocNoFb, PartnerId, "loc-nofb", ProviderKind.Entra, "A2 no fallback", [TenantB], authority: e.Fake.BaseUrl, clientId: cidC, secretRef: "ref-c", allowDbFallback: false, mfaRequired: true)),
+                new("loc-db", FixtureConfig.Build(LocDb, PartnerId, "loc-db", ProviderKind.Database, "DB", [], authority: null, clientId: null, secretRef: null, allowDbFallback: false, mfaRequired: true)),
             ],
             Secrets = new() { ["ref-a"] = Sec(), ["ref-b"] = Sec(), ["ref-c"] = Sec() },
         };
         var issA = $"{e.Fake.BaseUrl}/{TenantA:D}/v2.0";
         f.Links.Add(new(issA, TenantA, e.OidA, e.UserA, "same@fake.invalid"));
         f.Links.Add(new($"{e.Fake.BaseUrl}/{TenantB:D}/v2.0", TenantB, e.OidB, e.UserB, null));
-        f.Users.Add(new(e.UserA, PartnerId, AppUserStatus.Active, null));
-        f.Users.Add(new(e.UserB, PartnerId, AppUserStatus.Active, null));
+        f.Users.Add(new(e.UserA, PartnerId, "active", null));
+        f.Users.Add(new(e.UserB, PartnerId, "active", null));
         f.Assignments.Add(new(e.UserA, LocA));
         f.Assignments.Add(new(e.UserB, LocNoFb));
         e.Fake.ClientSecrets[cidA] = f.Secrets["ref-a"]; e.Fake.ClientSecrets[cidB] = f.Secrets["ref-b"]; e.Fake.ClientSecrets[cidC] = f.Secrets["ref-c"];
@@ -112,9 +112,8 @@ public sealed class Env : IAsyncDisposable
         b.Logging.ClearProviders(); b.Logging.AddProvider(e.Logs);
         b.WebHost.UseUrls(e.HostUrl);
         b.Services.AddSingleton<ILocationLoginConfigReader>(e.Store);
-        b.Services.AddSingleton<IExternalLoginLookup>(e.Store);
-        b.Services.AddSingleton<IAppUserReader>(e.Store);
-        b.Services.AddSingleton<ILocationAssignmentCheck>(e.Store);
+        b.Services.AddSingleton<IExternalLoginReader>(e.Store);
+        b.Services.AddSingleton<IUserLocationReader>(e.Store);
         b.Services.AddSingleton<ISecretResolver>(e.Store);
         b.Services.AddSingleton<IEntraHost>(e.Host);
         if (clock is not null) b.Services.AddSingleton(clock);

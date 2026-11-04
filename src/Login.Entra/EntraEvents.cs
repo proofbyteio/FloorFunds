@@ -1,6 +1,6 @@
 using System.IdentityModel.Tokens.Jwt;
 using Login.Entra.Contracts;
-using Login.Entra.Drafts;
+using Login.Abstractions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Http;
@@ -10,7 +10,7 @@ namespace Login.Entra;
 
 /// <summary>OIDC events for scheme "entra-oidc": plan §a.3 checks 1–11 plus D3/D4 down handling.</summary>
 public sealed class EntraOidcEvents(
-    ILocationLoginConfigReader configs, IExternalLoginLookup links, IAppUserReader users, ILocationAssignmentCheck assignments,
+    ILocationLoginConfigReader configs, IExternalLoginReader links, IUserLocationReader assignments,
     ISecretResolver secrets, IEntraHost host, PerLocationConfigurationManager configMgr, EntraAccessTokenValidator atv,
     ReplayCache replay, EntraOptions opts, TimeProvider clock, ILogger<EntraOidcEvents> log) : OpenIdConnectEvents
 {
@@ -86,16 +86,16 @@ public sealed class EntraOidcEvents(
         var now = clock.GetUtcNow();
         if (authTime > now + opts.ClockSkew || now - authTime > opts.MaxAuthAge) { await Refuse("stale_auth_time", "stale_auth_time"); return; }
         // 7 link on (issuer, tid, oid) only (TLD-S2B-06)
-        var userId = await links.FindAsync(loc.Authority, tidG, oidG, http.RequestAborted);
-        if (userId is null) { await Refuse("bad_credentials", "unknown_subject"); return; }
-        var user = await users.FindUserAsync(userId.Value, http.RequestAborted);
-        if (user is null) { await Refuse("bad_credentials", "user_missing"); return; }
+        // Abstractions: null = no external_login row; throws on DB error or unknown status (fail closed, UserStatusText.Parse).
+        var user = await links.FindUserAsync(ProviderKind.Entra, loc.Authority, tidG, oidG, http.RequestAborted);
+        if (user is null) { await Refuse("bad_credentials", "unknown_subject"); return; }
         // 8 assignment
         if (!await assignments.IsAssignedAsync(user.UserId, loc.Config.LocationId, http.RequestAborted)) { await Refuse("bad_credentials", "location_not_assigned"); return; }
-        // 9 user state
+        // 9 user state: explicit checks first so the reason codes survive; MaySignIn is the final guard
+        // (only an explicit Active and not locked passes; never trust default(UserStatus), SSE N1).
         if (user.LockedUntil is { } lu && lu > now) { await Refuse("locked", "locked"); return; }
-        if (user.Status == AppUserStatus.Disabled) { await Refuse("bad_credentials", "disabled"); return; }
-        if (user.Status != AppUserStatus.Active) { await Refuse("bad_credentials", "user_status_unknown"); return; } // fail closed
+        if (user.Status == UserStatus.Disabled) { await Refuse("bad_credentials", "disabled"); return; }
+        if (user.Status != UserStatus.Active || !user.MaySignIn(now)) { await Refuse("bad_credentials", "user_status_unknown"); return; }
         // 10 amr (TLD-S2B-12/13/20)
         var amr = AmrMapper.Map(at.Token.TryGetPayloadValue<string[]>("amr", out var raw) ? raw : null);
         if (loc.Config.MfaRequired && !amr.Contains("mfa")) { await Refuse("mfa_missing", "mfa_missing"); return; }

@@ -1,5 +1,5 @@
 using Login.Entra.Contracts;
-using Login.Entra.Drafts;
+using Login.Abstractions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
@@ -19,7 +19,7 @@ public sealed class EntraLocationEndpoint(ILocationLoginConfigReader configs, En
             await host.RenderErrorAsync(http, null);
             return Outcome.NotFoundOrFailClosed;
         }
-        if (cfg.ProviderKind == LoginProviderKind.Database) { await host.RenderDatabaseFormAsync(http, cfg, viaFallback: false); return Outcome.Database; }
+        if (cfg.ProviderKind == ProviderKind.Database) { await host.RenderDatabaseFormAsync(http, cfg, viaFallback: false); return Outcome.Database; }
 
         var loc = EntraLocation.TryCreate(cfg, opts.AllowInsecureTestAuthority, out var why);
         if (loc is null) { log.LogWarning("entra.config_invalid location={L} why={W}", cfg.LocationId, why); await host.RenderErrorAsync(http, cfg.LocationId); return Outcome.Error; }

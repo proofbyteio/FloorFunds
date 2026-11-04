@@ -1,7 +1,7 @@
 // ENT-* end-to-end tests: real ASP.NET Core OIDC handler + Login.Entra against the fake issuer on 18093.
 using System.Net;
 using Login.Entra;
-using Login.Entra.Drafts;
+using Login.Abstractions;
 using Login.Entra.Fixtures;
 using Login.FakeEntra;
 using Xunit;
@@ -68,10 +68,9 @@ public class EntFlowTests
 
     public static TheoryData<string, string, int?, string, string> UserStates => new()
     {
-        { "locked", AppUserStatus.Active, 10, "locked", "locked" },
-        { "lock-expired", AppUserStatus.Active, -10, "", "" },
-        { "disabled", AppUserStatus.Disabled, null, "bad_credentials", "disabled" },
-        { "unknown-status", "pending_review", null, "bad_credentials", "user_status_unknown" },
+        { "locked", "active", 10, "locked", "locked" },
+        { "lock-expired", "active", -10, "", "" },
+        { "disabled", "disabled", null, "bad_credentials", "disabled" },
     };
 
     [Theory, MemberData(nameof(UserStates))]
@@ -85,11 +84,23 @@ public class EntFlowTests
         _ = id;
     }
 
-    [Fact] public async Task ENT_04c_linked_but_no_app_user_row_refused()
+    // Unknown status / missing user row: Abstractions readers THROW (UserStatusText.Parse), so these fail closed
+    // through the same path as a DB error (no session, no form). The old "user_status_unknown"/"user_missing" details are gone.
+    [Theory, InlineData("pending_review"), InlineData("Active"), InlineData("")]
+    public async Task ENT_04b2_unknown_status_fails_closed(string status)
+    {
+        await using var e = await Env.StartAsync();
+        e.Store.Mutate(d => { d.Users.RemoveAll(u => u.UserId == e.UserA); d.Users.Add(new(e.UserA, Env.PartnerId, status, null)); });
+        var f = await e.SignInAsync("loc-a");
+        Assert.NotEqual(HttpStatusCode.OK, f.FinalStatus); Assert.DoesNotContain("<form", f.FinalBody); Assert.Empty(e.Host.Sessions);
+    }
+
+    [Fact] public async Task ENT_04c_linked_but_no_app_user_row_fails_closed()
     {
         await using var e = await Env.StartAsync();
         e.Store.Mutate(d => d.Users.Clear());
-        Refused(await e.SignInAsync("loc-a"), e, "bad_credentials", "user_missing");
+        var f = await e.SignInAsync("loc-a");
+        Assert.NotEqual(HttpStatusCode.OK, f.FinalStatus); Assert.DoesNotContain("<form", f.FinalBody); Assert.Empty(e.Host.Sessions);
     }
 
     [Fact] public async Task ENT_04d_reader_throws_fails_closed()
@@ -374,7 +385,7 @@ public class EntFlowTests
         Assert.Null(EntraLocation.TryCreate(c, allowHttp: false, out var w1)); Assert.Equal("authority_not_https", w1);
         Assert.Null(EntraLocation.TryCreate(c with { EntraAllowedTenantIds = [Env.TenantA, Env.TenantB] }, true, out var w2)); Assert.Equal("tenant_count", w2);
         Assert.Null(EntraLocation.TryCreate(c with { OidcAuthority = "http://example.invalid" }, true, out var w3)); Assert.Equal("authority_not_https", w3);
-        Assert.Null(EntraLocation.TryCreate(c with { SecretRef = null }, true, out _));
+        Assert.Null(EntraLocation.TryCreate(FixtureConfig.WithoutSecret(c), true, out _));
         Assert.Equal("https://login.microsoftonline.com/" + Env.TenantA.ToString("D") + "/v2.0",
             EntraLocation.TryCreate(c with { OidcAuthority = "https://login.microsoftonline.com/" }, false, out _)!.Authority);
         var prod = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder(new Microsoft.AspNetCore.Builder.WebApplicationOptions { EnvironmentName = "Production" });
