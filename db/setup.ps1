@@ -78,6 +78,8 @@ function Get-Pw([SecureString]$given, [string]$envValue, [string]$prompt) {
   if ([string]::IsNullOrEmpty($v)) { Write-Error 'Empty password refused' -ErrorAction Continue; exit 2 }
   # K5: a newline/CR would break the psql \set the password travels in.
   if ($v.Contains("`n") -or $v.Contains("`r")) { [Console]::Error.WriteLine("Refused: the password ($prompt) contains a newline or carriage return. Nothing was changed."); exit 2 }
+  # KF-A: only a SCRAM verifier is sent; SASLprep is the identity only for printable ASCII.
+  if ($v -cnotmatch '^[\x20-\x7E]+$') { [Console]::Error.WriteLine("Refused: the password ($prompt) must be printable ASCII (space to ~). Nothing was changed."); exit 2 }
   $v
 }
 $pw = Get-Pw $Password $env:FF_DB_PASSWORD "Password for role $Role"
@@ -119,7 +121,8 @@ function Get-KitSql([string]$name) { [System.IO.File]::ReadAllText((Join-Path $K
 
 # 0. K1 preflight: read-only, before anything is changed.
 Write-Host "Preflight (read-only): $Db, $Role, $AdminApiRole, $LoginRole..."
-$pre = @((Invoke-Psql (Get-KitSql 'preflight.sql') @('-tA', '-v', "api_role=$AdminApiRole", '-v', "login_role=$LoginRole") -Capture -FailCode 5) -split "`r?`n" | Where-Object { $_ })
+# KF-E: split on LF only, so a line ending in CR (e.g. "END ...`r") does not match exactly, as in setup.sh.
+$pre = @((Invoke-Psql (Get-KitSql 'preflight.sql') @('-tA', '-v', "api_role=$AdminApiRole", '-v', "login_role=$LoginRole") -Capture -FailCode 5) -split "`n" | Where-Object { $_ })
 # KF3: fail closed. The preflight always ends with this line; empty or truncated output is a refusal.
 if (-not $pre.Count -or $pre[-1] -cne 'END floorfunds-kit-preflight') {
   [Console]::Error.WriteLine('Refused: the preflight returned no end marker (empty or incomplete output), so the catalog could not be checked. Nothing was changed.'); exit 5
@@ -135,13 +138,24 @@ if ($exists.Count -and -not $Force) {
   [Console]::Error.WriteLine("Refused: re-run with -Force to update the kit's own objects (add -Drop to recreate the DB). Nothing was changed."); exit 5
 }
 
+function Get-ScramVerifier([string]$pw) {
+  # RFC 5802/7677 SCRAM-SHA-256, 4096 iterations, 16-byte random salt: the format libpq's PQencryptPasswordConn makes.
+  $C = [System.Security.Cryptography.HMACSHA256]
+  $pb = [System.Text.Encoding]::ASCII.GetBytes($pw)
+  $salt = [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(16)
+  $salted = [System.Security.Cryptography.Rfc2898DeriveBytes]::Pbkdf2($pb, $salt, 4096, [System.Security.Cryptography.HashAlgorithmName]::SHA256, 32)
+  $ck = $C::HashData($salted, [System.Text.Encoding]::ASCII.GetBytes('Client Key'))
+  $sk = $C::HashData($salted, [System.Text.Encoding]::ASCII.GetBytes('Server Key'))
+  $stored = [System.Security.Cryptography.SHA256]::HashData($ck)
+  'SCRAM-SHA-256$4096:' + [Convert]::ToBase64String($salt) + '$' + [Convert]::ToBase64String($stored) + ':' + [Convert]::ToBase64String($sk)
+}
 # Plain login role: no superuser, no BYPASSRLS, no CREATEDB/CREATEROLE/REPLICATION; created + marked, or
 # updated only if it carries the kit marker (db/kit/role.sql).
 function Set-AppRole([string]$r, [string]$p) {
   Write-Host "Role ${r}: create or update (kit-marked only)..."
-  # psql quoted-variable escaping: ' -> '' and \ -> \\
-  $pq = $p.Replace('\', '\\').Replace("'", "''")
-  [void](Invoke-Psql ("\set r '$r'`n\set p '$pq'`n" + (Get-KitSql 'role.sql')) -FailCode 5)
+  # KF-A: only the SCRAM-SHA-256 verifier reaches psql/the server (base64 + $ :, no escaping needed).
+  $v = Get-ScramVerifier $p
+  [void](Invoke-Psql ("\set r '$r'`n\set p '$v'`n" + (Get-KitSql 'role.sql')) -FailCode 5)
 }
 Set-AppRole $Role $pw
 

@@ -21,6 +21,8 @@ export KIT_STUB_LOG="$T/stub.log" KIT_STUB_PREFLIGHT="$T/preflight.out"
 pass=0; fail=0
 ok() { if [[ "$2" == 1 ]]; then pass=$((pass+1)); echo "PASS $1"; else fail=$((fail+1)); echo "FAIL $1${3:+ :: $3}"; fi; }
 t() { "$@" >/dev/null 2>&1 && echo 1 || echo 0; }
+# a well-formed (unusable) SCRAM verifier for calling kit/role.sql directly (KF-A: it accepts only verifiers)
+DUMMYV='SCRAM-SHA-256$4096:AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
 PW() { od -An -N12 -tx1 /dev/urandom | tr -d ' \n'; }
 q() { sudo -u postgres psql -X -tA -v ON_ERROR_STOP=1 -d postgres -c "$1"; }
 
@@ -76,6 +78,13 @@ ok "stub: the --force run sent only guarded kit SQL (role.sql x3 marker guard, d
 export KIT_STUB_NO_END=1
 stub_case "KF3 empty preflight output (no end marker) with --force -> refused" 5 1 "preflight returned no end marker" "" -- --db ${P}z --role ${P}z --force --no-migrate
 stub_case "KF3 truncated preflight output (EXISTS lines, no end marker) with --force -> refused" 5 1 "preflight returned no end marker" "EXISTS role ${P}z${NL}EXISTS database ${P}z${NL}" -- --db ${P}z --role ${P}z --force --no-migrate
+# KF-E: an END line ending in CR is not the end marker, in both scripts.
+CR=$'\r'
+stub_case "KF-E end marker ending in CR (CRLF) -> refused" 5 1 "preflight returned no end marker" "END floorfunds-kit-preflight${CR}${NL}" -- --db ${P}z --role ${P}z --force --no-migrate
+stub_case "KF-E end marker ending in CR (no LF) -> refused" 5 1 "preflight returned no end marker" "END floorfunds-kit-preflight${CR}" -- --db ${P}z --role ${P}z --force --no-migrate
+# KF-A: only printable ASCII passwords (SASLprep is then the identity for the client-side SCRAM verifier).
+FF_DB_PASSWORD="caf$(printf '\xc3\xa9')-$(PW)" stub_case "KF-A non-ASCII owner password refused" 2 0 "must be printable ASCII" "" -- --db ${P}z --role ${P}z --no-migrate
+FF_LOGIN_PASSWORD="tab$(printf '\t')-$(PW)" stub_case "KF-A control-character login password refused" 2 0 "must be printable ASCII" "" -- --db ${P}z --role ${P}z --no-migrate
 unset KIT_STUB_NO_END
 stub_case "KF1 preflight membership finding with --force -> refused" 5 1 "Refused: role ${P}z is a member of role pg_read_all_data" "REFUSE role ${P}z is a member of role pg_read_all_data (a kit role may belong to no role outside the kit)${NL}EXISTS role ${P}z${NL}" -- --db ${P}z --role ${P}z --force --no-migrate
 OLDPW="$FF_DB_PASSWORD"
@@ -206,15 +215,15 @@ ok "[ps1] KF1 after every grant/attribute was reverted: -Force on ${P}a -> rc 0,
 
 # B4 defence in depth: the mutating kit SQL itself refuses unmarked objects (if the preflight were bypassed / raced)
 s0=$(snap)
-out=$( { printf "\\\\set r '${P}u'\n\\\\set p 'x'\n"; cat "$DBDIR/kit/role.sql"; } | sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}a -v role=${P}a_owner -f - 2>&1); rc=$?
+out=$( { printf "\\\\set r '${P}u'\n\\\\set p '$DUMMYV'\n"; cat "$DBDIR/kit/role.sql"; } | sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}a -v role=${P}a_owner -f - 2>&1); rc=$?
 ok "kit/role.sql directly on unmarked ${P}u -> error, role unchanged" "$([[ $rc != 0 && $out == *'refusing to alter a role the kit did not create'* && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
-out=$( { printf "\\\\set r '${P}s'\n\\\\set p 'x'\n"; cat "$DBDIR/kit/role.sql"; } | sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}a -v role=${P}a_owner -f - 2>&1); rc=$?
+out=$( { printf "\\\\set r '${P}s'\n\\\\set p '$DUMMYV'\n"; cat "$DBDIR/kit/role.sql"; } | sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}a -v role=${P}a_owner -f - 2>&1); rc=$?
 ok "kit/role.sql directly on marked superuser ${P}s -> error, still superuser" "$([[ $rc != 0 && $out == *'refusing to alter'* && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
 out=$(sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}u -v role=${P}u -v drop=1 -f - <"$DBDIR/kit/database.sql" 2>&1); rc=$?
 ok "kit/database.sql drop=1 directly on unmarked ${P}u -> error, DB not dropped/regranted" "$([[ $rc != 0 && $out == *'refusing to touch a database the kit did not create'* && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
 
 # KF2: the DO-block guards themselves (preflight bypassed), on the kit's own marked roles.
-roledirect() { { printf "\\\\set r '%s'\n\\\\set p 'x'\n" "$1"; cat "$DBDIR/kit/role.sql"; } | sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}a -v role=${P}a_owner -f - 2>&1; }
+roledirect() { { printf "\\\\set r '%s'\n\\\\set p '%s'\n" "$1" "${2:-$DUMMYV}"; cat "$DBDIR/kit/role.sql"; } | sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}a -v role=${P}a_owner -f - 2>&1; }
 q "GRANT pg_read_all_data TO ${P}a_login" >/dev/null; s0=$(snap); h0=$(pwhash ${P}a_login)
 out=$(roledirect ${P}a_login); rc=$?
 ok "kit/role.sql DO block directly on marked ${P}a_login with pg_read_all_data -> error, password and membership unchanged" "$([[ $rc != 0 && $out == *'member of role(s) outside the kit: pg_read_all_data'* && $(snap) == "$s0" && $(pwhash ${P}a_login) == "$h0" ]] && echo 1 || echo 0)" "rc=$rc"
@@ -233,6 +242,62 @@ for d in 0 1; do
 done
 out=$(sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}u -v role=${P}u -v drop=0 -f - <"$DBDIR/kit/database.sql" 2>&1); rc=$?
 ok "kit/database.sql DO block (drop=0) directly on unmarked ${P}u -> error, not marked or regranted" "$([[ $rc != 0 && $out == *'refusing to touch a database the kit did not create'* && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
+
+
+# ---------- KF-A / KF-B / KF-C (commit after 81affe1) ----------
+LOG=/var/log/postgresql/postgresql-17-main.log  # read only (sudo -u postgres tail from a byte offset); never edited
+logfrom() { sudo -u postgres tail -c +$(( $1 + 1 )) "$LOG"; }
+# KF-A 1: the stored password is a SCRAM verifier made client-side, and the kit's passwords log in.
+for r in ${P}a_owner ${P}a_admin_api ${P}a_login ${P}b ${P}b_admin_api ${P}b_login; do
+  ok "KF-A $r: rolpassword is SCRAM-SHA-256\$4096" "$([[ $(q "SELECT rolpassword LIKE 'SCRAM-SHA-256\$4096:%' FROM pg_authid WHERE rolname='$r'") == t ]] && echo 1 || echo 0)"
+done
+for w in sh ps1; do
+  pw="kfa-$(PW)"
+  if [[ $w == sh ]]; then rc=$(FF_LOGIN_PASSWORD="$pw" SH --db ${P}a --role ${P}a_owner --force); else rc=$(FF_LOGIN_PASSWORD="$pw" PS -Db ${P}a -Role ${P}a_owner -Force); fi
+  ok "KF-A [$w] client-side verifier: ${P}a_login logs in with the new password, not with a wrong one" \
+    "$([[ $rc == 0 ]] && PGPASSWORD="$pw" psql -X -tA -h 127.0.0.1 -U ${P}a_login -d ${P}a -c 'select 1' >/dev/null 2>&1 && ! PGPASSWORD="x$pw" psql -X -tA -h 127.0.0.1 -U ${P}a_login -d ${P}a -c 'select 1' >/dev/null 2>&1 && echo 1 || echo 0)" "rc=$rc"
+done
+r=$(checks ${P}b ${P}b); ok "KF-A DB checks on ${P}b after the SCRAM change -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
+# KF-A 2: force an error INSIDE the DO block's EXECUTE (CREATE ROLE "none": reserved name, passes the name check, not
+# in pg_roles). The unique password must appear neither on stderr/stdout nor in the server log after the offset.
+for w in sh ps1; do
+  u="kfa-uniq-$(PW)"; off=$(sudo -u postgres stat -c %s "$LOG"); s0=$(snap)
+  if [[ $w == sh ]]; then rc=$(FF_DB_PASSWORD="$u" SH --db ${P}n --role none --no-migrate); else rc=$(FF_DB_PASSWORD="$u" PS -Db ${P}n -Role none -NoMigrate); fi
+  ok "KF-A [$w] error inside the DO-block EXECUTE -> rc 5, 'CREATE ROLE \"none\" failed (42939)', nothing changed" \
+    "$([[ $rc == 5 && $(snap) == "$s0" ]] && grep -q 'CREATE ROLE "none" failed (42939)' "$T/out" && echo 1 || echo 0)" "rc=$rc $(grep -v "$u" "$T/out" | tail -2 | tr '\n' ' ')"
+  ok "KF-A [$w] the unique password is not in the script output" "$(grep -qF "$u" "$T/out" && echo 0 || echo 1)"
+  ok "KF-A [$w] the unique password is not in the server log after offset $off (and no verifier either)" "$(logfrom $off | grep -qF -e "$u" -e 'SCRAM-SHA-256$' && echo 0 || echo 1)"
+  ok "KF-A [$w] the server did log the error (so the log check is live)" "$(logfrom $off | grep -qF 'CREATE ROLE "none" failed (42939)' && echo 1 || echo 0)"
+done
+out=$(roledirect ${P}a_login 'plain-text-password'); rc=$?
+ok "KF-A kit/role.sql refuses a value that is not a SCRAM verifier" "$([[ $rc != 0 && $out == *'must arrive as a SCRAM-SHA-256 verifier'* ]] && echo 1 || echo 0)" "rc=$rc"
+
+# KF-C: a role outside the kit that is a member OF a kit role is refused (preflight in both scripts + DO block).
+q "CREATE ROLE ${P}c NOLOGIN" >/dev/null; q "GRANT ${P}a_login TO ${P}c" >/dev/null; s0=$(snap)
+rc=$(SH --db ${P}a --role ${P}a_owner --force)
+ok "KF-C [sh] ${P}c member of kit role ${P}a_login -> rc 5, nothing changed" "$([[ $rc == 5 && $(snap) == "$s0" ]] && grep -q "${P}c is a member of kit role ${P}a_login" "$T/out" && echo 1 || echo 0)" "rc=$rc"
+rc=$(PS -Db ${P}a -Role ${P}a_owner -Force)
+ok "KF-C [ps1] same -> rc 5, nothing changed" "$([[ $rc == 5 && $(snap) == "$s0" ]] && grep -q "${P}c is a member of kit role ${P}a_login" "$T/out" && echo 1 || echo 0)" "rc=$rc"
+h0=$(pwhash ${P}a_login); out=$(roledirect ${P}a_login); rc=$?
+ok "KF-C kit/role.sql DO block directly -> error, password unchanged" "$([[ $rc != 0 && $out == *"outside the kit are members of it: ${P}c"* && $(pwhash ${P}a_login) == "$h0" ]] && echo 1 || echo 0)" "rc=$rc"
+q "REVOKE ${P}a_login FROM ${P}c" >/dev/null; q "DROP ROLE ${P}c" >/dev/null
+
+# KF-B race: a concurrent UNCOMMITTED GRANT pg_read_all_data TO the kit role. The kit's SHARE lock must wait for it;
+# after the grantor commits, the kit must refuse. Never rc 0 with the membership present.
+for w in sh ps1; do
+  fifo="$T/race.$w"; rm -f "$fifo"; mkfifo "$fifo"
+  ( sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres <"$fifo" >"$T/grantor.$w" 2>&1 ) & gp=$!
+  exec 7>"$fifo"
+  printf 'BEGIN;\nGRANT pg_read_all_data TO %s;\nSELECT pg_sleep(4);\nCOMMIT;\n' "${P}a_login" >&7; exec 7>&-
+  sleep 1  # the GRANT is now uncommitted and holds ROW EXCLUSIVE on pg_auth_members
+  t0=$(date +%s)
+  if [[ $w == sh ]]; then rc=$(SH --db ${P}a --role ${P}a_owner --force); else rc=$(PS -Db ${P}a -Role ${P}a_owner -Force); fi
+  el=$(( $(date +%s) - t0 )); wait $gp; grc=$?
+  mem=$(q "SELECT count(*) FROM pg_auth_members m JOIN pg_roles g ON g.oid=m.roleid JOIN pg_roles r ON r.oid=m.member WHERE g.rolname='pg_read_all_data' AND r.rolname='${P}a_login'")
+  ok "KF-B [$w] race with an uncommitted GRANT pg_read_all_data -> kit refused (rc $rc), membership present ($mem), kit waited for the lock (${el}s), never rc 0" \
+    "$([[ $grc == 0 && $mem == 1 && $rc != 0 && $el -ge 2 ]] && grep -q 'pg_read_all_data' "$T/out" && echo 1 || echo 0)" "rc=$rc grc=$grc mem=$mem el=${el}s $(tail -2 "$T/out" | tr '\n' ' ')"
+  q "REVOKE pg_read_all_data FROM ${P}a_login" >/dev/null
+done
 
 cleanup
 ok "cleanup: no ${P}* DB or role left" "$([[ $(q "SELECT (SELECT count(*) FROM pg_database WHERE datname LIKE '$PL%') + (SELECT count(*) FROM pg_roles WHERE rolname LIKE '$PL%')") == 0 ]] && echo 1 || echo 0)"

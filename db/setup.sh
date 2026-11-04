@@ -107,6 +107,9 @@ ask() { # ask VAR "prompt": hidden prompt if VAR is empty
   fi
   # K5: a newline/CR would break the psql \set the password travels in.
   [[ "${!__v}" != *$'\n'* && "${!__v}" != *$'\r'* ]] || { echo "Refused: the password for $3 contains a newline or carriage return. Nothing was changed." >&2; exit 2; }
+  # KF-A: the kit sends Postgres a SCRAM-SHA-256 verifier, never the password. SASLprep (RFC 4013) is the identity
+  # only for printable ASCII, so other characters are refused rather than hashed differently from libpq at login.
+  local LC_ALL=C; [[ "${!__v}" =~ ^[\ -~]+$ ]] || { echo "Refused: the password for $3 must be printable ASCII (space to ~). Nothing was changed." >&2; exit 2; }
 }
 ask PASSWORD "Password for role $ROLE" "role $ROLE"
 ask ADMIN_API_PASSWORD "Password for app role $ADMIN_API_ROLE" "app role $ADMIN_API_ROLE"
@@ -123,8 +126,19 @@ run_psql() {
     -v db="$DB" -v role="$ROLE" "$@"
 }
 
-pw_set() { # psql quoted-variable escaping: ' -> '' and \ -> \\
-  printf '\\set %s %s\n' "$1" "'$(printf '%s' "$2" | sed "s/'/''/g; s/\\\\/\\\\\\\\/g")'"
+command -v perl >/dev/null || { echo "perl not found on PATH (needed to hash the passwords client-side)" >&2; exit 3; }
+scram() { # KF-A: password on stdin -> SCRAM-SHA-256 verifier (RFC 5802/7677, 4096 iterations, 16-byte random salt),
+  # the same format libpq's PQencryptPasswordConn produces. Only the verifier is ever sent to the server.
+  perl -MDigest::SHA=hmac_sha256,sha256 -MMIME::Base64=encode_base64 -e '
+    local $/; my $pw = <STDIN>; open(my $r, "<:raw", "/dev/urandom") or die; read($r, my $salt, 16) == 16 or die;
+    my $u = hmac_sha256($salt . pack("N", 1), $pw); my $h = $u;
+    for (2 .. 4096) { $u = hmac_sha256($u, $pw); $h ^= $u; }
+    my $b = sub { encode_base64($_[0], "") };
+    print "SCRAM-SHA-256\$4096:", $b->($salt), "\$", $b->(sha256(hmac_sha256("Client Key", $h))), ":", $b->(hmac_sha256("Server Key", $h));'
+}
+pw_set() { # \set NAME 'verifier' (base64 + $ : only, so no psql escaping is needed)
+  local v; v="$(printf '%s' "$2" | scram)" || { echo "Password hashing failed. Nothing more was changed." >&2; exit 5; }
+  printf '\\set %s %s\n' "$1" "'$v'"
 }
 
 # 0. K1 preflight: read-only, before anything is changed.

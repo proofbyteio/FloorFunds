@@ -156,9 +156,27 @@ Branch `fix/db-kit-kf` off 3e12b8d (kept apart from P3). No migration, spec or a
 - **Other checks:** the spec checker gives v1.1-S2a 201/201 and v1-d4 ALL PASS. Login.Abstractions.Checks passes 52/52, and the Release build has 0 warnings and 0 errors (warm cache). `db/migrations.sql` (6d2904571ab1b40ecdddc652fb13fdca) and the spec (455a2f6bcb44a358d5a1cdf394591693) are unchanged.
 - **Open:**
   - The CREATE/DROP DATABASE window can't be closed in Postgres.
-  - KF1 doesn't look at roles that were granted membership *in* a kit role. That was out of scope; ask TL if it's wanted.
+  - KF1 doesn't look at roles that were granted membership *in* a kit role (closed later by KF-C, below).
   - setup.ps1 has never run on Windows.
   - NU3018 still needs re-checking on a normally networked machine.
+
+## KF-A/B/C/E (commit after 81affe1): SSE2 NO-GO fixes
+
+- **Source:** SSE2 review `/tmp/sse2-fverify/F-STATUS-VERIFY.md` md5 `382cfd6c34649d9f2f643926b9e6baf5`, snapshotted to `/tmp/F-STATUS-VERIFY.382cfd6c.md`. TL steering at 9:03 (KF-B lock; SCRAM verifier; KF-C in this commit).
+- **KF-A, what:** a password leaked through the QUERY/CONTEXT lines when an error happened inside role.sql's `EXECUTE`. Reproduced before the fix: `--role none` (reserved name) printed the password on stderr and in the server log.
+  - **Fix:** setup.sh and setup.ps1 now hash the password client-side into a SCRAM-SHA-256 verifier (RFC 5802/7677, 4096 iterations, random 16-byte salt). setup.sh uses perl with Digest::SHA; setup.ps1 uses .NET Rfc2898DeriveBytes.Pbkdf2, HMACSHA256 and SHA256. role.sql refuses any value that is not a verifier.
+  - Each `EXECUTE` is wrapped as `EXCEPTION WHEN OTHERS THEN RAISE 'floorfunds-kit: % failed (%)', step, SQLSTATE`, and psql runs with `SHOW_CONTEXT never` and `VERBOSITY terse`.
+  - Passwords must be printable ASCII, so SASLprep is the identity.
+  - **Server log:** `log_min_error_statement=error`, so the failing statement is logged. After the fix it is the `DO` text, which holds no password and no verifier (checked from a byte offset, read only, through `sudo -u postgres`).
+- **KF-B:** role.sql takes `LOCK pg_authid, pg_auth_members IN SHARE MODE`. This works because the kit's admin is a superuser.
+  - The race test runs an uncommitted GRANT pg_read_all_data, sleeps 4 s, then commits. The kit waits about 3 s and refuses with rc 5 (sh and ps1).
+  - Mutation check: with the LOCK removed, the same test gets rc 0 with the membership present (2 FAIL), so the test detects the race.
+  - The README's "only CREATE/DROP remains" text now states that the role race is closed and the DB race is still open.
+- **KF-C:** refuses a non-kit role that is a member OF a kit role, in both preflight.sql (line kind 11) and role.sql. Tested in sh, ps1 and the DO block directly.
+  - **Conflict:** the Task 2 brief said not to implement KF-C; the 9:03 steering said "KF-C in this commit". I followed the steering.
+- **KF-E:** setup.ps1 splits the preflight output on LF only, so `END …\r` is not taken as the end marker, the same as setup.sh. Stub tests cover CRLF and a bare CR.
+- **Results:** k1-kit-tests 169/0 (was 134; +35 new). DB checks 162/162 on every scratch run. Spec v1.1-S2a 201/201 and v1-d4 ALL PASS. Abstractions 52/52. Release build 0 warnings and 0 errors. Scratch objects were cleaned up to 0.
+- **Open:** the CREATE/DROP DATABASE window. The ALTER-path EXECUTE error is not forced by a test (hard to trigger once the lock is held), but it is wrapped the same way. setup.ps1 has never run on Windows. NU3018.
 
 ## Decisions (this slice)
 
