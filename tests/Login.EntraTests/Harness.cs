@@ -57,7 +57,15 @@ public sealed class Env : IAsyncDisposable
     public static readonly Guid LocB = Guid.Parse("00000000-0000-4000-8000-0000000000b1");
     public static readonly Guid LocDb = Guid.Parse("00000000-0000-4000-8000-0000000000d1");
     public static readonly Guid LocNoFb = Guid.Parse("00000000-0000-4000-8000-0000000000a2");
-    public const int HostPort = 18090;
+    public static readonly int HostPort = PortFromEnv("ENT_STANDIN_PORT", 18090);
+    public static readonly int FakePort = PortFromEnv("ENT_FAKEENTRA_PORT", 18093);
+    static int PortFromEnv(string name, int dflt)
+    {
+        var v = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(v)) return dflt;
+        if (!int.TryParse(v, out var p)) throw new InvalidOperationException($"{name}='{v}' is not a port number");
+        return p;
+    }
     public string HostUrl => $"http://127.0.0.1:{HostPort}";
 
     public FakeEntraServer Fake { get; private set; } = null!;
@@ -73,7 +81,8 @@ public sealed class Env : IAsyncDisposable
     {
         var e = new Env();
         PortGuard.Check(HostPort);
-        e.Fake = new FakeEntraServer(18093);
+        PortGuard.Check(FakePort);
+        e.Fake = new FakeEntraServer(FakePort);
         if (fakeUp) await e.Fake.StartAsync();
         string Sec() => "fixture-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(16)); // generated, test-only
         string cidA = Guid.NewGuid().ToString("D"), cidB = Guid.NewGuid().ToString("D"), cidC = Guid.NewGuid().ToString("D");
