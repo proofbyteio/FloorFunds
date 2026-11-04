@@ -1,0 +1,285 @@
+// Hand-written EF migration (TLD 2026-11-04 7:56 option b: no EF Design package, no dotnet-ef).
+// Creates all of spec §8 (contract/v1.1-S2a-location-login-config.md): schema auth, nine tables with their CHECKs/FKs/
+// indexes, RLS (ENABLE + FORCE) and policies, the two SECURITY DEFINER functions, and the grants to the per-DB app roles.
+// The app roles are NOT created here (needs CREATEROLE): run src/Auth.Data/tools/create-app-roles.sh first; Up RAISEs
+// if they are missing or over-privileged (fail closed). Every statement is valid inside the idempotent script's
+// DO $EF$ wrapper (db/migrations.sql).
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace Auth.Data.Migrations
+{
+    [DbContext(typeof(AuthDbContext))]
+    [Migration("20261104160000_S2aInitial")]
+    public partial class S2aInitial : Migration
+    {
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            // 0. Roles must exist and be plain (spec §8.2).
+            migrationBuilder.Sql("""
+                DO $s2a_roles$
+                DECLARE a text := current_database() || '_admin_api'; l text := current_database() || '_login';
+                BEGIN
+                  IF (SELECT count(*) FROM pg_roles WHERE rolname IN (a, l)) <> 2 THEN
+                    RAISE EXCEPTION 'S2a: app roles % and % must exist; run src/Auth.Data/tools/create-app-roles.sh first', a, l;
+                  END IF;
+                  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN (a, l)
+                             AND (rolsuper OR rolbypassrls OR rolcreatedb OR rolcreaterole OR NOT rolcanlogin)) THEN
+                    RAISE EXCEPTION 'S2a: app roles % / % must be LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', a, l;
+                  END IF;
+                END $s2a_roles$;
+                """);
+
+            // 1. Schema; nothing for PUBLIC; functions the owner creates later never get PUBLIC EXECUTE (F4).
+            // Global (not IN SCHEMA) on purpose: per-schema default privileges can only ADD to the global defaults, so
+            // "IN SCHEMA auth REVOKE ... FROM PUBLIC" is a silent no-op (found by the probe check; spec §8.3 corrected).
+            // pg_default_acl is per database, so this is scoped to the owner role in this database.
+            migrationBuilder.Sql("""
+                CREATE SCHEMA auth;
+                REVOKE ALL ON SCHEMA auth FROM PUBLIC;
+                ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+                """);
+
+            // 2. Tables (§8.1). No sequences (F5).
+            migrationBuilder.Sql("""
+                CREATE TABLE auth.location (
+                  location_id uuid NOT NULL,
+                  partner_id  uuid NOT NULL,
+                  slug        text NOT NULL,
+                  name        text NOT NULL,
+                  CONSTRAINT location_pkey PRIMARY KEY (location_id),
+                  CONSTRAINT location_slug_key UNIQUE (slug),
+                  CONSTRAINT location_slug_format CHECK (slug ~ '^[a-z0-9](?:[a-z0-9-]{0,62})$'),
+                  CONSTRAINT location_name_length CHECK (char_length(name) BETWEEN 1 AND 200)
+                );
+                CREATE INDEX location_partner_ix ON auth.location (partner_id);
+
+                CREATE TABLE auth.location_login_config (
+                  location_id              uuid        NOT NULL,
+                  provider_kind            text        NOT NULL,
+                  display_name             text        NOT NULL,
+                  entra_allowed_tenant_ids uuid[]      NOT NULL DEFAULT '{}',
+                  oidc_authority           text        NULL,
+                  oidc_client_id           text        NULL,
+                  secret_ref               text        NULL,
+                  allow_db_fallback        boolean     NOT NULL DEFAULT false,
+                  mfa_required             boolean     NOT NULL,
+                  created_by               uuid        NOT NULL,
+                  created_at               timestamptz NOT NULL,
+                  updated_by               uuid        NOT NULL,
+                  updated_at               timestamptz NOT NULL,
+                  row_version              bigint      NOT NULL DEFAULT 1,
+                  CONSTRAINT location_login_config_pkey PRIMARY KEY (location_id),
+                  CONSTRAINT location_login_config_location_fk FOREIGN KEY (location_id) REFERENCES auth.location (location_id) ON DELETE RESTRICT,
+                  CONSTRAINT llc_provider_kind CHECK (provider_kind IN ('database', 'entra')),
+                  CONSTRAINT llc_entra CHECK (provider_kind <> 'entra' OR (cardinality(entra_allowed_tenant_ids) = 1
+                      AND oidc_authority IS NOT NULL AND oidc_client_id IS NOT NULL AND secret_ref IS NOT NULL)),
+                  CONSTRAINT llc_database CHECK (provider_kind <> 'database' OR (cardinality(entra_allowed_tenant_ids) = 0
+                      AND oidc_authority IS NULL AND oidc_client_id IS NULL AND secret_ref IS NULL AND NOT allow_db_fallback)),
+                  CONSTRAINT llc_row_version CHECK (row_version >= 1)
+                );
+                CREATE INDEX llc_tenants_gin ON auth.location_login_config USING gin (entra_allowed_tenant_ids);
+
+                CREATE TABLE auth.location_login_config_change (
+                  change_id      uuid        NOT NULL,
+                  location_id    uuid        NOT NULL,
+                  actor_user_id  uuid        NOT NULL,
+                  admin_type     text        NOT NULL,
+                  reason         text        NULL,
+                  at             timestamptz NOT NULL,
+                  change_kind    text        NOT NULL,
+                  changed_fields text[]      NOT NULL,
+                  before         jsonb       NULL,
+                  after          jsonb       NOT NULL,
+                  row_version    bigint      NOT NULL,
+                  CONSTRAINT location_login_config_change_pkey PRIMARY KEY (change_id),
+                  CONSTRAINT llcc_location_fk FOREIGN KEY (location_id) REFERENCES auth.location (location_id) ON DELETE RESTRICT,
+                  CONSTRAINT llcc_admin_type CHECK (admin_type IN ('super', 'partner')),
+                  CONSTRAINT llcc_reason CHECK (reason IS NULL OR (reason = btrim(reason) AND char_length(reason) BETWEEN 10 AND 500)),
+                  CONSTRAINT llcc_change_kind CHECK (change_kind IN ('created', 'updated'))
+                );
+                CREATE INDEX llcc_location_at_ix ON auth.location_login_config_change (location_id, at DESC);
+
+                CREATE TABLE auth.app_user (
+                  user_id      uuid        NOT NULL,
+                  partner_id   uuid        NULL,
+                  status       text        NOT NULL,
+                  locked_until timestamptz NULL,
+                  CONSTRAINT app_user_pkey PRIMARY KEY (user_id),
+                  CONSTRAINT app_user_status CHECK (status IN ('active', 'disabled'))
+                );
+
+                CREATE TABLE auth.external_login (
+                  provider_kind text        NOT NULL,
+                  issuer        text        NOT NULL,
+                  tenant_id     uuid        NOT NULL,
+                  subject       uuid        NOT NULL,
+                  user_id       uuid        NOT NULL,
+                  linked_at     timestamptz NOT NULL DEFAULT now(),
+                  linked_by     uuid        NULL,
+                  CONSTRAINT external_login_pkey PRIMARY KEY (provider_kind, issuer, tenant_id, subject),
+                  CONSTRAINT external_login_user_fk FOREIGN KEY (user_id) REFERENCES auth.app_user (user_id),
+                  CONSTRAINT external_login_provider_kind CHECK (provider_kind IN ('entra')),
+                  CONSTRAINT external_login_issuer_format CHECK (issuer ~ '^https://[^/?#]+/[0-9a-f-]{36}/v2\.0$'),
+                  CONSTRAINT external_login_issuer_tid CHECK (position(tenant_id::text in issuer) > 0)
+                );
+                CREATE INDEX external_login_user_ix ON auth.external_login (user_id);
+
+                CREATE TABLE auth.user_location (
+                  user_id     uuid        NOT NULL,
+                  location_id uuid        NOT NULL,
+                  created_at  timestamptz NOT NULL DEFAULT now(),
+                  created_by  uuid        NULL,
+                  CONSTRAINT user_location_pkey PRIMARY KEY (user_id, location_id),
+                  CONSTRAINT user_location_user_fk FOREIGN KEY (user_id) REFERENCES auth.app_user (user_id),
+                  CONSTRAINT user_location_location_fk FOREIGN KEY (location_id) REFERENCES auth.location (location_id) ON DELETE RESTRICT
+                );
+                CREATE INDEX user_location_location_ix ON auth.user_location (location_id);
+
+                CREATE TABLE auth.audit_outbox (
+                  event_id     uuid        NOT NULL,
+                  occurred_at  timestamptz NOT NULL,
+                  event_type   text        NOT NULL,
+                  envelope     jsonb       NOT NULL,
+                  published_at timestamptz NULL,
+                  CONSTRAINT audit_outbox_pkey PRIMARY KEY (event_id),
+                  CONSTRAINT audit_outbox_type_match CHECK (envelope->>'event_type' = event_type),
+                  CONSTRAINT audit_outbox_id_match CHECK (envelope->>'event_id' = event_id::text)
+                );
+
+                CREATE TABLE auth.oidc_replay (
+                  kind       text        NOT NULL,
+                  key_hash   bytea       NOT NULL,
+                  created_at timestamptz NOT NULL DEFAULT now(),
+                  expires_at timestamptz NOT NULL,
+                  CONSTRAINT oidc_replay_pkey PRIMARY KEY (kind, key_hash),
+                  CONSTRAINT oidc_replay_kind CHECK (kind IN ('nonce', 'code', 'uti')),
+                  CONSTRAINT oidc_replay_key_hash CHECK (octet_length(key_hash) = 32),
+                  CONSTRAINT oidc_replay_ttl CHECK (expires_at > created_at AND expires_at <= created_at + interval '24 hours')
+                );
+                CREATE INDEX oidc_replay_expires_ix ON auth.oidc_replay (expires_at);
+
+                CREATE TABLE auth.session (
+                  session_id          uuid        NOT NULL,
+                  cookie_key_hash     bytea       NOT NULL,
+                  user_id             uuid        NOT NULL,
+                  partner_id          uuid        NULL,
+                  location_id         uuid        NULL,
+                  admin_type          text        NULL,
+                  session_kind        text        NOT NULL DEFAULT 'normal',
+                  login_provider      text        NOT NULL,
+                  entra_tenant_id     uuid        NULL,
+                  config_row_version  bigint      NULL,
+                  amr                 text[]      NOT NULL,
+                  auth_time           timestamptz NOT NULL,
+                  created_at          timestamptz NOT NULL DEFAULT now(),
+                  last_seen_at        timestamptz NOT NULL,
+                  interactive         boolean     NOT NULL DEFAULT true,
+                  via_return          boolean     NOT NULL DEFAULT false,
+                  code_issued         boolean     NOT NULL DEFAULT false,
+                  interactive_used_at timestamptz NULL,
+                  handoff_used_at     timestamptz NULL,
+                  cage_consumed_at    timestamptz NULL,
+                  revoked_at          timestamptz NULL,
+                  revoked_reason      text        NULL,
+                  CONSTRAINT session_pkey PRIMARY KEY (session_id),
+                  CONSTRAINT session_cookie_key_hash_key UNIQUE (cookie_key_hash),
+                  CONSTRAINT session_location_fk FOREIGN KEY (location_id) REFERENCES auth.location (location_id),
+                  CONSTRAINT session_cookie_key_hash_len CHECK (octet_length(cookie_key_hash) = 32),
+                  CONSTRAINT session_admin_type CHECK (admin_type IN ('super', 'partner')),
+                  CONSTRAINT session_kind_values CHECK (session_kind IN ('normal', 'recovery_reenroll')),
+                  CONSTRAINT session_login_provider CHECK (login_provider IN ('database', 'entra')),
+                  CONSTRAINT session_amr CHECK (cardinality(amr) >= 1 AND amr <@ ARRAY['pwd','otp','mfa','hwk','swk','pin','fpt','face','rba','wia','sms','user','kba','mca']::text[]),
+                  CONSTRAINT session_revoked_reason CHECK (revoked_reason ~ '^[a-z_]+$'),
+                  CONSTRAINT session_revoked_pair CHECK ((revoked_at IS NULL) = (revoked_reason IS NULL)),
+                  CONSTRAINT session_scope CHECK (admin_type IS NOT NULL OR (location_id IS NOT NULL AND partner_id IS NOT NULL)),
+                  CONSTRAINT session_partner_admin CHECK (admin_type IS DISTINCT FROM 'partner' OR partner_id IS NOT NULL),
+                  CONSTRAINT session_entra CHECK (login_provider <> 'entra' OR (location_id IS NOT NULL AND entra_tenant_id IS NOT NULL
+                      AND admin_type IS NULL AND session_kind = 'normal' AND config_row_version IS NOT NULL)),
+                  CONSTRAINT session_db CHECK (login_provider <> 'database' OR entra_tenant_id IS NULL),
+                  CONSTRAINT session_recovery_amr CHECK (session_kind <> 'recovery_reenroll' OR NOT ('mfa' = ANY (amr)))
+                );
+                CREATE INDEX session_user_live_ix ON auth.session (user_id) WHERE revoked_at IS NULL;
+                CREATE INDEX session_last_seen_ix ON auth.session (last_seen_at);
+                """);
+
+            // 3. SECURITY DEFINER helpers (§4 steps 3-4 and 8); owner-run, fixed search_path, no PUBLIC EXECUTE.
+            migrationBuilder.Sql("""
+                CREATE FUNCTION auth.location_partner(p_location_id uuid) RETURNS uuid
+                  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, auth
+                  AS $f$ SELECT l.partner_id FROM auth.location l WHERE l.location_id = p_location_id $f$;
+                CREATE FUNCTION auth.tenant_bound_elsewhere(p_tid uuid, p_partner_id uuid) RETURNS boolean
+                  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, auth
+                  AS $f$ SELECT EXISTS (SELECT 1 FROM auth.location_login_config c JOIN auth.location l ON l.location_id = c.location_id
+                                        WHERE p_tid = ANY (c.entra_allowed_tenant_ids) AND l.partner_id <> p_partner_id) $f$;
+                REVOKE ALL ON FUNCTION auth.location_partner(uuid) FROM PUBLIC;
+                REVOKE ALL ON FUNCTION auth.tenant_bound_elsewhere(uuid, uuid) FROM PUBLIC;
+                """);
+
+            // 4. RLS (§8.3) and grants (§8.2, §8.4). Role names are per database; policies and grants are dynamic.
+            migrationBuilder.Sql("""
+                ALTER TABLE auth.location ENABLE ROW LEVEL SECURITY;
+                ALTER TABLE auth.location FORCE ROW LEVEL SECURITY;
+                ALTER TABLE auth.location_login_config ENABLE ROW LEVEL SECURITY;
+                ALTER TABLE auth.location_login_config FORCE ROW LEVEL SECURITY;
+                ALTER TABLE auth.location_login_config_change ENABLE ROW LEVEL SECURITY;
+                ALTER TABLE auth.location_login_config_change FORCE ROW LEVEL SECURITY;
+
+                CREATE POLICY location_owner ON auth.location FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+                CREATE POLICY llc_owner ON auth.location_login_config FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+                CREATE POLICY llcc_owner ON auth.location_login_config_change FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+
+                DO $s2a_grants$
+                DECLARE
+                  a text := current_database() || '_admin_api';
+                  l text := current_database() || '_login';
+                  scope text := $p$(current_setting('app.admin_type', true) = 'super' OR (current_setting('app.admin_type', true) = 'partner' AND partner_id = nullif(current_setting('app.partner_id', true), '')::uuid))$p$;
+                  via_location text := $p$(EXISTS (SELECT 1 FROM auth.location l WHERE l.location_id = %I.location_id))$p$;
+                BEGIN
+                  EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I, %I', current_database(), a, l);
+                  EXECUTE format('GRANT USAGE ON SCHEMA auth TO %I, %I', a, l);
+
+                  EXECUTE format('CREATE POLICY location_admin ON auth.location FOR ALL TO %I USING %s WITH CHECK %s', a, scope, scope);
+                  EXECUTE format('CREATE POLICY location_login ON auth.location FOR SELECT TO %I USING (true)', l);
+                  EXECUTE format('CREATE POLICY llc_admin ON auth.location_login_config FOR ALL TO %I USING %s WITH CHECK %s', a,
+                                 format(via_location, 'location_login_config'), format(via_location, 'location_login_config'));
+                  EXECUTE format('CREATE POLICY llc_login ON auth.location_login_config FOR SELECT TO %I USING (true)', l);
+                  EXECUTE format('CREATE POLICY llcc_admin ON auth.location_login_config_change FOR ALL TO %I USING %s WITH CHECK %s', a,
+                                 format(via_location, 'location_login_config_change'), format(via_location, 'location_login_config_change'));
+
+                  EXECUTE format('GRANT SELECT, INSERT ON auth.location TO %I', a);
+                  EXECUTE format('GRANT UPDATE (name) ON auth.location TO %I', a);
+                  EXECUTE format('GRANT SELECT ON auth.location TO %I', l);
+                  EXECUTE format('GRANT SELECT, INSERT, UPDATE ON auth.location_login_config TO %I', a);
+                  EXECUTE format('GRANT SELECT ON auth.location_login_config TO %I', l);
+                  EXECUTE format('GRANT SELECT, INSERT ON auth.location_login_config_change TO %I', a);
+                  EXECUTE format('GRANT SELECT ON auth.app_user, auth.external_login, auth.user_location TO %I', l);
+                  EXECUTE format('GRANT INSERT ON auth.audit_outbox TO %I, %I', a, l);
+                  EXECUTE format('GRANT SELECT, INSERT, DELETE ON auth.oidc_replay TO %I', l);
+                  EXECUTE format('GRANT SELECT, INSERT, DELETE ON auth.session TO %I', l);
+                  EXECUTE format('GRANT UPDATE (last_seen_at, revoked_at, revoked_reason, interactive_used_at, handoff_used_at, cage_consumed_at, code_issued) ON auth.session TO %I', l);
+                  EXECUTE format('GRANT EXECUTE ON FUNCTION auth.location_partner(uuid), auth.tenant_bound_elsewhere(uuid, uuid) TO %I', a);
+                END $s2a_grants$;
+                """);
+        }
+
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.Sql("""
+                DO $s2a_down$
+                BEGIN
+                  EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM %I, %I', current_database(),
+                                 current_database() || '_admin_api', current_database() || '_login');
+                END $s2a_down$;
+                DROP FUNCTION auth.tenant_bound_elsewhere(uuid, uuid);
+                DROP FUNCTION auth.location_partner(uuid);
+                DROP TABLE auth.session, auth.oidc_replay, auth.audit_outbox, auth.user_location, auth.external_login,
+                           auth.app_user, auth.location_login_config_change, auth.location_login_config, auth.location;
+                ALTER DEFAULT PRIVILEGES GRANT EXECUTE ON FUNCTIONS TO PUBLIC;
+                DROP SCHEMA auth RESTRICT;
+                """);
+        }
+    }
+}
