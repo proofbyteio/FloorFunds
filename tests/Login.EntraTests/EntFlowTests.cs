@@ -547,6 +547,12 @@ public class EntFlowTests
         Assert.Equal(ref2, e.Store.LastResolvedRef);
         Assert.Equal(2, e.Store.ResolveCalls);
         Assert.Single(e.Host.Sessions);
+        // F1 (TL, after SSE's 5f08d0d review): after the deployment values change, a database location still gets nulls.
+        var ct = TestContext.Current.CancellationToken;
+        var db = (await e.Store.GetAsync(Env.LocDb, ct))!;
+        Assert.Null(db.OidcAuthority); Assert.Null(db.OidcClientId); Assert.Null(db.SecretRef);
+        var dbBySlug = (await e.Store.GetBySlugAsync("loc-db", ct))!;
+        Assert.Null(dbBySlug.OidcAuthority); Assert.Null(dbBySlug.OidcClientId); Assert.Null(dbBySlug.SecretRef);
     }
 
     // Same for the deployment client id: the next authorize and token requests use the new one.
