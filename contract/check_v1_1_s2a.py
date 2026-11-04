@@ -325,7 +325,7 @@ for _pin in ["| 413 | `payload_too_large` | step 7: body over 64 KiB by `Content
              "401/403 never 413 [TLD 2026-11-04 9:04, OQ-P3-8]", "**Oversize and unread bodies [TLD 2026-11-04 9:28, P3-2]:**",
              "**[TLD 2026-11-04 9:28, P3-4]:** the header is set by middleware before routing", "405 wrong method on a mapped path, unrouted 404",
              "**V11-AUDITRATE** (backlog, TLD 2026-11-04 9:28, SSE2 review P3-5)", "**V11-TIMING** (backlog, TLD 2026-11-04 9:28, SSE2 review P3-6)",
-             "**P3-3** stale `If-Match` checked before the oversize body (409). **TLD 9:28: no change.**", "md5 bfaa2efbe4ee6f41cca4447ac36d21ba",
+             "**P3-3** stale `If-Match` checked before the oversize body (409). **TLD 9:28: no change.**", "md5 c6f7258b0ecce00dd33ceb0197b9e2cd",
              "[TLD 2026-11-04 9:28] (TLD 9:28)"]:
     exp("spec pin 9:28: " + _pin[:60], [] if _pin in spec else ["missing"], False)
 exp("spec 9:28: malformed_body row no longer claims the 64 KiB case", ["stale"] if "| 400 `malformed_body`; no event |" in spec else [], False)
@@ -388,7 +388,21 @@ for _pin in ["**TLD 10:42 [TLD 2026-11-04 10:42] (on 8c3ccce..06dc8ac):**", "TL 
     exp("spec pin 10:42: " + _pin[:50], [] if _pin in spec else ["missing"], False)
 exp("10:42 spec: rotated_at question no longer OPEN", ["stale"] if "`rotated_at` after a config-only rotation" in spec else [], False)
 exp("10:42 spec: no live rotated_at derivation text left", [k for k in ["`rotated_at` = latest change row", "`rotated_at` only moves on a change row", "Set, rotated …\" (= `secret`;"] if k in spec], False)
-exp("10:42 spec Sources still cite the review snapshot bfaa2efb (P4 commit changes it)", [] if "bfaa2efbe4ee6f41cca4447ac36d21ba" in spec else ["missing"], False)
+exp("P4 spec Sources cite the review snapshot c6f7258b, not the old full md5 bfaa2efb", [] if "c6f7258b0ecce00dd33ceb0197b9e2cd" in spec and "bfaa2efbe4ee6f41cca4447ac36d21ba" not in spec else ["stale"], False)
+exp("P4 spec §11: UI built in P4 from MK9 90d2a8fa [D-103]", [] if "built in P4 from MK9 90d2a8fa" in spec and "(recorded, not built in C1)" not in spec else ["stale"], False)
+# ---- D-103 (MK9 90d2a8fa), D-102 (UX error copy, review 8c7d5274), TLD 2026-11-04 11:57 (P4) ----
+exp("D-103: MK9 source row pins 90d2a8fa0052d5496f8fc4c274bc779c", [] if "| MK9 | `login-hub-mockups/09-location-method.html`, snapshot `/tmp/sse-llc1/09-location-method.90d2a8fa.snapshot.html` | `90d2a8fa0052d5496f8fc4c274bc779c` |" in spec else ["missing"], False)
+exp("D-103: no live MK9 pin to 939e41bd / 9dae6040 left", [k for k in ["MK9 939e41bd", "MK9 9dae6040", "v939e41bd", "snapshot md5 9dae6040", "939e41bd0d087a35e1f00688dca53a6c"] if k in spec], False)
+_s11 = spec.split("## 11. UI notes")[1].split("## 12.")[0]
+for _pin in ["**approved by UX under D-102** (review md5 8c7d5274)", "\"It may have been removed, or you may not have access to it.\"",
+             "\"Only a Super Admin can make this change.\" / \"Nothing was saved. Turning off the second step or allowing backup sign-in needs a Super Admin.\"",
+             "\"This reason is too short or too long. Change it, then try again.\" (TO CONFIRM", "**Request ID line [D-102]:**", "never on field errors",
+             "(**V11-CREATE-SECRETCARD**, §12)", "(**V11-PARTNERNAME**, §12)", "waits on OQ-S2a-1 [TLD 2026-11-04 11:57]"]:
+    exp("§11 pin D-102 / 11:57: " + _pin[:50], [] if _pin in _s11 else ["missing"], False)
+exp("§11: no stale 'SSE PROPOSAL FOR UX, NOT APPROVED' / PROPOSAL-error-copy path as the live file", [k for k in ["labelled \"SSE PROPOSAL FOR UX, NOT APPROVED\"", "live in `ui/orgs/js/PROPOSAL-error-copy.mjs`"] if k in _s11], False)
+for _b in ["V11-PARTNERNAME", "V11-CREATE-SECRETCARD"]:
+    exp(f"11:57 §12 lists {_b}", [] if f"**{_b}** (backlog, [TLD 2026-11-04 11:57])" in _s12 else ["missing"], False)
+exp("Sources list D-102 (8c7d5274) and TLD 11:57 (P4)", [] if "| D-102 |" in spec and "8c7d5274d549d45d18ae0415964e2236" in spec and "| TLD 11:57 (P4) |" in spec else ["missing"], False)
 exp("spec 10:12: no stale 'validated with the same rules and messages as the admin API'", ["stale"] if "validated with the same rules and messages as the admin API" in spec else [], False)
 exp("spec 10:02: access_rules example pins secret_visible_to super_admin", [] if EX["access_rules"].get("secret_visible_to") == ["super_admin"] else ["missing"], False)
 

@@ -285,6 +285,78 @@ Branch `fix/db-kit-kf` off 3e12b8d (kept apart from P3). No migration, spec or a
 - **Mutation spot-checks** (restored after each; final run 323/0): `secret_ref` dropped from `ServerFilled` → FAILs (≥ 6 shown, create field_not_writable; output head-limited); startup `SecretRefAllowed(EntraSecretRef)` disabled → FAILs (≥ 6 shown, each startup refusal case); schema copy with `secret_ref` re-added to the write body and `secret_ref_required` in the enum → 18 FAILs in `check_v1_1_s2a.py`.
 - **Open (for TL)**: (q1) a changed `Entra:SecretRef` does not rewrite existing entra rows (as A-21) — OK? (q2) hide `secret {set, rotated_at}` from Partner Admin / org:V ("Super Admin GET may show")? (q3) confirm `secret_ref_format` removal. Evidence: `/tmp/sse-llc1/p3f-evidence.txt`.
 
+## P4 — screen 9 UI (`ui/orgs/`) [TLD 2026-11-04 9:49, D-51] (new commits on top of 6a71fbf, rebased onto its TLD 11:57 / 12:04 amend; unpushed)
+
+- **Inputs.** Mockup 09 is the live file, now md5 90d2a8fa (D-103, see P4b; built first from snapshot md5 9dae6040). Theme snapshot `/tmp/sse-llc1/theme.aaae47e3.snapshot.css` (md5 aaae47e3) is copied verbatim to `ui/orgs/theme.css`. Fonts are copied from `ui/login-hub/fonts` (byte-identical). TLD 9:49 C2 and C3 apply. Part A evidence: `/tmp/sse-llc1/p3n-evidence.txt`, md5 75f925843de4cadc1b3b41585f8652b9.
+- **Page** `ui/orgs/location-sign-in.html` plus `js/llc-core.mjs` (pure) and `js/llc-page.mjs` (DOM and fetch). There is no inline script or style.
+  - States: view; Super Admin edit, including the downgrade sub-state (warning banner, reason field, title "Lower sign-in security: {name}"); partner-edit; create; partner-create at `/orgs/{partner}/locations/new`; view only; saved; errors.
+  - The app-shell grid needs a rail, so a plain wrapper is used instead (the chrome stays app-agnostic).
+- **Viewer kind comes from the API**, not the host. A `secret` key means Super Admin. A restricted view then asks `/changes`: 200 means Partner Admin; 403 means an org:V reader, who gets the "View only (org:V)" chip and info banner, no history (C2), no form and no card. `data-admin-type` only picks the create layout. OQ-S2a-1 is open.
+- **C3.** The partner comes from the URL. A location whose `partner_id` is not the URL org is shown as not found. Partner-create under another partner gets the API's 404.
+- **Writes.** A PUT sends exactly the six keys with `If-Match`. A create drops a blank reason. Writes never send `oidc_*`, `secret_ref` or `secret`; e2e asserts this on every captured body.
+- **Super Admin card** "Microsoft app connection": authority, client id and "Set" / "Not set". It is read-only, has no date, and there is no secret input. It is not shown on create (open item).
+- **History** columns: When (PT), Event (`auth.provider.changed`), Who (`actor_user_id`, V11-ACTORNAME) and Details, with the reason appended.
+- **Partner Admin** locks only the downgrade direction, against the saved value (on create, against MFA on and backup off). Locked controls use `aria-disabled` and stay focusable, with MK9 hints. A click on a locked control is prevented.
+- **Errors.** These use MK9 copy:
+  - 409: the conflict banner with a reload link;
+  - 422 `tenant_bound_elsewhere`: the tenant banner and field error;
+  - the saved banner.
+
+  Field errors set `aria-invalid` and `aria-describedby`. Everything else uses `js/PROPOSAL-error-copy.mjs`, labelled "SSE PROPOSAL FOR UX, NOT APPROVED" [TLD 9:49, D-51], plus a "Request ID: <X-Request-ID>" line on every error banner.
+- **Not decided (TO CONFIRM, Mohanraj).** These are left as labelled open items in `ui/orgs/README.md`:
+  - The reason length copy. There is no client-side 10–500 check; the server code is shown.
+  - Whether a Partner Admin may undo a downgrade. The page follows the API, which allows it.
+  - The test sign-in deferral. There is no button and no gate.
+- **Test host (TEST ONLY)** `src/Admin.Api.Checks/UiHost.cs` with `Program.cs --ui-host <dir>`.
+  - It runs the harness's real API with the same startup and fake ids.
+  - It seeds L1–L4 through the API as the Super Admin and adds L1 and L2 to the org:V reader set.
+  - It serves the page under `/as/{persona}/orgs/…` and only `theme.css`, `js/*.mjs` and `fonts/*.ttf` under `/ui/orgs/`, with a traversal guard.
+  - It proxies `/as/{persona}/api/…` with that persona's test token.
+  - Response headers: CSP `default-src 'none'` with `'self'` for script, style, font, connect and img; `base-uri`, `form-action` and `frame-ancestors` `'none'`; plus XFO DENY, nosniff and no-store.
+  - On stdin EOF it prints the owner-read DB summary. The `finally` (via `goto uiHostDone`) then stops the API and empties the tables.
+  - The normal checks mode is unchanged: **393/0**.
+- **Tests.**
+  - `node --test ui/orgs/tests/core.test.mjs`: **7/7**.
+  - `node ui/orgs/tests/e2e.mjs ff_sse`: **54/0**. It runs headless Chrome 156 over CDP using node built-ins only. Every host except 127.0.0.1 is unresolvable, the profile is under /tmp, and the CDP port is in 18130–18139.
+  - e2e covers: SA view (entra and db); org:V (F-A3, real PG: page, `/changes` 403, restricted view, reader of an unassigned location 404); another partner 404; wrong URL org; anon 401; partner-edit (locks, real mouse and Space, tenant-taken, save); SA downgrade (reason_required, then reason_length, then saved); conflict and reload; SA create; partner-create (own partner, partner B 404, org:V 403); no CSP, console or exception errors; no outside request.
+  - Real-PG summary after the run: no change row by the org:V reader; SA 6 and PA 3; 6 locations.
+- **e2e mutations** (restored by `cp`, md5 re-checked):
+  - History shown for viewonly: caught (1).
+  - Partner Admin MFA lock removed: caught (3). The first try caught only 2, because the click-then-Space check toggled the box twice. The check was split so each input is asserted separately.
+  - Inline style in the page: caught by the CSP check (1).
+- **Spec.**
+  - §11 heading and the P4 bullet now say "built in P4 from MK9 90d2a8fa" (D-103; first built from 9dae6040), with a "Built in P4" summary.
+  - The §13 Sources review snapshot moved from bfaa2efb to `/tmp/sse-llc1/S2A-P3-REVIEW.c6f7258b.snapshot.md` (md5 c6f7258b). That file equals the original plus SSE2's prepended 9:44/9:48 delta review (final GO); the diff is a pure 41-line prepend.
+  - Checker pins: L328 is now c6f7258b. L391 now requires c6f7258b and no full bfaa2efb, and a new §11 pin was added.
+  - Checker results: **398/0**; v1-d4 ALL PASS (VENV=/tmp/sse-d0/venv, nothing installed).
+- **IVT finding (Part A, recorded here).** The `InternalsVisibleTo` evidence count of 2 is check-name strings only. There are 0 real attributes.
+- **Not touched / noted.**
+  - frozen files (errors.md 1e97dae4, Allowlist.cs 239a7899, root README 16b8b071, db/, Login.Abstractions);
+  - allowlist.db e5384097;
+  - SSE2's root docs/, tests/ and tools/.
+  - Noted only: `wt-sse2-entra` has an untracked shellcheck_py-0.11.0.1 wheel. It is SSE2's and was left alone.
+- **Evidence:** `/tmp/sse-llc1/p4a-evidence.txt` (new file).
+
+### P4b — TLD 11:57 (P4 items), D-102 (UX error copy), D-103 (MK9 90d2a8fa) [TLD 2026-11-04 11:57] (fixups folded into the P4 commits; unpushed)
+
+- **D-103, MK9 90d2a8fa.** Source `/workspace/cachd-ones/login-hub-mockups/09-location-method.html` (the file 9dae6040 was taken from), md5 90d2a8fa0052d5496f8fc4c274bc779c, snapshot `/tmp/sse-llc1/09-location-method.90d2a8fa.snapshot.html`.
+  - `diff` against the 9dae6040 snapshot: 2 changed lines, nothing else. (1) the "Microsoft app connection" card's `data-show` loses `create`; (2) its design note adds "Not shown in create: the card appears in edit once the location exists (TLD 11:57 AM PT, V11-CREATE-SECRETCARD)" and cites TLD 11:57 / D-103. theme.css in that folder is still aaae47e3.
+  - Every pin moved to 90d2a8fa: page header comment, `llc-core.mjs` header, `ui/orgs/README.md`, the spec (Sources row, header, §3, §4, §11 heading and bullets; the 939e41bd and 9dae6040 mentions left are "replaces / was" history only), this log, and the checker pin.
+- **TLD 11:57 (P4).**
+  - No Microsoft card on create. It appears in the view and edit states once the location exists. e2e: the SA create state has no card; after create the saved view shows it ("Not set" for a database location), and so does the edit view. Backlog **V11-CREATE-SECRETCARD** (spec §12).
+  - Partner Admin chip: "Partner Admin: <partner id>" in mono (MK9 draws "Partner Admin: Example Partner"; no API gives the name), like the actor ids. The id is the viewed location's `partner_id`, or the URL partner on create. e2e checks it on view and partner-create. Backlog **V11-PARTNERNAME** (spec §12).
+  - OQ-S2a-13 stays open and waits on OQ-S2a-1. No location list is built. The TO CONFIRM items are left undecided.
+- **D-102 (UX error-copy review** `/workspace/cachd-ones/reviews/sse-error-copy-review.md`, md5 8c7d5274, snapshot `/tmp/sse-llc1/sse-error-copy-review.8c7d5274.snapshot.md`): proposal 9c71950f approved with exactly three changes.
+  - `git mv ui/orgs/js/PROPOSAL-error-copy.mjs ui/orgs/js/error-copy.mjs` (history kept), header "Approved D-102 (UX)". Imports updated in `llc-page.mjs` and `core.test.mjs`.
+  - `not_found.text` = "It may have been removed, or you may not have access to it."; `not_super_admin` = "Only a Super Admin can make this change." / "Nothing was saved. Turning off the second step or allowing backup sign-in needs a Super Admin."; `FIELD.reason_length` = "This reason is too short or too long. Change it, then try again." with the TO CONFIRM comment (becomes "Enter a reason of 10 to 500 characters." once Mohanraj confirms). All other copy unchanged. README notes reason_length is still TO CONFIRM.
+  - Request ID line: new `ui/orgs/orgs.css` (theme.css stays verbatim), class `.request-id`: own last line (block) of the banner, small, #6b6b7b, `user-select: text`, `white-space: normal`, `overflow-wrap: anywhere`, `text-overflow: clip`. The element carries `hidden` and is shown only when there is an id. It is in the error, 409 conflict and 422 tenant banners only, never in field errors. UiHost (TEST ONLY) now also serves `orgs.css`.
+- **e2e** (`node ui/orgs/tests/e2e.mjs ff_sse`): **67/0** (was 54). New: the three D-102 strings (404 page, a Partner Admin MFA-off PUT made by unlocking the box in the page so the server's 403 shows, the short reason); the Request ID line on the not_found, validation, not_super_admin, 409 and tenant banners (visible, UUIDv7, `display: block`, below the title, last child, colour rgb(107, 107, 123), not `user-select: none` and a real selection returns the whole text, no ellipsis, no nowrap, scrollWidth <= clientWidth); absent (hidden, empty) on a route error with no request; cleared after a success; never under a field; the create card and the chip. Unit tests **7/7** (D-102 strings asserted).
+- **e2e mutations** (restored by `cp`, md5 re-checked): history shown for viewonly: caught (1); Partner Admin MFA lock removed: caught (8); inline style (CSP): caught (1); `.request-id` ellipsis + nowrap + overflow hidden: caught (5); `.request-id` `user-select: none`: caught (5). A first, weaker history mutation (adding `viewonly` to the role test) was not caught, because the null-history guard still hides the card; it is kept in the evidence as mut1a.
+- **Spec checker:** **413/0** at P4b, **439/0** on the final tree after the P3 TLD 11:57 / 12:04 amend added 9 pins, the TLD 12:33 amend 8 and the TLD 13:15 KF-A amend [KF-A] 9 (+15 at P4b: D-103 source pin and no live 939e41bd / 9dae6040 pin, D-102 §11 pins, §12 V11-PARTNERNAME / V11-CREATE-SECRETCARD, Sources rows); v1-d4 ALL PASS.
+- **Evidence:** `/tmp/sse-llc1/p4b-evidence.txt` (new file; p4a left as it was).
+- **Evidence after the TLD 13:15 KF-A P3 amend [TLD 2026-11-04 13:15] [KF-A]:** `/tmp/sse-llc1/p4d-evidence.txt` at the rebased P4 HEAD (new file; p4a–p4c left as they were; P3 evidence `/tmp/sse-llc1/p3q-evidence.txt`).
+- **Evidence after the TLD 13:54 P3 amend [TLD 2026-11-04 13:54]:** `/tmp/sse-llc1/p4e-evidence.txt` at the rebased P4 HEAD (new file; p4a–p4d left as they were; P3 evidence `/tmp/sse-llc1/p3r-evidence.txt`). From p4e on, nothing on 5432 is inspected with sudo: `ff_scratch_*` leftovers are counted as `ff_scratchadm`, `ff_sse` tables as the `ff_sse` owner role [TLD 13:54 item 3].
+
 ## P3 follow-up — TLD 11:57 o1–o3 + TLD 12:04 F1 + SSE2 de9c1946 F2 [TLD 2026-11-04 11:57] [TLD 2026-11-04 12:04] (third amend of the unpushed 6a71fbf)
 
 Review: `/tmp/sse2-fverify/RANGE-06dc8ac-6a71fbf-REVIEW.md` md5 de9c1946 (snapshot `/tmp/sse-llc1/RANGE-06dc8ac-6a71fbf-REVIEW.de9c1946.snapshot.md`). Evidence: `/tmp/sse-llc1/p3o-evidence.txt` (new file; p3f, p3h–p3n untouched).
@@ -613,7 +685,7 @@ See spec §13 (A-21 server-filled OIDC keep/startup validation; A-22 Entra partn
 
 ## Sources (md5)
 
-MK9 `939e41bd0d087a35e1f00688dca53a6c`; SSE2 F-verify `/tmp/sse2-fverify/F-STATUS-VERIFY.md` `70f77c7402918580e5980874f2d2adfd`; SSE2 review @c35863f `536109ccc2115b9c7185ecf08809aa85`; `src/Login.StandIn/fixtures.json` `612918cc3bd6c9453a3031d0a3668b15`.
+MK9 `90d2a8fa0052d5496f8fc4c274bc779c` (D-103; was 939e41bd, then 9dae6040); UX error-copy review (D-102) `8c7d5274d549d45d18ae0415964e2236`; SSE2 F-verify `/tmp/sse2-fverify/F-STATUS-VERIFY.md` `70f77c7402918580e5980874f2d2adfd`; SSE2 review @c35863f `536109ccc2115b9c7185ecf08809aa85`; `src/Login.StandIn/fixtures.json` `612918cc3bd6c9453a3031d0a3668b15`.
 
 ## Toolchain
 
