@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using Auth.Data;
 using Login.Abstractions;
 using Microsoft.IdentityModel.Tokens;
@@ -39,10 +38,6 @@ public sealed record AdminApiOptions
     /// </summary>
     public TimeSpan BodyReadTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
-    static readonly Regex AuthorityRe = new(@"^https://[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?::[0-9]{1,5})?\z", RegexOptions.CultureInvariant);
-    static readonly Regex AccountRe = new(@"^[0-9]{12}\z", RegexOptions.CultureInvariant);
-    static readonly Regex RegionRe = new(@"^[a-z]{2}(?:-[a-z]+)+-[0-9]\z", RegexOptions.CultureInvariant);
-
     public static AdminApiOptions FromConfiguration(IConfiguration c)
     {
         string Req(string k) => c[k] is { Length: > 0 } v ? v : throw new InvalidOperationException($"config {k} is required");
@@ -66,47 +61,65 @@ public sealed record AdminApiOptions
     }
 
     /// <summary>Throws InvalidOperationException (key name only) on any invalid value; returns the normalised options.</summary>
-    public AdminApiOptions Validated()
+    public AdminApiOptions Validated() => ValidatedWith(out _);
+
+    /// <summary>
+    /// The Entra:* / SecretRef:* rules run in EntraDeployment.Create [TLD 2026-11-04 10:58 F-A1]: one rule set, the db8f360 order and
+    /// messages. Each refusal reason maps to the message naming the config key, never its value.
+    /// </summary>
+    AdminApiOptions ValidatedWith(out EntraDeployment entra)
     {
-        if (!IsValidAuthority(EntraAuthority)) throw new InvalidOperationException("config Entra:Authority must be https://host[:port] (no path, query, fragment, userinfo or trailing slash)");
-        if (!Guid.TryParseExact(EntraClientId, "D", out var cid) || cid == Guid.Empty) throw new InvalidOperationException("config Entra:ClientId must be a GUID");
-        if (SecretAccountIds.Count == 0 || SecretAccountIds.Any(a => !AccountRe.IsMatch(a))) throw new InvalidOperationException("config SecretRef:AllowedAccountIds must list 12-digit AWS account ids");
-        if (SecretRegions.Count == 0 || SecretRegions.Any(r => !RegionRe.IsMatch(r))) throw new InvalidOperationException("config SecretRef:AllowedRegions must list AWS region names");
-        // After the allowlists (it is checked against them). The message names the keys only: never the ARN, account id or region.
-        if (!SecretRefAllowed(EntraSecretRef)) throw new InvalidOperationException("config Entra:SecretRef must be an AWS Secrets Manager ARN in an allowed account and region (SecretRef:AllowedAccountIds / SecretRef:AllowedRegions)");
+        var r = EntraDeployment.Create(EntraAuthority, EntraClientId, EntraSecretRef, SecretAccountIds, SecretRegions);
+        if (!r.Ok) throw new InvalidOperationException(r.Reason switch
+        {
+            EntraDeployment.Reasons.AuthorityInvalid => "config Entra:Authority must be https://host[:port] (no path, query, fragment, userinfo or trailing slash)",
+            EntraDeployment.Reasons.ClientIdInvalid => "config Entra:ClientId must be a GUID",
+            EntraDeployment.Reasons.AllowedAccountIdsInvalid => "config SecretRef:AllowedAccountIds must list 12-digit AWS account ids",
+            EntraDeployment.Reasons.AllowedRegionsInvalid => "config SecretRef:AllowedRegions must list AWS region names",
+            // The message names the keys only: never the ARN, account id or region.
+            EntraDeployment.Reasons.SecretRefNotAllowed => "config Entra:SecretRef must be an AWS Secrets Manager ARN in an allowed account and region (SecretRef:AllowedAccountIds / SecretRef:AllowedRegions)",
+            _ => "config Entra:* refused (" + r.Reason + ")",
+        });
+        entra = r.Value!;
         if (!Uri.TryCreate(TokenIssuer, UriKind.Absolute, out var iss) || iss.Scheme is not ("https" or "http")) throw new InvalidOperationException("config BackofficeAuth:Issuer must be an absolute URI");
         if (SigningKeys.Count == 0 || SigningKeys.Any(k => k is not (RsaSecurityKey or JsonWebKey { Kty: "RSA" })))
             throw new InvalidOperationException("config BackofficeAuth:JwksPath must hold at least one RSA signing key (RS256 only)");
         if (!File.Exists(AuditSchemaPath)) throw new InvalidOperationException("audit-events.schema.json not found (Audit:SchemaPath)");
         _ = new NpgsqlConnectionStringBuilder(ConnectionString);
         if (BodyReadTimeout <= TimeSpan.Zero || BodyReadTimeout > TimeSpan.FromSeconds(60)) throw new InvalidOperationException("BodyReadTimeout must be in (0, 60] s");
-        return this with { EntraClientId = cid.ToString("D") };
+        return this with { EntraClientId = entra.ClientId };
     }
 
-    public static bool IsValidAuthority(string v) =>
-        AuthorityRe.IsMatch(v) && Uri.TryCreate(v, UriKind.Absolute, out var u) && u.Scheme == "https" && u.UserInfo == "" &&
-        u.AbsolutePath == "/" && u.Query == "" && u.Fragment == "" && !u.Host.Contains("..") && (u.IsDefaultPort || u.Port is > 0 and <= 65535);
-
-    static readonly Regex ArnRe = new(@"^arn:aws:secretsmanager:([a-z0-9-]+):([0-9]{12}):secret:[A-Za-z0-9/_+=.@-]+\z", RegexOptions.CultureInvariant);
+    // [F-C1, SSE2 review 3fac1d52] Through EntraDeployment.Create (its predicates are internal). Create checks the authority first and
+    // returns AuthorityInvalid exactly when the authority rule fails, so "Reason != AuthorityInvalid" is the old predicate.
+    public static bool IsValidAuthority(string v)
+    {
+        ArgumentNullException.ThrowIfNull(v); // unchanged: the old Regex.IsMatch(null) threw ArgumentNullException
+        return EntraDeployment.Create(v, null, null, null, null).Reason != EntraDeployment.Reasons.AuthorityInvalid;
+    }
 
     /// <summary>Records print every member by default; this one holds a connection string and Entra:SecretRef.</summary>
     public override string ToString() => "AdminApiOptions { [redacted] }";
 
     /// <summary>Entra:SecretRef shape (A-1) AND the K4 deployment allowlist of account id and region (startup only since TLD 9:49).</summary>
+    /// [F-C1, SSE2 review 3fac1d52] Through EntraDeployment.Create with a fixed valid authority / client id, so only the list and ARN
+    /// rules decide. Same answer as before for every options object whose lists pass Validated() (the only ones the host uses);
+    /// stricter (false) when SecretRef:AllowedAccountIds / AllowedRegions are themselves malformed (Create refuses the list first).
     public bool SecretRefAllowed(string v)
     {
-        if (v.Length > 2048) return false;
-        var m = ArnRe.Match(v);
-        return m.Success && SecretRegions.Contains(m.Groups[1].Value) && SecretAccountIds.Contains(m.Groups[2].Value);
+        _ = v.Length; // unchanged: null threw NullReferenceException before
+        return EntraDeployment.Create(ProbeAuthority, ProbeClientId, v, SecretAccountIds, SecretRegions).Ok;
     }
+    const string ProbeAuthority = "https://login.microsoftonline.com", ProbeClientId = "00000000-0000-4000-8000-000000000001";
 
     /// <summary>
-    /// The deployment Entra values for the login readers and the views [TLD 2026-11-04 10:02 Q1]. Runs Validated() first (the rules
-    /// above, unchanged since db8f360, TLD 10:12), so an invalid value never reaches a reader. Built once at startup; no hot reload.
+    /// The deployment Entra values for the login readers and the views [TLD 2026-11-04 10:02 Q1]. Runs Validated(), whose Entra
+    /// rules ARE EntraDeployment.Create (the only factory, TLD 10:58 F-A1), so an invalid value never reaches a reader.
+    /// Built once at startup; no hot reload.
     /// </summary>
     public EntraDeployment Entra()
     {
-        var v = Validated();
-        return new EntraDeployment(v.EntraAuthority, v.EntraClientId, new SecretReference(v.EntraSecretRef));
+        _ = ValidatedWith(out var entra);
+        return entra;
     }
 }

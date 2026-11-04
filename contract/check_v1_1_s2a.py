@@ -78,8 +78,16 @@ ent = EX["put_req_pa_db_to_entra"]; db = EX["put_req_entra_to_db"]; view = EX["g
 
 # ---- 3. leak negatives: secret_ref injected into responses/events is rejected ----
 exp("view + secret_ref rejected", errs(LLC, VIEW, m(view, secret_ref=FAKE)), True)
-exp("view secret + value rejected", errs(LLC, VIEW, m(view, secret={"set": True, "rotated_at": None, "value": FAKE})), True)
-exp("view secret set=false with rotated_at rejected", errs(LLC, VIEW, m(view, secret={"set": False, "rotated_at": "2026-10-30T17:05:00Z"})), True)
+exp("view secret + value rejected", errs(LLC, VIEW, m(view, secret={"set": True, "value": FAKE})), True)
+# TLD 2026-11-04 10:42: rotated_at dropped, secret is exactly {set}
+for _rv in ["2026-10-30T17:05:00Z", None]:
+    for _set in [True, False]:
+        exp(f"10:42 view secret {{set: {_set}, rotated_at: {_rv!r}}} rejected", errs(LLC, VIEW, m(view, secret={"set": _set, "rotated_at": _rv})), True)
+exp("10:42 view secret {set: true} ok", errs(LLC, VIEW, m(view, secret={"set": True})), False)
+exp("10:42 view secret {set: false} ok", errs(LLC, VIEW, m(view, secret={"set": False})), False)
+exp("10:42 view secret {} rejected (set required)", errs(LLC, VIEW, m(view, secret={})), True)
+exp("10:42 secret_view declares exactly {set}", [] if (L["secret_view"]["required"] == ["set"] and list(L["secret_view"]["properties"]) == ["set"] and L["secret_view"]["additionalProperties"] is False) else ["shape"], False)
+exp("10:42 example get_200_entra secret is {set: true}", [] if view.get("secret") == {"set": True} else ["differ"], False)
 exp("error + secret_ref rejected", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "secret_ref", "code": "field_not_writable"}], "secret_ref": FAKE}), True)
 exp("error field entry + value rejected", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "secret_ref", "code": "field_not_writable", "value": FAKE}]}), True)
 chg = EX["ev_changed_pa_upgrade"]; den = EX["ev_denied_not_super_admin"]
@@ -124,8 +132,8 @@ exp("restricted view + oidc_client_id rejected", errs(LLC, RV, m(rview, oidc_cli
 exp("super view without oidc_authority rejected", errs(LLC, VIEW, m(view, oidc_authority=DEL)), True)
 exp("super view without oidc_client_id rejected", errs(LLC, VIEW, m(view, oidc_client_id=DEL)), True)
 exp("10:02 restricted view = super view minus oidc keys and secret", [] if rview == {k: v for k, v in view.items() if not k.startswith("oidc_") and k != "secret"} else ["differ"], False)
-# secret {set, rotated_at} visible to Super Admin only [TLD 2026-11-04 10:02 Q2, mockup cbb3ab4b]
-exp("10:02 restricted view + secret rejected", errs(LLC, RV, m(rview, secret={"set": True, "rotated_at": "2026-10-30T17:05:00Z"})), True)
+# secret {set} visible to Super Admin only [TLD 2026-11-04 10:02 Q2, mockup cbb3ab4b; rotated_at dropped TLD 10:42]
+exp("10:02 restricted view + secret rejected", errs(LLC, RV, m(rview, secret={"set": True})), True)
 exp("10:02 restricted view + secret null rejected (omitted, not null)", errs(LLC, RV, m(rview, secret=None)), True)
 exp("10:02 super view without secret rejected", errs(LLC, VIEW, m(view, secret=DEL)), True)
 exp("10:02 restricted schema declares no secret / does not require it", ["present"] if "secret" in L["login_config_view_restricted"]["properties"] or "secret" in L["login_config_view_restricted"]["required"] else [], False)
@@ -338,7 +346,7 @@ exp("spec 9:49: no request example carries secret_ref", ["present"] if any("secr
 _s12 = spec.split("## 12.")[1].split("## 13.")[0]
 for _pin in ["**Config is the source of truth [TLD 2026-11-04 10:02] (Q1):**", "nothing reads that copy (cleanup: V11-ROWSECRETCLEANUP, §12)",
              "A config change therefore applies to **all** entra locations after a restart, with no row rewrite",
-             "**`secret {set, rotated_at}` is Super Admin only [TLD 2026-11-04 10:02] (Q2, UX mockup cbb3ab4b):**", "**omitted, not null,**",
+             "**`secret {set}` is Super Admin only [TLD 2026-11-04 10:02] (Q2, UX mockup cbb3ab4b):**", "**omitted, not null,**",
              "`NpgsqlLocationLoginConfigReader` no longer selects `oidc_authority`, `oidc_client_id` or `secret_ref`", "`Auth.Data.EntraDeployment`",
              "**TLD 10:02 [TLD 2026-11-04 10:02]:** **Q1**", "**Q3** confirmed: both `secret_ref_required` and `secret_ref_format` are removed", "| TLD 10:02 |"]:
     exp("spec pin 10:02: " + _pin[:60], [] if _pin in spec else ["missing"], False)
@@ -364,8 +372,67 @@ for _pin in ["| 408 | `request_timeout` | step 7: body (under 64 KiB) not fully 
 exp("spec 9:53: V11-HTTPFRAMING in §12", [] if "V11-HTTPFRAMING" in spec.split("## 12.")[1].split("## 13.")[0] else ["missing"], False)
 exp("spec 9:53 P3-10: no 'Kestrel's 1 MiB' / 'Kestrel 1 MiB' / '8 KiB buffer' left", [k for k in ["Kestrel's 1 MiB", "Kestrel 1 MiB", "Kestrel's own 1 MiB", "8 KiB buffer"] if k in spec], False)
 exp("spec 9:53: the 408 row sits before 400 malformed_body in the §5 table", [] if spec.find("| 408 | `request_timeout`") < spec.find("| 400 | `malformed_body`") and spec.find("| 408 | `request_timeout`") > spec.find("| 413 | `payload_too_large`") else ["order"], False)
+# ---- TLD 2026-11-04 10:42: rotated_at dropped (V11-ROTATEDAT), Expect 413 abort, backlog notes ----
+_s12 = spec.split("## 12.")[1].split("## 13.")[0]
+_s5 = spec.split("## 5. Errors")[1].split("### 5.2")[0]
+exp("10:42 schema: no rotated_at property anywhere", [] if '"rotated_at":' not in json.dumps(S[LLC]) else ["present"], False)
+exp("10:42 spec: no JSON example carries rotated_at", [k for k, v in EX.items() if "rotated_at" in json.dumps(v)], False)
+for _b in ["V11-ROTATEDAT", "V11-BODYTIMEOUT-CONFIG"]:
+    exp(f"10:42 §12 lists {_b}", [] if f"**{_b}** (backlog, [TLD 2026-11-04 10:42])" in _s12 else ["missing"], False)
+exp("10:42 V11-ROTATEDAT says: read from the secret store (AWS)", [] if "read from the secret store (AWS Secrets Manager" in _s12 else ["missing"], False)
+exp("10:42 V11-HTTPFRAMING records body-read reset / bad framing 500 + Error, no S2a change", [] if "a body read that fails (connection reset, bad chunked framing) ends in 500 + one Error log line; no S2a change" in _s12 else ["missing"], False)
+exp("10:42 §5 states the 408/413 vs 404/428/409 order and why", [] if "**Order of 408 / 413 vs 404 / 428 / 409 [TLD 2026-11-04 10:42] [TLD 2026-11-04 11:00]:**" in _s5 and "nothing about the request is known until it has been read" in _s5 else ["missing"], False)
+exp("10:42 §5.1 Expect: connection closed right after the 413 is sent", [] if "the server closes the connection right after the 413 is sent [TLD 2026-11-04 10:42]" in _s5 else ["missing"], False)
+for _pin in ["**TLD 10:42 [TLD 2026-11-04 10:42] (on 8c3ccce..06dc8ac):**", "TL **kept** the `EntraDeployment` constructor parameter", "`access_rules.secret_visible_to` (§6.1)",
+             "A-3 retired [TLD 2026-11-04 10:42]", "| TLD 10:42 |", "**`secret` is exactly `{set}`; `rotated_at` is dropped [TLD 2026-11-04 10:42]:**"]:
+    exp("spec pin 10:42: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+exp("10:42 spec: rotated_at question no longer OPEN", ["stale"] if "`rotated_at` after a config-only rotation" in spec else [], False)
+exp("10:42 spec: no live rotated_at derivation text left", [k for k in ["`rotated_at` = latest change row", "`rotated_at` only moves on a change row", "Set, rotated …\" (= `secret`;"] if k in spec], False)
+exp("10:42 spec Sources still cite the review snapshot bfaa2efb (P4 commit changes it)", [] if "bfaa2efbe4ee6f41cca4447ac36d21ba" in spec else ["missing"], False)
 exp("spec 10:12: no stale 'validated with the same rules and messages as the admin API'", ["stale"] if "validated with the same rules and messages as the admin API" in spec else [], False)
 exp("spec 10:02: access_rules example pins secret_visible_to super_admin", [] if EX["access_rules"].get("secret_visible_to") == ["super_admin"] else ["missing"], False)
+
+# ---- TLD 2026-11-04 10:58 / 10:59 / 11:00 (SSE2 range review ce1151ae): F-A1, F-B1, F-A2, F-A3; Expect close approved; §5 order; LD L171 quote ----
+_s5 = spec.split("## 5. Errors")[1].split("### 5.2")[0]
+_s13 = spec.split("## 13.")[1].split("## 14.")[0]
+for _pin in ["**On PUT, 413 stays at step 7, after 404 / 428 / 409, per P3-3 [TLD 2026-11-04 9:28], which stands**", "**On create, 408 and 413 come first**",
+             "**408 comes first everywhere**", "TL's 10:42 item 5 was too broad [TLD 2026-11-04 11:00]"]:
+    exp("11:00 §5 order: " + _pin[:50], [] if _pin in _s5 else ["missing"], False)
+exp("11:00 §5.1: Expect close via that request's MaxRequestBodySize = 0, approved, 200 repeats, that request only",
+    [] if all(k in _s5 for k in ["**that request's** `MaxRequestBodySize` to 0", "approved [TLD 2026-11-04 11:00]", "200 repeats (100 PUT + 100 POST), 0 resets", "The limit applies to that one request only", "mutation MC2"]) else ["missing"], False)
+exp("10:58 F-B1 §5.1: total deadline, never reset by a read, under-limit trickle 408", [] if "**Total deadline [TLD 2026-11-04 10:58 F-B1]:**" in _s5 and "never reset by a read" in _s5 else ["missing"], False)
+exp("11:00: no OPEN left on the Expect close or the PUT 413 order", [k for k in ["**OPEN, for TL:** confirm this form", "**OPEN (SSE, for TL):** 10:42 says 408", "OPEN for TL, §13", "TL asked for an abort after the flush"] if k in spec], False)
+exp("11:00 LD L171 quote kept verbatim + V11-ROTATEDAT note", [] if '[SRC: LD L171: "`secret_ref` is never shown (only "set / rotated on")."; S2a shows no date (V11-ROTATEDAT) [TLD 2026-11-04 11:00]]' in spec else ["missing"], False)
+for _pin in ["**Superseded by [TLD 2026-11-04 10:58 F-A1, clarified 10:59]:** the `EntraDeployment` constructor is **internal**", "**`EntraDeployment.Create(authority, clientId, secretRef, allowedAccountIds, allowedRegions)`**",
+             "a reason code (`entra_authority_invalid`", "that never contains the value", "no `InternalsVisibleTo` anywhere"]:
+    exp("10:58 F-A1 pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+for _pin in ["**F-A1** `EntraDeployment` is validated by construction", "**F-B1** the body deadline is total", "**F-A2** Info only, no change",
+             "**F-A3** backlog for P4 tests: org:V coverage against real PG"]:
+    exp("10:58 §13 pin: " + _pin[:40], [] if _pin in _s13 else ["missing"], False)
+for _pin in ["| TLD 10:58 / 10:59 |", "| TLD 11:00 |", "| RANGE | `docs/reviews/RANGE-8c3ccce-06dc8ac-REVIEW.md`", "`ce1151aef3fd3e09dd863be3575654a0`"]:
+    exp("10:58 Sources: " + _pin[:40], [] if _pin in spec else ["missing"], False)
+
+exp("11:19 Q1 §5: 401/403 stay first (TLD 9:04 #8), 408 straight after", [] if "**401 / 403 stay first (TLD 9:04 #8) and 408 comes straight after them** [TLD 2026-11-04 11:19]" in spec.split("## 5. Errors")[1].split("### 5.2")[0] else ["missing"], False)
+exp("11:19 Sources row", [] if "| TLD 11:19 |" in spec else ["missing"], False)
+exp("RANGE2 Sources row (SSE2 review 3fac1d52)", [] if "| RANGE2 | `/tmp/sse2-fverify/RANGE-06dc8ac-ba85c77-REVIEW.md`" in spec and "`3fac1d52402e99371b9fc254b03b74f0`" in spec else ["missing"], False)
+exp("F-C1 §13: EntraDeployment public surface = type + Create + Reasons + Result", [] if "**SSE2 review 06dc8ac..ba85c77 F-C1 (Low) [SSE2 review 3fac1d52]" in spec and "`IsValidAuthority` and `SecretRefAllowed` are internal" in spec else ["missing"], False)
+exp("11:21 Sources row (Q2 option b scratch DB)", [] if "| TLD 11:21 | TL ruling 11:21 AM PT on Q2: option (b)" in spec else ["missing"], False)
+exp("11:21 §14: N3/N1 probes on a marked scratch DB via the public FindUserAsync", [] if "**N3 / N1 fail-closed probes [TLD 2026-11-04 11:21]:**" in spec.split("## 14. Contract tests")[1] and "/tmp/sse-d0/venv" not in spec.split("## 14. Contract tests")[1] else ["missing"], False)
+_s14 = spec.split("## 14. Contract tests")[1]
+for _pin in ["| TLD 11:57 (P3) | TL decisions 11:57 AM PT on the scratch DB", "| TLD 12:04 | TL decision 12:04 AM PT on SSE2 review de9c1946 F1", "| RANGE3 | `/tmp/sse2-fverify/RANGE-06dc8ac-6a71fbf-REVIEW.md`"]:
+    exp("11:57/12:04 Sources: " + _pin[:40], [] if _pin in spec else ["missing"], False)
+for _pin in ["**Scratch rules [TLD 2026-11-04 11:57] [TLD 2026-11-04 12:04]:**", "loopback host only (`127.0.0.1` / `::1`", "default `postgres`", "older than 1 h and has no `pg_stat_activity` connections", "reported by name, not dropped, and the run fails", "[SSE2 review de9c1946 F2]"]:
+    exp("11:57/12:04 §14: " + _pin[:40], [] if _pin in _s14 else ["missing"], False)
+
+exp("12:33 Sources row", [] if "| TLD 12:33 | TL decisions 12:33 PM PT on the scratch DB" in spec else ["missing"], False)
+for _pin in ["**Maintenance-DB exception [TLD 2026-11-04 12:33]:**", "everything else is refused before it is sent", "**o3 [TLD 2026-11-04 12:33]: net role set identical; per-run roles allowed only if marked and dropped.**", "an unmarked `ff_scratch_*` look-alike role is reported, never dropped, and the run fails", "`ff_scratchadm` is documented kit infrastructure", "`src/Auth.Data.Checks/README.md`"]:
+    exp("12:33 §14: " + _pin[:40], [] if _pin in _s14 else ["missing"], False)
+exp("12:33 §14: the old 'only CONNECT and catalog reads' / 'o3 not fully met' wording is gone", [] if "only `CONNECT` and catalog reads there" not in _s14 and "why o3 is not fully met" not in _s14 else ["present"], False)
+exp("13:15 Sources row (KF-A)", [] if "| TLD 13:15 | TL decisions 1:15 PM PT: items 1, 3–9 accepted" in spec and "on the kit's KF-A rule" in spec else ["missing"], False)
+exp("RANGE4 Sources row (SSE2 review 04dba71d)", [] if "| RANGE4 | `/tmp/sse2-fverify/RANGE-9771ad3-1b9f5bd-REVIEW.md`" in spec and "`04dba71d9eb8f4a85d9425e4e7774505`" in spec else ["missing"], False)
+for _pin in ["**KF-A [TLD 2026-11-04 13:15]:**", "never cleartext in `CREATE/ALTER ROLE`", "only `SCRAM-SHA-256$4096:` may follow", "**Scratch lock per kit DB [TLD 2026-11-04 13:15 #5]:**", "do not block each other", "exits 2 with the key named, never its value"]:
+    exp("13:15 §14: " + _pin[:40], [] if _pin in _s14 else ["missing"], False)
+exp("04dba71d Info §13: EntraDeployment getters Authority / ClientId / SecretRef + redacted ToString allowed, reflection allows exactly those", [] if "**Allowed public getters [SSE2 review 9771ad3..1b9f5bd Info] [SSE2 review 04dba71d]:**" in spec and "allows exactly these members and fails on any other public member" in spec else ["missing"], False)
 
 print("v1.1-S2a checks: %d passed, %d failed" % (PASSES[0], len(FAIL)), "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)

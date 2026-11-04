@@ -108,6 +108,65 @@ Refuses("startup: empty SecretRef:AllowedAccountIds refused", o => o with { Secr
 Refuses("startup: bad account id refused", o => o with { SecretAccountIds = new HashSet<string> { "12345" } }, "AllowedAccountIds");
 Refuses("startup: empty SecretRef:AllowedRegions refused", o => o with { SecretRegions = new HashSet<string>() }, "AllowedRegions");
 Refuses("startup: bad region refused", o => o with { SecretRegions = new HashSet<string> { "US-WEST-2" } }, "AllowedRegions");
+// [TLD 2026-11-04 10:58 F-A1, clarified 10:59] EntraDeployment: internal constructor, EntraDeployment.Create the only (validated) way in,
+// no InternalsVisibleTo anywhere. Values: SSE2-FAKE-TEST-ONLY (account 000000000000, FAKE ARNs).
+{
+    var t = typeof(Auth.Data.EntraDeployment);
+    var bf = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+    Ok("F-A1: EntraDeployment has NO public constructor (reflection); every constructor is internal",
+        t.GetConstructors().Length == 0 && t.GetConstructors(bf).Length > 0 && t.GetConstructors(bf).All(c => c.IsAssembly && !c.IsPublic),
+        string.Join(", ", t.GetConstructors(bf).Select(c => $"public={c.IsPublic} internal={c.IsAssembly}")));
+    Ok("F-A1: no InternalsVisibleTo on Auth.Data or Admin.Api (TLD 10:59: none anywhere, incl. tests)",
+        !t.Assembly.GetCustomAttributes(typeof(System.Runtime.CompilerServices.InternalsVisibleToAttribute), false).Any()
+        && !typeof(AdminApiOptions).Assembly.GetCustomAttributes(typeof(System.Runtime.CompilerServices.InternalsVisibleToAttribute), false).Any());
+    IReadOnlySet<string> acc = new HashSet<string> { "000000000000" }, reg = new HashSet<string> { "us-west-2" };
+    var bad = Auth.Data.EntraDeployment.Create(Authority, ClientId, "not-an-arn", acc, reg);
+    Ok("F-A1 bypass: Create(..., \"not-an-arn\") refused with reason entra_secret_ref_not_allowed; the reason and ToString never contain the value",
+        !bad.Ok && bad.Value is null && bad.Reason == Auth.Data.EntraDeployment.Reasons.SecretRefNotAllowed
+        && !bad.Reason.Contains("not-an-arn") && !bad.ToString().Contains("not-an-arn"), $"{bad.Reason}");
+    var good = Auth.Data.EntraDeployment.Create(Authority, ClientId.ToUpperInvariant(), DeployArn, acc, reg);
+    Ok("F-A1: Create with allowlisted fakes -> value (client id lower-case canonical, SecretRef = the ARN, ToString redacted)",
+        good.Ok && good.Reason is null && good.Value!.ClientId == ClientId && good.Value.Authority == Authority && good.Value.SecretRef.Reveal() == DeployArn
+        && !good.Value.ToString().Contains("arn:") && !good.ToString().Contains("arn:"));
+    foreach (var (n, r, want) in new (string, Auth.Data.EntraDeployment.Result, string)[] {
+        ("authority http", Auth.Data.EntraDeployment.Create("http://login.microsoftonline.com", ClientId, DeployArn, acc, reg), Auth.Data.EntraDeployment.Reasons.AuthorityInvalid),
+        ("authority null", Auth.Data.EntraDeployment.Create(null, ClientId, DeployArn, acc, reg), Auth.Data.EntraDeployment.Reasons.AuthorityInvalid),
+        ("client id not a GUID", Auth.Data.EntraDeployment.Create(Authority, "not-a-guid", DeployArn, acc, reg), Auth.Data.EntraDeployment.Reasons.ClientIdInvalid),
+        ("account list bad", Auth.Data.EntraDeployment.Create(Authority, ClientId, DeployArn, new HashSet<string> { "12345" }, reg), Auth.Data.EntraDeployment.Reasons.AllowedAccountIdsInvalid),
+        ("region list empty", Auth.Data.EntraDeployment.Create(Authority, ClientId, DeployArn, acc, new HashSet<string>()), Auth.Data.EntraDeployment.Reasons.AllowedRegionsInvalid),
+        ("ARN account outside allowlist", Auth.Data.EntraDeployment.Create(Authority, ClientId, Arn("x", acct: "111122223333"), acc, reg), Auth.Data.EntraDeployment.Reasons.SecretRefNotAllowed),
+        ("ARN null", Auth.Data.EntraDeployment.Create(Authority, ClientId, null, acc, reg), Auth.Data.EntraDeployment.Reasons.SecretRefNotAllowed) })
+        Ok($"F-A1: Create refuses {n} -> {want}, no value echoed", !r.Ok && r.Reason == want && !r.Reason!.Contains("arn:") && !r.Reason.Contains("111122223333") && !r.Reason.Contains("not-a-guid"), $"{r.Reason}");
+    // [SSE2 review 06dc8ac..ba85c77 (3fac1d52) F-C1] Auth.Data's EntraDeployment public surface = the type + Create + Reasons (5
+    // consts) + Result (Value / Reason / Ok / ToString) + the instance getters and redacted ToString. Anything else public fails.
+    // [SSE2 review 04dba71d Info] the read-only getters Authority / ClientId / SecretRef and the redacted ToString are allowed
+    // (spec §13 "Allowed public getters"); this check allows exactly those: a setter, a public constructor or any other member fails.
+    {
+        const System.Reflection.BindingFlags pub = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly;
+        string Surf(Type x) => string.Join(",", x.GetMembers(pub).Select(m => m.MemberType + ":" + m.Name).OrderBy(s => s, StringComparer.Ordinal));
+        var res = typeof(Auth.Data.EntraDeployment.Result); var rsn = typeof(Auth.Data.EntraDeployment.Reasons);
+        var got = $"T[{Surf(t)}] Reasons[{Surf(rsn)}] Result[{Surf(res)}]";
+        var want = "T[Method:Create,Method:ToString,Method:get_Authority,Method:get_ClientId,Method:get_SecretRef,NestedType:Reasons,NestedType:Result,Property:Authority,Property:ClientId,Property:SecretRef]"
+                 + " Reasons[Field:AllowedAccountIdsInvalid,Field:AllowedRegionsInvalid,Field:AuthorityInvalid,Field:ClientIdInvalid,Field:SecretRefNotAllowed]"
+                 + " Result[Method:ToString,Method:get_Ok,Method:get_Reason,Method:get_Value,Property:Ok,Property:Reason,Property:Value]";
+        Ok("F-C1: EntraDeployment public surface is exactly {type, Create, Reasons+consts, Result+members, read-only getters Authority/ClientId/SecretRef + redacted ToString (allowed, SSE2 04dba71d)} (reflection; IsValidAuthority / SecretRefAllowed internal)",
+            got == want && t.IsPublic && rsn.IsNestedPublic && res.IsNestedPublic, got);
+        string[] auths = { Authority, "http://login.microsoftonline.com", "https://login.microsoftonline.com/", "https://login.microsoftonline.com/tenant",
+                           "https://login.microsoftonline.com?x=1", "https://u:p@login.microsoftonline.com", "https://login.microsoftonline.com#f", "",
+                           "login.microsoftonline.com", "https://login.microsoftonline.com:99999", "https://login..microsoftonline.com", "https://h:8443" };
+        Ok("F-C1: AdminApiOptions.IsValidAuthority via Create: true only for the valid authorities, null still throws ArgumentNullException",
+            auths.All(a => AdminApiOptions.IsValidAuthority(a) == (a == Authority || a == "https://h:8443"))
+            && Throws<ArgumentNullException>(() => AdminApiOptions.IsValidAuthority(null!)), string.Join(" ", auths.Select(AdminApiOptions.IsValidAuthority)));
+        string[] refs = { DeployArn, "", "my-client-secret", Arn("x", acct: "111122223333"), Arn("x", region: "eu-west-1"), "arn:aws-cn:secretsmanager:us-west-2:000000000000:secret:FAKE-x",
+                          "arn:aws:ssm:us-west-2:000000000000:secret:FAKE-x", DeployArn + "\n", "arn:aws:secretsmanager:us-west-2:000000000000:secret:FAKE-" + new string('a', 2048) };
+        Ok("F-C1: AdminApiOptions.SecretRefAllowed via Create: true only for the allowlisted ARN; null still throws NullReferenceException",
+            refs.All(r => Opts().SecretRefAllowed(r) == (r == DeployArn)) && Throws<NullReferenceException>(() => Opts().SecretRefAllowed(null!)),
+            string.Join(" ", refs.Select(r => Opts().SecretRefAllowed(r))));
+        static bool Throws<TE>(Action a) where TE : Exception { try { a(); return false; } catch (TE) { return true; } catch { return false; } }
+    }
+    try { _ = (Opts() with { EntraSecretRef = "not-an-arn" }).Entra(); Ok("F-A1: AdminApiOptions.Entra() goes through Create: not-an-arn refused (key named, value not echoed)", false, "accepted"); }
+    catch (InvalidOperationException e) { Ok("F-A1: AdminApiOptions.Entra() goes through Create: not-an-arn refused (key named, value not echoed)", e.Message.Contains("config Entra:SecretRef") && !e.Message.Contains("not-an-arn"), e.Message); }
+}
 // TLD 2026-11-04 9:49 (D-51): Entra:SecretRef validated against the allowlists at startup; the refusal names the key, never the value.
 foreach (var (n, bad) in new[] { ("empty", ""), ("not an ARN", "my-client-secret"), ("account outside allowlist", Arn("x", acct: "111122223333")),
                                   ("region outside allowlist", Arn("x", region: "eu-west-1")), ("partition aws-cn", "arn:aws-cn:secretsmanager:us-west-2:000000000000:secret:FAKE-x"),
@@ -234,6 +293,7 @@ var allCorr = new List<string?>();
 var oldHeader = 0; // responses carrying the pre-9:20 X-Correlation-Id header
 bool IsCorr(string? v) => v is not null && Guid.TryParseExact(v, "D", out var g) && g.Version == 7;
 var responsesForSchema = new List<(string def, string body)>();
+const string HarnessErrorBody = "{\"error\":\"harness_transport_error\",\"fields\":[]}";
 async Task<R> Send(HttpMethod m, string path, string? token, string? body = null, string? ifMatch = null, Action<HttpRequestMessage>? edit = null)
 {
     using var req = new HttpRequestMessage(m, path);
@@ -241,8 +301,16 @@ async Task<R> Send(HttpMethod m, string path, string? token, string? body = null
     if (body is not null) req.Content = new StringContent(body, Encoding.UTF8, "application/json");
     if (ifMatch is not null) req.Headers.TryAddWithoutValidation("If-Match", ifMatch);
     edit?.Invoke(req);
-    using var res = await http.SendAsync(req);
-    var text = await res.Content.ReadAsStringAsync();
+    HttpResponseMessage res0; string text;
+    // [SSE2 review 06dc8ac..ba85c77 (3fac1d52) Info, MD4] A transport failure (broken pipe, reset) on one request records a FAIL with the
+    // exception types and returns a placeholder response, so the run carries on and ends with a clean FAIL count instead of aborting.
+    try { res0 = await http.SendAsync(req); text = await res0.Content.ReadAsStringAsync(); }
+    catch (Exception e) when (e is IOException or SocketException || e is HttpRequestException { InnerException: IOException or SocketException })
+    {
+        Ok($"transport: {m} {path} got a response", false, $"{e.GetType().Name}{(e.InnerException is { } ie ? "/" + ie.GetType().Name + ": " + ie.Message : ": " + e.Message)}");
+        return new R(0, HarnessErrorBody, null, null, null, null, null, null);
+    }
+    using var res = res0;
     allBodies.Add(text);
     if ((int)res.StatusCode is >= 400 and < 500 and not 401 && text.Length > 0) responsesForSchema.Add(("error_response", text));
     string? H(string k) => res.Headers.TryGetValues(k, out var v) ? string.Join(",", v) : res.Content.Headers.TryGetValues(k, out var cv) ? string.Join(",", cv) : null;
@@ -256,7 +324,13 @@ Task<R> Put(Guid loc, string? tok, object body, string? ifMatch) => Send(HttpMet
 Task<R> Post(string? tok, object body) => Send(HttpMethod.Post, "/api/orgs/locations", tok, J(body));
 string Cfg(Guid l) => $"/api/orgs/locations/{l:D}/login-config";
 static string J(object o) => o is string s ? s : JsonSerializer.Serialize(o);
-static JsonObject Obj(string s) => JsonNode.Parse(s)!.AsObject();
+// [SSE2 review 3fac1d52 Info, MD4b] A body that is not a JSON object records a FAIL and yields the placeholder, so the run carries on.
+JsonObject Obj(string s)
+{
+    try { return JsonNode.Parse(s)!.AsObject(); }
+    catch (Exception e) when (e is JsonException or InvalidOperationException or NullReferenceException)
+    { Ok("response body is a JSON object", false, $"{e.GetType().Name}, {s.Length} chars"); return JsonNode.Parse(HarnessErrorBody)!.AsObject(); }
+}
 bool Err(R r, int status, string code) => r.Status == status && Obj(r.Body)["error"]?.GetValue<string>() == code;
 bool HasField(R r, string field, string code) => r.Status == 422 && Obj(r.Body)["fields"]!.AsArray().Any(f => (string)f!["field"]! == field && (string)f["code"]! == code);
 void ForSchema(string def, R r) => responsesForSchema.Add((def, r.Body));
@@ -387,7 +461,7 @@ try
         var b = Obj(rB1.Body);
         Ok("create: super view shows server-filled oidc_* from Entra:Authority / Entra:ClientId",
             (string?)b["oidc_authority"] == Authority && (string?)b["oidc_client_id"] == ClientId);
-        Ok("Q2 create: SA 201 response has secret {set: true, rotated_at} [TLD 10:02 Q2]", b["secret"] is JsonObject so && so.Count == 2 && (bool)so["set"]! && so["rotated_at"] is not null, rB1.Body);
+        Ok("Q2 create: SA 201 response has secret {set: true} and nothing else (no rotated_at) [TLD 10:02 Q2, TLD 10:42]", b["secret"] is JsonObject so && so.Count == 1 && (bool)so["set"]! && !so.ContainsKey("rotated_at"), rB1.Body);
         var ev = await NewEvents();
         Ok("create: SA event lists oidc_* and secret_ref in changed_fields, no value",
             ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["admin_type"]! == "super"
@@ -503,9 +577,9 @@ try
         ForSchema("login_config_view_restricted", r);
         r = await Get(Cfg(B1), SA);
         Ok("get: SA any -> 200 super view with oidc_*", r.Status == 200 && (string?)Obj(r.Body)["oidc_client_id"] == ClientId);
-        Ok("Q2 get: SA -> secret {set, rotated_at} present [TLD 10:02 Q2]", Obj(r.Body)["secret"] is JsonObject gs && gs.Count == 2 && (bool)gs["set"]! && gs.ContainsKey("rotated_at"), r.Body);
+        Ok("Q2 get: SA -> secret {set: true} present, nothing else (no rotated_at) [TLD 10:02 Q2, TLD 10:42]", Obj(r.Body)["secret"] is JsonObject gs && gs.Count == 1 && (bool)gs["set"]! && !gs.ContainsKey("rotated_at"), r.Body);
         var saDb = await Get(Cfg(A1), SA);
-        Ok("Q2 get: SA on a database location -> secret {set: false, rotated_at: null} present", Obj(saDb.Body)["secret"] is JsonObject ds && !(bool)ds["set"]! && ds["rotated_at"] is null, saDb.Body);
+        Ok("Q2 get: SA on a database location -> secret {set: false} present, nothing else [TLD 10:42]", Obj(saDb.Body)["secret"] is JsonObject ds && ds.Count == 1 && !(bool)ds["set"]!, saDb.Body);
         ForSchema("login_config_view_super", saDb);
         ForSchema("login_config_view_super", r);
         var miss = await Get(Cfg(missing), PA);
@@ -584,8 +658,8 @@ try
         Ok("put: entra -> database (no secret_ref in body) -> 200, oidc + secret cleared by the server (TLD 9:49)", r.Status == 200 && r.ETag == "\"3\"" && !Obj(r.Body).ContainsKey("secret")
             && await OScalar<long>("SELECT count(*) FROM auth.location_login_config WHERE location_id=$1 AND oidc_authority IS NULL AND oidc_client_id IS NULL AND secret_ref IS NULL", A1) == 1, r.Body);
         var saAfterDb = Obj((await Get(Cfg(A1), SA)).Body);
-        Ok("Q2 get: SA on a database location with past secret_ref change rows -> secret {set: false, rotated_at: null} (secret_view rule)",
-            saAfterDb["secret"] is JsonObject dbs && !(bool)dbs["set"]! && dbs["rotated_at"] is null, saAfterDb.ToJsonString());
+        Ok("Q2 get: SA on a database location with past secret_ref change rows -> secret {set: false} only [TLD 10:42]",
+            saAfterDb["secret"] is JsonObject dbs && dbs.Count == 1 && !(bool)dbs["set"]!, saAfterDb.ToJsonString());
         var evDb = await NewEvents();
         Ok("put: entra -> database event changed_fields lists secret_ref (cleared), no value", evDb.Count == 1 && Valid(evDb[0])
             && evDb[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["provider_kind", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret_ref"])
@@ -629,7 +703,7 @@ try
         Ok("put: SA mfa off, whitespace reason -> 400 reason_required", Err(r, 400, "reason_required"));
         r = await Put(A1, SA, With(EntraCfg(T3, mfa: false), "reason", "Client's Entra conditional access already enforces MFA; ticket OPS-1234"), "\"4\"");
         Ok("put: SA mfa off + reason -> 200 super view", r.Status == 200 && (bool)Obj(r.Body)["mfa_required"]! == false && Obj(r.Body).ContainsKey("oidc_authority"));
-        Ok("Q2 put: SA 200 response has secret {set: true, rotated_at} [TLD 10:02 Q2]", Obj(r.Body)["secret"] is JsonObject ps && ps.Count == 2 && (bool)ps["set"]! && ps["rotated_at"] is not null, r.Body);
+        Ok("Q2 put: SA 200 response has secret {set: true} and nothing else (no rotated_at) [TLD 10:02 Q2, TLD 10:42]", Obj(r.Body)["secret"] is JsonObject ps && ps.Count == 1 && (bool)ps["set"]! && !ps.ContainsKey("rotated_at"), r.Body);
         ForSchema("login_config_view_super", r);
         ev = await NewEvents();
         Ok("put: SA downgrade event admin_type super + reason", ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["admin_type"]! == "super" && (string?)ev[0]["details"]!["reason"] is { Length: > 10 });
@@ -643,12 +717,11 @@ try
 
         // Entra -> Entra keeps the stored secret_ref (A-21 analogue, TLD 9:49) even if the row differs from Entra:SecretRef; and no-op.
         await OExec("UPDATE auth.location_login_config SET secret_ref = $2 WHERE location_id = $1", A1, Arn("llc/pre-d51-row"));
-        var rot0 = (string?)Obj((await Get(Cfg(A1), SA)).Body)["secret"]!["rotated_at"];
         r = await Put(A1, PA, EntraCfg(T3, display: "Riverbend Casino North"), "\"7\"");
         ev = await NewEvents();
-        Ok("put: entra -> entra edit -> changed_fields [display_name] only, stored secret_ref kept, rotated_at unchanged", r.Status == 200 && ev.Count == 1
+        Ok("put: entra -> entra edit -> changed_fields [display_name] only, stored secret_ref kept, SA view still secret {set: true} only", r.Status == 200 && ev.Count == 1
             && ev[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["display_name"])
-            && !Obj(r.Body).ContainsKey("secret") && (string?)Obj((await Get(Cfg(A1), SA)).Body)["secret"]!["rotated_at"] == rot0 && rot0 is not null
+            && !Obj(r.Body).ContainsKey("secret") && Obj((await Get(Cfg(A1), SA)).Body)["secret"] is JsonObject ks && ks.Count == 1 && (bool)ks["set"]!
             && await OScalar<string>("SELECT secret_ref FROM auth.location_login_config WHERE location_id=$1", A1) == Arn("llc/pre-d51-row"), r.Body);
         await OExec("UPDATE auth.location_login_config SET secret_ref = $2 WHERE location_id = $1", A1, DeployArn);
         r = await Put(A1, PA, EntraCfg(T3, display: "  Riverbend Casino North  "), "\"8\"");
@@ -1057,6 +1130,15 @@ try
         var st409 = await Raw("PUT", Cfg(A1), SA, KiB400, false, "\"99\"");
         Ok("P3-3 unchanged: stale If-Match + declared 400 KiB -> 409 concurrency_conflict, Connection: close, no reset", st409.ReadErr is null && st409.Status == 409
             && st409.H.GetValueOrDefault("Connection") == "close" && (await NewEvents()).Count == 0, $"{st409.Status} {st409.ReadErr}");
+        // [TLD 2026-11-04 11:00] spec §5 order: on PUT the 413 is step 7, after 404/428/409 (P3-3, TLD 9:28, stands); on create 413 comes first.
+        var o404 = await Raw("PUT", Cfg(Guid.CreateVersion7()), SA, KiB400, false, $"\"{rvA1}\"");
+        Ok("TLD 11:00 §5 order: PUT missing location + declared 400 KiB -> 404 not_found (404 before 413), Connection: close, no reset", o404.ReadErr is null && o404.Status == 404
+            && o404.Body == "{\"error\":\"not_found\"}" && o404.H.GetValueOrDefault("Connection") == "close" && (await NewEvents()).Count == 0, $"{o404.Status} {o404.ReadErr}");
+        var o428 = await Raw("PUT", Cfg(A1), SA, KiB400, false);
+        Ok("TLD 11:00 §5 order: PUT without If-Match + declared 400 KiB -> 428 precondition_required (428 before 413), Connection: close, no reset", o428.ReadErr is null && o428.Status == 428
+            && o428.Body == "{\"error\":\"precondition_required\"}" && o428.H.GetValueOrDefault("Connection") == "close" && (await NewEvents()).Count == 0, $"{o428.Status} {o428.ReadErr}");
+        var oc = await Raw("POST", "/api/orgs/locations", PA, KiB400, false);
+        Ok("TLD 11:00 §5 order: create, PA, declared 400 KiB (partner unreadable) -> 413 first (never 404), no forbidden_scope event", Is413("post PA declared 400K", oc) && (await NewEvents()).Count == 0);
         var keep = await Send(HttpMethod.Get, Cfg(A1), SA);
         Ok("413: a normal request after the 413s still works (200, ETag unchanged)", keep.Status == 200 && keep.ETag == $"\"{rvA1}\"");
 
@@ -1091,10 +1173,12 @@ try
         Ok("P3-7: BodyReadTimeout default is 10 s (code default, DRAFT)", new AdminApiOptions { ConnectionString = "x", EntraAuthority = "x", EntraClientId = "x", EntraSecretRef = "x", SecretAccountIds = new HashSet<string>(), SecretRegions = new HashSet<string>(), TokenIssuer = "x", SigningKeys = [], AuditSchemaPath = "x" }.BodyReadTimeout == TimeSpan.FromSeconds(10));
         // Raw client: sends the head, then `first` body bytes, then stalls (never sends the rest) until the response is read.
         // expect = send Expect: 100-continue and NO body bytes; any "HTTP/1.1 100" interim line is reported.
+        string? stallCloseErr = null; // how the last Stall connection ended after the response: null = clean EOF (FIN), else the error (reset)
         async Task<(int Status, Dictionary<string, string> H, string Body, string? ReadErr, long Ms, bool Saw100, long ClosedMs)> Stall(string method, string path, string? token,
             long contentLength, int first, bool expect = false, string? ifMatch = null)
         {
             using var tcp = new TcpClient();
+            stallCloseErr = null;
             await tcp.ConnectAsync(IPAddress.Loopback, port3);
             var st = tcp.GetStream();
             var head = new StringBuilder($"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port3}\r\nContent-Type: application/json\r\nContent-Length: {contentLength}\r\n");
@@ -1134,7 +1218,7 @@ try
             catch (Exception x) when (x is IOException or SocketException or OperationCanceledException) { err = x.InnerException?.Message ?? x.Message; }
             var sw2 = Stopwatch.StartNew();
             try { using var c2 = new CancellationTokenSource(TimeSpan.FromSeconds(10)); int n; while (err is null && (n = await st.ReadAsync(buf, c2.Token)) > 0) acc.AddRange(buf.AsSpan(0, n).ToArray()); }
-            catch (Exception x) when (x is IOException or SocketException or OperationCanceledException) { }
+            catch (Exception x) when (x is IOException or SocketException or OperationCanceledException) { stallCloseErr = x.InnerException?.Message ?? x.Message; }
             var closedMs = sw2.ElapsedMilliseconds;
             var saw100 = Encoding.ASCII.GetString(acc.ToArray()).Contains("HTTP/1.1 100", StringComparison.Ordinal);
             if (status >= 400 && body.Length > 0) responsesForSchema.Add(("error_response", body));
@@ -1171,6 +1255,20 @@ try
         Ok("P3-7: POST 408 wrote nothing (no location, no event, no change row)",
             (await NewEvents()).Count == 0 && await Count("location") == locs && await Count("location_login_config_change") == changes);
 
+        // [TLD 2026-11-04 11:00] 408 comes first: a slow PUT is answered 408 before steps 3-6 (404 / 428 / 409); a slow create before 404.
+        foreach (var (n, path, im, also) in new[] { ("missing location", Cfg(Guid.CreateVersion7()), (string?)$"\"{rvA1}\"", "404"), ("no If-Match", Cfg(A1), null, "428"),
+                                                    ("stale If-Match", Cfg(A1), "\"99\"", "409") })
+        {
+            mark = wlog.Entries.Count;
+            s = await Stall("PUT", path, SA, 4000, 100, ifMatch: im);
+            w = await Settle(mark);
+            Ok($"TLD 11:00 §5 order: SA slow PUT, {n} -> 408 request_timeout (408 before {also})", Is408(s) && w.Count == 1 && (await NewEvents()).Count == 0, $"{s.Status} {s.Body} {s.Ms} ms");
+        }
+        mark = wlog.Entries.Count;
+        s = await Stall("POST", "/api/orgs/locations", PA, 6000, 9);
+        w = await Settle(mark);
+        Ok("TLD 11:00 §5 order: PA slow create (partner not yet readable) -> 408 (408 before 404), no event", Is408(s) && w.Count == 1 && (await NewEvents()).Count == 0, $"{s.Status} {s.Body} {s.Ms} ms");
+
         // 401/403 still come first with a slow body.
         mark = wlog.Entries.Count;
         s = await Stall("PUT", Cfg(A1), null, 4000, 100, ifMatch: $"\"{rvA1}\"");
@@ -1187,6 +1285,10 @@ try
         Ok("P3-7 vs #8: the 401/403 slow-body requests log no 408 Warning", w.All(e => !e.Text.Contains("408")), string.Join(" | ", w.Select(e => e.Text)));
 
         // P3-8: Expect: 100-continue + Content-Length over 64 KiB -> 413 at once, no 100 Continue, no drain, no log.
+        // [TLD 2026-11-04 10:42] the server closes the connection right after the 413 is sent: closed < 1.5 s after the response (Kestrel's own
+        // close was ~6 s). ctx.Abort() right after CompleteAsync lost the 413 (reset) on 4+ of 42 requests (POSTs; mutation MC2), so the host
+        // sets THIS request's MaxRequestBodySize to 0 and Kestrel closes after the response [TLD 2026-11-04 11:00: approved]; the 200 repeats
+        // below guard that no 413 is lost, and the checks after them that the limit applies to that one request only.
         foreach (var (m, p, im) in new[] { ("PUT", Cfg(A1), (string?)$"\"{rvA1}\""), ("POST", "/api/orgs/locations", null) })
         {
             mark = wlog.Entries.Count;
@@ -1194,10 +1296,62 @@ try
             w = await Settle(mark);
             Ok($"P3-8: SA {m} Expect: 100-continue + Content-Length 8 MiB -> 413 payload_too_large at once, NO 100 Continue, Connection: close, X-Request-ID",
                 e.ReadErr is null && e.Status == 413 && e.Body == "{\"error\":\"payload_too_large\"}" && !e.Saw100 && e.Ms < 900
-                && e.H.GetValueOrDefault("Connection") == "close" && IsCorr(e.H.GetValueOrDefault(LoginConfigApi.RequestIdHeader)) && e.ClosedMs < 10000,
+                && e.H.GetValueOrDefault("Connection") == "close" && IsCorr(e.H.GetValueOrDefault(LoginConfigApi.RequestIdHeader)),
                 $"{e.Status} saw100={e.Saw100} {e.Ms} ms closed {e.ClosedMs} ms");
-            Console.WriteLine($"INFO P3-8 Expect {m}: 413 after {e.Ms} ms, server closed {e.ClosedMs} ms after the response (no drain; Kestrel's own close)");
+            Console.WriteLine($"INFO P3-8 Expect {m}: 413 after {e.Ms} ms, server closed {e.ClosedMs} ms after the response (TLD 10:42 close after the 413; bound < 1500 ms)");
+            Ok($"TLD 10:42: the {m} Expect 413 connection is closed by the server < 1.5 s after the response (closed right after the 413 is sent)", e.ClosedMs < 1500, $"closed {e.ClosedMs} ms");
             Ok($"P3-8: the {m} Expect 413 logs nothing (no drain) and writes nothing", w.Count == 0 && (await NewEvents()).Count == 0, string.Join(" | ", w.Select(x => x.Text)));
+        }
+        // TLD 10:42 / 11:00: the close must never lose the 413: 100 more of each (200), every one a full 413, closed < 1.5 s, by a clean close (no reset).
+        {
+            mark = wlog.Entries.Count;
+            var reps = new List<(int Status, Dictionary<string, string> H, string Body, string? ReadErr, long Ms, bool Saw100, long ClosedMs)>();
+            var resets = new List<string>();
+            for (var i = 0; i < 100; i++)
+            {
+                reps.Add(await Stall("PUT", Cfg(A1), SA, 8L << 20, 0, expect: true, ifMatch: $"\"{rvA1}\""));
+                if (stallCloseErr is not null) resets.Add("PUT " + stallCloseErr);
+                reps.Add(await Stall("POST", "/api/orgs/locations", SA, 8L << 20, 0, expect: true));
+                if (stallCloseErr is not null) resets.Add("POST " + stallCloseErr);
+            }
+            var bad = reps.Where(x => !(x.ReadErr is null && x.Status == 413 && x.Body == "{\"error\":\"payload_too_large\"}" && !x.Saw100 && x.ClosedMs < 1500)).ToList();
+            Console.WriteLine($"INFO TLD 10:42/11:00 Expect 413 x{reps.Count} (resets {resets.Count}, lost {bad.Count}): close after response max {reps.Max(x => x.ClosedMs)} ms, median {reps.Select(x => x.ClosedMs).Order().ElementAt(reps.Count / 2)} ms");
+            Ok($"TLD 11:00: {reps.Count} repeated Expect 413s (100 PUT + 100 POST): every response complete (no reset, no lost 413, no 100) and each closed < 1.5 s",
+                reps.Count == 200 && bad.Count == 0, string.Join(" | ", bad.Take(3).Select(x => $"{x.Status} err={x.ReadErr} closed {x.ClosedMs}")));
+            Ok($"TLD 11:00: every one of the {reps.Count} Expect 413 connections ends with a clean close (EOF / FIN), never a reset", resets.Count == 0, string.Join(" | ", resets.Take(3)));
+            w = await Settle(mark);
+            Ok("TLD 10:42: the repeated Expect 413s log nothing and write nothing", w.Count == 0 && (await NewEvents()).Count == 0, string.Join(" | ", w.Select(x => x.Text)));
+        }
+        // [TLD 2026-11-04 11:00] MaxRequestBodySize = 0 is for THAT request only: later requests on the same server, each on a fresh
+        // connection, still get the normal 64 KiB limit (just under: read and evaluated, 422 here; just over: 413 as before).
+        {
+            async Task<(int Status, string Body)> Fresh(HttpMethod m, string path, int bytes, string? im = null)
+            {
+                using var hc3 = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port3}") }; // new client = new connection
+                using var q = new HttpRequestMessage(m, path);
+                q.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", SA);
+                if (im is not null) q.Headers.TryAddWithoutValidation("If-Match", im);
+                var json = "{\"zz_pad\":\"" + new string('a', bytes - 12) + "\"}";
+                q.Content = new ByteArrayContent(Encoding.ASCII.GetBytes(json));
+                q.Content.Headers.ContentType = new("application/json");
+                using var r = await hc3.SendAsync(q);
+                var b = await r.Content.ReadAsStringAsync();
+                if ((int)r.StatusCode >= 400 && b.Length > 0) responsesForSchema.Add(("error_response", b));
+                return ((int)r.StatusCode, b);
+            }
+            const int Under = 64 * 1024 - 64, Over = 64 * 1024 + 64;
+            var pu = await Fresh(HttpMethod.Put, Cfg(A1), Under, $"\"{rvA1}\"");
+            var po = await Fresh(HttpMethod.Post, "/api/orgs/locations", Under);
+            Console.WriteLine($"INFO TLD 11:00 limit scope: after the Expect 413s, fresh-connection PUT {Under} B -> {pu.Status}, POST {Under} B -> {po.Status}");
+            Ok($"TLD 11:00: after the Expect 413s, a fresh-connection normal PUT of {Under} bytes (under 64 KiB) is read and evaluated (422 validation_failed zz_pad unknown_field, never 413)",
+                pu.Status == 422 && pu.Body.Contains("{\"field\":\"zz_pad\",\"code\":\"unknown_field\"}"), $"{pu.Status} {pu.Body[..Math.Min(120, pu.Body.Length)]}");
+            Ok($"TLD 11:00: after the Expect 413s, a fresh-connection normal POST of {Under} bytes (under 64 KiB) is read and evaluated (422 validation_failed zz_pad unknown_field, never 413)",
+                po.Status == 422 && po.Body.Contains("{\"field\":\"zz_pad\",\"code\":\"unknown_field\"}"), $"{po.Status} {po.Body[..Math.Min(120, po.Body.Length)]}");
+            var pu2 = await Fresh(HttpMethod.Put, Cfg(A1), Over, $"\"{rvA1}\"");
+            var po2 = await Fresh(HttpMethod.Post, "/api/orgs/locations", Over);
+            Ok($"TLD 11:00: the 64 KiB limit is unchanged too: fresh-connection PUT / POST of {Over} bytes -> 413 payload_too_large",
+                pu2.Status == 413 && po2.Status == 413 && pu2.Body == "{\"error\":\"payload_too_large\"}" && po2.Body == pu2.Body, $"{pu2.Status} {po2.Status}");
+            Ok("TLD 11:00: the limit-scope requests wrote nothing", (await NewEvents()).Count == 0 && Rv(A1) == rvA1);
         }
         Ok("P3-8: Expect 413s wrote nothing (location count, change rows, A1 row_version unchanged)",
             await Count("location") == locs && await Count("location_login_config_change") == changes && Rv(A1) == rvA1);
@@ -1216,6 +1370,71 @@ try
         Ok("P3-7/P3-8: a normal request after the 408s/413s still works (200)", (int)keep3.StatusCode == 200);
         Ok("P3-7/P3-8: no Error-level log line from any of these requests", wlog.Entries.All(e => e.Level < LogLevel.Error), string.Join(" | ", wlog.Entries.Where(e => e.Level >= LogLevel.Error).Select(e => $"{e.ExType}: {e.Text}")));
         await app3.StopAsync();
+    }
+
+    // ================= 7f. F-B1 [TLD 2026-11-04 10:58]: the body deadline is a TOTAL deadline, not an idle timeout =================
+    {
+        // UNDER-limit slow body [TLD 2026-11-04 10:58 F-B1; 11:10 TL/SSE2: the 8 MiB trickle (7d, kept) alone does not cover this].
+        // Default host (BodyReadTimeout = code default 10 s). Content-Length 100 (well under 64 KiB, larger than what ever arrives, so the
+        // body never finishes); the client sends the head, then ONE body byte about every 2.9 s: each gap is under the 10 s deadline, so an
+        // idle-only (reset-per-read) deadline would never trip; the total deadline, started when the body read starts, must answer 408 at
+        // ~10 s. Stated bound: 408 headers arrive in [9500, 11500] ms after the head was sent (the body read starts right after the head).
+        var port4 = FreePort(port);
+        var wlog4 = new CaptureLogger(LogLevel.Warning);
+        await using var app4 = await AdminApiHost.BuildAsync(Opts() with { Urls = $"http://127.0.0.1:{port4}" }, dir, extraLogger: wlog4);
+        await app4.StartAsync();
+        var rvA1 = Rv(A1); var changes = await Count("location_login_config_change");
+        _ = await NewEvents();
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(IPAddress.Loopback, port4);
+        var st = tcp.GetStream();
+        var head = $"PUT {Cfg(A1)} HTTP/1.1\r\nHost: 127.0.0.1:{port4}\r\nContent-Type: application/json\r\nAuthorization: Bearer {SA}\r\nIf-Match: \"{rvA1}\"\r\nContent-Length: 100\r\n\r\n";
+        var sw = Stopwatch.StartNew();
+        await st.WriteAsync(Encoding.ASCII.GetBytes(head));
+        var sent = 0; using var stop = new CancellationTokenSource();
+        var trickle = Task.Run(async () =>
+        {
+            try { while (sent < 100 && !stop.IsCancellationRequested) { await st.WriteAsync("{"u8.ToArray().AsMemory(0, 1)); sent++; await Task.Delay(2900, stop.Token); } }
+            catch (Exception x) when (x is IOException or SocketException or ObjectDisposedException or OperationCanceledException) { }
+        });
+        var acc = new List<byte>(); var buf = new byte[8192]; string? err = null; long ms = -1; int status = 0; var hh = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); var body = "";
+        using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25)))
+        {
+            try
+            {
+                int hdrEnd = -1;
+                while (hdrEnd < 0)
+                {
+                    var n = await st.ReadAsync(buf, cts.Token);
+                    if (n == 0) throw new IOException("EOF before headers");
+                    acc.AddRange(buf.AsSpan(0, n).ToArray());
+                    hdrEnd = Encoding.ASCII.GetString(acc.ToArray()).IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                }
+                ms = sw.ElapsedMilliseconds;
+                var lines = Encoding.ASCII.GetString(acc.ToArray(), 0, hdrEnd).Split("\r\n");
+                status = int.Parse(lines[0].Split(' ')[1]);
+                foreach (var l in lines.Skip(1)) { var i = l.IndexOf(':'); hh[l[..i].Trim()] = l[(i + 1)..].Trim(); }
+                var want = hh.TryGetValue("Content-Length", out var cl) ? int.Parse(cl) : 0;
+                while (acc.Count - (hdrEnd + 4) < want) { var n = await st.ReadAsync(buf, cts.Token); if (n == 0) throw new IOException("EOF before body end"); acc.AddRange(buf.AsSpan(0, n).ToArray()); }
+                body = Encoding.UTF8.GetString(acc.ToArray(), hdrEnd + 4, want);
+            }
+            catch (Exception x) when (x is IOException or SocketException or OperationCanceledException) { err = x.InnerException?.Message ?? x.Message; ms = sw.ElapsedMilliseconds; }
+        }
+        stop.Cancel(); var sentAtAnswer = sent;
+        await Task.WhenAny(trickle, Task.Delay(5000));
+        tcp.Close();
+        await Task.Delay(300);
+        if (status >= 400 && body.Length > 0) responsesForSchema.Add(("error_response", body));
+        if (hh.TryGetValue(LoginConfigApi.RequestIdHeader, out var rid4)) allCorr.Add(rid4);
+        var w4 = wlog4.Entries.ToList();
+        Console.WriteLine($"INFO F-B1 under-limit trickle (Content-Length 100): 1 byte / 2900 ms, deadline 10000 ms (total): {status} after {ms} ms, {sentAtAnswer} body bytes sent, err={err ?? "none"} (bound [9500, 11500] ms)");
+        Ok("F-B1: under-limit slow body (Content-Length 100, never completes; 1 byte every ~2.9 s, each gap under the 10 s deadline) -> 408 request_timeout at the TOTAL deadline, in [9500, 11500] ms, Connection: close, X-Request-ID",
+            err is null && status == 408 && body == "{\"error\":\"request_timeout\"}" && hh.GetValueOrDefault("Connection") == "close" && IsCorr(hh.GetValueOrDefault(LoginConfigApi.RequestIdHeader))
+            && ms is >= 9500 and <= 11500 && sentAtAnswer is >= 3 and <= 5 && sentAtAnswer < 100, $"{status} {body} err={err} {ms} ms, {sentAtAnswer} bytes");
+        Ok("F-B1: the trickle 408 logs exactly ONE Warning and writes nothing (no event, no change row, A1 row_version unchanged)",
+            w4.Count == 1 && w4[0].Text.Contains("408 request_timeout") && !w4[0].HasException && (await NewEvents()).Count == 0
+            && await Count("location_login_config_change") == changes && Rv(A1) == rvA1, string.Join(" | ", w4.Select(e => e.Text)));
+        await app4.StopAsync();
     }
 
     // ================= 8. secrets never leave =================
@@ -1255,6 +1474,12 @@ try
         Console.WriteLine($"INFO corpus {corpus.Count} docs, {responsesForSchema.Count} responses -> {outDir}");
     }
     exitCode = fail == 0 ? 0 : 1;
+}
+// [SSE2 review 3fac1d52 Info, MD4b] Any other exception out of the inline check sequence (e.g. a null dereference after a mutant's
+// empty 201) is one FAIL with its type; cleanup still runs and the run ends with the "N passed, M failed" line, never an unhandled crash.
+catch (Exception e)
+{
+    Ok("harness: check sequence completed (an exception stopped it; the remaining checks did not run)", false, $"{e.GetType().Name}: {e.Message}");
 }
 finally
 {

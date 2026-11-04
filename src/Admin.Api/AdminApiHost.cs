@@ -73,7 +73,9 @@ public static class AdminApiHost
 /// minimum body data rate are lifted per request: one deadline (408 request_timeout, P3-7) instead of Kestrel's own abort.
 /// (3) [TLD 2026-11-04 9:53/10:02, P3-8] a drain that hits its 2 s bound logs ONE Warning line (request_id, bytes, no exception, no
 /// stack trace), unless the request already logged its Warning (408). A request with Expect: 100-continue whose body was never read
-/// is not drained at all: the client is waiting for us and has sent nothing, so no 100 Continue is ever produced.
+/// is not drained at all: the client is waiting for us and has sent nothing, so no 100 Continue is ever produced. [TLD 2026-11-04 10:42]
+/// The connection is closed right after that 413 is sent (Kestrel's body limit is lowered below the declared length, so its own
+/// end-of-request drain rejects the body at once); a ctx.Abort() after CompleteAsync was measured to lose the 413 (reset) sometimes.
 /// </summary>
 public static class RequestEnvelope
 {
@@ -105,8 +107,16 @@ public static class RequestEnvelope
         if (!Unread()) return;
         await ctx.Response.CompleteAsync();
         // Expect: 100-continue and nothing read: the client waits for a 100 Continue and has sent no body bytes; nothing to drain [P3-8].
-        // (No Abort here: right after CompleteAsync the response may not be on the wire yet, and an abort would lose it.)
-        if (ctx.Request.Headers.Expect.Any(e => string.Equals(e, "100-continue", StringComparison.OrdinalIgnoreCase))) return;
+        // Close right after the 413 is sent [TLD 2026-11-04 10:42]: otherwise Kestrel keeps the connection about 5-6 s (its own body
+        // drain wait). Not ctx.Abort(): it can cancel the transport output before the flushed 413 reaches the socket (measured: a reset
+        // instead of the 413 on 4 or more of 42 Expect requests, POSTs only). The client has sent no body bytes, so Kestrel's close is a FIN, not a reset.
+        if (ctx.Request.Headers.Expect.Any(e => string.Equals(e, "100-continue", StringComparison.OrdinalIgnoreCase)))
+        {
+            // Lower Kestrel's body-size limit below the declared length (the body was never started, so the feature is still writable):
+            // Kestrel's own end-of-request drain then rejects the body at once and closes the connection after the 413 has been sent.
+            if (ctx.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } cap) cap.MaxRequestBodySize = 0;
+            return;
+        }
         var (end, drained) = await ReadBoundedAsync(ctx, DrainMaxTime, DrainMaxBytes, null);
         if (end == BodyEnd.TimedOut && ctx.Items[WarnedKey] is not true)
             ctx.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Admin.Api.RequestEnvelope")

@@ -79,9 +79,9 @@ public sealed class NpgsqlExternalLoginReader(NpgsqlDataSource dataSource) : IEx
         ArgumentNullException.ThrowIfNull(issuer);
     }
 
-    // Same SQL and mapping as FindUserAsync on a caller-owned connection/transaction. Used by FindUserAsync and by the
-    // integration checks that must create states the constraints forbid (orphan link, unknown status) inside a
-    // rolled-back owner transaction (SSE2 N3; see src/S2A-BUILD-LOG.md).
+    // Same SQL and mapping as FindUserAsync on a caller-owned connection/transaction. Internal again [TLD 2026-11-04 11:19 Q2,
+    // 11:21 option b]: no InternalsVisibleTo anywhere; the N3/N1 integration probes now commit the forbidden states in a
+    // marked scratch DB and use the public FindUserAsync (src/Auth.Data.Checks/ScratchDb.cs, src/S2A-BUILD-LOG.md).
     internal static async Task<ExternalLoginMatch?> FindOnConnectionAsync(NpgsqlConnection conn, NpgsqlTransaction? tx,
         ProviderKind providerKind, string issuer, Guid tenantId, Guid subject, CancellationToken ct)
     {

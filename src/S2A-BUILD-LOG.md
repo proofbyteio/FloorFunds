@@ -285,6 +285,231 @@ Branch `fix/db-kit-kf` off 3e12b8d (kept apart from P3). No migration, spec or a
 - **Mutation spot-checks** (restored after each; final run 323/0): `secret_ref` dropped from `ServerFilled` → FAILs (≥ 6 shown, create field_not_writable; output head-limited); startup `SecretRefAllowed(EntraSecretRef)` disabled → FAILs (≥ 6 shown, each startup refusal case); schema copy with `secret_ref` re-added to the write body and `secret_ref_required` in the enum → 18 FAILs in `check_v1_1_s2a.py`.
 - **Open (for TL)**: (q1) a changed `Entra:SecretRef` does not rewrite existing entra rows (as A-21) — OK? (q2) hide `secret {set, rotated_at}` from Partner Admin / org:V ("Super Admin GET may show")? (q3) confirm `secret_ref_format` removal. Evidence: `/tmp/sse-llc1/p3f-evidence.txt`.
 
+## P3 follow-up — TLD 11:57 o1–o3 + TLD 12:04 F1 + SSE2 de9c1946 F2 [TLD 2026-11-04 11:57] [TLD 2026-11-04 12:04] (third amend of the unpushed 6a71fbf)
+
+Review: `/tmp/sse2-fverify/RANGE-06dc8ac-6a71fbf-REVIEW.md` md5 de9c1946 (snapshot `/tmp/sse-llc1/RANGE-06dc8ac-6a71fbf-REVIEW.de9c1946.snapshot.md`). Evidence: `/tmp/sse-llc1/p3o-evidence.txt` (new file; p3f, p3h–p3n untouched).
+
+- **o1 [TLD 11:57]:** the runid is `ff_scratch_<UTC yyyyMMddHHmmss><6 hex>` (`ScratchDb.NewName` / `RunIdUtc`). The start-up sweep (`SweepAsync`) skips this run's own DB, keeps a marked DB with no parsable timestamp, age ≤ 1 h or any `pg_stat_activity` connection (55006 on DROP also counts as kept), and drops the rest. It also drops orphan marked `ff_scratch_*_(admin_api|login)` roles whose DB is gone. The name is generated before the sweep and passed to it, so the sweep can never drop the DB this run is about to create; `scratchName` is set only after CREATE + COMMENT succeed, so the finally never drops a DB this run did not make.
+- **o2 [TLD 11:57]:** an unmarked (or not-ours) `ff_scratch_*` DB is never dropped: the sweep prints its name and `FATAL scratch-sweep: unmarked …`, and the main run then refuses to set up the scratch DB, so N3 / N1 / Q2 FAIL (the run fails loudly). `--scratch-sweep` alone exits 3. If CREATE works but COMMENT fails, the run throws `FATAL scratch: created X but could not mark it; left in place UNMARKED`.
+- **o3 [TLD 11:57] — NOT fully met; TL to decide.** No new cluster-level object is left behind by a run: `ClusterSnapshotAsync` (roles + attributes + comments, `pg_auth_members`, tablespaces, databases with owner/flags/ACL/comment, `pg_db_role_setting`, `pg_shdescription` counts) is taken before CREATE and after DROP and Q2 requires them to be identical (the diff is printed if not). But during a run the frozen migration (`db/` is not mine to change) needs the per-DB roles `<db>_admin_api` and `<db>_login` (LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE), so per-run marked roles are still created and dropped with the DB. The kit roles (`ff_sse_*`) cannot be reused without the migration targeting `ff_sse`'s role names, which would mean touching `db/` or widening. Also `ff_scratchadm` (role, created by me at P3 via `scratch-admin-setup.sh`) is itself a persistent cluster-level object. Options for TL: (A) keep `ff_scratchadm` persistent + per-run marked roles (what is built); (B) clone from a migrated DB as template (needs `ff_sse` as a template source, not allowed); (C) a kit DB via `db/setup.sh` (also creates roles); (D) CREATEDB for `ff_sse` (widening); (E) a fixed pool of scratch names whose roles are created once.
+- **F1 (a) [TLD 12:04]:** `RequireLoopback` accepts only `127.0.0.1` or `::1` (`SCRATCH_PG_HOST`, and the Host in the env connection string must match); host names incl. `localhost`, other IPs (`10.0.0.1`, `127.0.0.2`, `0.0.0.0`, `::ffff:127.0.0.1`), multi-host lists and Unix-socket paths are refused before any connection (`ScratchDb.Opens` unchanged). Port `SCRATCH_PG_PORT` (default 5432) and maintenance DB `SCRATCH_MAINT_DB` (default `postgres`, was `ff_maint_scratch`) are overridable; `ff_sse`, `ff_sse2`, templates, `ff_scratch_*` and non-identifiers are refused as maintenance DB. The rules apply on any cluster. `--scratch-info` prints host, port, maintenance DB and `server_version` (recorded in the evidence). `scratch-admin-setup.sh` no longer creates a maintenance DB and writes `Database=postgres` (not re-run: that would rotate the password; Host/Port/Database in the existing env file are replaced at run time anyway).
+- **`ff_maint_scratch`:** a DB I created at P3 with `scratch-admin-setup.sh` (OWNER postgres, comment `floorfunds-scratch-maint`, CONNECT for `ff_scratchadm`); it was not pre-existing. After F1 it is unused. It is still present; not dropped without approval.
+- **Tension (open):** TLD 12:04's default maintenance DB `postgres` vs the standing rule "never point kit scripts at postgres". Only CONNECT and catalog reads/`CREATE DATABASE`/`DROP DATABASE` of `ff_scratch_*` are issued from that connection; nothing is created in `postgres` itself.
+- **F2 [SSE2 review de9c1946]:** the N1 `Throws` checks now require `auth.app_user.status has an unknown value` in the message. Mutation (p3o): a scratch setup that fails (bad `SCRATCH_MAINT_DB`) makes N1 FAIL, not pass.
+- Main run count unchanged (162/0, k1 pin); the self-test modes (`--scratch-info`, `--scratch-crash [--backdate-hours N]`, `--scratch-hold`, `--scratch-decoy-create` / `--scratch-decoy-drop`, `--scratch-drop`, `--scratch-sweep`, `--scratch-snapshot`, `--scratch-selftest old young live`) are not counted.
+- **p3o → p3o2 fix (same amend):** the first p3o run (`/tmp/sse-llc1/p3o-evidence.txt`, kept) showed the self-test ending 68/2: its last two checks demanded zero `ff_scratch_*` DBs / roles while the live-connection case is by design still held (DropAsync never FORCEs). They now assert that only the held live DB and its two roles remain; the verify script drops it with `--scratch-sweep` after the hold and checks 0 DBs / 0 roles cluster-wide. `--scratch-drop` on an unmarked name aborted with rc 134 (unhandled exception); it now prints the refusal and exits 2. Evidence: `/tmp/sse-llc1/p3o2-evidence.txt`.
+- Spec §14 "Scratch rules" + Sources rows TLD 11:57 (P3), TLD 12:04, RANGE3; checker +9 pins.
+
+## P3 follow-up — TLD 1:54 PM items 1–4 [TLD 2026-11-04 13:54] (sixth amend of the unpushed P3, was 9c0967a)
+
+Evidence: `/tmp/sse-llc1/p3r-evidence.txt` (new file; p3f, p3h–p3q untouched; unique prefix `ff_kit_ssep3r` reserved). No private cluster was started for p3r; its KF-A server-log result is p3q's (below). Not run in p3r because they need the postgres superuser on 5432 (item 3): the k1 kit tests (`db/tests/k1-kit-tests.sh` uses `sudo -u postgres`; db/ is frozen) and mutation M(b) (`ALTER ROLE` / `GRANT` on `ff_scratchadm`); their last results are p3q's (k1 200/0, M(b1)/M(b2) CAUGHT), past results, not current. Open question for TL: how k1 should run under the no-sudo rule.
+
+- **Item 1, lock target refusal:** a lock target DB outside `ff_sse` / `ff_sse2` / `ff_kit_*` in the main run, `--scratch-selftest` or `--scratch-sweep` now exits 2 with the existing refusal message (`FATAL scratch-lock: refuse: the scratch single-runner lock is taken on the kit target DB only (ff_sse, ff_sse2 or ff_kit_*)`), checked by `ScratchLock.Refusal` before any connection; no unhandled exception (was rc 134), no name or other value echoed. Checks: one self-test check (`Refusal` for bad / good names) and, in p3r, one CLI check per mode and name (rc 2, message, no echo, no `Unhandled`, no new session). Mutation ml (the pre-checks removed) brings back rc 134 → those checks FAIL.
+- **Item 2, private-cluster KF-A log check (p3q):** a throwaway PG17 cluster on loopback `127.0.0.1:18277`, local superuser `kfasuper`, `log_statement=all`, used ONLY for the KF-A server-log check and the m1+m2 cleartext mutations. It was stopped and removed afterwards (0 listeners on 18277); no cleartext reached 5432 (m1+m2 ran only there; m1 on 5432 is refused by the guard before sending). Accepted by TLD 1:54 PM under the TLD 12:04 ruling.
+- **Item 3, no sudo on 5432 [TLD 13:54 NEW RULE]:** from p3r on, nothing on 5432 is inspected with `sudo` / `sudo psql`. Leftover `ff_scratch_*` DBs and roles are counted as `ff_scratchadm` (`pg_database`, `pg_roles`); `ff_sse` table counts as the `ff_sse` owner role. What `ff_scratchadm` cannot see is reported, not worked around: `pg_authid.rolpassword` (KF-A (c)) and the server log file. So p3r has no 5432 (c) or server-log check; those stand on p3q's private-cluster result ((c) PASS; log: 2 `PASSWORD` lines, both `SCRAM-SHA-256$4096:`, 0 other, 0 hex). p3q and earlier evidence used `sudo -u postgres` before this rule; it is left as it was. The k1 kit tests and M(b) also need the superuser, so they are not in p3r (see Evidence).
+- **Item 4, TLD rulings [TLD 13:54]:** no cluster-wide lock (per kit DB stays, TLD 13:15 #5); the empty test lock DB `ff_kit_ssekfalock` on the private cluster is accepted; the private-cluster log check is enough, so 5432 (`log_statement=none`) is not changed.
+- Self-test 139 → 140 checks (the item 1 pre-check); main run unchanged.
+
+## P3 follow-up — TLD 1:15 PM item 2 on KF-A [TLD 2026-11-04 13:15] [KF-A] (fifth amend of the unpushed P3, was 1b9f5bd)
+
+Evidence: `/tmp/sse-llc1/p3q-evidence.txt` (new file; p3f, p3h–p3p untouched; k1 prefix `ff_kit_ssep3q`). Details: `src/Auth.Data.Checks/README.md` § "KF-A".
+
+- **TLD 1:15 PM:** items 1 and 3–9 accepted as proposed; item 2 (the self-test session-role password) accepted on the kit's **KF-A** rule: a role password reaches the server only as a client-side SCRAM-SHA-256 verifier, never cleartext in `CREATE/ALTER ROLE`; random per run, memory only.
+- **Fix:** `CreateMarkedRoleAsync` sent `PASSWORD '<32 hex cleartext>'` for the self-test `sessRole`. It now sends `ScratchDb.ScramVerifier(password)` = `SCRAM-SHA-256$4096:<salt>$<StoredKey>:<ServerKey>` (RFC 5802/7677, PBKDF2-HMAC-SHA256 4096, random 16-byte salt), the format of `db/kit/role.sql` / `db/setup.sh` (KF-A; kit files and frozen files unchanged). RFC 7677 vector checked; the p3q script also checks the kit's perl formula gives the same verifier as the C# code for that vector.
+- **Allowlist [TLD 13:15]:** the maint guard's create-role pattern now accepts only `PASSWORD 'SCRAM-SHA-256\$4096:[A-Za-z0-9+/]{22}==\$[A-Za-z0-9+/]{43}=:[A-Za-z0-9+/]{43}='` (`MaintSql.ScramVerifierRe`); hex cleartext is refused. Not widened to `SET log_statement`.
+- **Checks (self-test "KF-A" block):** (a) SCRAM-only sign-in with the cleartext, wrong password 28P01; (b) statement capture: one `CREATE ROLE`, verifier only, cleartext in no statement; `pg_stat_activity` sampled during the CREATE shows the verifier, never the cleartext; server log for the run window grepped read-only as `postgres` by the verify script (`log_statement=none`: superuser GUC, not settable by `ff_scratchadm`, not changed — so statement capture + `pg_stat_activity` are the primary evidence, as TLD allowed); (c) `pg_authid.rolpassword` prefix `SCRAM-SHA-256$` read by the verify script as `postgres` while the self-test holds the role (prefix only). Limitation: the server hashes cleartext input too, so (c) alone cannot catch cleartext in transit.
+- **Mutations (p3q):** m1 `CreateMarkedRoleAsync` sends the cleartext → refused by the guard, the self-test FAILs and stops (rc 1, nothing else created); m2 the regex also allows 32 hex → the "32 hex cleartext is refused" check FAILs; m1+m2 → the statement-text and `pg_stat_activity` checks FAIL.
+- **SSE2 review 04dba71d [steering 13:21], folded into this amend.** Review `/tmp/sse2-fverify/RANGE-9771ad3-1b9f5bd-REVIEW.md` (md5 04dba71d9eb8f4a85d9425e4e7774505, PROVISIONAL GO on 1b9f5bd), snapshot `/tmp/sse-llc1/RANGE-9771ad3-1b9f5bd-REVIEW.04dba71d.snapshot.md` (same md5). SSE2's baseline: exactly one cleartext `CREATE ROLE … PASSWORD '<32 hex>'` (the self-test session role) in its `log_statement=all` log.
+  - **KF-A, three places:** after every `PASSWORD` only `SCRAM-SHA-256$4096:` (or no `PASSWORD`) — statement text (whole self-test captured: 2 `PASSWORD` statements, both verifiers, neither test password anywhere), `pg_stat_activity` (sampled during both `CREATE ROLE`s) and the server log (p3q: shared cluster read-only for the run window, `log_statement=none`; plus one self-test on a private throwaway PG17 cluster with `log_statement=all`, removed afterwards).
+  - **Low:** a refused admin connection-string key (and any other admin-target refusal) in a `--scratch-*` mode exits 2 with `FATAL scratch: refuse: …` naming the key, never the value (was an unhandled exception, rc 134). p3q: one CLI check per key (8 keys); mutation mk (the rc-2 mapping removed) → rc 134 → those checks FAIL.
+  - **Info:** spec §13 "Allowed public getters": `EntraDeployment`'s read-only `Authority` / `ClientId` / `SecretRef` getters and redacted `ToString` are allowed; the `Admin.Api.Checks` reflection check allows exactly those members (its comment and label say so; count unchanged).
+- **Scratch lock per kit DB [TLD 2026-11-04 13:15 #5]:** the advisory lock is on the kit target DB, so runs on different kit DBs do not block each other (documented in the spec §14 and the scratch README).
+- Self-test 116 → 139 checks (not counted by k1); main run 162/0; spec 414 → 423/0 at P3 (+9 pins: TLD 13:15 and RANGE4 Sources rows, §14 KF-A / lock / rc 2, §13 getters).
+
+## P3 follow-up — TLD 12:33 items 1–3 [TLD 2026-11-04 12:33] (fourth amend of the unpushed P3, was 9771ad3)
+
+Evidence: `/tmp/sse-llc1/p3p-evidence.txt` (new file; p3f, p3h–p3o2 untouched; k1 prefix `ff_kit_ssep3p`). Details: `src/Auth.Data.Checks/README.md`.
+
+- **Item 1, o3 [TLD 12:33]: "net role set identical; per-run roles allowed only if marked and dropped".** This replaces the "o3 NOT fully met" note below (option A as built, now ruled). Per-run roles `<runid>_admin_api` / `<runid>_login` are marked `floorfunds-scratch` and dropped in the same finally as the DB. `SweepAsync` now also sweeps roles: a marked role with a runid older than 1 h (UTC timestamp), no `pg_stat_activity` session as that role, not this run's and whose DB is gone is dropped; young, in-session, own-run or DB-still-present roles are kept. An unmarked `ff_scratch_*` look-alike role is reported (`FATAL scratch-sweep: unmarked ff_scratch_* look-alike role(s) …`), never dropped; the main run's scratch setup throws, so N3 / N1 / Q2 FAIL, and `--scratch-sweep` exits 3. Self-test cases: stale marked role dropped; young role kept; stale role with a live session kept, then dropped by the next sweep once the session ends; unmarked look-alike reported and kept (then cleaned up by exact name); exactly one stand-alone role dropped.
+- **`ff_scratchadm` [TLD 12:33]:** documented kit infrastructure. `AdminRoleViolationsAsync` requires the `pg_roles` row `ff_scratchadm|false|false|true|true|true|false|false|-1||floorfunds-scratch-admin` (NOSUPERUSER NOINHERIT NOREPLICATION NOBYPASSRLS, only CREATEDB + CREATEROLE), no `pg_db_role_setting` rows, and no membership except the PG17 implicit grant on each **marked** per-run role it creates (`ff_scratchadm` member, ADMIN true, INHERIT false, SET false, grantor oid 10; `createrole_self_grant` empty). It runs in every main-run setup (a violation fails N1 / N3 / Q2), in Q2's condition, in the self-test and as `--scratch-admincheck` (exit 4). The live state already matched; no ALTER was needed. `scratch-admin-setup.sh` got doc comments only (not re-run). No password or secret for it is in the repo (p3p secret grep: `git grep -F` and `git log --all -p | grep -F` on the env-file password, both 0).
+- **Item 2 [TLD 12:33]: `ff_maint_scratch` dropped** at 2026-11-04 12:42 PST after both checks passed: comment `floorfunds-scratch-maint` (owner postgres) and 0 `pg_stat_activity` connections; `DROP DATABASE ff_maint_scratch` (as postgres) rc 0, 0 rows after. Record: `/tmp/sse-llc1/run/p3p-ff_maint_scratch-drop.txt` (md5 d10a4acac16c9d6b0d96750eeeb17fb2), copied into the p3p evidence.
+- **Item 3 [TLD 12:33]: the `postgres` maintenance-DB exception is scoped in code.** Every maintenance-connection statement goes through `MaintConn`; `MaintSql` holds the allowlist: connect; the fixed reads `MaintSql.Reads`, naming only `pg_database`, `pg_roles`, `pg_stat_activity`, `pg_auth_members`, `pg_shdescription`, `pg_tablespace`, `pg_db_role_setting` (the last two only for the o3 snapshot / settings check: beyond TL's list, open question); and `CREATE` / `COMMENT` / `DROP` `DATABASE` or `ROLE` on `ff_scratch_*` names in fixed shapes, DROP only for marked (and, for DBs, owned) objects. Anything else is refused before it is sent (`refuse [maint-guard TLD 12:33]`, the first two words only). `Program.cs` no longer opens raw maintenance connections. The rule against `postgres` as a target DB is unchanged. Self-test: 7 non-allowed statements refused (`SELECT 1`, a `pg_authid` read, `ALTER ROLE ff_scratchadm SUPERUSER`, multi-statement, `DO`, `SET ROLE`, another comment), unmarked / missing drops and a non-scratch CREATE refused, every read names only listed catalogs, refusal text echoes no literals.
+- **Exact-name cleanup** of objects made unmarked on purpose (o2 decoy, look-alike role, roles leaked by mutation a): `CleanupUnmarkedAsync` (prefix, unmarked, owned, no sessions → marked, then dropped through the marked path); modes `--scratch-decoy-drop`, `--scratch-cleanup-role`, `--scratch-lookalike-create`.
+- **Mutations (p3p):** M1–M3 as p3o2 (M3: the role DROP in `DropAsync` disabled); M(a) the `COMMENT ON ROLE` marker in `PrepareAsync` removed → caught (Q2 FAIL, next sweep FATAL on the unmarked roles; cleaned up by exact name); M(b1) `ALTER ROLE ff_scratchadm REPLICATION` and M(b2) `GRANT pg_read_all_data TO ff_scratchadm` → caught by `--scratch-admincheck` and the main run, then reverted and the saved role row / memberships / settings compared identical; M4 the maint guard disabled → the refusal checks FAIL.
+- Main run unchanged at 162/0 (no new counted checks; Q2's name gains "ff_scratchadm as documented [TLD 12:33]"). Spec §14 "Scratch rules" paragraph updated (maintenance-DB exception, o3 wording) + Sources row TLD 12:33; checker +8 pins.
+- **SSE2 review 09e31f68 [steering 12:45], folded into this same amend.** Review `/tmp/sse2-fverify/RANGE-6a71fbf-9771ad3-REVIEW.md` (md5 09e31f68f8a08505e2d057e3839c34ef), snapshot `/tmp/sse-llc1/RANGE-6a71fbf-9771ad3-REVIEW.09e31f68.snapshot.md` (same md5). Details in `src/Auth.Data.Checks/README.md` § "SSE2 review 09e31f68".
+  - **F3:** p3p is produced in a detached worktree of the new P3 commit (`/tmp/sse-llc1/wt-p3p`, removed afterwards) and its header prints that sha and checks every md5 against the P3 tree; p4c is produced at the P4 HEAD (`/tmp/sse-llc1/p4c-evidence.txt`), header prints that sha.
+  - **F4:** the self-test's env overrides restore the saved value (`WithEnv`), and a check compares the three `SCRATCH_*` values with the start snapshot after each of the 16 blocks; p3p runs the self-test also with `SCRATCH_PG_HOST=127.0.0.1 SCRATCH_PG_PORT=5432 SCRATCH_MAINT_DB=postgres` set explicitly (0 failed).
+  - **M2:** `--scratch-drop` (`ScratchDb.DropCliAsync`) on a marked DB with an open connection → exit 2 with "N connection(s) in pg_stat_activity; not dropped", no crash; SQLSTATE 55006 at DROP is caught and refused the same way.
+  - **M3 (covers L3, L4):** single-runner guard `pg_try_advisory_lock(7378711910451082339)` on the kit target DB connection (`CONNECTION_STRING`), not on the maintenance DB (the 12:33 allowlist is unchanged); main run, `--scratch-selftest` and `--scratch-sweep`. A second concurrent run exits 5 at once with "another scratch run holds the lock". p3p: 4 parallel main runs → exactly 1 runs (162/0), 3 exit 5 fast, 0 scratch objects left. Limitation: per database (runs on two different kit DBs do not exclude each other) — open question.
+  - **L1:** a marked, owned DB or role whose runid is missing, invalid or > 5 min in the future is reported by name (`BAD RUNID`, FATAL), the main run fails and `--scratch-sweep` exits 3; never kept silently, never dropped automatically.
+  - **L2:** every name / DDL pattern is anchored `\z` (no `$`); `ff_scratch_abcdef\n` is refused by `GuardName`, `DropAsync` and the maint-guard classifier. `--scratch-drop` prints "nothing to drop" when nothing existed (no "dropped").
+  - **Info:** the admin connection string allows only Host/Server, Port, Database, Username, Password, Pooling (Passfile, Options, Target Session Attributes, Include Error Detail, SSL Mode refused in the self-test, key named, value never). The CLI has no "own DB" concept: `--scratch-drop` drops any marked, owned, unconnected scratch DB by name.
+  - Self-test 97 → 116 checks (not counted by k1); main run still 162/0; spec and checker unchanged (430/0).
+  - Mutations (p3p): M2 pre-check disabled (→ the 55006 path still refuses rc 2, the pre-check check FAILs); M3 lock always granted (→ the second-acquire check FAILs); L1 bad runid kept silently (→ L1 check FAILs); L2 `\z` reverted to `$` (→ the newline checks FAIL); F4 restore-to-null (→ the F4 check FAILs with an explicit override).
+
+## P3 follow-up — TLD 11:19 Q1–Q4 + TLD 11:21 Q2 (b) [TLD 2026-11-04 11:19] [TLD 2026-11-04 11:21] (second amend of the unpushed ba85c77)
+
+One amend, Q1–Q4 together (user 11:20: fold Q2/Q3 in before P4; no P4 commit existed yet, so no rebase was needed).
+
+- **Q1** spec §5: 401 / 403 stay first (TLD 9:04 #8) and 408 comes straight after them, cited [TLD 2026-11-04 11:19]; check pin
+  added. Code order unchanged (already so).
+- **Q4** `/tmp/sse-llc1/run/p3-verify-template.sh` takes the venv as `VENV=<dir>` (required, no hard-coded path) and prints the
+  python / jsonschema / referencing versions in the evidence; `ONLY=spec` runs only the spec checkers + frozen md5s. Old
+  template kept as `p3-verify-template.bac3fc59.sh`. Spec §14 "Run:" line now uses `"$VENV"` too. Nothing installed; VENV used:
+  `/tmp/sse-d0/venv` (python 3.13.5, jsonschema 4.23.0, referencing 0.37.0).
+- **Q2 → option (b) [TLD 2026-11-04 11:21].** SSE2's N3 / N1 probes moved off the rolled-back owner transaction on
+  AUTH_CHECKS_DB onto a throwaway scratch DB:
+  - `Readers.FindOnConnectionAsync` is `internal` again (as at 06dc8ac); no `InternalsVisibleTo` anywhere. The `:619`
+    "on-connection path == FindUserAsync" check is dropped (it needed the wider API).
+  - New `Auth.Data.Checks/ScratchDb.cs`. Each Auth.Data.Checks run: start-up sweep → `CREATE DATABASE ff_scratch_<12 hex>`
+    (`TEMPLATE template0`, read only as the copy source) → `COMMENT ON DATABASE … 'floorfunds-scratch'` straight after →
+    two plain marked app roles `<db>_admin_api` / `<db>_login` (LOGIN, **no password**: they exist only because the migration
+    requires them) → `MigrateAsync` (same runner as `Auth.Data.Migrator update`) → the probe rows (scratch-only fake users
+    `…05d1..05d3`) and the FK / CHECK drops are **committed in the scratch DB only** → the 4 probes call the public
+    `new NpgsqlExternalLoginReader(scratchDs).FindUserAsync(...)` and must throw `InvalidOperationException` (never null /
+    Active) → `finally` drops the DB and its two marked roles, also on failure.
+  - Guards: maintenance connection must be 127.0.0.1:5432 and the connect-only DB `ff_maint_scratch` (never postgres /
+    template / ff_sse*); name must match `^ff_scratch_[a-z0-9]{6,24}$` and is explicitly never ff_sse, ff_sse2, postgres,
+    template*, ff_maint_scratch; refuse when the name already exists; nothing is dropped without the marker AND ownership by
+    the scratch role; unmarked roles are refused too. The sweep does not use `WITH (FORCE)`: a scratch DB still in use by a
+    concurrent run is skipped (55006), not killed.
+  - AUTH_CHECKS_DB is never altered: "N3: FK and CHECK still present in AUTH_CHECKS_DB" stays; the new counted check "Q2: this
+    run's scratch DB dropped in the finally; no MARKED ff_scratch_* DB left" replaces `:619`, so the DB run stays at
+    **162/0**, which k1 (`db/tests/k1-kit-tests.sh`, not mine, not edited) pins literally.
+  - Self-test modes (verify script §4c, not counted by k1): `--scratch-crash` creates + marks + migrates and exits 70 without
+    the finally (simulated crash); `--scratch-selftest <name>` checks FindOnConnectionAsync is not public (reflection),
+    the name / connection guards (29 refusals), that the crashed DB was left MARKED, creates an UNMARKED decoy
+    `ff_scratch_decoy<8 hex>`, DropAsync and CreateMarkedAsync refuse it, the sweep drops the crashed DB (+ roles) and keeps
+    the decoy, then I drop the decoy myself (exact name, still unmarked) and check no ff_scratch_* DB or role is left.
+  - **Cluster setup (decision, flagged):** the ff_sse owner has no CREATEDB, so `src/Auth.Data/tools/scratch-admin-setup.sh`
+    (run once via `sudo -u postgres`) created role `ff_scratchadm` (LOGIN CREATEDB CREATEROLE, NOSUPERUSER NOBYPASSRLS
+    NOREPLICATION; marker comment `floorfunds-scratch-admin`) and a connect-only DB `ff_maint_scratch` (owner postgres,
+    CONNECT only for ff_scratchadm). PG17 CREATEROLE only manages roles it created; DROP DATABASE needs ownership, so it can
+    not drop ff_sse / ff_sse2. Password in `/tmp/ff-db/ff_scratchadm.env` (0600, test-only, never printed); `tools/env.sh`
+    sources it when present. ff_sse2 and its env files untouched.
+- **Q3** commit subject reworded to the final code: the `Expect` 413 close is per-request `MaxRequestBodySize = 0` (TLD 11:00),
+  not an abort; it also names F-A1 (validated `EntraDeployment.Create`), F-B1 (total-deadline 408) and the Q2 scratch DB.
+- The MD2 record is accepted as is [TLD 2026-11-04 11:19].
+- **SSE2 review of ba85c77** (`/tmp/sse2-fverify/RANGE-06dc8ac-ba85c77-REVIEW.md`, md5 `3fac1d52402e99371b9fc254b03b74f0`,
+  provisional; snapshot `/tmp/sse-llc1/RANGE-06dc8ac-ba85c77-REVIEW.3fac1d52.snapshot.md`), folded into this same amend (user 11:29):
+  - **F-C1 (Low)** under TLD 10:58 F-A1: `EntraDeployment.IsValidAuthority` and `SecretRefAllowed` are `internal`.
+    `EntraDeployment.Reasons` (5 consts) and `EntraDeployment.Result` (Value / Reason / Ok / ToString) stay public as `Create`'s
+    return surface; the instance getters and redacted ToString stay as at 06dc8ac (spec §13 note). `AdminApiOptions.IsValidAuthority`
+    = `Create(v, null, null, null, null).Reason != AuthorityInvalid` (Create checks the authority first; null still throws
+    ArgumentNullException as the old Regex call did). `AdminApiOptions.SecretRefAllowed(v)` = `Create(<fixed valid authority>,
+    <fixed valid GUID>, v, SecretAccountIds, SecretRegions).Ok` (null still throws NullReferenceException). **Exact case where it is
+    not identical:** on an options object whose own SecretRef:AllowedAccountIds / AllowedRegions are malformed (never one the host
+    uses: Validated() refuses it at startup), the old predicate could return true for an entry that matches the ARN group but not
+    the list rule (e.g. region `local`); through Create it returns false (the list is refused first). Nothing calls this wrapper
+    today (git grep). Not widened; listed for TL. Startup refusals and reason codes unchanged (all existing startup checks pass).
+  - New Admin.Api.Checks: "F-C1: EntraDeployment public surface is exactly {...}" (reflection over the type, Reasons and Result;
+    anything else public fails) and two wrapper-equivalence checks (12 authorities, 9 secret refs, null behaviour) → 393/0.
+    Mutation: `IsValidAuthority` public again → 392/1, the surface check FAILs.
+  - **Info (MD4 / MD4b), harness only:** `Send` now turns an IOException / SocketException (incl. wrapped in HttpRequestException)
+    into one FAIL "transport: <method> <path> got a response" with the exception types and a placeholder response; `Obj` turns a
+    non-JSON body into one FAIL; any other exception out of the inline sequence is one FAIL "harness: check sequence completed"
+    and cleanup still runs. Re-run: MD4 (zero limit on every unread-body path) → 390/4 clean (the broken pipe is now
+    `FAIL transport: POST /api/orgs/locations ... HttpRequestException/IOException`, the run carries on); MD4b (zero limit at
+    request start) → 113/4 clean (the sequence stops at the first null after the empty 201, by design of the inline checks:
+    making every inline check null-safe is not a small change, left).
+- **Open:** (o1) the start-up sweep cannot tell a crashed run's DB from one a concurrent run created but has not yet
+  connected to (sub-second window between CREATE and migrate); it would drop it and that run would fail (no data loss).
+  (o2) a crash between CREATE and COMMENT leaves an unmarked DB that only a human removes. (o3) the ff_scratchadm role /
+  ff_maint_scratch DB are new cluster objects on the shared test cluster — keep, or move into the db/ kit (SSE2/TL)?
+
+## P3 follow-up — TLD 10:58 / 11:00 (+11:10) [TLD 2026-11-04 10:58] [TLD 2026-11-04 11:00] (amend of the unpushed 4b3f849)
+
+SSE2 range review of 8c3ccce..06dc8ac (`docs/reviews/RANGE-8c3ccce-06dc8ac-REVIEW.md`, md5 ce1151ae, snapshot
+`/tmp/sse-llc1/RANGE-8c3ccce-06dc8ac-REVIEW.ce1151ae.snapshot.md`; SSE2 GO, TL pushed 06dc8ac). TL decisions 10:58, clarified 10:59,
+11:00; TL + SSE2 steering 11:10. Amended into the 10:42 commit (unpushed); no UI; Sources review md5 (bfaa2efb) unchanged.
+
+- **F-A1 validated `EntraDeployment` [10:58, clarified 10:59].** `Auth.Data/EntraDeployment.cs`: the constructor is `internal`; the only
+  public way in is `EntraDeployment.Create(authority, clientId, secretRef, allowedAccountIds, allowedRegions)`, which runs the db8f360
+  rules (moved here from `AdminApiOptions`: authority, GUID client id, account / region allowlists, ARN shape) and returns a `Result`
+  (`Value` or `Reason`; `ToString` prints the reason only). Reason codes: `entra_authority_invalid`, `entra_client_id_invalid`,
+  `secret_ref_allowed_account_ids_invalid`, `secret_ref_allowed_regions_invalid`, `entra_secret_ref_not_allowed`; none contains a value.
+  `AdminApiOptions.Validated()` / `Entra()` go through `Create` and map each reason to the old key-only startup messages (same order).
+  **No `InternalsVisibleTo` anywhere**: removed from `Auth.Data.csproj` and `Admin.Api.csproj`. To keep the checks compiling without it,
+  `Readers.FindOnConnectionAsync` is now `public` (used by `Auth.Data.Checks/Program.cs:596`, `:617`) — listed as an open question.
+  Callers changed: `Auth.Data.Checks/Program.cs:539` (now `EntraDeployment.Create(…SSE2-FAKE-TEST-ONLY client id, fake ARN 000000000000…)`),
+  `Admin.Api/AdminApiOptions.cs` (`ValidatedWith`). `Admin.Api.Checks` already used `Opts().Validated().Entra()`.
+  SSE2 (`feat/entra-signin`, `wt-sse2-entra`, read only): no call of the constructor; only comments / docs and SSE2's own stand-in type
+  (`src/Login.Entra/Fixtures/FixtureStores.cs:16, 37, 71`; `tests/Login.EntraTests/EntFlowTests.cs:535`; `tests/Login.EntraTests/README.md:46-47`).
+  Nothing of SSE2's breaks.
+  New checks: reflection (no public constructor, all constructors internal; no `InternalsVisibleToAttribute` on either assembly);
+  bypass `Create(…, "not-an-arn")` refused with `entra_secret_ref_not_allowed`, value absent from reason and `ToString`; valid fake → value;
+  7 refusal cases with their codes; `Opts() with { EntraSecretRef = "not-an-arn" }.Entra()` throws naming the key, no value.
+  The F-A1 block now runs before the startup refusal loops (so a `Create` mutation reaches it before the empty-SecretRef case).
+- **F-B1 total deadline [10:58; 11:10 TL/SSE2: under-limit slow body].** New 7f: raw PUT, `Content-Length: 100` (well under 64 KiB, never
+  reached, so the body never completes), 1 byte every 2900 ms (each gap under the 10 s deadline). Expect 408 `request_timeout`,
+  `Connection: close`, `X-Request-ID`, within [9500, 11500] ms of the head being sent (the body read starts right after the head),
+  ONE Warning, nothing written. Measured: dev1 10010 ms, dev2 10007 ms, dev3 10006 ms, 4 bytes sent each time. The 8 MiB trickle check
+  (7d "413: bounded read …") is kept. `ReadBoundedAsync` already used one `CancellationTokenSource(deadline)` for the whole read: no code
+  change; the per-read reset is recorded as mutation MD3.
+- **F-A2** Info only, no change. **F-A3** spec §13 backlog note: P4 tests need org:V coverage against real PG, not only fakes.
+- **TLD 11:00 #1 `Expect` close approved** (`MaxRequestBodySize = 0` on that request, `AdminApiHost.cs` L117; L96 resets the feature per
+  request). Repeats 40 → **200** (100 PUT + 100 POST): 0 resets, every 413 received, close after the response max 0 ms, median 0 ms
+  (bound < 1500 ms). New limit-scope check: after the Expect 413s, fresh-connection PUT and POST of 65472 B → 422 (`zz_pad`
+  `unknown_field`, never 413), 64 KiB + 64 → 413, nothing written. MC2 (`ctx.Abort()`) kept below as the mutation record.
+- **TLD 11:00 #2 §5 order** worded as ruled: on PUT 413 stays at step 7 after 404/428/409 (P3-3, TLD 9:28, stands); on create 408 and
+  413 come first; 408 first everywhere; TL's 10:42 item 5 was too broad. Code checked against it: PUT 401/403 → 408 (read right after
+  step 2) → 404 → 428/400 → 409 → 413; POST 403 → 408 → 413 → 400 → 404. Matches; no code change. New checks: PUT missing location +
+  400 KiB → 404, PUT without If-Match + 400 KiB → 428, PA POST 400 KiB → 413 (no event), slow PUT with missing location / no If-Match /
+  stale If-Match → 408, PA slow create → 408; "P3-3 unchanged" stale If-Match + 400 KiB → 409 kept.
+- **TLD 11:00 #3** LD L171 quote kept verbatim ("`secret_ref` is never shown (only "set / rotated on")") with the note that S2a shows
+  no date (V11-ROTATEDAT).
+
+Checks: Admin.Api.Checks 365 → **390** (0 failed); crosscheck 548 docs / 342 responses (the 200 Expect repeats and the new 7d–7f
+requests are in the corpus), 0 disagreements; check_v1_1_s2a 370 → **391**; check_schemas ALL PASS; Auth.Data 162. Build 0 warnings.
+
+Mutations (`/tmp/sse-llc1/c2/mut.sh`, restore verified with `md5sum -c` against `preMD.md5` / `preMD2c.md5` after each):
+- MD1 constructor made `public` → 389/1: F-A1 reflection check fails. Auth.Data 162.
+- MD2 `Create` skips all validation → **not applied**: the mutated build failed (CS8604 nullable), the harness ran stale binaries; discarded.
+- MD2b `Create` skips all validation (with `authority!`) → 19 FAILs (startup refusals accepted), then the run crashed at the empty
+  SecretRef case (`SecretReference("")` throws) before the F-A1 block (which then ran later in the file).
+- MD2c `Create` skips only the ARN / allowlist check → 3 FAILs, all F-A1 (bypass `not-an-arn`, account outside allowlist, `Entra()`
+  refuses not-an-arn), then the same crash at the empty SecretRef loop. Run after moving the F-A1 block first.
+- MD3 per-read deadline reset (`timer.CancelAfter(deadline)` after each read) → 387/3: 8 MiB trickle, F-B1 408 and F-B1 Warning fail.
+- MD4 limit leaks to later requests (static flag sets every later request's limit to 0) → 383/7: both 11:00 limit-scope 422 checks,
+  drain-timeout, Error-log and F-B1 checks fail.
+- MD1, MD3, MD4 were run before the 11:10 relabel of 7f and the move of the F-A1 block (labels/order only; logic identical).
+- MC1–MC3 (10:42 section above) stand; MC2 is the record for TL's literal `ctx.Abort()`.
+
+Evidence: `/tmp/sse-llc1/p3m-evidence.txt` (script `/tmp/sse-llc1/run/p3m-verify.sh`, a copy of the P3 template; k1 prefix ff_kit_ssed1;
+k1 out `/tmp/sse-llc1/run/p3m-k1.out`). p3l left as it was. The template's Python venv (`/tmp/sse2-venv`) no longer exists on the box;
+p3m-verify.sh uses the existing `/tmp/sse-d0/venv` (jsonschema 4.23.0, referencing 0.37.0) instead: nothing installed.
+
+## P3 follow-up — TLD 10:42 [TLD 2026-11-04 10:42] (on top of commit B 06dc8ac)
+
+TL decisions 10:42 AM PT on 8c3ccce..06dc8ac. One commit; no UI; Sources review md5 (bfaa2efb) unchanged (P4 commit).
+
+- **`rotated_at` dropped (V11-ROTATEDAT).** `LoginConfigApi`: the `max(change.at) … 'secret_ref' = ANY(changed_fields)` column and
+  `LlcRow.RotatedAt` removed; GET / PUT 200 / POST 201 views carry `secret {set}` only, Super Admin only, omitted for the other roles.
+  Schema `secret_view` = `{set}` (required, closed). Spec status line, §3.0 / §3.1 / §3.2 / §5 / §5.1 / §8 change table / §11 / §12 / §13 updated, A-3 retired, V11-ROTATEDAT in §12
+  (the last-rotation date is to come from the secret store: rotation happens in AWS and the ref usually does not change).
+- **Expect 413: connection closed right after the 413.** Before: Kestrel held the connection ~6 s (p3j: PUT 6047 ms, POST 6697 ms).
+  TL asked for an abort after the flush. A `ctx.Abort()` right after `CompleteAsync` was tried first: in the first full check run
+  (`/tmp/sse-llc1/c-run1`) the single POST and at least 3 of the 40 repeats got a reset and no 413 (status 0, "Connection reset by
+  peer"). So the host instead lowers Kestrel's `MaxRequestBodySize` to 0 for that request (never started, so still writable); Kestrel's
+  end-of-request drain then rejects the body at once and closes the connection itself once the 413 is out: a clean FIN, no reset.
+  Approved [TLD 2026-11-04 11:00] (that request only; see the 10:58 / 11:00 section below).
+- **Spec only:** §5 order note (408 before 404/428/409; 413 before 404 on create; PUT 413 still at step 7 after 404/428/409 per P3-3,
+  ruled [TLD 2026-11-04 11:00]: P3-3 stands); V11-BODYTIMEOUT-CONFIG (`BodyReadTimeout` code-only 10 s); body-read reset / bad
+  framing → 500 + Error recorded under V11-HTTPFRAMING; TL kept the `EntraDeployment` ctor parameter and `access_rules.secret_visible_to`.
+
+Checks: Admin.Api.Checks 360 → **365** (+2 per-method close < 1.5 s, +1 40× repeat complete + closed < 1.5 s, +1 40× clean close (no
+reset), +1 repeats log/write nothing; the Q2 secret checks now require exactly `{set}`). check_v1_1_s2a 345 → **370**. Auth.Data 162.
+Measured close after the 413 (c-run2..c-run4): PUT 0 ms, POST 0 ms, 40 repeats max 0 ms / median 0 ms (bound < 1500 ms).
+
+Mutations (`/tmp/sse-llc1/c2/mut.sh`, restore verified against `preMC.md5`):
+- MC1 no close (limit not lowered) → 361/4: per-method close checks fail (PUT 6049 ms, POST 6697 ms), repeats max 6999 ms.
+- MC2 `ctx.Abort()` after the flush (TL's literal form) → 363/2: repeats lose 413s (reset) and close with resets.
+- MC3 `rotated_at: null` back in the view → 359/6: every Q2 `secret {set}`-only check fails.
+
+Evidence: `/tmp/sse-llc1/p3l-evidence.txt` (script `/tmp/sse-llc1/run/p3l-verify.sh`, a copy of the P3 template; k1 prefix ff_kit_ssec1;
+k1 out `/tmp/sse-llc1/run/p3l-k1.out`).
+
 ## P3 HTTP body handling — TLD 9:53/10:02 P3-7/P3-8/P3-9/P3-10 (commit B, on top of commit A 5db350a)
 
 Findings from SSE2's P3 review (`/tmp/sse2-fverify/S2A-P3-REVIEW.md`; the spec still cites the snapshot md5 bfaa2efb, the original is now c6f7258b, see OPEN below). TL decisions 9:53 and 10:02 AM PT:

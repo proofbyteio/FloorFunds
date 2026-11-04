@@ -17,7 +17,7 @@ public sealed record Caller(AdminIdentity Id, AdminGrant Grant, string RequestId
 
 sealed record LlcRow(Guid LocationId, Guid PartnerId, string Slug, string Name, string ProviderKind, string DisplayName, Guid[] Tenants,
     bool AllowDbFallback, bool MfaRequired, long RowVersion,
-    Guid CreatedBy, DateTime CreatedAt, Guid UpdatedBy, DateTime UpdatedAt, DateTime? RotatedAt)
+    Guid CreatedBy, DateTime CreatedAt, Guid UpdatedBy, DateTime UpdatedAt)
 {
     public CurrentConfig Current => new(ProviderKind, Tenants, AllowDbFallback, MfaRequired);
     public JsonObject State => AuditOutbox.State(ProviderKind, Tenants, AllowDbFallback, MfaRequired);
@@ -182,8 +182,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         await using var cmd = new NpgsqlCommand(
             """
             SELECT l.partner_id, l.slug, l.name, c.provider_kind, c.display_name, c.entra_allowed_tenant_ids,
-                   c.allow_db_fallback, c.mfa_required, c.row_version, c.created_by, c.created_at, c.updated_by, c.updated_at,
-                   (SELECT max(ch.at) FROM auth.location_login_config_change ch WHERE ch.location_id = l.location_id AND 'secret_ref' = ANY (ch.changed_fields))
+                   c.allow_db_fallback, c.mfa_required, c.row_version, c.created_by, c.created_at, c.updated_by, c.updated_at
             FROM auth.location l JOIN auth.location_login_config c ON c.location_id = l.location_id
             WHERE l.location_id = $1 AND l.partner_id = $2
             """ + (forUpdate ? " FOR UPDATE OF c" : ""), c, tx);
@@ -192,8 +191,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         await using var r = await cmd.ExecuteReaderAsync();
         if (!await r.ReadAsync()) return null;
         return new LlcRow(location, r.GetGuid(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetFieldValue<Guid[]>(5),
-            r.GetBoolean(6), r.GetBoolean(7), r.GetInt64(8), r.GetGuid(9), r.GetFieldValue<DateTime>(10), r.GetGuid(11), r.GetFieldValue<DateTime>(12),
-            r.IsDBNull(13) ? null : r.GetFieldValue<DateTime>(13));
+            r.GetBoolean(6), r.GetBoolean(7), r.GetInt64(8), r.GetGuid(9), r.GetFieldValue<DateTime>(10), r.GetGuid(11), r.GetFieldValue<DateTime>(12));
     }
 
     static string T(DateTime d) => AuditOutbox.Ts(new DateTimeOffset(DateTime.SpecifyKind(d, DateTimeKind.Utc)));
@@ -214,7 +212,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             var isEntra = r.ProviderKind == "entra";
             v["oidc_authority"] = isEntra ? opt.EntraAuthority : null;
             v["oidc_client_id"] = isEntra ? opt.EntraClientId : null;
-            v["secret"] = new JsonObject { ["set"] = isEntra, ["rotated_at"] = isEntra && r.RotatedAt is { } ra ? T(ra) : null }; // null when not set (secret_view)
+            // secret is {set} only: rotated_at is dropped [TLD 2026-11-04 10:42]; the last rotation date comes from the secret store (V11-ROTATEDAT).
+            v["secret"] = new JsonObject { ["set"] = isEntra };
         }
         v["allow_db_fallback"] = r.AllowDbFallback; v["mfa_required"] = r.MfaRequired; v["row_version"] = r.RowVersion;
         v["created_by"] = r.CreatedBy.ToString("D"); v["created_at"] = T(r.CreatedAt);

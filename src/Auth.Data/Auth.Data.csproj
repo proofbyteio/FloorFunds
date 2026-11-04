@@ -26,6 +26,5 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Login.Abstractions/Login.Abstractions.csproj" />
-    <InternalsVisibleTo Include="Auth.Data.Checks" />
   </ItemGroup>
 </Project>

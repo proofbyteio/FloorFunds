@@ -18,7 +18,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Auth.Data/Auth.Data.csproj" />
-    <InternalsVisibleTo Include="Admin.Api.Checks" />
   </ItemGroup>
   <ItemGroup>
     <None Include="../../contract/audit-events.schema.json" Link="contract/audit-events.schema.json" CopyToOutputDirectory="PreserveNewest" />
