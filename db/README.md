@@ -1,0 +1,186 @@
+# FloorFunds local database kit
+
+This folder lets you create the FloorFunds Postgres database on your own
+machine and run the latest code against it.
+
+Status: slice S2a. The migration, roles step, test seed and DB checks are in
+place. The admin API (S2a P3) and the Entra sign-in (S2b) build on this database.
+
+## 1. Install PostgreSQL 17
+
+Overview of all platforms: https://www.postgresql.org/download/
+
+**Windows**: use the EDB installer.
+- https://www.postgresql.org/download/windows/
+- https://www.enterprisedb.com/downloads/postgres-postgresql-downloads
+- Pick version 17. Keep the default port, 5432. Remember the `postgres` superuser password you set during install.
+
+**macOS**: use either Homebrew or Postgres.app.
+- Homebrew (https://formulae.brew.sh/formula/postgresql@17):
+  ```
+  brew install postgresql@17
+  brew services start postgresql@17
+  ```
+  Homebrew makes your macOS user a superuser, so plain `psql` works.
+- Postgres.app (https://postgresapp.com/): install it, then add a server for version 17.
+- See also https://www.postgresql.org/download/macosx/
+
+**Linux (Debian/Ubuntu)**: use the PGDG apt repository.
+- https://www.postgresql.org/download/linux/ubuntu/
+- https://www.postgresql.org/download/linux/debian/
+- https://wiki.postgresql.org/wiki/Apt
+- Then: `sudo apt install postgresql-17`
+
+Check that it works: `psql --version` should show 17.x.
+
+## 2. Create the roles and database, apply the migrations (one script)
+
+`db/setup.sh` (macOS / Linux) and `db/setup.ps1` (Windows, PowerShell 7) do the
+same four steps. Both are safe to run again.
+
+1. **Owner role + database** (as a Postgres superuser): a login role (default
+   `floorfunds_dev`) and a database it owns. CONNECT is revoked from PUBLIC.
+2. **App roles** (as a superuser; spec §8.2): `<db>_admin_api` (the admin API)
+   and `<db>_login` (the login service). Both are plain login roles: no
+   superuser, no BYPASSRLS, no CREATEDB/CREATEROLE/REPLICATION, and they own
+   nothing. The migration refuses to run if either is missing or privileged.
+3. **Migrations**: applies `db/migrations.sql` **as the owner role** over TCP.
+   This is the only way the `auth` schema and tables are created. The script is
+   idempotent; re-running it is a no-op. Skip with `--no-migrate` / `-NoMigrate`.
+4. **Test seed** (optional, `--seed` / `-Seed`): loads `db/seed/*.sql`. See step 5.
+
+**macOS / Linux**: `db/setup.sh`
+```
+# Linux (runs the superuser psql as the postgres OS user via sudo; this is the default)
+./db/setup.sh                                  # db and owner role: floorfunds_dev; prompts for 3 passwords
+./db/setup.sh --seed                           # same, plus the TEST-ONLY seed
+
+# macOS Homebrew (you are already a superuser)
+./db/setup.sh --superuser-cmd "psql"
+```
+Options:
+- `--db NAME` and `--role NAME`. Both default to `floorfunds_dev`. Names must match `^[a-z_][a-z0-9_]{0,62}$`; `--db` is at most 53 characters so that `<db>_admin_api` fits.
+- Owner password: `--password PW`, or env `FF_DB_PASSWORD`, else a hidden prompt.
+- App-role passwords: env `FF_ADMIN_API_PASSWORD` and `FF_LOGIN_PASSWORD`, else hidden prompts.
+- Prefer the prompts: `--password` can end up in your shell history. No password is ever printed.
+- `--host` (default `127.0.0.1`) and `--port` (default `5432`): where the owner connects to apply the migrations and the seed (TCP, password auth). Also used in the printed connection strings.
+- `--admin-host H`: where the superuser psql connects. The default is the local socket.
+- `--superuser-cmd "CMD"`: the command that runs psql as a superuser. The default is `sudo -u postgres psql`.
+- `--no-migrate`, `--migrations FILE` (default `db/migrations.sql`), `--seed`.
+- `--drop`: drops and recreates **only** the named database (see step 7).
+
+**Windows**: `db/setup.ps1` (needs PowerShell 7, and psql on PATH, e.g. `C:\Program Files\PostgreSQL\17\bin`).
+```
+./db/setup.ps1                                   # floorfunds_dev; prompts for the passwords
+./db/setup.ps1 -Db floorfunds_dev -Role floorfunds_dev -Drop -Seed
+```
+- Same options as setup.sh: `-Db`, `-Role`, `-Password`, `-AdminApiPassword`, `-LoginPassword` (SecureStrings; otherwise env `FF_DB_PASSWORD`, `FF_ADMIN_API_PASSWORD`, `FF_LOGIN_PASSWORD`; otherwise hidden prompts), `-Host`, `-Port`, `-AdminHost`, `-AdminUser`, `-Drop`, `-NoMigrate`, `-Migrations`, `-Seed`.
+- The admin connection defaults to `psql -U postgres -h localhost`. The postgres password is read from `PGPASSWORD` if it is set; otherwise you are prompted. Use `-AdminHost ''` to connect through the local socket instead (Linux/macOS).
+- **Tested only with pwsh 7.6.9 on Linux**, installed from packages.microsoft.com (debian/13 trixie, prod) per TL's OK, run as the `postgres` OS user with `-AdminHost ''`. **Untested on Windows**: the Windows admin login over TCP with the postgres password, finding psql on PATH, and the EDB install directory.
+
+## 3. Connection strings (never in a repo file)
+
+The scripts print three templates (passwords are the ones you entered):
+```
+owner:     Host=127.0.0.1;Port=5432;Database=floorfunds_dev;Username=floorfunds_dev;Password=<password>
+admin API: Host=127.0.0.1;Port=5432;Database=floorfunds_dev;Username=floorfunds_dev_admin_api;Password=<password>
+login:     Host=127.0.0.1;Port=5432;Database=floorfunds_dev;Username=floorfunds_dev_login;Password=<password>
+```
+The migration runner and the DB checks read them from env vars:
+`CONNECTION_STRING` (owner), `ADMIN_API_CONNECTION_STRING`, `LOGIN_CONNECTION_STRING`.
+```
+# macOS / Linux
+export CONNECTION_STRING='Host=127.0.0.1;Port=5432;Database=floorfunds_dev;Username=floorfunds_dev;Password=<password>'
+# Windows PowerShell
+$env:CONNECTION_STRING = 'Host=127.0.0.1;Port=5432;Database=floorfunds_dev;Username=floorfunds_dev;Password=<password>'
+```
+Never put a password in appsettings*.json or any other file in the repo.
+Connection-string reference: https://www.npgsql.org/doc/connection-string-parameters.html
+
+## 4. Apply the migrations (creates the `auth` schema)
+
+`setup.sh` / `setup.ps1` already did this (step 2.3). To do it by hand:
+
+**Option A: plain psql, no .NET needed**
+```
+psql "host=127.0.0.1 port=5432 dbname=floorfunds_dev user=floorfunds_dev" -f db/migrations.sql
+```
+`db/migrations.sql` is generated by the repo's migration runner
+(`src/Auth.Data.Migrator`, `script` command: EF Core `GenerateScript`,
+idempotent), so it is safe to run more than once. Its first statement stops
+with "S2a: app roles … must exist" if the app roles are missing.
+
+**Option B: the migration runner** (.NET 10 SDK; run from `src/`, with `CONNECTION_STRING` set to the owner)
+```
+dotnet run --project Auth.Data.Migrator -- update        # apply all (EF Core MigrateAsync)
+dotnet run --project Auth.Data.Migrator -- list          # applied / pending
+dotnet run --project Auth.Data.Migrator -- update 0      # revert everything (test DBs only)
+dotnet run --project Auth.Data.Migrator -- script ../db/migrations.sql   # regenerate the script
+```
+There is no `dotnet ef` tool: the migrations are hand-written EF Core
+migration classes (TL ruling 2026-11-04 7:56 AM PT). The runner uses only the
+approved runtime packages.
+
+## 5. Load the seed data (TEST-ONLY)
+
+`db/seed/` is **test-only**: `--seed` / `-Seed`, or by hand as the owner:
+```
+psql "host=127.0.0.1 port=5432 dbname=floorfunds_dev user=floorfunds_dev" -f db/seed/s2a-test-app-user.sql
+```
+It loads the 7 SI1 fixture users into `auth.app_user` (INTERIM table) and is
+idempotent. Every id in it is fake and marked `SSE2-FAKE-TEST-ONLY`. There is
+no real data. Never load it into a database with real data.
+
+## 6. Run and test
+
+**Prerequisites**
+- PostgreSQL 17 (step 1), with TCP password login on `127.0.0.1` (the default for the installers above).
+- `psql` 17 on PATH.
+- .NET SDK 10.0.4xx (only for the runner and the checks): https://dotnet.microsoft.com/download/dotnet/10.0
+- Network access to nuget.org for the first restore. `src/nuget.config` only accepts the approved package ids, signed by the approved owners.
+
+**Setup**: step 2, with `--seed` (`-Seed`) if you will run the checks.
+
+**Run the DB checks** (161 checks: schema, roles, grants, RLS, constraints, concurrency, readers). They write test rows
+and change constraints inside rolled-back transactions, so use a **throwaway** database (e.g. `--db ff_kit_test`),
+never one with real data. Name it `ff_kit_<something>`: the checks take the target from `AUTH_CHECKS_DB`,
+refuse any name other than `ff_kit_*` (or the engineers' `ff_sse` / `ff_sse2`), and refuse if a connection string points elsewhere.
+```
+./db/setup.sh --db ff_kit_test --role ff_kit_test --seed
+export CONNECTION_STRING='Host=127.0.0.1;Port=5432;Database=ff_kit_test;Username=ff_kit_test;Password=<owner password>'
+export ADMIN_API_CONNECTION_STRING='Host=127.0.0.1;Port=5432;Database=ff_kit_test;Username=ff_kit_test_admin_api;Password=<admin api password>'
+export LOGIN_CONNECTION_STRING='Host=127.0.0.1;Port=5432;Database=ff_kit_test;Username=ff_kit_test_login;Password=<login password>'
+cd src
+AUTH_CHECKS_DB=ff_kit_test dotnet run --project Auth.Data.Checks -- Login.StandIn/fixtures.json
+```
+Expected last line: `161 passed, 0 failed`. Other checks (no database needed), from `src/`:
+```
+dotnet run --project Login.Abstractions.Checks        # expect: 52 passed, 0 failed
+```
+Then drop the throwaway database (as a superuser): `DROP DATABASE ff_kit_test WITH (FORCE);` and, if you like,
+`DROP ROLE ff_kit_test_admin_api, ff_kit_test_login, ff_kit_test;`.
+
+**Run the app**: the admin API (S2a P3) instructions are added with that code.
+The SI1 login stand-in (`src/Login.StandIn`) does not use this database.
+
+## 7. Drop and rebuild
+
+```
+./db/setup.sh --drop          # add --db/--role/--superuser-cmd/--seed as in step 2
+```
+This drops **only** the named database (using `DROP DATABASE ... WITH (FORCE)`,
+which disconnects active sessions), recreates it, and re-applies the migrations
+(and the seed with `--seed`). The roles are kept.
+
+## 8. Differences: engineers' box vs your machine
+
+| | Engineers' shared box | Mohanraj's machine |
+|---|---|---|
+| Databases | One per engineer: `ff_sse` and `ff_sse2` | One dev database: `floorfunds_dev` |
+| Server | localhost:5432 (Postgres 17, cluster 17/main) | your local Postgres 17 |
+| Passwords | Generated, stored in `/tmp/ff-db/<db>.env` (mode 0600), never committed | Chosen by you, kept in an env var or user-secrets |
+| Create / reset | `/workspace/cachd-ones/ff-db/ff-db.sh` (outside the repo) + `src/Auth.Data/tools/create-app-roles.sh` | `db/setup.sh` or `db/setup.ps1` |
+
+The SI1 login stand-in (`src/Login.StandIn`) still runs on in-memory fixtures
+and does not use Postgres. Only the S2a/S2b code (location login config and
+Entra sign-in) uses this database.
