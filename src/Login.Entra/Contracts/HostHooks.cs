@@ -7,7 +7,7 @@ namespace Login.Entra.Contracts;
 public sealed record EntraAuditEvent(
     string EventType,            // auth.login.failed | auth.login.succeeded
     string ProviderKind,         // "entra"
-    string? Reason,              // v1 reasons only: bad_credentials, locked, mfa_missing, tenant_mismatch, stale_auth_time
+    string? Reason,              // v1 reasons only: bad_credentials, locked, mfa_missing, tenant_mismatch, stale_auth_time; not_location_user (TLD 8:07 (a): partner/assignment refusal)
     string UsernameSubject,      // host computes username_hmac from this (oid@tid, or "" when no identity yet)
     Guid? LocationId,
     Guid? UserId,

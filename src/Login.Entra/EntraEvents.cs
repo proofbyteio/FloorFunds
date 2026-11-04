@@ -89,8 +89,13 @@ public sealed class EntraOidcEvents(
         // Abstractions: null = no external_login row; throws on DB error or unknown status (fail closed, UserStatusText.Parse).
         var user = await links.FindUserAsync(ProviderKind.Entra, loc.Authority, tidG, oidG, http.RequestAborted);
         if (user is null) { await Refuse("bad_credentials", "unknown_subject"); return; }
-        // 8 assignment
-        if (!await assignments.IsAssignedAsync(user.UserId, loc.Config.LocationId, http.RequestAborted)) { await Refuse("bad_credentials", "location_not_assigned"); return; }
+        // 8 location membership: partner + assignment (single refusal)
+        // TLD 8:07 (a): the user's partner must be non-null and equal the location's partner, AND auth.user_location must
+        // have the row. Both are always evaluated (no short-circuit, same queries either way) and one combined refusal is
+        // written, so a partner mismatch can't be told apart from "not assigned": same reason, same detail, no partner ids.
+        var partnerOk = user.PartnerId is { } up && up == loc.Config.PartnerId;
+        var assigned = await assignments.IsAssignedAsync(user.UserId, loc.Config.LocationId, http.RequestAborted);
+        if (!(partnerOk & assigned)) { await Refuse("not_location_user", "not_location_user"); return; }
         // 9 user state: explicit checks first so the reason codes survive; MaySignIn is the final guard
         // (only an explicit Active and not locked passes; never trust default(UserStatus), SSE N1).
         if (user.LockedUntil is { } lu && lu > now) { await Refuse("locked", "locked"); return; }

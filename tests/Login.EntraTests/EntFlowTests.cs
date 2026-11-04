@@ -115,7 +115,54 @@ public class EntFlowTests
     [Fact] public async Task ENT_04_linked_but_not_assigned_refused()
     {
         await using var e = await Env.StartAsync();
-        Refused(await e.SignInAsync("loc-b"), e, "bad_credentials", "location_not_assigned"); // user A at B (same tenant)
+        Refused(await e.SignInAsync("loc-b"), e, "not_location_user", "not_location_user"); // user A at B (same tenant)
+    }
+
+    // TLD 8:07 (a): partner must match the location's partner, on top of user_location.
+    static readonly Guid OtherPartner = Guid.Parse("f4ce0000-5e20-4a00-8000-0000000000c2"); // SSE2-FAKE-TEST-ONLY
+    public static TheoryData<string, bool, bool, bool> PartnerCases => new()
+    {
+        { "null-partner", true, false, false },      // id, assigned, partnerMatches(false => null or other), signsIn
+        { "mismatch-assigned", true, false, false },
+        { "match-unassigned", false, true, false },
+        { "match-assigned", true, true, true },
+    };
+
+    [Theory, MemberData(nameof(PartnerCases))]
+    public async Task ENT_04e_partner_must_match_location(string id, bool assigned, bool match, bool signsIn)
+    {
+        await using var e = await Env.StartAsync();
+        Guid? partner = match ? Env.PartnerId : id == "null-partner" ? null : OtherPartner;
+        e.Store.Mutate(d =>
+        {
+            d.Users.RemoveAll(u => u.UserId == e.UserA); d.Users.Add(new(e.UserA, partner, "active", null));
+            if (!assigned) d.Assignments.RemoveAll(a => a.UserId == e.UserA && a.LocationId == Env.LocA);
+        });
+        var f = await e.SignInAsync("loc-a");
+        if (signsIn) { Signed(f, e); return; }
+        Refused(f, e, "not_location_user", "not_location_user");
+        // Indistinguishable: every refusal of this kind carries the same reason and the same log detail, and no partner id.
+        var ev = Assert.Single(e.Failed);
+        Assert.Equal("not_location_user", ev.Reason);
+        Assert.Null(ev.UserId);
+        var dump = System.Text.Json.JsonSerializer.Serialize(e.Host.Audit) + string.Join("\n", e.Logs.Lines);
+        foreach (var p in new[] { Env.PartnerId, OtherPartner })
+        { Assert.DoesNotContain(p.ToString("D"), dump, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain(p.ToString("N"), dump, StringComparison.OrdinalIgnoreCase); }
+    }
+
+    [Fact] public async Task ENT_04f_partner_mismatch_and_unassigned_look_identical()
+    {
+        string Shape(Env e) => string.Join("|", e.Failed.Select(a => $"{a.EventType}/{a.ProviderKind}/{a.Reason}/{a.UserId}/{a.Amr?.Count}"))
+            + "#" + string.Join("|", e.Logs.Lines.Where(l => l.Contains("entra.refused")).Select(l => System.Text.RegularExpressions.Regex.Replace(l, "event=[0-9a-f-]+", "event=X")));
+        var a = await Env.StartAsync();
+        a.Store.Mutate(d => { d.Users.RemoveAll(u => u.UserId == a.UserA); d.Users.Add(new(a.UserA, OtherPartner, "active", null)); });
+        await a.SignInAsync("loc-a");
+        var sa = Shape(a);
+        await a.DisposeAsync();
+        await using var b = await Env.StartAsync();
+        b.Store.Mutate(d => d.Assignments.RemoveAll(x => x.UserId == b.UserA && x.LocationId == Env.LocA));
+        await b.SignInAsync("loc-a");
+        Assert.Equal(sa, Shape(b));
     }
 
     [Fact] public async Task ENT_05_tampered_state_and_replayed_callback_refused()
