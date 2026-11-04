@@ -1,6 +1,7 @@
 // ENT-* end-to-end tests: real ASP.NET Core OIDC handler + Login.Entra against the fake issuer on 18093.
 using System.Net;
 using Login.Entra;
+using Login.Entra.Drafts;
 using Login.Entra.Fixtures;
 using Login.FakeEntra;
 using Xunit;
@@ -63,6 +64,41 @@ public class EntFlowTests
         await using var e = await Env.StartAsync();
         e.Fake.NextUser = new FakeUser { Oid = Guid.NewGuid(), Email = "same@fake.invalid" }; // email of a linked user
         Refused(await e.SignInAsync("loc-a"), e, "bad_credentials", "unknown_subject");
+    }
+
+    public static TheoryData<string, string, int?, string, string> UserStates => new()
+    {
+        { "locked", AppUserStatus.Active, 10, "locked", "locked" },
+        { "lock-expired", AppUserStatus.Active, -10, "", "" },
+        { "disabled", AppUserStatus.Disabled, null, "bad_credentials", "disabled" },
+        { "unknown-status", "pending_review", null, "bad_credentials", "user_status_unknown" },
+    };
+
+    [Theory, MemberData(nameof(UserStates))]
+    public async Task ENT_04b_app_user_state(string id, string status, int? lockMin, string v1, string detail)
+    {
+        await using var e = await Env.StartAsync();
+        e.Store.Mutate(d => { d.Users.RemoveAll(u => u.UserId == e.UserA);
+            d.Users.Add(new(e.UserA, Env.PartnerId, status, lockMin is { } m ? DateTimeOffset.UtcNow.AddMinutes(m) : null)); });
+        var f = await e.SignInAsync("loc-a");
+        if (v1 == "") Signed(f, e); else Refused(f, e, v1, detail);
+        _ = id;
+    }
+
+    [Fact] public async Task ENT_04c_linked_but_no_app_user_row_refused()
+    {
+        await using var e = await Env.StartAsync();
+        e.Store.Mutate(d => d.Users.Clear());
+        Refused(await e.SignInAsync("loc-a"), e, "bad_credentials", "user_missing");
+    }
+
+    [Fact] public async Task ENT_04d_reader_throws_fails_closed()
+    {
+        await using var e = await Env.StartAsync();
+        var f = await e.SignInAsync("loc-a", cb => { e.Store.Mutate(d => d.ReadersThrow = true); return cb; });
+        Assert.NotEqual(HttpStatusCode.OK, f.FinalStatus);
+        Assert.DoesNotContain("<form", f.FinalBody);
+        Assert.Empty(e.Host.Sessions);
     }
 
     [Fact] public async Task ENT_04_linked_but_not_assigned_refused()

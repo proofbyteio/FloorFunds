@@ -1,4 +1,5 @@
 // Host hooks: the only coupling between Login.Entra and its host (stand-in now, real service R1 later).
+using Login.Entra.Drafts;
 using Microsoft.AspNetCore.Http;
 namespace Login.Entra.Contracts;
 
@@ -13,7 +14,7 @@ public sealed record EntraAuditEvent(
     IReadOnlyList<string>? Amr,  // mapped, closed enum
     DateTimeOffset? AuthTime);
 
-public sealed record EntraSignInResult(Guid UserId, string Username, Guid LocationId, Guid TenantId, Guid ObjectId,
+public sealed record EntraSignInResult(Guid UserId, Guid PartnerId, Guid LocationId, Guid TenantId, Guid ObjectId,
     IReadOnlyList<string> Amr, DateTimeOffset AuthTime, string? ReturnUrl);
 
 public interface IEntraHost

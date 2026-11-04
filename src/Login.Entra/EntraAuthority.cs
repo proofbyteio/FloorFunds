@@ -1,4 +1,5 @@
 using Login.Entra.Contracts;
+using Login.Entra.Drafts;
 namespace Login.Entra;
 
 /// <summary>Validated Entra settings for one location. Authority = base + "/{tid}/v2.0", exactly one tenant (TLD-S2B-18).</summary>

@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using Login.Entra;
 using Login.Entra.Contracts;
+using Login.Entra.Drafts;
 using Login.Entra.Fixtures;
 using Login.FakeEntra;
 using Microsoft.AspNetCore.Builder;
@@ -61,6 +62,7 @@ public sealed class Env : IAsyncDisposable
 
     public FakeEntraServer Fake { get; private set; } = null!;
     public FixtureEntraStore Store { get; private set; } = null!;
+    public static readonly Guid PartnerId = Guid.Parse("f4ce0000-5e20-4a00-8000-0000000000c1"); // SSE2-FAKE-TEST-ONLY
     public RecordingHost Host { get; } = new();
     public ListLogger Logs { get; } = new();
     public Guid UserA = Guid.NewGuid(), UserB = Guid.NewGuid();
@@ -87,8 +89,10 @@ public sealed class Env : IAsyncDisposable
             Secrets = new() { ["ref-a"] = Sec(), ["ref-b"] = Sec(), ["ref-c"] = Sec() },
         };
         var issA = $"{e.Fake.BaseUrl}/{TenantA:D}/v2.0";
-        f.Links.Add(new(issA, TenantA, e.OidA, e.UserA, "cashier.a", "same@fake.invalid"));
-        f.Links.Add(new($"{e.Fake.BaseUrl}/{TenantB:D}/v2.0", TenantB, e.OidB, e.UserB, "cashier.b", null));
+        f.Links.Add(new(issA, TenantA, e.OidA, e.UserA, "same@fake.invalid"));
+        f.Links.Add(new($"{e.Fake.BaseUrl}/{TenantB:D}/v2.0", TenantB, e.OidB, e.UserB, null));
+        f.Users.Add(new(e.UserA, PartnerId, AppUserStatus.Active, null));
+        f.Users.Add(new(e.UserB, PartnerId, AppUserStatus.Active, null));
         f.Assignments.Add(new(e.UserA, LocA));
         f.Assignments.Add(new(e.UserB, LocNoFb));
         e.Fake.ClientSecrets[cidA] = f.Secrets["ref-a"]; e.Fake.ClientSecrets[cidB] = f.Secrets["ref-b"]; e.Fake.ClientSecrets[cidC] = f.Secrets["ref-c"];
@@ -100,6 +104,7 @@ public sealed class Env : IAsyncDisposable
         b.WebHost.UseUrls(e.HostUrl);
         b.Services.AddSingleton<ILocationLoginConfigReader>(e.Store);
         b.Services.AddSingleton<IExternalLoginLookup>(e.Store);
+        b.Services.AddSingleton<IAppUserReader>(e.Store);
         b.Services.AddSingleton<ILocationAssignmentCheck>(e.Store);
         b.Services.AddSingleton<ISecretResolver>(e.Store);
         b.Services.AddSingleton<IEntraHost>(e.Host);

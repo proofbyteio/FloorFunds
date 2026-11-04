@@ -2,6 +2,7 @@
 // interfaces land (plan step 8). No SQL here; never hand-create tables.
 using System.Text.Json;
 using Login.Entra.Contracts;
+using Login.Entra.Drafts;
 namespace Login.Entra.Fixtures;
 
 public sealed class EntraFixture
@@ -10,6 +11,9 @@ public sealed class EntraFixture
     public List<FixtureLink> Links { get; set; } = [];
     public List<FixtureAssignment> Assignments { get; set; } = [];
     public Dictionary<string, string> Secrets { get; set; } = [];
+    public List<AppUserRecord> Users { get; set; } = [];
+    /// <summary>Test knob: make every reader call throw (SSE contract: readers throw on DB errors).</summary>
+    public bool ReadersThrow { get; set; }
 
     public static EntraFixture Load(string path) =>
         JsonSerializer.Deserialize<EntraFixture>(File.ReadAllText(path), new JsonSerializerOptions(JsonSerializerDefaults.Web))
@@ -17,11 +21,11 @@ public sealed class EntraFixture
 }
 
 public sealed record FixtureLocation(string Slug, LocationLoginConfig Config);
-public sealed record FixtureLink(string Issuer, Guid TenantId, Guid ObjectId, Guid UserId, string Username, string? Email, bool Disabled = false, bool Locked = false);
+public sealed record FixtureLink(string Issuer, Guid TenantId, Guid ObjectId, Guid UserId, string? Email);
 public sealed record FixtureAssignment(Guid UserId, Guid LocationId);
 
 /// <summary>Thread-safe, mutable in tests (row_version bump, etc.).</summary>
-public sealed class FixtureEntraStore(EntraFixture f) : ILocationLoginConfigReader, IExternalLoginLookup, ILocationAssignmentCheck, ISecretResolver
+public sealed class FixtureEntraStore(EntraFixture f) : IAppUserReader, ILocationLoginConfigReader, IExternalLoginLookup, ILocationAssignmentCheck, ISecretResolver
 {
     private readonly object _gate = new();
     public EntraFixture Data => f;
@@ -33,13 +37,23 @@ public sealed class FixtureEntraStore(EntraFixture f) : ILocationLoginConfigRead
     { lock (_gate) return Task.FromResult(f.Locations.FirstOrDefault(l => string.Equals(l.Slug, slug, StringComparison.Ordinal))?.Config); }
 
     // (issuer, tid, oid) only — Email is in the fixture only to prove it is never used (ENT-03).
-    public Task<ExternalLoginUser?> FindAsync(string issuer, Guid tenantId, Guid objectId, CancellationToken ct)
+    public Task<Guid?> FindAsync(string issuer, Guid tenantId, Guid subjectOid, CancellationToken ct)
     {
         lock (_gate)
         {
-            var l = f.Links.FirstOrDefault(x => x.Issuer == issuer && x.TenantId == tenantId && x.ObjectId == objectId);
-            return Task.FromResult(l is null ? null : new ExternalLoginUser(l.UserId, l.Username, l.Disabled, l.Locked));
+            Guard(ct);
+            var l = f.Links.FirstOrDefault(x => x.Issuer == issuer && x.TenantId == tenantId && x.ObjectId == subjectOid);
+            return Task.FromResult(l?.UserId);
         }
+    }
+
+    public Task<AppUserRecord?> FindUserAsync(Guid userId, CancellationToken ct)
+    { lock (_gate) { Guard(ct); return Task.FromResult(f.Users.FirstOrDefault(u => u.UserId == userId)); } }
+
+    private void Guard(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (f.ReadersThrow) throw new InvalidOperationException("fixture reader: simulated DB error");
     }
 
     public Task<bool> IsAssignedAsync(Guid userId, Guid locationId, CancellationToken ct)

@@ -1,5 +1,6 @@
 using System.IdentityModel.Tokens.Jwt;
 using Login.Entra.Contracts;
+using Login.Entra.Drafts;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Http;
@@ -9,7 +10,7 @@ namespace Login.Entra;
 
 /// <summary>OIDC events for scheme "entra-oidc": plan §a.3 checks 1–11 plus D3/D4 down handling.</summary>
 public sealed class EntraOidcEvents(
-    ILocationLoginConfigReader configs, IExternalLoginLookup links, ILocationAssignmentCheck assignments,
+    ILocationLoginConfigReader configs, IExternalLoginLookup links, IAppUserReader users, ILocationAssignmentCheck assignments,
     ISecretResolver secrets, IEntraHost host, PerLocationConfigurationManager configMgr, EntraAccessTokenValidator atv,
     ReplayCache replay, EntraOptions opts, TimeProvider clock, ILogger<EntraOidcEvents> log) : OpenIdConnectEvents
 {
@@ -85,20 +86,23 @@ public sealed class EntraOidcEvents(
         var now = clock.GetUtcNow();
         if (authTime > now + opts.ClockSkew || now - authTime > opts.MaxAuthAge) { await Refuse("stale_auth_time", "stale_auth_time"); return; }
         // 7 link on (issuer, tid, oid) only (TLD-S2B-06)
-        var user = await links.FindAsync(loc.Authority, tidG, oidG, http.RequestAborted);
-        if (user is null) { await Refuse("bad_credentials", "unknown_subject"); return; }
+        var userId = await links.FindAsync(loc.Authority, tidG, oidG, http.RequestAborted);
+        if (userId is null) { await Refuse("bad_credentials", "unknown_subject"); return; }
+        var user = await users.FindUserAsync(userId.Value, http.RequestAborted);
+        if (user is null) { await Refuse("bad_credentials", "user_missing"); return; }
         // 8 assignment
         if (!await assignments.IsAssignedAsync(user.UserId, loc.Config.LocationId, http.RequestAborted)) { await Refuse("bad_credentials", "location_not_assigned"); return; }
         // 9 user state
-        if (user.Locked) { await Refuse("locked", "locked"); return; }
-        if (user.Disabled) { await Refuse("bad_credentials", "disabled"); return; }
+        if (user.LockedUntil is { } lu && lu > now) { await Refuse("locked", "locked"); return; }
+        if (user.Status == AppUserStatus.Disabled) { await Refuse("bad_credentials", "disabled"); return; }
+        if (user.Status != AppUserStatus.Active) { await Refuse("bad_credentials", "user_status_unknown"); return; } // fail closed
         // 10 amr (TLD-S2B-12/13/20)
         var amr = AmrMapper.Map(at.Token.TryGetPayloadValue<string[]>("amr", out var raw) ? raw : null);
         if (loc.Config.MfaRequired && !amr.Contains("mfa")) { await Refuse("mfa_missing", "mfa_missing"); return; }
         if (amr.Count == 0) { await Refuse("bad_credentials", "amr_missing"); return; }
         // 11 success
         await host.WriteAuditAsync(new("auth.login.succeeded", "entra", null, subject, loc.Config.LocationId, user.UserId, amr, authTime), http.RequestAborted);
-        await host.CompleteSignInAsync(http, new(user.UserId, user.Username, loc.Config.LocationId, tidG, oidG, amr, authTime, ctx.Properties?.RedirectUri));
+        await host.CompleteSignInAsync(http, new(user.UserId, user.PartnerId, loc.Config.LocationId, tidG, oidG, amr, authTime, ctx.Properties?.RedirectUri));
         ctx.HandleResponse(); // we never keep Entra tokens or an external cookie
     }
 
