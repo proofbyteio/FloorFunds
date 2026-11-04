@@ -304,7 +304,9 @@ done
 
 # TLD 9:19: live non-superuser admin (CREATEROLE + CREATEDB is still not enough) -> rc 5 up front, nothing changed.
 ADMPW="adm-$(PW)"
-q "CREATE ROLE ${P}adm LOGIN CREATEROLE CREATEDB PASSWORD '$ADMPW'" >/dev/null 2>&1
+q "CREATE ROLE ${P}adm LOGIN CREATEROLE CREATEDB" >/dev/null
+# I-4: the password travels on psql's stdin, never on a command line.
+printf "ALTER ROLE %s PASSWORD '%s';\n" "${P}adm" "$ADMPW" | sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -f - >/dev/null
 for w in sh ps1; do
   for f in "" force; do
     s0=$(snap); c0=$(q "SELECT md5(string_agg(coalesce(description,''), '|' ORDER BY objoid, classoid)) FROM pg_shdescription")
@@ -319,6 +321,42 @@ for w in sh ps1; do
   done
 done
 q "DROP ROLE ${P}adm" >/dev/null
+
+
+# KF-G (TLD 9:42): a membership between two roles of the same kit install is refused (preflight both scripts + DO block).
+for g in "${P}a_owner:${P}a_login" "${P}a_login:${P}a_admin_api"; do
+  gr=${g%%:*}; mb=${g##*:}
+  q "GRANT $gr TO $mb" >/dev/null; s0=$(snap)
+  rc=$(SH --db ${P}a --role ${P}a_owner --force --no-migrate)
+  ok "KF-G [sh] GRANT $gr TO $mb -> rc 5, nothing changed" "$([[ $rc == 5 && $(snap) == "$s0" ]] && grep -q "role $mb is a member of kit role $gr (KF-G" "$T/out" && echo 1 || echo 0)" "rc=$rc $(tail -2 "$T/out" | tr '\n' ' ')"
+  rc=$(PS -Db ${P}a -Role ${P}a_owner -Force -NoMigrate)
+  ok "KF-G [ps1] GRANT $gr TO $mb -> rc 5, nothing changed" "$([[ $rc == 5 && $(snap) == "$s0" ]] && grep -q "role $mb is a member of kit role $gr (KF-G" "$T/out" && echo 1 || echo 0)" "rc=$rc"
+  for t in $gr $mb; do
+    h0=$(pwhash $t); out=$(roledirect $t); rc=$?
+    ok "KF-G kit/role.sql DO block directly on $t ($mb in $gr) -> error, password and membership unchanged" "$([[ $rc != 0 && $out == *"it has role memberships (the kit uses none): $mb in $gr"* && $(pwhash $t) == "$h0" && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc $out"
+  done
+  q "REVOKE $gr FROM $mb" >/dev/null
+done
+
+# I-5 (TLD 9:42): forced ALTER ROLE error inside the DO-block EXECUTE. passwordcheck is loaded for the kit's superuser
+# connections only, per connection (PGOPTIONS session_preload_libraries; no server config change). It rejects a
+# password equal to the role name even as a SCRAM verifier (SQLSTATE 22023). The password here IS the role name, so
+# the leak checks look for the verifier and for passwordcheck's own message instead.
+PCO=-csession_preload_libraries=passwordcheck
+VRE='SCRAM-SHA-256\$4096:[A-Za-z0-9+/]{16,}'
+for w in sh ps1; do
+  off=$(sudo -u postgres stat -c %s "$LOG"); h0=$(pwhash ${P}a_login)
+  if [[ $w == sh ]]; then
+    FF_LOGIN_PASSWORD=${P}a_login bash "$DBDIR/setup.sh" --superuser-cmd "sudo -u postgres env PGOPTIONS=$PCO psql" --db ${P}a --role ${P}a_owner --force --no-migrate >"$T/out" 2>&1; rc=$?
+  else
+    FF_LOGIN_PASSWORD=${P}a_login PGOPTIONS=$PCO sudo -u postgres --preserve-env=FF_DB_PASSWORD,FF_ADMIN_API_PASSWORD,FF_LOGIN_PASSWORD,PGOPTIONS pwsh -NoProfile -NonInteractive -File "$DBDIR/setup.ps1" -AdminHost '' -Db ${P}a -Role ${P}a_owner -Force -NoMigrate >"$T/out" 2>&1; rc=$?
+  fi
+  ok "I-5 [$w] passwordcheck rejects the ALTER ROLE -> rc 5, 'ALTER ROLE ${P}a_login failed (22023)', login password unchanged" \
+    "$([[ $rc == 5 && $(pwhash ${P}a_login) == "$h0" ]] && grep -qF "floorfunds-kit: ALTER ROLE ${P}a_login failed (22023)" "$T/out" && echo 1 || echo 0)" "rc=$rc $(tail -2 "$T/out" | tr '\n' ' ' | sed -E "s#$VRE#<VERIFIER>#g")"
+  ok "I-5 [$w] no verifier and no inner error text in the script output" "$(grep -Eq -e "$VRE" -e 'must not' "$T/out" && echo 0 || echo 1)"
+  ok "I-5 [$w] no verifier and no inner error text in the new server-log lines (after offset $off)" "$(logfrom $off | grep -Eq -e "$VRE" -e 'must not' && echo 0 || echo 1)"
+  ok "I-5 [$w] the server did log the wrapped error (log check is live)" "$(logfrom $off | grep -qF "ALTER ROLE ${P}a_login failed (22023)" && echo 1 || echo 0)"
+done
 
 cleanup
 ok "cleanup: no ${P}* DB or role left" "$([[ $(q "SELECT (SELECT count(*) FROM pg_database WHERE datname LIKE '$PL%') + (SELECT count(*) FROM pg_roles WHERE rolname LIKE '$PL%')") == 0 ]] && echo 1 || echo 0)"

@@ -195,6 +195,24 @@ Branch `fix/db-kit-kf` off 3e12b8d (kept apart from P3). No migration, spec or a
 - **README:** step 0 says the admin must be a superuser and why. The Known limits text now matches.
 - **Results:** see the commit message and `/tmp/sse-kf/evidence-kf3.txt`.
 
+## TLD 9:42: Low follow-ups after SSE2 GO (commit after 63d1c1e)
+
+- **Source:** SSE2 review `/tmp/sse2-fverify/KF-REWORK-REVIEW.md` md5 `8b91c5e96d2ae0bc76aa79af44b681d1`, snapshotted to `/tmp/KF-REWORK-REVIEW.8b91c5e9.md`. It gave GO on 7dff464 + 63d1c1e, and TL pushed 63d1c1e.
+- **KF-G:**
+  - **What:** a membership between two roles of the same install (for example the owner granted to `<db>_login`) passed everything with rc 0, which let the login role SET ROLE to the owner.
+  - **Preflight:** a new line kind 12 refuses a kit role that is a member of another kit role.
+  - **role.sql:** a new clause refuses any pg_auth_members row with the role as member or as granted role.
+  - **Tests:** `owner TO login` and `login TO admin_api` on sh and ps1 (rc 5, nothing changed), plus the DO block run directly on both sides of each grant.
+- **I-1:** the README's Known limits now say a failed run isn't atomic across steps, list what can be left behind, and give the recovery (`--force`, or `--force --drop`). The script headers point there.
+- **I-3:** the README, the setup.sh `--help` and the setup.ps1 synopsis warn that `--password` / `-Password` (and the pwsh app-password parameters) put the password in argv and the process list. They recommend the existing hidden prompt or the `FF_*_PASSWORD` env vars. The kit has no password-file option, and the README says so.
+- **I-4:** the live test now creates `ff_kit_kfadm` without a password and sets it through psql's stdin. The scripts get it only through PGPASSWORD in the child env. No test passes a password on a command line any more.
+- **I-5:**
+  - **Load:** passwordcheck is loaded per connection, only for the kit's superuser psql: `PGOPTIONS=-csession_preload_libraries=passwordcheck`, via `sudo -u postgres env …` for sh and `--preserve-env` for ps1.
+  - **Deviation:** SSE2 used a private initdb cluster with shared_preload_libraries, not a session LOAD. I used a per-connection setting instead. It's the session-level equivalent and changes no server config (postgresql.conf untouched).
+  - **Result:** sh and ps1 both give rc 5 with `floorfunds-kit: ALTER ROLE ff_kit_kfa_login failed (22023)`, and the login password is unchanged. No verifier and no inner message ('must not') are in the output or in the server-log lines after the offset, and the wrapped error was logged.
+  - **Caveat:** the password equals the role name by design of this hook, so the cleartext-absence check is meaningless here. It's covered by the KF-A CREATE test instead.
+- **Results:** k1-kit-tests 197/0. See `/tmp/sse-kf/evidence-kf4.txt`.
+
 ## Decisions (this slice)
 
 - Project names: `Login.Abstractions` (mandated by F9). The data project will be `src/Auth.Data` (matches the `auth` schema; shared by the admin API and the login service, so not `Login.*`).
