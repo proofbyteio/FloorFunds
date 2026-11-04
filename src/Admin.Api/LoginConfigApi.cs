@@ -8,7 +8,7 @@ using NpgsqlTypes;
 namespace Admin.Api;
 
 /// <summary>A caller after step 1 (authn) and the server-side role lookup. Nothing here comes from request data.</summary>
-public sealed record Caller(AdminIdentity Id, AdminGrant Grant)
+public sealed record Caller(AdminIdentity Id, AdminGrant Grant, string RequestId)
 {
     public bool IsSuper => Grant.Role == BuiltInRole.SuperAdmin;
     public bool IsPartnerAdmin => Grant.Role == BuiltInRole.PartnerAdmin;
@@ -52,13 +52,17 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     static IResult Json(int status, JsonNode body) => Results.Text(body.ToJsonString(), "application/json; charset=utf-8", null, status);
 
-    /// <summary>Server-generated per request, on every response (incl. 401 and 500); never taken from the request [TLD 2026-11-04 9:04, OQ-P3-3].</summary>
-    public const string CorrelationHeader = "X-Correlation-Id";
+    /// <summary>
+    /// Server-generated UUIDv7 per request, on every response (incl. 401 and 500); a client value is ignored, never echoed
+    /// [TLD 2026-11-04 9:04, OQ-P3-3]. Name as v1 errors.md L67 [TLD 2026-11-04 9:20]. The same value is the audit event's
+    /// correlation_id and is in the 500 error log line.
+    /// </summary>
+    public const string RequestIdHeader = "X-Request-ID";
 
     async Task<IResult> Run(HttpContext ctx, Func<Caller, Task<IResult>> f)
     {
-        var correlation = Guid.CreateVersion7().ToString("D");
-        ctx.Response.Headers[CorrelationHeader] = correlation;
+        var requestId = Guid.CreateVersion7().ToString("D");
+        ctx.Response.Headers[RequestIdHeader] = requestId;
         ctx.Response.Headers.CacheControl = "no-store";
         try
         {
@@ -68,13 +72,13 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             // A built-in role must agree with the sign-in kind; otherwise only org:V (if any) remains.
             if ((g.Role == BuiltInRole.SuperAdmin && id.AdminType != "super") || (g.Role == BuiltInRole.PartnerAdmin && (id.AdminType != "partner" || id.PartnerId is null)))
                 g = g with { Role = BuiltInRole.None, LoginMethodWrite = false, OrgCreateEdit = false };
-            return await f(new Caller(id, g));
+            return await f(new Caller(id, g, requestId));
         }
         catch (Fail x) { return x.Body is null ? Results.StatusCode(x.Status) : Json(x.Status, x.Body); }
         catch (Exception x)
         {
             // Fail closed: nothing committed. Log the type/SQLSTATE only: messages and DETAIL lines can carry row values.
-            log.LogError("admin-api request failed: {Type} {SqlState} correlation_id={CorrelationId}", x.GetType().Name, (x as PostgresException)?.SqlState, correlation);
+            log.LogError("admin-api request failed: {Type} {SqlState} request_id={RequestId}", x.GetType().Name, (x as PostgresException)?.SqlState, requestId);
             return Results.StatusCode(500);
         }
     }
@@ -115,7 +119,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
     }
 
     Task DenyAsync(Caller who, string reason, Guid? targetPartner, Guid? location, IEnumerable<string> attempted) =>
-        WriteDeniedAsync(AuditOutbox.Denied(Guid.CreateVersion7(), Now(), who.Id, reason, targetPartner, location, attempted));
+        WriteDeniedAsync(AuditOutbox.Denied(Guid.CreateVersion7(), Now(), who.Id, who.RequestId, reason, targetPartner, location, attempted));
 
     /// <summary>Null = too large (over 64 KiB by Content-Length or while reading). Never lets Kestrel's 1 MiB limit surface as 413.</summary>
     static async Task<byte[]?> ReadBodyAsync(HttpRequest req)
@@ -404,7 +408,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         var after = AuditOutbox.State(n.ProviderKind, n.Tenants, n.AllowDbFallback, n.MfaRequired);
         var cf = changed.ToArray();
         await InsertChangeAsync(c, tx, changeId, location, who, n.Reason, now, false, cf, row.State, after, expected + 1);
-        await outbox.InsertAsync(c, tx, AuditOutbox.ProviderChanged(Guid.CreateVersion7(), now, who.Id, row.PartnerId, location, changeId, false,
+        await outbox.InsertAsync(c, tx, AuditOutbox.ProviderChanged(Guid.CreateVersion7(), now, who.Id, who.RequestId, row.PartnerId, location, changeId, false,
             expected + 1, cf, row.State, after, n.Reason), CancellationToken.None);
         var saved = await LoadAsync(c, tx, location, row.PartnerId, false) ?? throw new InvalidOperationException("row vanished");
         await tx.CommitAsync();
@@ -517,7 +521,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         var changeId = Guid.CreateVersion7();
         var after = AuditOutbox.State(cfg.ProviderKind, cfg.Tenants, cfg.AllowDbFallback, cfg.MfaRequired);
         await InsertChangeAsync(c, tx, changeId, location, who, cfg.Reason, now, true, cf, null, after, 1);
-        await outbox.InsertAsync(c, tx, AuditOutbox.ProviderChanged(Guid.CreateVersion7(), now, who.Id, n.PartnerId, location, changeId, true,
+        await outbox.InsertAsync(c, tx, AuditOutbox.ProviderChanged(Guid.CreateVersion7(), now, who.Id, who.RequestId, n.PartnerId, location, changeId, true,
             1, cf, null, after, cfg.Reason), CancellationToken.None);
         var saved = await LoadAsync(c, tx, location, n.PartnerId, false) ?? throw new InvalidOperationException("row vanished");
         await tx.CommitAsync();

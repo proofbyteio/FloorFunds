@@ -6,9 +6,11 @@ public static class AdminApiHost
 {
     /// <summary>
     /// Builds the API (fail closed): options validated, audit schema loaded (unknown keyword = throw), DB role guard (§8.3).
-    /// <paramref name="directory"/> defaults to the INTERIM token directory; only the in-process checks pass another one.
+    /// <paramref name="directory"/> defaults to the INTERIM token directory; only the in-process checks pass another one
+    /// (and <paramref name="extraLogger"/>, to read the error log line).
     /// </summary>
-    public static async Task<WebApplication> BuildAsync(AdminApiOptions options, IAdminDirectory? directory = null, TimeProvider? clock = null)
+    public static async Task<WebApplication> BuildAsync(AdminApiOptions options, IAdminDirectory? directory = null, TimeProvider? clock = null,
+        ILoggerProvider? extraLogger = null)
     {
         var opt = options.Validated();
         var schema = JsonSchemaLite.Load(await File.ReadAllTextAsync(opt.AuditSchemaPath));
@@ -18,6 +20,7 @@ public static class AdminApiHost
         var b = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [] });
         // Request logs at Information would record paths per request; keep framework logs at Warning (no bodies, no headers).
         b.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
+        if (extraLogger is not null) b.Logging.AddProvider(extraLogger);
         b.WebHost.UseKestrel(k => { k.AddServerHeader = false; k.Limits.MaxRequestBodySize = 1 << 20; });
         if (opt.Urls.Length > 0) b.WebHost.UseUrls(opt.Urls);
         b.Services.AddSingleton(opt);

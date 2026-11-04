@@ -11,6 +11,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Admin.Api;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
@@ -184,6 +185,7 @@ var CU = Token("partner", U_CU, P_A);   // custom role carrying the write permis
 // ---------- HTTP ----------
 var allBodies = new List<string>();
 var allCorr = new List<string?>();
+var oldHeader = 0; // responses carrying the pre-9:20 X-Correlation-Id header
 bool IsCorr(string? v) => v is not null && Guid.TryParseExact(v, "D", out var g) && g.Version == 7;
 var responsesForSchema = new List<(string def, string body)>();
 async Task<R> Send(HttpMethod m, string path, string? token, string? body = null, string? ifMatch = null, Action<HttpRequestMessage>? edit = null)
@@ -198,8 +200,9 @@ async Task<R> Send(HttpMethod m, string path, string? token, string? body = null
     allBodies.Add(text);
     if ((int)res.StatusCode is >= 400 and < 500 and not 401 && text.Length > 0) responsesForSchema.Add(("error_response", text));
     string? H(string k) => res.Headers.TryGetValues(k, out var v) ? string.Join(",", v) : res.Content.Headers.TryGetValues(k, out var cv) ? string.Join(",", cv) : null;
-    var r = new R((int)res.StatusCode, text, H("ETag"), H("Location"), H("WWW-Authenticate"), H("Cache-Control"), H("Server"), H(LoginConfigApi.CorrelationHeader));
+    var r = new R((int)res.StatusCode, text, H("ETag"), H("Location"), H("WWW-Authenticate"), H("Cache-Control"), H("Server"), H(LoginConfigApi.RequestIdHeader));
     allCorr.Add(r.Corr);
+    if (H("X-Correlation-Id") is not null) oldHeader++;
     return r;
 }
 Task<R> Get(string path, string? tok) => Send(HttpMethod.Get, path, tok);
@@ -709,7 +712,8 @@ try
         await File.WriteAllTextAsync(rejectAll, """{"type":"string"}""");
         var port2 = FreePort(port);
         Console.WriteLine($"INFO fail-closed port {port2}");
-        await using var app2 = await AdminApiHost.BuildAsync(Opts(schema: rejectAll) with { Urls = $"http://127.0.0.1:{port2}" }, dir);
+        var errLog = new CaptureLogger();
+        await using var app2 = await AdminApiHost.BuildAsync(Opts(schema: rejectAll) with { Urls = $"http://127.0.0.1:{port2}" }, dir, extraLogger: errLog);
         await app2.StartAsync();
         using var h2 = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port2}") };
         var corr500 = new List<string?>();
@@ -721,7 +725,8 @@ try
             using var res = await h2.SendAsync(q);
             var t = await res.Content.ReadAsStringAsync();
             allBodies.Add(t);
-            if ((int)res.StatusCode == 500) corr500.Add(res.Headers.TryGetValues(LoginConfigApi.CorrelationHeader, out var cv) ? string.Join(",", cv) : null);
+            if (res.Headers.Contains("X-Correlation-Id")) oldHeader++;
+            if ((int)res.StatusCode == 500) corr500.Add(res.Headers.TryGetValues(LoginConfigApi.RequestIdHeader, out var cv) ? string.Join(",", cv) : null);
             return ((int)res.StatusCode, t);
         }
         var before = (await Count("location"), await Count("location_login_config_change"), Rv(A1));
@@ -733,18 +738,44 @@ try
         Ok("fail closed: denied-event write failure -> 500 (OQ)", st == 500);
         (st, bd) = await S2(HttpMethod.Post, "/api/orgs/locations", NO, J(Create(P_A, "Doomed", DbCfg())));
         Ok("fail closed: refused-create event write failure -> 500, no body (never dropped silently, TLD 9:04 #4)", st == 500 && bd.Length == 0);
-        Ok("fail closed #3: every 500 has no body and an X-Correlation-Id (UUIDv7), all distinct", corr500.Count == 4 && corr500.All(IsCorr) && corr500.Distinct().Count() == 4,
+        Ok("fail closed #3: every 500 has no body and an X-Request-ID (UUIDv7), all distinct", corr500.Count == 4 && corr500.All(IsCorr) && corr500.Distinct().Count() == 4,
             string.Join(",", corr500));
+        // TLD 9:20: the error log line carries the same value as the 500's X-Request-ID (and no other id name).
+        var errLines = errLog.Lines.Where(l => l.StartsWith("admin-api request failed:")).ToList();
+        Ok("fail closed 9:20: one error log line per 500, each 'request_id=<the 500's X-Request-ID>'", errLines.Count == 4
+            && corr500.All(id => errLines.Count(l => l.EndsWith(" request_id=" + id)) == 1), string.Join(" | ", errLines));
+        Ok("fail closed 9:20: no error log line says correlation / X-Correlation-Id", errLog.Lines.All(l => !l.Contains("orrelation", StringComparison.Ordinal)));
         Ok("fail closed: nothing saved (locations, change rows, row_version, outbox)", (await Count("location"), await Count("location_login_config_change"), Rv(A1)) == before && (await NewEvents()).Count == 0);
         await app2.StopAsync();
         File.Delete(rejectAll);
     }
 
-    // ================= 7b. correlation id (TLD 9:04 #3) =================
+    // ================= 7b. X-Request-ID (TLD 9:04 #3; renamed TLD 9:20, as v1 errors.md L67) =================
     {
-        var r = await Send(HttpMethod.Get, Cfg(A1), SA, edit: q => q.Headers.TryAddWithoutValidation(LoginConfigApi.CorrelationHeader, "client-chosen"));
-        Ok("correlation: server-generated, a client-sent X-Correlation-Id is not echoed", r.Status == 200 && IsCorr(r.Corr) && r.Corr != "client-chosen", r.Corr);
-        Ok("correlation: every API response so far carried a distinct UUIDv7 X-Correlation-Id (200/201/4xx/401)", allCorr.Count > 100 && allCorr.All(IsCorr) && allCorr.Distinct().Count() == allCorr.Count, $"{allCorr.Count}");
+        Ok("X-Request-ID: header name is exactly X-Request-ID", LoginConfigApi.RequestIdHeader == "X-Request-ID");
+        var r = await Send(HttpMethod.Get, Cfg(A1), SA, edit: q => q.Headers.TryAddWithoutValidation(LoginConfigApi.RequestIdHeader, "client-chosen"));
+        Ok("X-Request-ID: server-generated, a client-sent X-Request-ID is not echoed", r.Status == 200 && IsCorr(r.Corr) && r.Corr != "client-chosen", r.Corr);
+        var clientV7 = Guid.CreateVersion7().ToString("D");
+        r = await Send(HttpMethod.Post, "/api/orgs/locations", NO, J(Create(P_A, "ReqId refused", DbCfg())),
+            edit: q => { q.Headers.TryAddWithoutValidation(LoginConfigApi.RequestIdHeader, clientV7); q.Headers.TryAddWithoutValidation("X-Correlation-Id", clientV7); });
+        var ev = await NewEvents();
+        Ok("X-Request-ID: a client-sent well-formed UUIDv7 is ignored (not in the header, not in the event)", r.Status == 403 && IsCorr(r.Corr) && r.Corr != clientV7
+            && ev.Count == 1 && (string?)ev[0]["correlation_id"] != clientV7, r.Corr);
+        Ok("X-Request-ID = correlation_id of the stored event: refused create (not_admin, location_id null)", ev.Count == 1 && (string?)ev[0]["details"]!["reason"] == "not_admin"
+            && ev[0]["details"]!["location_id"] is null && (string?)ev[0]["correlation_id"] == r.Corr, $"{r.Corr} {(ev.Count > 0 ? ev[0]["correlation_id"] : null)}");
+        r = await Put(B1, PA, DbCfg(), "\"1\"");
+        ev = await NewEvents();
+        Ok("X-Request-ID = correlation_id of the stored event: denial (forbidden_scope, 404)", r.Status == 404 && ev.Count == 1 && (string?)ev[0]["details"]!["reason"] == "forbidden_scope"
+            && (string?)ev[0]["correlation_id"] == r.Corr, $"{r.Corr} {(ev.Count > 0 ? ev[0]["correlation_id"] : null)}");
+        r = await Post(SA, Create(P_A, "ReqId Cage", DbCfg()));
+        ev = await NewEvents();
+        Ok("X-Request-ID = correlation_id of the stored event: success (create, auth.provider.changed)", r.Status == 201 && ev.Count == 1 && (string?)ev[0]["event_type"] == "auth.provider.changed"
+            && (string?)ev[0]["correlation_id"] == r.Corr, $"{r.Corr} {(ev.Count > 0 ? ev[0]["correlation_id"] : null)}");
+        Ok("X-Request-ID: no response (incl. the 500s) carried an X-Correlation-Id header or mentions it in a body", oldHeader == 0 && !allBodies.Any(b => b.Contains("X-Correlation-Id")), $"{oldHeader}");
+        Ok("X-Request-ID: every API response so far carried a distinct UUIDv7 X-Request-ID (200/201/4xx/401)", allCorr.Count > 100 && allCorr.All(IsCorr) && allCorr.Distinct().Count() == allCorr.Count, $"{allCorr.Count}");
+        var corrSet = allCorr.ToHashSet();
+        Ok("X-Request-ID: every stored event so far has a UUIDv7 correlation_id equal to the X-Request-ID of the response that wrote it", allEvents.Count > 10
+            && allEvents.All(e => IsCorr((string?)e["correlation_id"]) && corrSet.Contains((string?)e["correlation_id"])), $"{allEvents.Count}");
     }
 
     // ================= 7c. schema: location_id null only for a refused create (TLD 9:04 #2) =================
@@ -848,4 +879,17 @@ sealed class TestDirectory(HashSet<Guid> readerLocations, Guid reader, Guid nobo
         // A custom role carrying org:location_login_method:write is ignored: only built-in roles count [LD L172].
         : id.UserId == custom ? Task.FromResult(AdminGrant.Nothing with { LoginMethodWrite = true, OrgCreateEdit = true })
         : _interim.ResolveAsync(id, ct);
+}
+
+/// <summary>Captures the API's own log lines (formatted), so the checks can read the 500 error line [TLD 9:20].</summary>
+sealed class CaptureLogger : ILoggerProvider, ILogger
+{
+    readonly List<string> _lines = new();
+    public IReadOnlyList<string> Lines { get { lock (_lines) return _lines.ToList(); } }
+    public ILogger CreateLogger(string categoryName) => this;
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+    public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Error;
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+    { if (IsEnabled(logLevel)) lock (_lines) _lines.Add(formatter(state, exception)); }
+    public void Dispose() { }
 }

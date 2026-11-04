@@ -273,8 +273,21 @@ exp("9:04 provider.changed no admin_type + scope [] + location_id null rejected"
 exp("9:04 v1 config denial + details.location_id null rejected", errs(AE, None, m(v1, details__location_id=None)), True)
 exp("9:04 v1 config denial with scope [] still rejected (envelope rule kept)", errs(AE, None, m(v1, scope__location_ids=[])), True)
 exp("9:04 login.failed with scope [] still rejected (envelope rule kept)", errs(AE, None, m(lf, scope__location_ids=[])), True)
-for _pin in ["**Refused create [TLD 2026-11-04 9:04, OQ-P3-2]:**", "**Correlation id [TLD 2026-11-04 9:04, OQ-P3-3]:**", "**Order [TLD 2026-11-04 9:04, OQ-P3-8]:**", "OQ-P3-10"]:
+for _pin in ["**Refused create [TLD 2026-11-04 9:04, OQ-P3-2]:**", "**Order [TLD 2026-11-04 9:04, OQ-P3-8]:**", "OQ-P3-10"]:
     exp("spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+
+# ---- 10. TLD 2026-11-04 9:20: X-Request-ID (as frozen v1 errors.md L67), OQ-P3-10 resolved ----
+for _pin in ["**Request id [TLD 2026-11-04 9:04, OQ-P3-3; name TLD 2026-11-04 9:20]:** every response (2xx, 4xx, 401, 500) carries `X-Request-ID`",
+             "`correlation_id` = the `X-Request-ID`", "**OQ-P3-10 [TLD 2026-11-04 9:20, approved as implemented]:**",
+             "- **OQ-P3-10** a `not_admin` create whose body gives no valid `partner_id` (unreadable, too large, duplicate keys, not a UUID). **TLD 9:20: approved as implemented**"]:
+    exp("spec pin 9:20: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+exp("spec 9:20: no X-Correlation-Id left", ["found"] if "X-Correlation" in spec else [], False)
+_open = [l for l in spec.splitlines() if l.startswith("**Still OPEN:**")]
+exp("spec 9:20: OQ-P3-10 not under Still OPEN", ["still open"] if len(_open) != 1 or "OQ-P3-10" in _open[0] else [], False)
+exp("spec 9:20: X-Request-ID is the v1 errors.md header", [] if "`X-Request-ID`" in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "errors.md")).read() else ["missing"], False)
+_env = S[AE]["$defs"]["envelope"]; _ce = _env["properties"]["correlation_id"]
+exp("schema 9:20: correlation_id stays an optional string", [] if _ce == {"type": "string"} and "correlation_id" not in _env["required"] else [str(_ce)], False)
+exp("9:20 not_admin create with a correlation_id (UUIDv7) ok", errs(AE, None, m(EX["ev_denied_not_admin_create"], correlation_id="019a4f2e-7c10-7a3b-9c4d-5e6f7a8b9c10")), False)
 
 print("v1.1-S2a checks: %d passed, %d failed" % (PASSES[0], len(FAIL)), "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)

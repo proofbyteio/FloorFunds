@@ -19,13 +19,14 @@ public sealed class AuditOutbox(JsonSchemaLite schema)
         ["allow_db_fallback"] = fallback, ["mfa_required"] = mfa,
     };
 
-    static JsonObject Envelope(Guid eventId, string type, string outcome, DateTimeOffset at, AdminIdentity actor, bool withAdminType,
+    static JsonObject Envelope(Guid eventId, string type, string outcome, DateTimeOffset at, AdminIdentity actor, string requestId, bool withAdminType,
         string targetType, Guid? targetId, string action, Guid? scopePartner, Guid[] scopeLocations, JsonObject details)
     {
         var e = new JsonObject
         {
             ["event_id"] = eventId.ToString("D"), ["schema"] = "cachd.log", ["schema_version"] = SchemaVersion, ["category"] = "event",
             ["event_type"] = type, ["occurred_at"] = Ts(at), ["outcome"] = outcome, ["is_audit"] = true, ["ingest_path"] = "outbox",
+            ["correlation_id"] = requestId, // = the response X-Request-ID [TLD 2026-11-04 9:20]
         };
         if (withAdminType) e["admin_type"] = actor.AdminType;
         e["actor"] = new JsonObject { ["user_id"] = actor.UserId.ToString("D") };
@@ -42,9 +43,9 @@ public sealed class AuditOutbox(JsonSchemaLite schema)
         return e;
     }
 
-    public static JsonObject ProviderChanged(Guid eventId, DateTimeOffset at, AdminIdentity actor, Guid partner, Guid location, Guid changeId,
+    public static JsonObject ProviderChanged(Guid eventId, DateTimeOffset at, AdminIdentity actor, string requestId, Guid partner, Guid location, Guid changeId,
         bool created, long rowVersion, IEnumerable<string> changed, JsonObject? before, JsonObject after, string? reason) =>
-        Envelope(eventId, "auth.provider.changed", "success", at, actor, true, "location", location, created ? "create" : "update", partner, [location],
+        Envelope(eventId, "auth.provider.changed", "success", at, actor, requestId, true, "location", location, created ? "create" : "update", partner, [location],
             new JsonObject
             {
                 ["location_id"] = location.ToString("D"), ["change_id"] = changeId.ToString("D"), ["change_kind"] = created ? "created" : "updated",
@@ -57,7 +58,7 @@ public sealed class AuditOutbox(JsonSchemaLite schema)
     /// Create: target partner/partner, scope [], details.location_id null [TLD 2026-11-04 9:04, OQ-P3-2]. targetPartner is null only for
     /// a not_admin create whose body gave no valid partner_id: then target.id and scope.partner_id are both absent (OQ-P3-10).
     /// </summary>
-    public static JsonObject Denied(Guid eventId, DateTimeOffset at, AdminIdentity actor, string reason, Guid? targetPartner, Guid? location,
+    public static JsonObject Denied(Guid eventId, DateTimeOffset at, AdminIdentity actor, string requestId, string reason, Guid? targetPartner, Guid? location,
         IEnumerable<string> attempted)
     {
         var isAdmin = reason != "not_admin";
@@ -69,8 +70,8 @@ public sealed class AuditOutbox(JsonSchemaLite schema)
         };
         if (isAdmin && actor.AdminType == "partner") d["actor_partner_id"] = actor.PartnerId!.Value.ToString("D");
         return location is { } l
-            ? Envelope(eventId, "auth.config.change_denied", "denied", at, actor, isAdmin, "location_login_config", l, "update", targetPartner, [l], d)
-            : Envelope(eventId, "auth.config.change_denied", "denied", at, actor, isAdmin, "partner", targetPartner, "create", targetPartner, [], d);
+            ? Envelope(eventId, "auth.config.change_denied", "denied", at, actor, requestId, isAdmin, "location_login_config", l, "update", targetPartner, [l], d)
+            : Envelope(eventId, "auth.config.change_denied", "denied", at, actor, requestId, isAdmin, "partner", targetPartner, "create", targetPartner, [], d);
     }
 
     /// <summary>Validates, then inserts in the caller's transaction. Invalid envelope = exception (the caller returns 500, fail closed).</summary>
