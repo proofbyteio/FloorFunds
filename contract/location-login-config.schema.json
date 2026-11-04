@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cachd-ones.invalid/contract/location-login-config.schema.json",
   "title": "Location login config API, contract v1.1 (slice S2a, screen 9)",
-  "description": "Request/response bodies for the location login config API. Prose, check order, error table and DDL intent: v1.1-S2a-location-login-config.md. Table columns [SRC: LD \u00a74.1 L167]. secret_ref is WRITE-ONLY: it appears only in write requests, never in any response, event or log [SRC: LD \u00a74.1 L171 'secret_ref is never shown (only set / rotated on)'] [TL Decision, S2a brief]. TLD 2026-11-04 7:39 (OQ rulings) and TLD 2026-11-04 7:41 (UX D-51: oidc_authority/oidc_client_id are server-filled from deployment config, never client-written, and shown only to a Super Admin) applied. Labels: [SRC], [Confirmed DEC-n], [TL Decision], ASSUMPTION, OPEN.",
+  "description": "Request/response bodies for the location login config API. Prose, check order, error table and DDL intent: v1.1-S2a-location-login-config.md. Table columns [SRC: LD \u00a74.1 L167]. secret_ref is SERVER-FILLED from deployment config key Entra:SecretRef [TLD 2026-11-04 9:49, D-51 (TL 7:40): one app registration per deployment]: it appears in no request, response, event or log (any secret_ref key in a client body -> 422 field_not_writable, value never echoed) [SRC: LD \u00a74.1 L171 'secret_ref is never shown (only set / rotated on)'] [TL Decision, S2a brief]. TLD 2026-11-04 7:39 (OQ rulings) and TLD 2026-11-04 7:41 (UX D-51: oidc_authority/oidc_client_id are server-filled from deployment config, never client-written, and shown only to a Super Admin) and TLD 2026-11-04 9:49 (D-51: secret_ref server-filled too; an Entra create or switch needs only the tenant id from the client) applied. Labels: [SRC], [Confirmed DEC-n], [TL Decision], ASSUMPTION, OPEN.",
   "$defs": {
     "id": {
       "description": "UUID string; same rule as claims/audit schemas (format uuid plus 8-4-4-4-12 pattern, CR-01).",
@@ -48,8 +48,8 @@
       "description": "SERVER-FILLED from deployment config key Entra:ClientId (DRAFT name): our app registration's client id, a GUID (ASSUMPTION A-8) [TLD 2026-11-04 7:41, UX D-51]; never accepted from a client. Fixtures use fake ids only.",
       "$ref": "#/$defs/id"
     },
-    "secret_ref_input": {
-      "description": "WRITE-ONLY, opaque. ASSUMPTION A-1: shaped like an AWS Secrets Manager ARN [SRC: LD \u00a74.1 L168 'secret_ref is an AWS Secrets Manager ARN']. Fixtures use fake account 000000000000 and the word FAKE. Secret kind (client secret vs certificate) deferred.",
+    "secret_ref_config": {
+      "description": "NOT a request field [TLD 2026-11-04 9:49, D-51 (TL 7:40): one app registration per deployment]. Shape of the deployment config value Entra:SecretRef (DRAFT name), the one app registration's client-credential reference: ASSUMPTION A-1, an AWS Secrets Manager ARN [SRC: LD \u00a74.1 L168 'secret_ref is an AWS Secrets Manager ARN'], whose account id and region must also be in SecretRef:AllowedAccountIds / SecretRef:AllowedRegions (K4). The admin API checks it at startup and refuses to start (exit 2, the message names the key, never the value). The server copies it into secret_ref on create with entra and on a switch to entra; Entra -> Entra keeps the stored value (A-21). Fixtures use fake account 000000000000 and the word FAKE. Secret kind (client secret vs certificate) deferred.",
       "type": "string",
       "maxLength": 2048,
       "pattern": "^arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$"
@@ -85,7 +85,7 @@
       "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62})$"
     },
     "login_config_write": {
-      "description": "Full replacement of the CLIENT-editable fields (PUT body and the login_config of a create) [TLD 2026-11-04 7:41, UX D-51]: provider_kind, display_name, entra_allowed_tenant_ids, secret_ref (write-only), mfa_required, allow_db_fallback, reason. Every editable key except secret_ref and reason is REQUIRED (send [] explicitly) so nothing is cleared silently. secret_ref: absent = keep current; string = replace (rotation); null = clear (only when switching to database). oidc_authority / oidc_client_id are server-filled: present in a body -> 422 field_not_writable. row_version is NOT in the body: it travels in If-Match. Other unknown keys -> 422 unknown_field.",
+      "description": "Full replacement of the CLIENT-editable fields (PUT body and the login_config of a create) [TLD 2026-11-04 7:41, UX D-51; TLD 2026-11-04 9:49]: provider_kind, display_name, entra_allowed_tenant_ids, mfa_required, allow_db_fallback, reason. Every editable key except reason is REQUIRED (send [] explicitly) so nothing is cleared silently. oidc_authority / oidc_client_id / secret_ref are server-filled from deployment config (Entra:Authority, Entra:ClientId, Entra:SecretRef): any of them in a body, with any value including null -> 422 field_not_writable, value never echoed [TLD 2026-11-04 9:49, D-51 (TL 7:40): one app registration per deployment]. An Entra create or switch needs only the tenant id. row_version is NOT in the body: it travels in If-Match. Other unknown keys -> 422 unknown_field.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -104,16 +104,6 @@
         },
         "entra_allowed_tenant_ids": {
           "$ref": "#/$defs/tenant_ids"
-        },
-        "secret_ref": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/secret_ref_input"
-            },
-            {
-              "type": "null"
-            }
-          ]
         },
         "allow_db_fallback": {
           "type": "boolean"
@@ -141,9 +131,6 @@
             "properties": {
               "entra_allowed_tenant_ids": {
                 "minItems": 1
-              },
-              "secret_ref": {
-                "type": "string"
               }
             }
           }
@@ -164,9 +151,6 @@
               "entra_allowed_tenant_ids": {
                 "maxItems": 0
               },
-              "secret_ref": {
-                "type": "null"
-              },
               "allow_db_fallback": {
                 "const": false
               }
@@ -176,7 +160,7 @@
       ]
     },
     "create_location_request": {
-      "description": "POST create: a location cannot be created without a provider choice [SRC: LD \u00a74.1 L169]. Needs the registry row 2 org create/edit permission AND org:location_login_method:write [TLD 2026-11-04 7:39, OQ-S2a-2]. slug is server-generated (not accepted). On create an entra secret_ref must be a string (no current secret to keep); the server fills oidc_authority / oidc_client_id [TLD 2026-11-04 7:41].",
+      "description": "POST create: a location cannot be created without a provider choice [SRC: LD \u00a74.1 L169]. Needs the registry row 2 org create/edit permission AND org:location_login_method:write [TLD 2026-11-04 7:39, OQ-S2a-2]. slug is server-generated (not accepted). The server fills oidc_authority / oidc_client_id [TLD 2026-11-04 7:41] and secret_ref (from Entra:SecretRef) [TLD 2026-11-04 9:49, D-51 (TL 7:40): one app registration per deployment]; an entra create sends only the tenant id.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -200,42 +184,20 @@
       }
     },
     "secret_view": {
-      "description": "The only secret information ever returned [SRC: LD \u00a74.1 L171]. rotated_at = time of the latest change row whose changed_fields contains secret_ref (ASSUMPTION A-3); null when set is false.",
+      "description": "The only secret information ever returned [SRC: LD \u00a74.1 L171], and only to a Super Admin (login_config_view_super) [TLD 2026-11-04 10:02 Q2]. Exactly {set}: set = the location is entra (its secret is deployment config Entra:SecretRef, never the per-row copy) [TLD 2026-11-04 10:02 Q1]. rotated_at is dropped [TLD 2026-11-04 10:42]: real rotation happens in the secret store (AWS Secrets Manager) and the ref usually does not change, so the date of the last rotation is to be read from the secret store (V11-ROTATEDAT).",
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "set",
-        "rotated_at"
+        "set"
       ],
       "properties": {
         "set": {
           "type": "boolean"
-        },
-        "rotated_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
-        }
-      },
-      "if": {
-        "properties": {
-          "set": {
-            "const": false
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "rotated_at": {
-            "type": "null"
-          }
         }
       }
     },
     "login_config_view_super": {
-      "description": "GET / PUT 200 / POST 201 body for a SUPER ADMIN caller: includes the server-filled oidc_authority / oidc_client_id [TLD 2026-11-04 7:41]. Closed: no secret_ref key (additionalProperties false). row_version mirrors the ETag.",
+      "description": "GET / PUT 200 / POST 201 body for a SUPER ADMIN caller: includes the server-filled oidc_authority / oidc_client_id [TLD 2026-11-04 7:41] and secret {set} [TLD 2026-11-04 10:02 Q2: Super Admin only; rotated_at dropped, TLD 2026-11-04 10:42], all from deployment config, never the per-row copy [TLD 2026-11-04 10:02 Q1]. Closed: no secret_ref key (additionalProperties false). row_version mirrors the ETag.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -330,7 +292,7 @@
       }
     },
     "login_config_view_restricted": {
-      "description": "GET / PUT 200 / POST 201 body for a Partner Admin or an org:V reader: oidc_authority and oidc_client_id are NOT present [TLD 2026-11-04 7:41]. Closed: no secret_ref key.",
+      "description": "GET / PUT 200 / POST 201 body for a Partner Admin or an org:V reader: oidc_authority and oidc_client_id are NOT present [TLD 2026-11-04 7:41], and neither is secret {set}: the key is omitted, not null [TLD 2026-11-04 10:02 Q2; UX mockup cbb3ab4b]. Closed (additionalProperties false): no secret_ref, no secret, no oidc_* key.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -341,7 +303,6 @@
         "provider_kind",
         "display_name",
         "entra_allowed_tenant_ids",
-        "secret",
         "allow_db_fallback",
         "mfa_required",
         "row_version",
@@ -372,9 +333,6 @@
         },
         "entra_allowed_tenant_ids": {
           "$ref": "#/$defs/tenant_ids"
-        },
-        "secret": {
-          "$ref": "#/$defs/secret_view"
         },
         "allow_db_fallback": {
           "type": "boolean"
@@ -439,7 +397,7 @@
       }
     },
     "changed_field": {
-      "description": "Field NAMES only (never values). secret_ref here means 'replaced or cleared', the value is never recorded (ASSUMPTION A-4).",
+      "description": "Field NAMES only (never values). secret_ref here means 'set or cleared by the server from deployment config' (set on create with entra / a switch to entra, cleared on a switch to database) [TLD 2026-11-04 9:49, D-51 (TL 7:40): one app registration per deployment]; the value is never recorded (ASSUMPTION A-4).",
       "enum": [
         "provider_kind",
         "display_name",
@@ -541,7 +499,7 @@
       }
     },
     "error_code": {
-      "description": "Top-level error codes; table in the spec \u00a75. No forbidden_scope code: an out-of-scope location answers exactly like a missing one (404 not_found) [TLD 2026-11-04 7:39, OQ-S2a-3].",
+      "description": "Top-level error codes; table in the spec \u00a75. No forbidden_scope code: an out-of-scope location answers exactly like a missing one (404 not_found) [TLD 2026-11-04 7:39, OQ-S2a-3]. payload_too_large = 413, body over 64 KiB by Content-Length or while reading, authorised callers only, nothing written [TLD 2026-11-04 9:28, P3-2]. request_timeout = 408, a body under the cap not fully received within the read deadline, authorised callers only, nothing written; S2a-only, frozen v1 errors.md unchanged, the general code waits for v1.1 [TLD 2026-11-04 9:53/10:02, P3-7].",
       "enum": [
         "unauthenticated",
         "forbidden",
@@ -550,13 +508,15 @@
         "if_match_invalid",
         "concurrency_conflict",
         "malformed_body",
+        "payload_too_large",
+        "request_timeout",
         "validation_failed",
         "not_super_admin",
         "reason_required"
       ]
     },
     "field_error_code": {
-      "description": "Per-field codes inside a 422 (spec \u00a75.2). field_not_writable = a server-filled key (oidc_authority, oidc_client_id) in the body [TLD 2026-11-04 7:41]; reason_length = reason not 10..500 after trim [TLD 2026-11-04 7:39].",
+      "description": "Per-field codes inside a 422 (spec \u00a75.2). field_not_writable = a server-filled key (oidc_authority, oidc_client_id [TLD 2026-11-04 7:41]; secret_ref [TLD 2026-11-04 9:49, D-51]) in the body, any value; reason_length = reason not 10..500 after trim [TLD 2026-11-04 7:39]. secret_ref_required and secret_ref_format were removed at TLD 9:49 (no client-supplied secret_ref left to require or check).",
       "enum": [
         "required",
         "unknown_field",
@@ -567,8 +527,6 @@
         "tenant_id_format",
         "tenant_bound_elsewhere",
         "field_not_writable",
-        "secret_ref_required",
-        "secret_ref_format",
         "field_not_allowed",
         "fallback_not_applicable",
         "partner_id_format",
@@ -577,7 +535,7 @@
       ]
     },
     "error_response": {
-      "description": "Every non-2xx body except 401 (no body, WWW-Authenticate only, as LD row 148 pattern). Never echoes submitted values (no secret_ref, no tenant ids). An out-of-scope location and a missing one return the identical body {\"error\":\"not_found\"}.",
+      "description": "Every non-2xx body except 401 (no body, WWW-Authenticate only, as LD row 148 pattern). Never echoes submitted values (no secret_ref value, no tenant ids). An out-of-scope location and a missing one return the identical body {\"error\":\"not_found\"}.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -599,7 +557,7 @@
             ],
             "properties": {
               "field": {
-                "description": "JSON pointer-ish name, e.g. entra_allowed_tenant_ids/0 or login_config/secret_ref.",
+                "description": "JSON pointer-ish name, e.g. entra_allowed_tenant_ids/0 or login_config/oidc_client_id.",
                 "type": "string",
                 "minLength": 1
               },
@@ -661,7 +619,7 @@
       ]
     },
     "access_rules": {
-      "description": "Machine-readable pins of TLD 2026-11-04 7:39 / 7:41 (spec \u00a76.1). check_v1_1_s2a.py validates the spec's access_rules block against this and runs negative cases.",
+      "description": "Machine-readable pins of TLD 2026-11-04 7:39 / 7:41 / 10:02 (spec \u00a76.1). check_v1_1_s2a.py validates the spec's access_rules block against this and runs negative cases.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -669,6 +627,7 @@
         "out_of_scope_location",
         "history_visible_to",
         "oidc_fields_visible_to",
+        "secret_visible_to",
         "reason_trimmed_length",
         "server_filled_fields",
         "server_filled_config_keys"
@@ -741,6 +700,12 @@
             "super_admin"
           ]
         },
+        "secret_visible_to": {
+          "description": "secret {set} is in Super Admin responses only (GET, PUT 200, POST 201); Partner Admin and org:V responses omit the key [TLD 2026-11-04 10:02 Q2].",
+          "const": [
+            "super_admin"
+          ]
+        },
         "reason_trimmed_length": {
           "const": {
             "min": 10,
@@ -750,13 +715,15 @@
         "server_filled_fields": {
           "const": [
             "oidc_authority",
-            "oidc_client_id"
+            "oidc_client_id",
+            "secret_ref"
           ]
         },
         "server_filled_config_keys": {
           "const": {
             "oidc_authority": "Entra:Authority",
-            "oidc_client_id": "Entra:ClientId"
+            "oidc_client_id": "Entra:ClientId",
+            "secret_ref": "Entra:SecretRef"
           }
         }
       }

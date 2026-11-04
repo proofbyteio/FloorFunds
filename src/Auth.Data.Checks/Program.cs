@@ -1,5 +1,6 @@
-// S2a P2 DB integration checks (spec §8-§10). Runs against a migrated, seeded test DB (ff_sse only).
-// env: CONNECTION_STRING (owner), ADMIN_API_CONNECTION_STRING, LOGIN_CONNECTION_STRING; arg 0: fixtures.json path.
+// S2a P2 DB integration checks (spec §8-§10). Runs against a migrated, seeded TEST DB named in AUTH_CHECKS_DB (TLD 8:20 P2-2).
+// env: AUTH_CHECKS_DB (target DB name), CONNECTION_STRING (owner), ADMIN_API_CONNECTION_STRING, LOGIN_CONNECTION_STRING;
+// arg 0: fixtures.json path.
 // Test data below is SSE2-FAKE-TEST-ONLY (fake tenant ids, account 000000000000 ARNs). Never prints connection strings.
 using System.Text.Json;
 using Auth.Data;
@@ -29,14 +30,486 @@ async Task Throws<T>(string name, Func<Task> f, Func<T, bool>? pred = null) wher
     catch (Exception e) { Ok(name, false, $"{e.GetType().Name}: {e.Message}"); }
 }
 
+// [TLD 2026-11-04 11:21 Q2b] [TLD 2026-11-04 11:57 o1-o3] [TLD 2026-11-04 12:04 F1] scratch-DB self-test modes (verify
+// script; not part of the counted DB run, which k1 pins at 162):
+//   --scratch-info       print host / port / maintenance DB / SHOW server_version / current_user (no connection string)
+//   --scratch-crash [--backdate-hours N]   create + mark + migrate a scratch DB (runid backdated N h), print its name, then
+//                        exit 70 WITHOUT the finally (simulated crash)
+//   --scratch-hold <name> <seconds>        hold one open connection to a scratch DB (live-connection case), then exit 0
+//   --scratch-decoy-create / --scratch-decoy-drop <name>   an UNMARKED ff_scratch_decoy* DB for the o2 cases (exact-name drop)
+//   --scratch-drop <name>  DropAsync one MARKED scratch DB (verify-script cleanup; refuses unmarked / not ours) [SSE2 09e31f68
+//                        M2]: exit 2 with a clear message (no crash) when it has connections (pre-check, or SQLSTATE 55006);
+//                        prints "nothing to drop" (exit 0) when neither the DB nor a marked role existed
+//   --scratch-sweep      the start-up sweep alone; exit 3 when an unmarked ff_scratch_* DB / role, or [SSE2 09e31f68 L1] a
+//                        marked one with a missing, invalid or future runid, is found (o2)
+// [SSE2 09e31f68 M3] the main run, --scratch-selftest and --scratch-sweep first take the single-runner advisory lock
+// (ScratchLock, key 7378711910451082339) on the kit target DB connection (CONNECTION_STRING); a second concurrent run exits 5
+// at once with "another scratch run holds the lock". [TLD 2026-11-04 13:54 item 1] A lock target outside ff_sse / ff_sse2 /
+// ff_kit_* exits 2 with "FATAL scratch-lock: refuse: ..." (ScratchLock.Refusal, no connection, no value echoed), never rc 134. The CLI has no "own DB" concept: --scratch-drop drops any MARKED,
+// ff_scratchadm-owned scratch DB by name, not only one this process made (SSE2 09e31f68 Info).
+//   --scratch-snapshot   print the o3 cluster snapshot (roles, memberships, tablespaces, databases, role settings)
+//   --scratch-selftest <old> <young> <live>  guards, loopback / port / maint-DB rules, o1 sweep cases, o2 decoy, o3 snapshot,
+//                        [TLD 12:33] role sweep cases, ff_scratchadm attribute / membership check, maint-guard refusals,
+//                        [TLD 13:15 KF-A] SCRAM verifier, cleartext-free CREATE ROLE, SCRAM sign-in
+//   --scratch-lookalike-create             [TLD 12:33] an UNMARKED ff_scratch_<old runid>_admin_api role (look-alike case)
+//   --scratch-cleanup-role <name>          [TLD 12:33] exact-name cleanup of an UNMARKED ff_scratch_* role made on purpose
+//                                          (or leaked by mutation a): no sessions -> marked, then dropped via the marked path
+//   --scratch-admincheck  [TLD 12:33] print the ff_scratchadm row, its memberships and any violation; exit 4 on a violation
+// Every maintenance-DB statement goes through MaintConn / MaintSql (allowlist, TLD 12:33 item 3); none is issued raw here.
+// [SSE2 04dba71d Low] every --scratch-* mode validates the admin target first: a refused connection-string key (Options,
+// Passfile, SSL Mode, Target Session Attributes ...), a non-loopback host, a bad port / maintenance DB or an unset variable
+// exits 2 with the refusal message (it names the key, never a value) instead of an unhandled exception (rc 134).
+if (args.Length >= 1 && args[0].StartsWith("--scratch-", StringComparison.Ordinal))
+{
+    try { ScratchDb.AdminCs(); }
+    catch (InvalidOperationException e) { Console.Error.WriteLine($"FATAL scratch: {e.Message}"); return 2; }
+}
+if (args is ["--scratch-info"])
+{
+    var (h, p, m) = ScratchDb.Target();
+    var acs = ScratchDb.AdminCs();
+    await using var c = await ScratchDb.OpenMaint(acs);
+    var r = await c.RowAsync(MaintSql.Info);
+    Console.WriteLine($"scratch-info: host={h} port={p} maint_db={m} (connected db={r[2]}) server_version={r[0]} user={r[1]}");
+    return 0;
+}
+if (args.Length >= 1 && args[0] == "--scratch-crash")
+{
+    var hours = args is [_, "--backdate-hours", var hs] ? double.Parse(hs, System.Globalization.CultureInfo.InvariantCulture) : 0;
+    var acs = ScratchDb.AdminCs();
+    var n = await ScratchDb.CreateMarkedAsync(acs, ScratchDb.NewName(TimeSpan.FromHours(hours)));
+    try
+    {
+        await ScratchDb.PrepareAsync(acs, n);
+        Console.WriteLine($"scratch-crash: created {n}; exiting 70 without the finally");
+        Environment.Exit(70);
+    }
+    finally { await ScratchDb.DropAsync(acs, n); }
+}
+if (args is ["--scratch-hold", var holdName, var holdSecs])
+{
+    var acs = ScratchDb.AdminCs();
+    await using var c = new NpgsqlConnection(ScratchDb.OwnerCs(acs, holdName));
+    await c.OpenAsync();
+    Console.WriteLine($"scratch-hold: connected to {holdName}");
+    await Task.Delay(TimeSpan.FromSeconds(int.Parse(holdSecs, System.Globalization.CultureInfo.InvariantCulture)));
+    return 0;
+}
+if (args is ["--scratch-decoy-create"])
+{
+    var acs = ScratchDb.AdminCs();
+    var decoy = "ff_scratch_decoy" + Guid.NewGuid().ToString("N")[..8];
+    ScratchDb.GuardName(decoy);
+    await ScratchDb.CreateUnmarkedAsync(acs, decoy, role: false); // deliberately UNMARKED
+    Console.WriteLine($"scratch-decoy: created {decoy} (unmarked)");
+    return 0;
+}
+if (args is ["--scratch-decoy-drop", var dropDecoy])
+{
+    // Exact name we created, ff_scratch_decoy prefix, still unmarked, owned by us, no connections: marked, then dropped
+    // through the marked-only path (the maint guard never drops an unmarked DB) [TLD 12:33].
+    var acs = ScratchDb.AdminCs();
+    ScratchDb.GuardName(dropDecoy);
+    var msg = await ScratchDb.CleanupUnmarkedAsync(acs, dropDecoy, role: false, prefix: "ff_scratch_decoy");
+    Console.WriteLine($"scratch-decoy: {msg}");
+    return msg.StartsWith("refuse", StringComparison.Ordinal) ? 2 : 0;
+}
+if (args is ["--scratch-lookalike-create"])
+{
+    var la = ScratchDb.NewName(TimeSpan.FromHours(2)) + "_admin_api";
+    await ScratchDb.CreateUnmarkedAsync(ScratchDb.AdminCs(), la, role: true);
+    Console.WriteLine($"scratch-lookalike: created {la} (unmarked role)");
+    return 0;
+}
+if (args is ["--scratch-cleanup-role", var cleanRole])
+{
+    var msg = await ScratchDb.CleanupUnmarkedAsync(ScratchDb.AdminCs(), cleanRole, role: true, prefix: "ff_scratch_");
+    Console.WriteLine($"scratch-cleanup-role: {msg}");
+    return msg.StartsWith("refuse", StringComparison.Ordinal) ? 2 : 0;
+}
+if (args is ["--scratch-admincheck"])
+{
+    var acs = ScratchDb.AdminCs();
+    await using (var m = await ScratchDb.OpenMaint(acs))
+    {
+        Console.WriteLine($"scratch-admincheck: row {await m.ScalarAsync(MaintSql.AdminRole)}");
+        foreach (var l in await m.ColumnAsync(MaintSql.AdminMembers)) Console.WriteLine($"scratch-admincheck: membership {l}");
+    }
+    var v = await ScratchDb.AdminRoleViolationsAsync(acs);
+    foreach (var x in v) Console.WriteLine($"FATAL scratch-admincheck: {x}");
+    Console.WriteLine($"scratch-admincheck: {(v.Count == 0 ? "ok" : v.Count + " violation(s)")}");
+    return v.Count == 0 ? 0 : 4;
+}
+if (args is ["--scratch-drop", var dropMarked])
+{
+    var (rc, msg) = await ScratchDb.DropCliAsync(ScratchDb.AdminCs(), dropMarked); // marked + ours + unconnected only
+    Console.WriteLine(msg);
+    return rc;
+}
+if (args is ["--scratch-sweep"])
+{
+    var kitCs = Environment.GetEnvironmentVariable("CONNECTION_STRING") ?? throw new InvalidOperationException("CONNECTION_STRING (kit target DB, for the scratch lock) not set");
+    if (ScratchLock.Refusal(kitCs) is { } lockRefused) { Console.Error.WriteLine($"FATAL scratch-lock: {lockRefused}"); return 2; } // [TLD 13:54 item 1]
+    await using var lk = await ScratchLock.TryAcquireAsync(kitCs);
+    if (lk is null) { Console.WriteLine(ScratchLock.BusyMessage(kitCs)); return 5; }
+    var res = await ScratchDb.SweepAsync(ScratchDb.AdminCs(), currentName: null);
+    return res.Unmarked.Count + res.UnmarkedRoles.Count + res.BadRunId.Count > 0 ? 3 : 0;
+}
+if (args is ["--scratch-snapshot"])
+{
+    Console.Write(await ScratchDb.ClusterSnapshotAsync(ScratchDb.AdminCs()));
+    return 0;
+}
+if (args is ["--scratch-selftest", var crashedOld, var crashedYoung, var crashedLive])
+{
+    var kitCs = Environment.GetEnvironmentVariable("CONNECTION_STRING") ?? throw new InvalidOperationException("CONNECTION_STRING (kit target DB, for the scratch lock) not set");
+    if (ScratchLock.Refusal(kitCs) is { } lockRefused) { Console.Error.WriteLine($"FATAL scratch-lock: {lockRefused}"); return 2; } // [TLD 13:54 item 1]
+    await using var lk = await ScratchLock.TryAcquireAsync(kitCs);
+    if (lk is null) { Console.WriteLine(ScratchLock.BusyMessage(kitCs)); return 5; }
+    var acs = ScratchDb.AdminCs();
+    // [SSE2 09e31f68 F4] every env override below goes through WithEnv: the previous value is restored (not nulled) and the
+    // three SCRATCH_* values are compared with the start-of-test snapshot after each block.
+    string[] envKeys = ["SCRATCH_PG_HOST", "SCRATCH_PG_PORT", "SCRATCH_MAINT_DB"];
+    string EnvSnap() => string.Join(" ", envKeys.Select(k => $"{k}={Environment.GetEnvironmentVariable(k) ?? "<unset>"}"));
+    var env0 = EnvSnap(); int envBlocks = 0, envDrift = 0;
+    string WithEnv(string k, string v, Func<string> f)
+    {
+        var old = Environment.GetEnvironmentVariable(k);
+        Environment.SetEnvironmentVariable(k, v);
+        try { return f(); }
+        finally { Environment.SetEnvironmentVariable(k, old); envBlocks++; if (EnvSnap() != env0) envDrift++; }
+    }
+    Console.WriteLine($"INFO F4 env at start: {env0}");
+    // [SSE2 09e31f68 M3] single-runner lock: held by this process; a second try on another connection is refused at once.
+    await Check($"M3 lock: a second pg_try_advisory_lock({ScratchLock.Key}) on the kit DB is refused while this run holds it [SSE2 09e31f68]", async () =>
+    {
+        await using var second = await ScratchLock.TryAcquireAsync(kitCs);
+        return second is null && ScratchLock.BusyMessage(kitCs).Contains(ScratchLock.Busy);
+    });
+    foreach (var notKit in new[] { "postgres", "template1", "ff_scratch_abcdef123456" })
+        await Throws<InvalidOperationException>($"M3 lock: refused on a non-kit DB ({notKit}), never the maintenance DB", () => ScratchLock.TryAcquireAsync(new NpgsqlConnectionStringBuilder(kitCs) { Database = notKit }.ConnectionString), e => e.Message.Contains("kit target DB"));
+    Ok("13:54 lock pre-check: ScratchLock.Refusal gives the refusal (no name echoed) for postgres / ff_sse3 / ff_kit_ + 21 chars, null for ff_sse / ff_sse2 / ff_kit_x [TLD 13:54 item 1]",
+        new[] { "postgres", "ff_sse3", "ff_kit_" + new string('a', 21) }.All(d => ScratchLock.Refusal(new NpgsqlConnectionStringBuilder(kitCs) { Database = d }.ConnectionString) is { } r && r == ScratchLock.NotKit && !r.Contains(d))
+        && new[] { "ff_sse", "ff_sse2", "ff_kit_x" }.All(d => ScratchLock.Refusal(new NpgsqlConnectionStringBuilder(kitCs) { Database = d }.ConnectionString) is null));
+    Ok("scratch: FindOnConnectionAsync is not public (internal, no InternalsVisibleTo) [TLD 11:21]",
+        typeof(NpgsqlExternalLoginReader).GetMethod("FindOnConnectionAsync", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static) is null
+        && typeof(NpgsqlExternalLoginReader).GetMethod("FindOnConnectionAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static) is { IsAssembly: true }
+        && !typeof(NpgsqlExternalLoginReader).Assembly.GetCustomAttributes(typeof(System.Runtime.CompilerServices.InternalsVisibleToAttribute), false).Any());
+    foreach (var bad in new[] { "ff_sse", "ff_sse2", "postgres", "template0", "template1", "ff_maint_scratch", "FF_SSE", "ff_scratch_", "ff_scratch_ab", "ff_scratch_ABCDEF12", "ff_scratch_abc-def12", "ff_kit_ssee1a" })
+    {
+        await Throws<InvalidOperationException>($"scratch guard: refuses '{bad}' (create, drop, owner cs)", async () => { ScratchDb.GuardName(bad); await Task.CompletedTask; });
+        await Throws<InvalidOperationException>($"scratch guard: DropAsync('{bad}') refuses before touching the server", () => ScratchDb.DropAsync(acs, bad));
+    }
+    // [TLD 12:04] loopback-only host, refused by pure validation before any connection (ScratchDb.Opens must not move).
+    var rawCs = Environment.GetEnvironmentVariable("SCRATCH_ADMIN_CONNECTION_STRING")!;
+    var opens0 = ScratchDb.Opens;
+    foreach (var badHost in new[] { "10.0.0.1", "db.example.invalid", "localhost", "/var/run/postgresql", "127.0.0.2", "::ffff:127.0.0.1", "127.0.0.1,10.0.0.1", "0.0.0.0" })
+    {
+        await Throws<InvalidOperationException>($"F1 loopback: SCRATCH_PG_HOST={badHost} -> refused, no connection [TLD 12:04]", async () =>
+        {
+            WithEnv("SCRATCH_PG_HOST", badHost, ScratchDb.AdminCs);
+            await Task.CompletedTask;
+        }, e => e.Message.Contains("loopback"));
+        await Throws<InvalidOperationException>($"F1 loopback: connection string Host={badHost} -> refused, no connection [TLD 12:04]", async () =>
+        { ScratchDb.ValidateAdminCs(new NpgsqlConnectionStringBuilder(rawCs) { Host = badHost }.ConnectionString); await Task.CompletedTask; }, e => e.Message.Contains("loopback"));
+    }
+    Ok("F1 loopback: no maintenance connection attempted by any refusal (ScratchDb.Opens unchanged)", ScratchDb.Opens == opens0);
+    Ok("F1: ::1 accepted as a loopback host (validation only)", ScratchDb.ValidateAdminCs(new NpgsqlConnectionStringBuilder(rawCs) { Host = "::1" }.ConnectionString, "::1") is { Length: > 0 });
+    foreach (var badDb in new[] { "ff_sse", "ff_sse2", "template0", "template1", "ff_scratch_abcdef123456", "Postgres;x" })
+        await Throws<InvalidOperationException>($"F1: SCRATCH_MAINT_DB={badDb} -> refused", async () =>
+        {
+            WithEnv("SCRATCH_MAINT_DB", badDb, ScratchDb.AdminCs);
+            await Task.CompletedTask;
+        }, e => e.Message.Contains("maintenance DB"));
+    {
+        var (th, tp, tm) = ScratchDb.Target();
+        var ab = new NpgsqlConnectionStringBuilder(acs);
+        bool unset = new[] { "SCRATCH_PG_HOST", "SCRATCH_PG_PORT", "SCRATCH_MAINT_DB" }.All(k => string.IsNullOrEmpty(Environment.GetEnvironmentVariable(k)));
+        Ok($"F1: effective target host={th} port={tp} maint_db={tm} is what the connection uses{(unset ? " (env unset -> defaults 127.0.0.1 / 5432 / postgres)" : "")}",
+            ab.Host == th && ab.Port == tp && ab.Database == tm && (!unset || (th, tp, tm) == ("127.0.0.1", 5432, "postgres")));
+    }
+    // Port override honoured: an unused loopback port -> connection refused; the default port works. No second cluster.
+    int freePort;
+    { var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0); l.Start(); freePort = ((System.Net.IPEndPoint)l.LocalEndpoint).Port; l.Stop(); }
+    await Check($"F1 port: SCRATCH_PG_PORT={freePort} (unused) -> connection refused on 127.0.0.1:{freePort}", async () =>
+    {
+        var cs = WithEnv("SCRATCH_PG_PORT", freePort.ToString(System.Globalization.CultureInfo.InvariantCulture), ScratchDb.AdminCs);
+        if (new NpgsqlConnectionStringBuilder(cs).Port != freePort) return false;
+        try { await ScratchDb.StateAsync(cs, "ff_scratch_portprobe1"); return false; }
+        catch (NpgsqlException e) when (e.InnerException is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.ConnectionRefused }) { return true; }
+    });
+    await Check("F1 port: the default/configured port works (StateAsync on a missing name -> (false,false))", async () => (await ScratchDb.StateAsync(acs, "ff_scratch_portprobe1")) == (false, false));
+    await Throws<InvalidOperationException>("F1: SCRATCH_PG_PORT=abc -> refused", async () =>
+    {
+        WithEnv("SCRATCH_PG_PORT", "abc", ScratchDb.AdminCs);
+        await Task.CompletedTask;
+    });
+    Ok($"F4: SCRATCH_PG_HOST / PORT / MAINT_DB unchanged after each of the {envBlocks} override blocks ({EnvSnap()}) and AdminCs() still gives the same target [SSE2 09e31f68]",
+        envBlocks >= 16 && envDrift == 0 && EnvSnap() == env0 && ScratchDb.AdminCs() == acs, $"blocks={envBlocks} drift={envDrift}");
+    // [SSE2 09e31f68 L2] names / DDL anchored with \z: a trailing newline is refused (guard, DropAsync, maint-guard classify).
+    var nl = "ff_scratch_abcdef\n";
+    await Throws<InvalidOperationException>("L2: GuardName refuses 'ff_scratch_abcdef\\n' (\\z anchor, no trailing newline)", async () => { ScratchDb.GuardName(nl); await Task.CompletedTask; });
+    await Throws<InvalidOperationException>("L2: DropAsync('ff_scratch_abcdef\\n') refuses before touching the server", () => ScratchDb.DropAsync(acs, nl));
+    Ok("L2: maint-guard does not classify DDL with a trailing newline (DROP DATABASE / DROP ROLE / CREATE DATABASE + \\n)",
+        MaintSql.Classify("DROP DATABASE \"ff_scratch_abcdef\"\n").kind is null && MaintSql.Classify("DROP ROLE \"ff_scratch_abcdef_login\"\n").kind is null
+        && MaintSql.Classify("CREATE DATABASE \"ff_scratch_abcdef\" TEMPLATE template0 ENCODING 'UTF8'\n").kind is null
+        && MaintSql.Classify("DROP DATABASE \"ff_scratch_abcdef\"").kind == "drop-db");
+    // [SSE2 09e31f68 Info] admin connection-string keys outside the allowlist are refused by pure validation.
+    var opens1 = ScratchDb.Opens;
+    foreach (var (key, val) in new[] { ("Passfile", "/tmp/x.pgpass"), ("Options", "-c role=postgres"), ("Target Session Attributes", "any"), ("Include Error Detail", "true"), ("SSL Mode", "Disable") })
+        await Throws<InvalidOperationException>($"Info: admin connection-string key '{key}' refused (allowlist Host/Port/Database/Username/Password/Pooling)", async () =>
+        { ScratchDb.ValidateAdminCs(new System.Data.Common.DbConnectionStringBuilder { ConnectionString = rawCs, [key] = val }.ConnectionString); await Task.CompletedTask; },
+        e => e.Message.Contains($"key '{key}'", StringComparison.OrdinalIgnoreCase) && !e.Message.Contains(val));
+    Ok("Info: no connection attempted by the key refusals; the env admin connection string passes", ScratchDb.Opens == opens1 && ScratchDb.ValidateAdminCs(rawCs) is { Length: > 0 });
+    // o1 sweep cases.
+    Ok("o1: runid carries a UTC timestamp (NewName -> RunIdUtc within 5 s of now)", ScratchDb.RunIdUtc(ScratchDb.NewName()) is { } ts && Math.Abs((DateTime.UtcNow - ts).TotalSeconds) < 5);
+    await Check($"scratch crash: crashed runs left their MARKED DBs behind ({crashedOld} old, {crashedYoung} young, {crashedLive} old + live connection)", async () =>
+        (await ScratchDb.StateAsync(acs, crashedOld)) == (true, true) && (await ScratchDb.StateAsync(acs, crashedYoung)) == (true, true) && (await ScratchDb.StateAsync(acs, crashedLive)) == (true, true));
+    Ok("o1: backdated runids parse as > 1 h old, the young one as <= 1 h", ScratchDb.RunIdUtc(crashedOld) is { } to && DateTime.UtcNow - to > ScratchDb.MinAge
+        && ScratchDb.RunIdUtc(crashedLive) is { } tl && DateTime.UtcNow - tl > ScratchDb.MinAge && ScratchDb.RunIdUtc(crashedYoung) is { } ty && DateTime.UtcNow - ty <= ScratchDb.MinAge);
+    await Check($"o1: {crashedLive} has a live connection in pg_stat_activity (held by --scratch-hold)", async () => await ScratchDb.ConnectionsAsync(acs, crashedLive) > 0);
+    // [TLD 2026-11-04 13:15, KF-A] a role password reaches the server only as a client-side SCRAM-SHA-256 verifier; random per
+    // run, in memory only. Runs before this self-test creates anything, so a refusal (mutation m1) stops it with nothing leaked.
+    const string rfcVector = "SCRAM-SHA-256$4096:W22ZaJ0SNY7soEsUEjb6gQ==$WG5d8oPm3OtcPnkdi4Uo7BkeZkBFzpcXkuLmtbsT4qY=:wfPLwcE6nTWhTAmQ7tl2KeoiWGPlZqQxSrmfPwDl2dU=";
+    var vre = new System.Text.RegularExpressions.Regex("^" + MaintSql.ScramVerifierRe + "\\z");
+    Ok($"KF-A: ScramVerifier('pencil', RFC 7677 salt) == {rfcVector} (RFC 5802/7677 derivation; same value as the kit's db/setup.sh scram())",
+        ScratchDb.ScramVerifier("pencil", Convert.FromBase64String("W22ZaJ0SNY7soEsUEjb6gQ==")) == rfcVector);
+    var pwA = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+    var (vA1, vA2) = (ScratchDb.ScramVerifier(pwA), ScratchDb.ScramVerifier(pwA));
+    Ok("KF-A: a verifier has the exact guard shape, never contains the password, and a fresh 16-byte salt each call", vre.IsMatch(vA1) && vre.IsMatch(vA2) && vA1 != vA2 && !vA1.Contains(pwA) && !vA2.Contains(pwA));
+    foreach (var (badPw, label) in new[] { ("", "an empty"), ("caf\u00e9", "a non-ASCII"), ("a\nb", "a newline") })
+        await Throws<ArgumentException>($"KF-A: ScramVerifier refuses {label} password (printable ASCII only, as the kit)", async () => { ScratchDb.ScramVerifier(badPw); await Task.CompletedTask; });
+    var kfaRole = ScratchDb.NewName() + "_login";
+    var kfaShape = $"CREATE ROLE \"{kfaRole}\" LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD ";
+    Ok("KF-A maint-guard: CREATE ROLE ... PASSWORD '<SCRAM-SHA-256$4096 verifier>' is allowlisted", MaintSql.Classify(kfaShape + $"'{vA1}'").kind == "create-role");
+    Ok("KF-A maint-guard: CREATE ROLE ... PASSWORD '<32 hex cleartext>' is refused [TLD 13:15]", MaintSql.Classify(kfaShape + $"'{pwA}'").kind is null);
+    foreach (var (badV, label) in new[] { ("md5" + new string('a', 32), "an md5 hash"), (vA1.Replace("$4096:", "$4095:"), "a verifier with 4095 iterations"), ("abc123", "a short cleartext"),
+                                          (vA1 + "' SUPERUSER '", "a verifier + quote injection"), (vA1[..^1], "a truncated verifier"), ("scram-sha-256" + vA1[13..], "a lower-case prefix") })
+        Ok($"KF-A maint-guard: CREATE ROLE ... PASSWORD with {label} is refused", MaintSql.Classify(kfaShape + $"'{badV}'").kind is null);
+    var kfaPw = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)).ToLowerInvariant(); // memory only
+    var kfaSent = new List<string>(); List<string> kfaSample = [];
+    var kfaCreated = false; var kfaOn = true;
+    // [SSE2 04dba71d KF-A] every maintenance statement of the whole self-test is captured (allSent); at the end every
+    // PASSWORD in it must be followed by 'SCRAM-SHA-256$4096:' (same rule SSE2 applies to the log_statement=all server log).
+    var allSent = new List<string>();
+    MaintConn.Trace = q => { lock (allSent) { allSent.Add(q); if (kfaOn) kfaSent.Add(q); } };
+    try
+    {
+        try { await ScratchDb.CreateMarkedRoleAsync(acs, kfaRole, kfaPw, afterCreate: async () => kfaSample = await ScratchDb.OwnSessionQueriesAsync(acs)); kfaCreated = true; }
+        catch (InvalidOperationException e) when (e.Message.Contains("maint-guard")) { Console.WriteLine($"INFO KF-A: {e.Message}"); }
+        finally { kfaOn = false; }
+        Ok($"KF-A: CreateMarkedRoleAsync({kfaRole}, password) passes the maint guard", kfaCreated);
+        if (kfaCreated)
+        {
+            var creates = kfaSent.Where(q => q.StartsWith("CREATE ROLE", StringComparison.Ordinal)).ToList();
+            Ok("KF-A (b) statement text: exactly one CREATE ROLE was sent and its PASSWORD is a SCRAM-SHA-256$4096 verifier",
+                creates is [var c1] && c1.StartsWith(kfaShape, StringComparison.Ordinal) && vre.IsMatch(c1[(kfaShape.Length + 1)..^1]), $"{creates.Count} CREATE ROLE");
+            Ok($"KF-A (b) statement text: the cleartext password is in none of the {kfaSent.Count} statements sent on maintenance connections", kfaSent.Count >= 3 && kfaSent.All(q => !q.Contains(kfaPw)));
+            Ok($"KF-A (b) pg_stat_activity sampled during the CREATE ({kfaSample.Count} other ff_scratchadm session(s)): the creating session's query is the CREATE ROLE with the verifier; the cleartext is in no query",
+                kfaSample.Any(q => q.StartsWith(kfaShape + "'SCRAM-SHA-256$4096:", StringComparison.Ordinal)) && kfaSample.All(q => !q.Contains(kfaPw)));
+            Ok("KF-A (b) [SSE2 04dba71d]: after every PASSWORD in the statement text and in the pg_stat_activity sample comes 'SCRAM-SHA-256$4096:' (or there is no PASSWORD)",
+                kfaSent.Concat(kfaSample).All(q => !MaintSql.PwNotVerifier.IsMatch(q)));
+            var pol = (await ScratchDb.LogPolicyAsync(acs)).Split('|');
+            Console.WriteLine($"INFO KF-A server: log_statement={pol[0]} password_encryption={pol[1]}; ff_scratchadm may SET log_statement: {pol[2]}; may read pg_authid: {pol[3]}"
+                + (pol[2] == "false" && pol[0] != "all" ? " -> log_statement=all not settable (superuser-only GUC, no SET grant); statement-text capture + pg_stat_activity sample used instead [TLD 13:15 (b)]" : ""));
+            Console.WriteLine("INFO KF-A (c): pg_authid.rolpassword is read by the verify script (superuser, read-only, first 14 chars only) while this role is held; not here");
+            var signIn = new NpgsqlConnectionStringBuilder(acs) { Username = kfaRole, Password = kfaPw, Database = crashedYoung, Pooling = false, RequireAuth = "ScramSHA256" };
+            await Check("KF-A (a): the role signs in with the cleartext password, Require Auth=ScramSHA256 (SCRAM only) -> the stored verifier is right", async () =>
+            {
+                await using var kc = new NpgsqlConnection(signIn.ConnectionString);
+                await kc.OpenAsync();
+                await using var cmd = new NpgsqlCommand("SELECT current_user", kc);
+                var who = (string?)await cmd.ExecuteScalarAsync() == kfaRole;
+                if (Environment.GetEnvironmentVariable("SCRATCH_KFA_HOLD_FILE") is { Length: > 0 } hold)
+                { // verify script only: it reads pg_authid.rolpassword (prefix) for this role while the file exists (60 s max)
+                    File.WriteAllText(hold, kfaRole + "\n");
+                    for (var i = 0; i < 600 && File.Exists(hold); i++) await Task.Delay(100);
+                }
+                return who;
+            });
+            await Throws<PostgresException>("KF-A (a): a wrong password is refused (28P01)", async () =>
+            {
+                await using var kc = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(signIn.ConnectionString) { Password = "wrong-" + kfaPw[..8] }.ConnectionString);
+                await kc.OpenAsync();
+            }, e => e.SqlState == "28P01");
+        }
+    }
+    finally
+    {
+        for (var i = 0; i < 50 && await ScratchDb.RoleSessionsAsync(acs, kfaRole) > 0; i++) await Task.Delay(100);
+        if (kfaCreated) await ScratchDb.DropAsync(acs, kfaRole[..^"_login".Length]); // marked, no DB: drops the marked role
+    }
+    Ok($"KF-A: {kfaRole} dropped again", !(await ScratchDb.RolesAsync(acs)).Any(x => x.role == kfaRole));
+    if (!kfaCreated)
+    {
+        Console.WriteLine("KF-A: stopping the self-test here (nothing else was created yet)");
+        Console.WriteLine($"\n{pass} passed, {fail} failed");
+        return 1;
+    }
+    var own = await ScratchDb.CreateMarkedAsync(acs, ScratchDb.NewName(TimeSpan.FromHours(3))); // this run's own DB, backdated 3 h, no connection
+    var decoy = "ff_scratch_decoy" + Guid.NewGuid().ToString("N")[..8];
+    ScratchDb.GuardName(decoy);
+    await ScratchDb.CreateUnmarkedAsync(acs, decoy, role: false); // deliberately UNMARKED
+    await Check($"scratch decoy: unmarked {decoy} created (no marker)", async () => (await ScratchDb.StateAsync(acs, decoy)) == (true, false));
+    await Throws<InvalidOperationException>("scratch: DropAsync refuses the unmarked decoy", () => ScratchDb.DropAsync(acs, decoy), e => e.Message.Contains("marker"));
+    await Throws<InvalidOperationException>("scratch: CreateMarkedAsync refuses an existing name", () => ScratchDb.CreateMarkedAsync(acs, decoy), e => e.Message.Contains("already exists"));
+    // [TLD 12:33 item 1] role cases: stand-alone MARKED per-run-shaped roles (no DB): stale, young, stale + a live session as
+    // it; and an UNMARKED look-alike. The session role gets a LOGIN password that exists only in this process's memory.
+    var staleRole = ScratchDb.NewName(TimeSpan.FromHours(2)) + "_login";
+    var youngRole = ScratchDb.NewName() + "_login";
+    var sessRole = ScratchDb.NewName(TimeSpan.FromHours(2)) + "_login";
+    var lookalike = ScratchDb.NewName(TimeSpan.FromHours(2)) + "_admin_api";
+    await ScratchDb.CreateMarkedRoleAsync(acs, staleRole);
+    await ScratchDb.CreateMarkedRoleAsync(acs, youngRole);
+    var sessPw = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+    List<string> sessSample = [];
+    await ScratchDb.CreateMarkedRoleAsync(acs, sessRole, sessPw, afterCreate: async () => sessSample = await ScratchDb.OwnSessionQueriesAsync(acs));
+    Ok($"KF-A (b) [TLD 13:15, SSE2 04dba71d]: the session role {sessRole} (was cleartext PASSWORD '<32 hex>') is created with a verifier: pg_stat_activity during its CREATE shows 'SCRAM-SHA-256$4096:' and never the cleartext",
+        sessSample.Any(q => q.Contains($"CREATE ROLE \"{sessRole}\"") && q.Contains("PASSWORD 'SCRAM-SHA-256$4096:")) && sessSample.All(q => !q.Contains(sessPw) && !MaintSql.PwNotVerifier.IsMatch(q)));
+    await ScratchDb.CreateUnmarkedAsync(acs, lookalike, role: true);
+    var sessConn = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(acs) { Username = sessRole, Password = sessPw, Database = crashedYoung, Pooling = false }.ConnectionString);
+    await sessConn.OpenAsync();
+    await Check($"role sweep setup: {sessRole} has a session in pg_stat_activity; {lookalike} exists unmarked", async () =>
+        await ScratchDb.RoleSessionsAsync(acs, sessRole) > 0 && (await ScratchDb.RolesAsync(acs)).Contains((lookalike, "")));
+    var sw = await ScratchDb.SweepAsync(acs, currentName: own);
+    await Check("o1: old marked DB with no connections -> dropped (and its marked roles)", async () =>
+        sw.Dropped.Contains(crashedOld) && !(await ScratchDb.StateAsync(acs, crashedOld)).exists);
+    await Check("o1: marked DB younger than 1 h -> kept", async () => sw.Kept.Contains(crashedYoung) && (await ScratchDb.StateAsync(acs, crashedYoung)) == (true, true));
+    await Check("o1: old marked DB with a live connection -> kept", async () => sw.Kept.Contains(crashedLive) && (await ScratchDb.StateAsync(acs, crashedLive)) == (true, true));
+    await Check("o1: the run's own DB (old, no connection) -> never dropped", async () => sw.Kept.Contains(own) && !sw.Dropped.Contains(own) && (await ScratchDb.StateAsync(acs, own)) == (true, true));
+    await Check("o2: unmarked decoy -> reported (Unmarked), not dropped", async () => sw.Unmarked.SequenceEqual([decoy]) && (await ScratchDb.StateAsync(acs, decoy)) == (true, false));
+    Ok("o1: exactly one DB dropped by the sweep", sw.Dropped.SequenceEqual([crashedOld]));
+    var rolesNow = await ScratchDb.RolesAsync(acs);
+    bool HasRole(string r) => rolesNow.Any(x => x.role == r);
+    Ok($"12:33 role sweep: stale marked role {staleRole} (2 h, DB gone, no session) -> dropped", sw.RolesDropped.Contains(staleRole) && !HasRole(staleRole));
+    Ok($"12:33 role sweep: young marked role {youngRole} -> kept", sw.RolesKept.Contains(youngRole) && HasRole(youngRole));
+    Ok($"12:33 role sweep: stale marked role {sessRole} with a live session -> kept", sw.RolesKept.Contains(sessRole) && HasRole(sessRole));
+    Ok($"12:33 role sweep: unmarked look-alike {lookalike} -> reported (UnmarkedRoles, FATAL), not dropped", sw.UnmarkedRoles.SequenceEqual([lookalike]) && rolesNow.Contains((lookalike, "")));
+    Ok("12:33 role sweep: roles of kept DBs (young, live) kept; the old DB's roles went with it", new[] { crashedYoung, crashedLive }.All(d => HasRole(d + "_admin_api") && HasRole(d + "_login"))
+        && !HasRole(crashedOld + "_admin_api") && !HasRole(crashedOld + "_login"));
+    Ok("12:33 role sweep: exactly one stand-alone role dropped", sw.RolesDropped.SequenceEqual([staleRole]));
+    await sessConn.DisposeAsync();
+    for (var i = 0; i < 50 && await ScratchDb.RoleSessionsAsync(acs, sessRole) > 0; i++) await Task.Delay(100);
+    var sw2 = await ScratchDb.SweepAsync(acs, currentName: own);
+    Ok($"12:33 role sweep: once the session ends, {sessRole} is dropped by the next sweep", sw2.RolesDropped.SequenceEqual([sessRole]) && !(await ScratchDb.RolesAsync(acs)).Any(x => x.role == sessRole));
+    // [SSE2 09e31f68 M2] --scratch-drop (DropCliAsync) on a marked DB with a live connection: rc 2, clear message, no crash.
+    var (m2rc, m2msg) = await ScratchDb.DropCliAsync(acs, crashedLive);
+    Console.WriteLine($"INFO M2: --scratch-drop {crashedLive} while held -> rc {m2rc}: {m2msg}");
+    await Check($"M2: --scratch-drop on marked {crashedLive} with a live connection -> rc 2, no crash, DB and its two roles intact [SSE2 09e31f68]", async () =>
+        m2rc == 2 && (await ScratchDb.StateAsync(acs, crashedLive)) == (true, true)
+        && (await ScratchDb.RolesAsync(acs)).Count(x => x.role.StartsWith(crashedLive + "_", StringComparison.Ordinal) && x.comment == ScratchDb.Marker) == 2);
+    Ok("M2: the refusal names the open connection(s) (pre-check before any DROP)", m2msg.Contains("connection(s) in pg_stat_activity"), m2msg);
+    var (n0rc, n0msg) = await ScratchDb.DropCliAsync(acs, "ff_scratch_nothing" + Guid.NewGuid().ToString("N")[..6]);
+    Ok("L2: --scratch-drop on a name that never existed -> rc 0, 'nothing to drop', never 'dropped'", n0rc == 0 && n0msg.Contains("nothing to drop") && !n0msg.Contains("dropped"), n0msg);
+    // [SSE2 09e31f68 L1] marked objects we own whose runid is missing, invalid or in the future: reported loudly (BadRunId,
+    // FATAL; --scratch-sweep exits 3, the main run fails), never kept silently and never dropped.
+    var l1NoRunDb = "ff_scratch_l1norunid" + Guid.NewGuid().ToString("N")[..6];
+    var l1FutureDb = ScratchDb.NewName(TimeSpan.FromHours(-24));
+    var l1BadDateRole = "ff_scratch_20991399999999" + Guid.NewGuid().ToString("N")[..6] + "_login";
+    var l1FutureRole = ScratchDb.NewName(TimeSpan.FromHours(-24)) + "_admin_api";
+    var l1NoRunRole = "ff_scratch_l1norunid" + Guid.NewGuid().ToString("N")[..6] + "_login";
+    await ScratchDb.CreateMarkedAsync(acs, l1NoRunDb);
+    await ScratchDb.CreateMarkedAsync(acs, l1FutureDb);
+    foreach (var r in new[] { l1BadDateRole, l1FutureRole, l1NoRunRole }) await ScratchDb.CreateMarkedRoleAsync(acs, r);
+    var sw3 = await ScratchDb.SweepAsync(acs, currentName: own);
+    string[] l1All = [l1NoRunDb, l1FutureDb, l1BadDateRole, l1FutureRole, l1NoRunRole];
+    await Check($"L1: marked DBs / roles with a missing, invalid or future runid -> reported by name (BadRunId, FATAL), none dropped or silently kept [SSE2 09e31f68]", async () =>
+        sw3.BadRunId.OrderBy(x => x, StringComparer.Ordinal).SequenceEqual(l1All.OrderBy(x => x, StringComparer.Ordinal))
+        && !sw3.Kept.Intersect(l1All).Any() && !sw3.RolesKept.Intersect(l1All).Any() && sw3.Dropped.Count == 0 && sw3.RolesDropped.Count == 0
+        && (await ScratchDb.StateAsync(acs, l1NoRunDb)) == (true, true) && (await ScratchDb.StateAsync(acs, l1FutureDb)) == (true, true)
+        && new[] { l1BadDateRole, l1FutureRole, l1NoRunRole }.All(r => sw3.BadRunId.Contains(r)) && (await ScratchDb.RolesAsync(acs)).Count(x => l1All.Contains(x.role)) == 3);
+    foreach (var d in new[] { l1NoRunDb, l1FutureDb, l1BadDateRole[..^"_login".Length], l1FutureRole[..^"_admin_api".Length], l1NoRunRole[..^"_login".Length] })
+        await ScratchDb.DropAsync(acs, d); // exact names made above, via the marked path
+    await Check("L1: the five L1 objects are gone after exact-name cleanup", async () =>
+        !(await ScratchDb.ListAsync(acs, markedOnly: false)).Intersect(l1All).Any() && !(await ScratchDb.RolesAsync(acs)).Any(x => l1All.Contains(x.role)));
+    // [TLD 12:33 item 1] ff_scratchadm: documented attributes, only the PG17 implicit ADMIN-OPTION memberships on marked per-run roles.
+    await using (var m = await ScratchDb.OpenMaint(acs))
+    {
+        var row = await m.ScalarAsync(MaintSql.AdminRole) as string;
+        var mem = await m.ColumnAsync(MaintSql.AdminMembers);
+        foreach (var l in mem) Console.WriteLine($"INFO ff_scratchadm membership (role|member|admin|inherit|set|grantor_is_bootstrap|role comment): {l}");
+        Ok($"12:33 ff_scratchadm attributes = {ScratchDb.AdminRoleExpected}", row == ScratchDb.AdminRoleExpected, row);
+        var other = mem.Where(l => !l.StartsWith(lookalike + "|", StringComparison.Ordinal)).ToList();
+        Ok("12:33 ff_scratchadm memberships (besides the look-alike's) are exactly the PG17 implicit grants on live marked per-run roles (ADMIN true, INHERIT false, SET false, grantor bootstrap)",
+            other.Count > 0 && other.All(l => l.Split('|') is [var r, "ff_scratchadm", "true", "false", "false", "true", "floorfunds-scratch"] && rolesNow.Contains((r, "floorfunds-scratch"))));
+    }
+    await Check($"12:33 ff_scratchadm check: flags exactly the implicit membership on the UNMARKED look-alike {lookalike} (not an allowed membership)", async () =>
+        (await ScratchDb.AdminRoleViolationsAsync(acs)) is [var only] && only.StartsWith($"membership: {lookalike}|ff_scratchadm|", StringComparison.Ordinal));
+    // [TLD 12:33 item 3] maint guard: reads name only the listed catalogs; anything not allowlisted is refused before sending.
+    var fromRe = new System.Text.RegularExpressions.Regex(@"\b(?:FROM|JOIN)\s+([a-z_]+)");
+    var named = MaintSql.Reads.SelectMany(q => fromRe.Matches(q).Select(x => x.Groups[1].Value)).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+    Ok($"maint-guard: reads name only allowlisted catalogs ({string.Join(", ", named)})", named.All(MaintSql.Catalogs.Contains)
+        && MaintSql.Reads.All(q => !q.Replace("'pg_authid'", "").Contains("pg_authid")));
+    foreach (var good in new[] { $"CREATE DATABASE \"{own}\" TEMPLATE template0 ENCODING 'UTF8'", $"COMMENT ON ROLE \"{own}_login\" IS 'floorfunds-scratch'", $"DROP ROLE \"{own}_admin_api\"" })
+        Ok($"maint-guard: allowlisted shape classified ({MaintSql.Head(good)})", MaintSql.Classify(good).kind is not null);
+    Ok("maint-guard: refusal text never echoes literals", !MaintSql.Head("CREATE ROLE \"x\" LOGIN PASSWORD 'abc123'").Contains("abc123"));
+    await using (var m = await ScratchDb.OpenMaint(acs))
+        foreach (var bad in new[] { "SELECT 1", "SELECT rolname FROM pg_authid", "ALTER ROLE ff_scratchadm SUPERUSER", "SELECT datname FROM pg_database; SELECT 1",
+                                    "DO $$BEGIN NULL; END$$", "SET ROLE postgres", "COMMENT ON DATABASE \"ff_scratch_zzzzzz999999\" IS 'other'" })
+            await Throws<InvalidOperationException>($"maint-guard: refused on the maintenance connection: {bad.Split(' ')[0]} {bad.Split(' ')[1]}", () => m.ExecAsync(bad), e => e.Message.Contains("maint-guard"));
+    await using (var m = await ScratchDb.OpenMaint(acs))
+    {
+        await Throws<InvalidOperationException>("maint-guard: DROP DATABASE of a missing / unmarked ff_scratch_* name refused", () => m.ExecAsync($"DROP DATABASE \"{decoy}\""), e => e.Message.Contains("maint-guard"));
+        await Throws<InvalidOperationException>("maint-guard: DROP ROLE of an unmarked ff_scratch_* role refused", () => m.ExecAsync($"DROP ROLE \"{lookalike}\""), e => e.Message.Contains("maint-guard"));
+        await Throws<InvalidOperationException>("maint-guard: CREATE DATABASE on a protected / non-scratch name refused", () => m.ExecAsync("CREATE DATABASE \"ff_sse3\" TEMPLATE template0 ENCODING 'UTF8'"), e => e.Message.Contains("maint-guard"));
+    }
+    // o3: the snapshot check catches a created cluster-level role (mutation), and is identical once it is dropped again.
+    var snap0 = await ScratchDb.ClusterSnapshotAsync(acs);
+    var mutRole = "ff_scratch_mut" + Guid.NewGuid().ToString("N")[..8] + "_login";
+    await ScratchDb.CreateMarkedRoleAsync(acs, mutRole);
+    var snap1 = await ScratchDb.ClusterSnapshotAsync(acs);
+    Ok($"o3 mutation: CREATE ROLE {mutRole} -> snapshot differs (caught)", snap1 != snap0 && ScratchDb.Diff(snap0, snap1).Contains(mutRole), ScratchDb.Diff(snap0, snap1));
+    await ScratchDb.DropAsync(acs, mutRole[..^"_login".Length]); // no DB of that name; drops the marked role
+    Ok("o3: after DROP ROLE the snapshot is identical again", await ScratchDb.ClusterSnapshotAsync(acs) == snap0);
+    // Cleanup: own via the marked path, young / live via the marked path (the hold has ended or is ignored by DropAsync? no FORCE:
+    // the verify script waits for the hold to end first), decoy by exact name.
+    await ScratchDb.DropAsync(acs, own);
+    foreach (var n in new[] { crashedYoung, crashedLive })
+        try { await ScratchDb.DropAsync(acs, n); } catch (PostgresException e) when (e.SqlState == "55006") { Console.WriteLine($"cleanup: {n} still in use"); }
+    Console.WriteLine($"cleanup: {await ScratchDb.CleanupUnmarkedAsync(acs, decoy, role: false, prefix: "ff_scratch_decoy")}");
+    Console.WriteLine($"cleanup: {await ScratchDb.CleanupUnmarkedAsync(acs, lookalike, role: true, prefix: "ff_scratch_")}");
+    await ScratchDb.DropAsync(acs, youngRole[..^"_login".Length]); // stand-alone marked role, no DB
+    await Check("12:33 ff_scratchadm: after cleanup AdminRoleViolationsAsync -> none (only the held live DB's two roles remain as memberships)", async () => (await ScratchDb.AdminRoleViolationsAsync(acs)) is { Count: 0 });
+    // The live DB is still held by --scratch-hold here (DropAsync never uses FORCE), so it is the only one allowed to remain;
+    // the verify script drops it with --scratch-sweep after the hold ends and then checks 0 DBs / 0 roles cluster-wide.
+    await Check($"scratch: after the self-test only the held {crashedLive} is left (no other ff_scratch_* DB, marked or not)", async () =>
+        (await ScratchDb.ListAsync(acs, markedOnly: false)).SequenceEqual([crashedLive]));
+    await Check($"scratch: the only ff_scratch_* roles left are {crashedLive}'s two", async () =>
+    {
+        return string.Join(' ', (await ScratchDb.RolesAsync(acs)).Select(x => x.role)) == $"{crashedLive}_admin_api {crashedLive}_login";
+    });
+    MaintConn.Trace = null;
+    {
+        var pwStmts = allSent.Count(q => MaintSql.PwAny.IsMatch(q));
+        Ok($"KF-A (b) [SSE2 04dba71d]: whole self-test statement text ({allSent.Count} maintenance statements, {pwStmts} with PASSWORD): every PASSWORD is followed by 'SCRAM-SHA-256$4096:'; neither test password appears",
+            pwStmts == 2 && allSent.All(q => !MaintSql.PwNotVerifier.IsMatch(q) && !q.Contains(kfaPw) && !q.Contains(sessPw)));
+    }
+    Console.WriteLine($"\n{pass} passed, {fail} failed");
+    return fail == 0 ? 0 : 1;
+}
+
 string Env(string k) => Environment.GetEnvironmentVariable(k) is { Length: > 0 } v ? v : throw new InvalidOperationException($"{k} not set");
 var ownerCs = Env("CONNECTION_STRING");
 var adminCs = Env("ADMIN_API_CONNECTION_STRING");
 var loginCs = Env("LOGIN_CONNECTION_STRING");
 var fixturesPath = args.Length > 0 ? args[0] : "Login.StandIn/fixtures.json";
-var dbName = new NpgsqlConnectionStringBuilder(ownerCs).Database!;
-if (dbName != "ff_sse") { Console.Error.WriteLine("refuse: checks run on ff_sse only"); return 2; }
+// Checks write committed SSE2-FAKE-TEST-ONLY rows and alter constraints inside rolled-back transactions, so the target DB
+// is named explicitly (AUTH_CHECKS_DB), all three connection strings must point at it, and a safety guard refuses anything
+// that is not an engineers' test DB (ff_sse, ff_sse2) or a db/ kit scratch DB (ff_kit_*). SSE runs only ff_sse / ff_kit_*.
+var dbName = Environment.GetEnvironmentVariable("AUTH_CHECKS_DB") ?? "";
+static bool IsTestDb(string n) => n is "ff_sse" or "ff_sse2" || System.Text.RegularExpressions.Regex.IsMatch(n, "^ff_kit_[a-z0-9_]{1,45}$");
+if (!IsTestDb(dbName))
+{ Console.Error.WriteLine("refuse: set AUTH_CHECKS_DB to a test DB: ff_sse, ff_sse2 or ff_kit_<name> (throwaway kit DB)"); return 2; }
+if (new[] { ownerCs, adminCs, loginCs }.Any(cs => new NpgsqlConnectionStringBuilder(cs).Database != dbName))
+{ Console.Error.WriteLine("refuse: every connection string's Database must equal AUTH_CHECKS_DB"); return 2; }
+// [SSE2 09e31f68 M3] fail-fast single runner: before any write to the kit DB or any scratch work, take the session advisory
+// lock on the kit target DB (owner connection); held until the process exits. A concurrent run exits 5 at once.
+if (ScratchLock.Refusal(ownerCs) is { } lockRefusedMain) { Console.Error.WriteLine($"FATAL scratch-lock: {lockRefusedMain}"); return 2; } // [TLD 13:54 item 1]
+await using var scratchLock = await ScratchLock.TryAcquireAsync(ownerCs);
+if (scratchLock is null) { Console.WriteLine(ScratchLock.BusyMessage(ownerCs)); return 5; }
 string adminRole = dbName + "_admin_api", loginRole = dbName + "_login";
+string[] LlcMutable = ["provider_kind", "display_name", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret_ref",
+                       "allow_db_fallback", "mfa_required", "updated_by", "updated_at", "row_version"];
 
 await using var ownerDs = NpgsqlDataSource.Create(ownerCs);
 await using var adminDs = NpgsqlDataSource.Create(adminCs);
@@ -103,7 +576,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [20261104160000_S2aInitial]", applied.SequenceEqual(["20261104160000_S2aInitial"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
@@ -159,7 +632,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     var expect = new Dictionary<(string, string), string[]>
     {
         [("location", adminRole)] = ["SELECT", "INSERT"], [("location", loginRole)] = ["SELECT"],
-        [("location_login_config", adminRole)] = ["SELECT", "INSERT", "UPDATE"], [("location_login_config", loginRole)] = ["SELECT"],
+        [("location_login_config", adminRole)] = ["SELECT", "INSERT"], [("location_login_config", loginRole)] = ["SELECT"],
         [("location_login_config_change", adminRole)] = ["SELECT", "INSERT"], [("location_login_config_change", loginRole)] = [],
         [("app_user", adminRole)] = [], [("app_user", loginRole)] = ["SELECT"],
         [("external_login", adminRole)] = [], [("external_login", loginRole)] = ["SELECT"],
@@ -176,18 +649,25 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     foreach (var t in expect.Keys.Select(k => k.Item1).Distinct())
         Ok($"grants: PUBLIC has nothing on auth.{t}", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_class cl, aclexplode(cl.relacl) x WHERE cl.oid = ('auth.' || $1)::regclass AND x.grantee = 0)", t));
 
-    var colMism = new List<string>();
-    foreach (var col in new[] { "location_id", "partner_id", "slug", "name" })
-        if (await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.location', $2, 'UPDATE')", adminRole, col) != (col == "name")) colMism.Add("location." + col);
-    var sessUpd = new[] { "last_seen_at", "revoked_at", "revoked_reason", "interactive_used_at", "handoff_used_at", "cage_consumed_at", "code_issued" };
-    await using (var cmd = new NpgsqlCommand("SELECT column_name FROM information_schema.columns WHERE table_schema='auth' AND table_name='session'", c))
+    // Column-level UPDATE, every column of every auth table, both roles (P2-1: no UPDATE on PKs / created_* / immutable).
+    var updAllowed = new Dictionary<(string, string), string[]>
     {
-        var all = new List<string>();
-        await using (var rr = await cmd.ExecuteReaderAsync()) while (await rr.ReadAsync()) all.Add(rr.GetString(0));
-        foreach (var col in all)
-            if (await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.session', $2, 'UPDATE')", loginRole, col) != sessUpd.Contains(col)) colMism.Add("session." + col);
-    }
-    Ok("grants: column UPDATE = location(name) for admin_api; session(7 spec columns) for login; nothing else", colMism.Count == 0, string.Join(", ", colMism));
+        [("location", adminRole)] = ["name"],
+        [("location_login_config", adminRole)] = LlcMutable,
+        [("session", loginRole)] = ["last_seen_at", "revoked_at", "revoked_reason", "interactive_used_at", "handoff_used_at", "cage_consumed_at", "code_issued"],
+    };
+    var colMism = new List<string>();
+    var cols = new List<(string T, string C)>();
+    await using (var cmd = new NpgsqlCommand("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema='auth' ORDER BY 1, 2", c))
+    await using (var rr = await cmd.ExecuteReaderAsync()) while (await rr.ReadAsync()) cols.Add((rr.GetString(0), rr.GetString(1)));
+    foreach (var (t, col) in cols)
+        foreach (var r in new[] { adminRole, loginRole })
+            if (await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.' || $2, $3, 'UPDATE')", r, t, col)
+                != (updAllowed.TryGetValue((t, r), out var ok) && ok.Contains(col))) colMism.Add($"{t}.{col}/{r}");
+    Ok($"grants: column UPDATE ({cols.Count} columns x 2 roles) = location(name) + location_login_config(11 mutable) for admin_api; session(7) for login; nothing else",
+        cols.Count > 0 && colMism.Count == 0, string.Join(", ", colMism));
+    Ok("grants: admin_api UPDATE on location_login_config location_id/created_at/created_by = none (P2-1)",
+        !await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.location_login_config', 'location_id', 'UPDATE') OR has_column_privilege($1, 'auth.location_login_config', 'created_at', 'UPDATE') OR has_column_privilege($1, 'auth.location_login_config', 'created_by', 'UPDATE')", adminRole));
 
     foreach (var f in new[] { "auth.location_partner(uuid)", "auth.tenant_bound_elsewhere(uuid,uuid)" })
     {
@@ -214,11 +694,13 @@ await using (var c = await ownerDs.OpenConnectionAsync())
             if (rr.GetBoolean(1) != want || rr.GetBoolean(2) != want) rls.Add(rr.GetString(0));
         }
     Ok("RLS: ENABLE+FORCE on exactly location, location_login_config, location_login_config_change", rls.Count == 0, string.Join(",", rls));
-    Ok("RLS: policy set == spec (owner/admin/login per table; no login policy on change)",
+    // K2 (SSE2 d787f76 review): the owner role is read from pg_database, not assumed equal to the DB name (kit --role != --db).
+    var dbOwner = await Scalar<string>(c, null, "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()");
+    Ok($"RLS: policy set == spec (owner {dbOwner} from pg_database/admin/login per table; no login policy on change)",
         await Scalar<string>(c, null, "SELECT string_agg(tablename || ':' || policyname || ':' || cmd || ':' || array_to_string(roles, '+'), ' ' ORDER BY tablename, policyname) FROM pg_policies WHERE schemaname='auth'")
-        == $"location:location_admin:ALL:{adminRole} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbName} " +
-           $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbName} " +
-           $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbName}");
+        == $"location:location_admin:ALL:{adminRole} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbOwner} " +
+           $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbOwner} " +
+           $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbOwner}");
 }
 
 // ================= 3. seed == SI1 fixtures =================
@@ -245,6 +727,60 @@ await using (var c = await ownerDs.OpenConnectionAsync())
 }
 
 // ================= 4. checks-only data (SSE2-FAKE-TEST-ONLY) =================
+// K3 (SSE2 d787f76 review): the checks commit their own rows and count exact row sets, so they need the post-seed state:
+// refuse cleanly (rc 3, before writing anything) when any business/check row is present, and delete their own rows at the
+// end (finally), so a re-run on the same DB passes. A crash mid-run leaves rows -> the next run refuses (reset: update 0, update, seed).
+const string StateSql = """
+    SELECT (SELECT count(*) FROM auth.location) + (SELECT count(*) FROM auth.location_login_config)
+         + (SELECT count(*) FROM auth.location_login_config_change) + (SELECT count(*) FROM auth.external_login)
+         + (SELECT count(*) FROM auth.user_location) + (SELECT count(*) FROM auth.session) + (SELECT count(*) FROM auth.oidc_replay)
+         + (SELECT count(*) FROM auth.audit_outbox) + (SELECT count(*) FROM auth.app_user WHERE user_id::text LIKE '%-000000000c7_')
+    """;
+await using (var c = await ownerDs.OpenConnectionAsync())
+{
+    var leftover = await Scalar<long>(c, null, StateSql);
+    if (leftover != 0)
+    {
+        Console.Error.WriteLine($"refuse: {dbName} is not in the post-seed state ({leftover} rows in auth location/config/change/link/session/replay/outbox tables or checks-only users), e.g. from an interrupted run. Reset it (runner update 0, update, seed) or use a fresh kit DB.");
+        return 3;
+    }
+}
+async Task CleanupCheckData()
+{
+    await using var c = await ownerDs.OpenConnectionAsync();
+    await using var tx = await c.BeginTransactionAsync();
+    var locs = new[] { L_PCI, L_NV, Guid.Parse("5f0c3e1a-00ee-4000-8000-0000000000e1") }; // = LX
+    await Exec(c, tx, "DELETE FROM auth.user_location WHERE location_id = ANY($1)", locs);
+    await Exec(c, tx, "DELETE FROM auth.external_login WHERE subject = ANY($1)", new[] { S1, S2, S3, S9 });
+    await Exec(c, tx, "DELETE FROM auth.app_user WHERE user_id = ANY($1)", new[] { U_DIS, U_LCK });
+    await Exec(c, tx, "DELETE FROM auth.location_login_config_change WHERE location_id = ANY($1)", locs);
+    await Exec(c, tx, "DELETE FROM auth.location_login_config WHERE location_id = ANY($1)", locs);
+    await Exec(c, tx, "DELETE FROM auth.location WHERE location_id = ANY($1)", locs);
+    await tx.CommitAsync();
+}
+// [TLD 2026-11-04 11:21 Q2b] scratch DB for the N3/N1 probes: start-up sweep of leftover MARKED scratch DBs (crashed runs),
+// then create + mark this run's ff_scratch_<runid>; it is migrated in the try and dropped in the finally (also on failure).
+// [TLD 11:57 o1-o3]: the sweep drops only old (> 1 h), unconnected, marked leftovers; an unmarked ff_scratch_* DB is not
+// dropped, it is printed as FATAL and no scratch DB is made, so N3/N1/Q2 FAIL and the run exits non-zero. Q2 also needs the
+// cluster snapshot (roles etc.) taken before CREATE to be identical after the DROP.
+string? scratchAdminCs = null, scratchName = null, scratchErr = null, scratchSnap = null;
+NpgsqlDataSource? scratchDs = null;
+try
+{
+    scratchAdminCs = ScratchDb.AdminCs();
+    var runName = ScratchDb.NewName();
+    var sweep = await ScratchDb.SweepAsync(scratchAdminCs, runName);
+    if (sweep.Unmarked.Count > 0) throw new InvalidOperationException($"unmarked ff_scratch_* database(s) present, not dropped: {string.Join(", ", sweep.Unmarked)} [TLD 11:57 o2]");
+    if (sweep.BadRunId.Count > 0) throw new InvalidOperationException($"marked ff_scratch_* object(s) with a missing, invalid or future runid present, not dropped: {string.Join(", ", sweep.BadRunId)} [SSE2 09e31f68 L1]");
+    if (sweep.UnmarkedRoles.Count > 0) throw new InvalidOperationException($"unmarked ff_scratch_* look-alike role(s) present, not dropped: {string.Join(", ", sweep.UnmarkedRoles)} [TLD 12:33]");
+    if (await ScratchDb.AdminRoleViolationsAsync(scratchAdminCs) is { Count: > 0 } adminViol)
+        throw new InvalidOperationException($"ff_scratchadm differs from the documented kit role: {string.Join("; ", adminViol)} [TLD 12:33]");
+    scratchSnap = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs);
+    scratchName = await ScratchDb.CreateMarkedAsync(scratchAdminCs, runName); // set only once CREATE + mark succeeded
+}
+catch (Exception e) { scratchErr = $"{e.GetType().Name}: {e.Message}"; Console.WriteLine($"FATAL scratch: setup failed ({scratchErr}); the N3/N1 probes and Q2 will FAIL"); }
+try
+{
 await using (var c = await ownerDs.OpenConnectionAsync())
 await using (var tx = await c.BeginTransactionAsync())
 {
@@ -309,6 +845,17 @@ await Check("RLS admin_api: partner pci CAN insert own change row", async () =>
 await Check("RLS admin_api: UPDATE location.slug denied (column grant, 42501); name allowed", async () =>
     await Try(adminDs, $"UPDATE auth.location SET slug = 'zz' WHERE location_id = '{L_PCI}'", "super") == "42501"
     && await Try(adminDs, $"UPDATE auth.location SET name = 'renamed' WHERE location_id = '{L_PCI}'", "super") == "ok");
+await Check("P2-1 admin_api: UPDATE location_login_config.location_id denied (42501)", async () =>
+    await Try(adminDs, $"UPDATE auth.location_login_config SET location_id = gen_random_uuid() WHERE location_id = '{L_PCI}'", "super") == "42501");
+await Check("P2-1 admin_api: UPDATE location_login_config.created_at denied (42501)", async () =>
+    await Try(adminDs, $"UPDATE auth.location_login_config SET created_at = now() WHERE location_id = '{L_PCI}'", "super") == "42501");
+await Check("P2-1 admin_api: UPDATE location_login_config.created_by denied (42501)", async () =>
+    await Try(adminDs, $"UPDATE auth.location_login_config SET created_by = gen_random_uuid() WHERE location_id = '{L_PCI}'", "super") == "42501");
+await Check("P2-1 admin_api: §8.5 UPDATE of all 11 mutable columns allowed (rolled back)", async () =>
+    await Try(adminDs, $"UPDATE auth.location_login_config SET provider_kind = provider_kind, display_name = display_name, entra_allowed_tenant_ids = entra_allowed_tenant_ids, oidc_authority = oidc_authority, oidc_client_id = oidc_client_id, secret_ref = secret_ref, allow_db_fallback = allow_db_fallback, mfa_required = mfa_required, updated_by = '{ACTOR}', updated_at = now(), row_version = row_version + 1 WHERE location_id = '{L_PCI}'", "super") == "ok");
+await Check("P2-1 admin_api: UPDATE on change table / audit_outbox denied (append-only, 42501)", async () =>
+    await Try(adminDs, "UPDATE auth.location_login_config_change SET at = now()", "super") == "42501"
+    && await Try(adminDs, "UPDATE auth.audit_outbox SET occurred_at = now()", "super") == "42501");
 await Check("RLS admin_api: DELETE denied on location/config/change (42501)", async () =>
     await Try(adminDs, "DELETE FROM auth.location", "super") == "42501" && await Try(adminDs, "DELETE FROM auth.location_login_config", "super") == "42501"
     && await Try(adminDs, "DELETE FROM auth.location_login_config_change", "super") == "42501");
@@ -469,20 +1016,28 @@ await Check("concurrency: raw §8.5 UPDATE ... WHERE row_version = stale -> 0 ro
 });
 
 // ================= 8. readers (as login) =================
-var cfgReader = new NpgsqlLocationLoginConfigReader(loginDs);
+// [TLD 2026-11-04 10:02 Q1] deployment config is the source of truth for oidc_* / secret_ref: these values differ from the row's
+// (row: Iss(T1) / FakeArn), so the checks below prove the reader returns config, never the per-row copy. Same check count (162).
+const string CfgArn = "arn:aws:secretsmanager:us-west-2:000000000000:secret:FAKE-test-only/deploy-cfg-AbCdEf"; // SSE2-FAKE-TEST-ONLY
+const string CfgClientId = "5f0c3e1a-00cc-4000-8000-0000000000cc"; // SSE2-FAKE-TEST-ONLY
+// [TLD 2026-11-04 10:58 F-A1, 10:59] the constructor is internal (no InternalsVisibleTo): built through the validated factory, allowlisted fakes.
+var entraCfg = Auth.Data.EntraDeployment.Create("https://login.microsoftonline.com", CfgClientId, CfgArn,
+    new HashSet<string> { "000000000000" }, new HashSet<string> { "us-west-2" }).Value ?? throw new InvalidOperationException("fixture EntraDeployment refused");
+var cfgReader = new NpgsqlLocationLoginConfigReader(loginDs, entraCfg);
 var extReader = new NpgsqlExternalLoginReader(loginDs);
 var ulReader = new NpgsqlUserLocationReader(loginDs);
-await Check("reader config: GetAsync(pci-main) -> entra row, tenant T1, row_version 1, SecretRef reveals fake ARN, ToString redacted", async () =>
+await Check("reader config: GetAsync(pci-main) -> entra row, tenant T1, row_version 1, oidc_* and SecretRef from deployment config not the row (TLD 10:02 Q1), ToString redacted", async () =>
 {
     var c = await cfgReader.GetAsync(L_PCI, default);
     return c is not null && c.ProviderKind == ProviderKind.Entra && c.PartnerId == P_PCI && c.Slug == "pci-main" && c.EntraAllowedTenantIds.SequenceEqual([T1])
-        && c.OidcAuthority == Iss(T1) && c.AllowDbFallback && c.MfaRequired && c.RowVersion == 1 && c.SecretRef?.Reveal() == FakeArn
+        && c.OidcAuthority == "https://login.microsoftonline.com" && c.OidcClientId == CfgClientId && c.AllowDbFallback && c.MfaRequired && c.RowVersion == 1
+        && c.SecretRef?.Reveal() == CfgArn && CfgArn != FakeArn
         && !c.ToString().Contains("000000000000") && !JsonSerializer.Serialize(c).Contains("000000000000");
 });
 await Check("reader config: GetAsync(nevada-main) -> database, SecretRef null, row_version 2 (after concurrency check)", async () =>
 {
     var c = await cfgReader.GetAsync(L_NV, default);
-    return c is { ProviderKind: ProviderKind.Database, SecretRef: null, OidcAuthority: null, RowVersion: 2 } && c.EntraAllowedTenantIds.Count == 0;
+    return c is { ProviderKind: ProviderKind.Database, SecretRef: null, OidcAuthority: null, OidcClientId: null, RowVersion: 2 } && c.EntraAllowedTenantIds.Count == 0;
 });
 await Check("reader config: unknown id -> null", async () => await cfgReader.GetAsync(Guid.NewGuid(), default) is null);
 await Check("reader config: GetBySlugAsync(\" PCI-Main \") normalises -> pci-main", async () => (await cfgReader.GetBySlugAsync(" PCI-Main ", default))?.LocationId == L_PCI);
@@ -515,39 +1070,48 @@ await Check("reader ext: issuer must match exactly (trailing slash / upper case 
 await Check("reader ext: right subject, other tenant -> null", async () => await extReader.FindUserAsync(ProviderKind.Entra, Iss(T2), T2, S1, default) is null);
 await Throws<ArgumentOutOfRangeException>("reader ext: providerKind Database -> ArgumentOutOfRangeException", () => extReader.FindUserAsync(ProviderKind.Database, Iss(T1), T1, S1, default));
 
-// N3: orphan link must throw. The FK forbids the state, so it is created inside a rolled-back OWNER transaction with the
-// FK dropped, and the reader's own SQL/mapping runs on that transaction via FindOnConnectionAsync (same code path).
-async Task<ExternalLoginMatch?> WithBrokenState(string breakSql, Guid subject)
+// N3/N1 [TLD 2026-11-04 11:21 Q2b]: states the constraints forbid (orphan link, unknown status) are COMMITTED only in this
+// run's marked scratch DB (FK/CHECK dropped there), and read back through the PUBLIC FindUserAsync on a scratch data
+// source: it must throw, never null/Active. AUTH_CHECKS_DB itself is never altered. Scratch-only fake ids below.
+Guid SU_DEL = Guid.Parse("5f0c3e1a-0003-4000-8000-0000000005d1"), SU_LCK = Guid.Parse("5f0c3e1a-0003-4000-8000-0000000005d2"),
+     SU_CAP = Guid.Parse("5f0c3e1a-0003-4000-8000-0000000005d3"), orphan = Guid.Parse("5f0c3e1a-0003-4000-8000-0000000000ff");
+Guid SS_DEL = Guid.Parse("5f0c3e1a-00fb-4000-8000-0000000005d1"), SS_LCK = Guid.Parse("5f0c3e1a-00fb-4000-8000-0000000005d2"),
+     SS_CAP = Guid.Parse("5f0c3e1a-00fb-4000-8000-0000000005d3");
+Task<NpgsqlDataSource>? scratchReady = null;
+async Task<NpgsqlDataSource> ScratchBroken()
 {
-    await using var c = await ownerDs.OpenConnectionAsync();
+    if (scratchAdminCs is null || scratchName is null) throw new InvalidOperationException($"no scratch DB ({scratchErr})");
+    await ScratchDb.PrepareAsync(scratchAdminCs, scratchName);
+    scratchDs = NpgsqlDataSource.Create(ScratchDb.OwnerCs(scratchAdminCs, scratchName));
+    await using var c = await scratchDs.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
-    try
-    {
-        await Exec(c, tx, breakSql);
-        return await NpgsqlExternalLoginReader.FindOnConnectionAsync(c, tx, ProviderKind.Entra, Iss(T1), T1, subject, default);
-    }
-    finally { await tx.RollbackAsync(); }
+    await Exec(c, tx, "INSERT INTO auth.app_user VALUES ($1,$4,'active',NULL),($2,$4,'active',NULL),($3,$4,'active',NULL)", SU_DEL, SU_LCK, SU_CAP, P_PCI);
+    await Exec(c, tx, "INSERT INTO auth.external_login (provider_kind, issuer, tenant_id, subject, user_id) VALUES ('entra',$1,$2,$3,$4),('entra',$1,$2,$5,$6),('entra',$1,$2,$7,$8)",
+        Iss(T1), T1, SS_DEL, SU_DEL, SS_LCK, SU_LCK, SS_CAP, SU_CAP);
+    await Exec(c, tx, "ALTER TABLE auth.external_login DROP CONSTRAINT external_login_user_fk");
+    await Exec(c, tx, "ALTER TABLE auth.app_user DROP CONSTRAINT app_user_status");
+    await Exec(c, tx, "INSERT INTO auth.external_login (provider_kind, issuer, tenant_id, subject, user_id) VALUES ('entra',$1,$2,$3,$4)", Iss(T1), T1, S9, orphan);
+    await Exec(c, tx, "DELETE FROM auth.app_user WHERE user_id = $1", SU_DEL);
+    await Exec(c, tx, "UPDATE auth.app_user SET status = 'locked' WHERE user_id = $1", SU_LCK);
+    await Exec(c, tx, "UPDATE auth.app_user SET status = 'Active' WHERE user_id = $1", SU_CAP);
+    await tx.CommitAsync();
+    return scratchDs;
 }
-var orphan = Guid.Parse("5f0c3e1a-0003-4000-8000-0000000000ff");
-await Throws<InvalidOperationException>("N3: external_login row without app_user row -> throws (never null); FK dropped in rolled-back owner tx",
-    () => WithBrokenState($"ALTER TABLE auth.external_login DROP CONSTRAINT external_login_user_fk; INSERT INTO auth.external_login (provider_kind, issuer, tenant_id, subject, user_id) VALUES ('entra', '{Iss(T1)}', '{T1}', '{S9}', '{orphan}')", S9),
-    e => e.Message.Contains("no auth.app_user row"));
-await Throws<InvalidOperationException>("N3: same via deleting the app_user row (FK dropped) -> throws",
-    () => WithBrokenState($"ALTER TABLE auth.external_login DROP CONSTRAINT external_login_user_fk; DELETE FROM auth.user_location WHERE user_id = '{U_C01}'; DELETE FROM auth.app_user WHERE user_id = '{U_C01}'", S1));
-await Throws<InvalidOperationException>("N1/7:53: unknown status 'locked' (CHECK dropped in rolled-back tx) -> throws, never Active",
-    () => WithBrokenState($"ALTER TABLE auth.app_user DROP CONSTRAINT app_user_status; UPDATE auth.app_user SET status = 'locked' WHERE user_id = '{U_C01}'", S1));
-await Throws<InvalidOperationException>("N1/7:53: status 'Active' (case) -> throws", () => WithBrokenState($"ALTER TABLE auth.app_user DROP CONSTRAINT app_user_status; UPDATE auth.app_user SET status = 'Active' WHERE user_id = '{U_C01}'", S1));
-await Check("N3: FK and CHECK still present after the rolled-back probes", async () =>
+async Task<ExternalLoginMatch?> ScratchFind(Guid subject) =>
+    await new NpgsqlExternalLoginReader(await (scratchReady ??= ScratchBroken())).FindUserAsync(ProviderKind.Entra, Iss(T1), T1, subject, default);
+await Throws<InvalidOperationException>("N3: external_login row without app_user row -> throws (never null); FK dropped in the scratch DB",
+    () => ScratchFind(S9), e => e.Message.Contains("no auth.app_user row"));
+await Throws<InvalidOperationException>("N3: same via deleting the app_user row (FK dropped, scratch DB) -> throws",
+    () => ScratchFind(SS_DEL), e => e.Message.Contains("no auth.app_user row"));
+// SSE2 review de9c1946 F2: the N1 checks need the reader's own message, so a missing scratch DB ("no scratch DB (...)") FAILS them.
+await Throws<InvalidOperationException>("N1/7:53: unknown status 'locked' (CHECK dropped in the scratch DB) -> throws, never Active",
+    () => ScratchFind(SS_LCK), e => e.Message.Contains("auth.app_user.status has an unknown value"));
+await Throws<InvalidOperationException>("N1/7:53: status 'Active' (case, scratch DB) -> throws", () => ScratchFind(SS_CAP),
+    e => e.Message.Contains("auth.app_user.status has an unknown value"));
+await Check("N3: FK and CHECK still present in AUTH_CHECKS_DB (drops committed only in the scratch DB)", async () =>
 {
     await using var c = await ownerDs.OpenConnectionAsync();
     return await Scalar<long>(c, null, "SELECT count(*) FROM pg_constraint WHERE conname IN ('external_login_user_fk','app_user_status')") == 2;
-});
-await Check("N3: on-connection path returns the same match as FindUserAsync for a valid row", async () =>
-{
-    await using var c = await ownerDs.OpenConnectionAsync();
-    var a = await NpgsqlExternalLoginReader.FindOnConnectionAsync(c, null, ProviderKind.Entra, Iss(T1), T1, S1, default);
-    var b = await extReader.FindUserAsync(ProviderKind.Entra, Iss(T1), T1, S1, default);
-    return a is not null && a == b;
 });
 
 await Check("reader user_location: c01@pci-main true; c01@nevada-main false; c03@pci-main false; unknown false", async () =>
@@ -558,10 +1122,10 @@ await Check("reader user_location: c01@pci-main true; c01@nevada-main false; c03
 var badCs = new NpgsqlConnectionStringBuilder(loginCs) { Password = "wrong-" + Guid.NewGuid().ToString("N"), Pooling = false }.ConnectionString;
 await using (var badDs = NpgsqlDataSource.Create(badCs))
 {
-    await Throws<PostgresException>("F8: config GetAsync with DB auth failure -> throws (28P01)", () => new NpgsqlLocationLoginConfigReader(badDs).GetAsync(L_PCI, default), e => e.SqlState == "28P01");
-    await Throws<PostgresException>("F8: config GetBySlugAsync with DB failure -> throws", () => new NpgsqlLocationLoginConfigReader(badDs).GetBySlugAsync("pci-main", default));
+    await Throws<PostgresException>("F8: config GetAsync with DB auth failure -> throws (28P01)", () => new NpgsqlLocationLoginConfigReader(badDs, entraCfg).GetAsync(L_PCI, default), e => e.SqlState == "28P01");
+    await Throws<PostgresException>("F8: config GetBySlugAsync with DB failure -> throws", () => new NpgsqlLocationLoginConfigReader(badDs, entraCfg).GetBySlugAsync("pci-main", default));
     await Check("F8: GetBySlugAsync(malformed) -> null without touching the DB (broken data source)", async () =>
-        await new NpgsqlLocationLoginConfigReader(badDs).GetBySlugAsync("pci_main!", default) is null);
+        await new NpgsqlLocationLoginConfigReader(badDs, entraCfg).GetBySlugAsync("pci_main!", default) is null);
     await Throws<PostgresException>("F8: FindUserAsync with DB failure -> throws", () => new NpgsqlExternalLoginReader(badDs).FindUserAsync(ProviderKind.Entra, Iss(T1), T1, S1, default));
     await Throws<PostgresException>("F8: IsAssignedAsync with DB failure -> throws (never false)", () => new NpgsqlUserLocationReader(badDs).IsAssignedAsync(U_C01, L_PCI, default));
 }
@@ -584,6 +1148,33 @@ await Check("F8: in-flight cancellation (pg_sleep) -> OperationCanceledException
     using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
     await using var cmd = new NpgsqlCommand("SELECT pg_sleep(5)", c);
     try { await cmd.ExecuteNonQueryAsync(cts.Token); return false; } catch (OperationCanceledException) { return true; }
+});
+
+}
+finally
+{
+    try { await CleanupCheckData(); }
+    finally
+    {
+        if (scratchDs is not null) await scratchDs.DisposeAsync();
+        if (scratchAdminCs is not null && scratchName is not null)
+            try { await ScratchDb.DropAsync(scratchAdminCs, scratchName); }
+            catch (Exception e) { scratchErr = $"drop: {e.GetType().Name}: {e.Message}"; }
+    }
+}
+await Check("Q2: this run's scratch DB dropped in the finally; no MARKED ff_scratch_* DB left [TLD 11:21]; cluster snapshot (roles, members, tablespaces, DBs) identical before CREATE and after DROP [TLD 11:57 o3]; ff_scratchadm as documented [TLD 12:33]", async () =>
+{
+    if (scratchAdminCs is null || scratchName is null || scratchSnap is null) return false;
+    var after = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs);
+    if (after != scratchSnap) Console.WriteLine($"Q2: cluster snapshot changed: {ScratchDb.Diff(scratchSnap, after)}");
+    var adminV = await ScratchDb.AdminRoleViolationsAsync(scratchAdminCs);
+    if (adminV.Count > 0) Console.WriteLine($"Q2: ff_scratchadm: {string.Join("; ", adminV)}");
+    return after == scratchSnap && adminV.Count == 0 && !(await ScratchDb.StateAsync(scratchAdminCs, scratchName)).exists && (await ScratchDb.ListAsync(scratchAdminCs, markedOnly: true)).Count == 0;
+});
+await Check("K3: cleanup -> DB back in the post-seed state (re-runnable)", async () =>
+{
+    await using var c = await ownerDs.OpenConnectionAsync();
+    return await Scalar<long>(c, null, StateSql) == 0;
 });
 
 Console.WriteLine($"\n{pass} passed, {fail} failed");
