@@ -303,6 +303,14 @@ Branch `fix/db-kit-kf` off 3e12b8d (kept apart from P3). No migration, spec or a
   - **Caveat:** the password equals the role name by design of this hook, so the cleartext-absence check is meaningless here. It's covered by the KF-A CREATE test instead.
 - **Results:** k1-kit-tests 197/0. See `/tmp/sse-kf/evidence-kf4.txt`.
 
+### I-6 follow-up (TL ruling, after SSE2 GO on b5fa2fa, review 781b53a8)
+
+- **Finding (SSE2 I-6, Info, pre-existing):** `Get-Help ./db/setup.ps1 -Full` printed only the syntax line, so the I-3 -Password warning was visible only in the source.
+- **Root cause (bisected in /tmp/i6):** the help block was not missing or misplaced. It already sat before `param()`. But `<#` was on the line directly after `#Requires -Version 7.0`. Removing the `#Requires` line or adding one blank line after it makes Get-Help render. Removing the comment line between `#>` and `param(` does not help.
+- **Deviation from the ruling's wording:** TL said to move the block before param(), and it already was. I kept `#Requires` and the block position and added one blank line instead. That is the minimal fix the bisection supports.
+- **Tests:** three new k1 checks (Get-Help shows SYNOPSIS, the WARNING (I-3) text, and EXAMPLE 1). There is no behaviour change to setup.ps1.
+- **Results:** k1-kit-tests 200/0, prefix ff_kit_ssei6b. See `/tmp/sse-kf/evidence-kf6.txt`.
+
 ## Decisions (this slice)
 
 - Project names: `Login.Abstractions` (mandated by F9). The data project will be `src/Auth.Data` (matches the `auth` schema; shared by the admin API and the login service, so not `Login.*`).
