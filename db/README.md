@@ -79,14 +79,25 @@ Options:
   - the owner role or an app role is a superuser (even if it carries the marker);
   - the owner role, an app role or the database already exists **without** the marker (someone else's object);
   - the `--role` role owns any database other than `--db`;
-  - `--db` exists but is owned by someone other than `--role`.
+  - `--db` exists but is owned by someone other than `--role`;
+  - the owner role or an app role has `BYPASSRLS`, `CREATEROLE`, `CREATEDB` or `REPLICATION` (the kit creates its roles with none of them, and they need none);
+  - the owner role or an app role is a member, directly or through other roles, of any role other than this run's own kit-marked roles (for example `pg_read_all_data`, `pg_write_server_files`, any `pg_*` role, a superuser or `BYPASSRLS` role, an unmarked role, or another kit install's role). The kit grants no role memberships, so any membership was added by someone else;
+  - the preflight's output does not end with its end marker (empty or cut-off output is a refusal, not a pass).
 
   `--force` / `-Force` never overrides these.
 - If the kit's own objects already exist, a run without `--force` stops with exit code 5 and changes nothing.
-- The kit never runs `ALTER ROLE` on a role it did not create and never changes a database's owner. `db/kit/role.sql` and `db/kit/database.sql` re-check the marker in the same statement they act in, so an object that changes between the preflight and the change is still refused.
+- The kit never runs `ALTER ROLE` on a role it did not create and never changes a database's owner. The changing SQL re-checks after the preflight:
+  - `db/kit/role.sql`: one `DO` block (one statement, one transaction) checks the role and then creates it and marks it, or alters it. It alters only a marked, non-superuser role with none of the attributes and memberships above. Otherwise it raises an error and changes nothing.
+  - `db/kit/database.sql`: PostgreSQL does not allow `CREATE DATABASE` or `DROP DATABASE` inside a transaction or a `DO` block, so they cannot share a statement with their check. Before `DROP`, a `DO` block checks the database (marked, owned by `--role`, which is not a superuser, and not a template), and the `DROP` itself is generated only for a database that still matches those conditions. After `CREATE`, one `DO` block re-checks the new database (owner `--role`, not a template, no comment yet) and then marks it and sets `CONNECT` in one transaction. If that re-check fails, the database is left unmarked, so every later run refuses it.
+  - What is left: between those separate statements, another superuser working at the same moment could swap in a different object with the same name. That needs superuser rights, which can already do anything to the server.
 - A password containing a newline or carriage return is refused (exit code 2) before anything runs.
 - Exit codes: 0 done; 2 bad arguments or password; 3 psql not found; 4 migrations or seed failed; 5 refused, or a kit guard stopped a change.
-- Tests: `db/tests/k1-kit-tests.sh` (engineers' box: needs `sudo -u postgres` and pwsh). It runs every refusal against both scripts, first with a stub psql that touches no database (including `postgres`, `template0/1`, `ff_sse`, `ff_sse2` with `--force --drop`), then live on scratch `ff_kit_k1*` objects that it creates and drops.
+- Tests: `db/tests/k1-kit-tests.sh` (engineers' box: needs `sudo -u postgres` and pwsh). It runs every refusal against both scripts, first with a stub psql that touches no database (including `postgres`, `template0/1`, `ff_sse`, `ff_sse2` with `--force --drop`), then live on scratch objects that it creates and drops. Every scratch name is built from one prefix (`KIT_TEST_PREFIX`, default `ff_kit_kf`), and cleanup removes everything with that prefix.
+
+**Known limits** (read before you rely on the kit)
+- `db/setup.ps1` has been tested only with pwsh 7.6.9 **on Linux**. It has never been run on Windows.
+- Package signature revocation (NuGet warning NU3018) could not be checked on the engineers' box, because it cannot reach the certificate revocation servers. Re-check it on a machine with normal network access before release, starting from an empty NuGet cache.
+- Scope of the KF1/KF2 fixes: they cover the three roles this run names (`--role`, `<db>_admin_api`, `<db>_login`) and the one `--db`. They check what those roles are members of, not which other roles were granted membership in them. They do not remove memberships or attributes, they refuse instead. They do not close the window between `CREATE`/`DROP DATABASE` and their checks (see above).
 
 **Windows**: `db/setup.ps1` (needs PowerShell 7, and psql on PATH, e.g. `C:\Program Files\PostgreSQL\17\bin`).
 ```

@@ -133,6 +133,33 @@ Lock files (locked mode): `Auth.Data` `6d686c7ecd199bae7b9a16a4c416315f`; `Auth.
 - **K1+K5 (next commit)**: every DB/role the kit creates carries `COMMENT ... IS 'floorfunds-kit'`. Read-only preflight `db/kit/preflight.sql`; hard refusals (exit 5, before any changing SQL; `--force` never overrides): `postgres` / template DBs, role `postgres` / `pg_*`, any superuser role, any existing unmarked role or DB, a `--role` owning another DB, an existing `--db` not owned by `--role`. Existing kit objects need `--force`; `--drop` needs `--force`. `ALTER DATABASE OWNER` removed; `ALTER ROLE` only on marked non-superusers, re-checked inside `db/kit/role.sql` / `db/kit/database.sql`. K5: newline/CR in a password → exit 2.
 - Tests `db/tests/k1-kit-tests.sh` (stub psql for the system DBs and `ff_sse`/`ff_sse2`, live scratch `ff_kit_k1*` objects otherwise, both scripts): 76 passed, 0 failed (`/tmp/sse-llc1/run/k1-tests.out`).
 
+## KF fixes (SSE2 GO review of 8d1497e/3e12b8d, `/tmp/sse2-fverify/F-STATUS-VERIFY.md` md5 1cb425b760c9eb7d27c32082d32cc36e, snapshot `/tmp/F-STATUS-VERIFY.1cb425b7.md`; TL Decision 8:50 AM PT) [TLD]
+
+Branch `fix/db-kit-kf` off 3e12b8d (kept apart from P3). No migration, spec or app code changed.
+
+- **What / why (KF1, Low):** `--force` kept privileged memberships on a marked kit role. `db/kit/preflight.sql` now REFUSEs (exit 5; `--force` never overrides) when a kit role (`--role`, `<db>_admin_api`, `<db>_login`) has `BYPASSRLS`, `CREATEROLE`, `CREATEDB` or `REPLICATION`, or when it is a member, directly or transitively, of any role that is not one of this run's kit-marked roles. That covers `pg_*`, superuser/BYPASSRLS/CREATEROLE/CREATEDB roles, unmarked roles, and another install's marked roles. The same rules are re-checked in `role.sql`.
+  - **Decision (attribute list):** SSE2 named BYPASSRLS; TL named BYPASSRLS, CREATEROLE and REPLICATION. I added CREATEDB because the kit creates its roles NOCREATEDB, and the migration's own guard (`db/migrations.sql` line 22) rejects CREATEDB app roles. SUPERUSER was already refused. LOGIN, INHERIT and CONNECTION LIMIT are left alone, since the kit sets LOGIN itself.
+  - **Decision (memberships):** I refuse instead of revoking, so the kit never silently undoes another admin's change (K1: never act on what the kit did not create). The kit grants no memberships and `db/migrations.sql` needs none. Membership in this run's own marked kit roles is allowed, because it gives no rights outside the kit.
+- **What / why (KF2, Low):** the check and the change were separate statements. Now:
+  - `role.sql` runs check+CREATE+COMMENT or check+ALTER as one `DO` block. Values arrive through transaction-local `set_config`, and `\gset` keeps them off stdout.
+  - `database.sql` does COMMENT/REVOKE/GRANT after its re-check in one `DO` block. A `DO` pre-check runs before DROP, and the DROP itself is still generated only under the same conditions. A superuser owner of the DB is now refused too.
+  - `CREATE DATABASE` and `DROP DATABASE` cannot run in a transaction or a function (PostgreSQL rule), so they cannot be made atomic with their check. That window (a concurrent superuser) is documented in db/README.md. The README sentence "re-check the marker in the same statement they act in" was inaccurate and has been rewritten to match the code.
+- **What / why (KF3, Info):** the preflight's last line is always `END floorfunds-kit-preflight`. setup.sh and setup.ps1 refuse with exit 5 when the output doesn't end with it, so empty or truncated output now fails closed.
+- **KF5 suggestion:** `db/tests/k1-kit-tests.sh` builds every scratch name from `P` (`KIT_TEST_PREFIX`, default `ff_kit_kf`, validated as `^ff_kit_[a-z0-9_]{1,20}$`). Cleanup uses `PL`, the LIKE-escaped form of `P`. A run with `KIT_TEST_PREFIX=ff_kit_kfm` cleaned up to 0.
+- **KF4 (Info), not fixed here:** NU3018 revocation is environmental. README "Known limits" now says to re-check it on a normally networked machine before release, and that setup.ps1 has never been run on Windows.
+- **Tests:** `db/tests/k1-kit-tests.sh` passes 134/0 (was 76). The new cases run on both scripts:
+  - KF3: empty and truncated preflight output, with --force.
+  - KF1 live: 10 membership cases and 4 attribute cases. The memberships are pg_read_all_data, pg_write_server_files, pg_monitor, a BYPASSRLS role, a CREATEROLE role, a CREATEDB role, a marked SUPERUSER role, an unmarked role, another install's marked role, and a transitive case via a kit role. The attributes are BYPASSRLS, CREATEROLE, REPLICATION and CREATEDB. Each is refused with rc 5 and nothing changes (the snapshot now covers memberships and attributes), and after each revert --force passes again.
+  - DO-block guards, run directly: a membership, BYPASSRLS, an unmarked DB, a marked DB with a superuser owner (drop=0/1), and atomic create+mark.
+  - The DB checks still pass 162/162 on fresh, --force --drop and ps1 scratch DBs.
+  - Mutation check: the new tests against the 3e12b8d kit give 79 passed and 51 failed, so they do detect the old behaviour.
+- **Other checks:** the spec checker gives v1.1-S2a 201/201 and v1-d4 ALL PASS. Login.Abstractions.Checks passes 52/52, and the Release build has 0 warnings and 0 errors (warm cache). `db/migrations.sql` (6d2904571ab1b40ecdddc652fb13fdca) and the spec (455a2f6bcb44a358d5a1cdf394591693) are unchanged.
+- **Open:**
+  - The CREATE/DROP DATABASE window can't be closed in Postgres.
+  - KF1 doesn't look at roles that were granted membership *in* a kit role. That was out of scope; ask TL if it's wanted.
+  - setup.ps1 has never run on Windows.
+  - NU3018 still needs re-checking on a normally networked machine.
+
 ## Decisions (this slice)
 
 - Project names: `Login.Abstractions` (mandated by F9). The data project will be `src/Auth.Data` (matches the `auth` schema; shared by the admin API and the login service, so not `Login.*`).

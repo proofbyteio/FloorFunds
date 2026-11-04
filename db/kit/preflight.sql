@@ -2,13 +2,26 @@
 -- psql variables: db, role, api_role, login_role. Output (psql -tA), one line per finding:
 --   REFUSE <reason>   hard refusal; --force never overrides it
 --   EXISTS <object>   a kit-marked object already exists; the kit proceeds only with --force
+--   END floorfunds-kit-preflight   always the LAST line (KF3). setup.sh/setup.ps1 fail closed (exit 5) without it,
+--                                  so empty or truncated output is never read as "no findings".
+-- KF1: a kit role (--role, <db>_admin_api, <db>_login) is refused when it has BYPASSRLS, CREATEROLE, CREATEDB or
+-- REPLICATION, or when it is a member (directly or through other roles) of any role outside this run's kit-marked
+-- roles: pg_* roles, superuser/privileged roles, unmarked roles. The kit grants no role memberships at all and its
+-- roles need none (db/migrations.sql grants only object privileges), so any membership was added by someone else.
 -- Kit objects carry COMMENT ... IS 'floorfunds-kit' (shared description). Unmarked = not created by the kit.
 BEGIN TRANSACTION READ ONLY;
-WITH want(name) AS (VALUES (:'role'), (:'api_role'), (:'login_role')),
+WITH RECURSIVE want(name) AS (VALUES (:'role'), (:'api_role'), (:'login_role')),
 ri AS (
   SELECT w.name, a.oid, coalesce(a.rolsuper, false) AS super,
+         concat_ws(', ', CASE WHEN a.rolbypassrls THEN 'BYPASSRLS' END, CASE WHEN a.rolcreaterole THEN 'CREATEROLE' END,
+                   CASE WHEN a.rolcreatedb THEN 'CREATEDB' END, CASE WHEN a.rolreplication THEN 'REPLICATION' END) AS attrs,
          (shobj_description(a.oid, 'pg_authid') IS NOT DISTINCT FROM 'floorfunds-kit') AS marked
   FROM want w LEFT JOIN pg_roles a ON a.rolname = w.name),
+kit AS (SELECT oid FROM ri WHERE oid IS NOT NULL AND marked),
+mem AS (  -- every role a kit role is a member of, transitively
+  SELECT ri.name, m.roleid FROM ri JOIN pg_auth_members m ON m.member = ri.oid
+  UNION
+  SELECT mem.name, m.roleid FROM mem JOIN pg_auth_members m ON m.member = mem.roleid),
 d AS (
   SELECT oid, datistemplate, pg_get_userbyid(datdba)::text AS owner,
          (shobj_description(oid, 'pg_database') IS NOT DISTINCT FROM 'floorfunds-kit') AS marked
@@ -27,8 +40,15 @@ SELECT line FROM (
   UNION ALL
   SELECT 6, 'REFUSE database ' || :'db' || ' is owned by ' || owner || ', not by --role ' || :'role' FROM d WHERE owner <> :'role'
   UNION ALL
+  SELECT 9, 'REFUSE role ' || name || ' has ' || attrs || ' (a kit role must have none of BYPASSRLS, CREATEROLE, CREATEDB, REPLICATION)' FROM ri WHERE attrs <> ''
+  UNION ALL
+  SELECT 10, 'REFUSE role ' || mem.name || ' is a member of role ' || g.rolname || ' (a kit role may belong to no role outside the kit)'
+    FROM mem JOIN pg_roles g ON g.oid = mem.roleid WHERE mem.roleid NOT IN (SELECT oid FROM kit)
+  UNION ALL
   SELECT 7, 'EXISTS role ' || name FROM ri WHERE oid IS NOT NULL
   UNION ALL
   SELECT 8, 'EXISTS database ' || :'db' FROM d
+  UNION ALL
+  SELECT 99, 'END floorfunds-kit-preflight'
 ) f ORDER BY k, line;
 ROLLBACK;

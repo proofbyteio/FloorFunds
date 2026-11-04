@@ -3,10 +3,16 @@
 #  A. stub runs: the superuser psql is db/tests/stub-psql.sh (logs every script, answers the preflight with canned
 #     findings), so the real postgres, template*, ff_sse and ff_sse2 are named but never touched. Asserts the exit
 #     code, the message, and that nothing but the read-only preflight was sent (or nothing at all).
-#  B. live runs on scratch ff_kit_k1* DBs/roles created here (unmarked ones by hand, for the purpose) and all
+#  B. live runs on scratch $P* (default ff_kit_kf*) DBs/roles created here (unmarked ones by hand, for the purpose) and all
 #     dropped at the end. Asserts refusals change nothing (oid, attributes, password hash, comment).
 # usage: db/tests/k1-kit-tests.sh   (needs sudo -u postgres, pwsh 7, and for the DB checks a built src/Auth.Data.Checks)
 set -uo pipefail
+# Every scratch DB/role name below is built from P, and cleanup matches PL (P with _ escaped for LIKE), so a renamed
+# copy only needs P changed and still cleans up everything it made (SSE2 KF5 suggestion).
+P="${KIT_TEST_PREFIX:-ff_kit_kf}"
+[[ "$P" =~ ^ff_kit_[a-z0-9_]{1,20}$ ]] || { echo "KIT_TEST_PREFIX must match ^ff_kit_[a-z0-9_]{1,20}\$" >&2; exit 2; }
+PL="${P//_/\\_}"
+NL=$'\n'
 DBDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$DBDIR/../src"
 T="$(mktemp -d /tmp/kit-k1.XXXXXX)"; chmod 0711 "$T"
@@ -48,38 +54,47 @@ stub_case() {
 }
 export FF_DB_PASSWORD="$(PW)" FF_ADMIN_API_PASSWORD="$(PW)" FF_LOGIN_PASSWORD="$(PW)"
 echo "=== A. stub runs (no database is touched) ==="
-stub_case "--db postgres --force" 5 0 "postgres is a system database" "" -- --db postgres --role ff_kit_k1z --force --no-migrate
+stub_case "--db postgres --force" 5 0 "postgres is a system database" "" -- --db postgres --role ${P}z --force --no-migrate
 stub_case "--db postgres --role postgres --force --drop" 5 0 "system database" "" -- --db postgres --role postgres --force --drop --no-migrate
-stub_case "--db template0 --force --drop" 5 0 "template0 is a system database" "" -- --db template0 --role ff_kit_k1z --force --drop --no-migrate
-stub_case "--db template1 --force" 5 0 "template1 is a system database" "" -- --db template1 --role ff_kit_k1z --force --no-migrate
-stub_case "--role postgres --force" 5 0 "role postgres is the bootstrap superuser" "" -- --db ff_kit_k1z --role postgres --force --no-migrate
-stub_case "--role pg_x (reserved prefix)" 5 0 "pg_ prefix is reserved" "" -- --db ff_kit_k1z --role pg_x --force --no-migrate
-stub_case "--drop without --force" 2 0 "drop needs .?-?-?[Ff]orce|Drop needs -Force" "" -- --db ff_kit_k1z --role ff_kit_k1z --drop --no-migrate
+stub_case "--db template0 --force --drop" 5 0 "template0 is a system database" "" -- --db template0 --role ${P}z --force --drop --no-migrate
+stub_case "--db template1 --force" 5 0 "template1 is a system database" "" -- --db template1 --role ${P}z --force --no-migrate
+stub_case "--role postgres --force" 5 0 "role postgres is the bootstrap superuser" "" -- --db ${P}z --role postgres --force --no-migrate
+stub_case "--role pg_x (reserved prefix)" 5 0 "pg_ prefix is reserved" "" -- --db ${P}z --role pg_x --force --no-migrate
+stub_case "--drop without --force" 2 0 "drop needs .?-?-?[Ff]orce|Drop needs -Force" "" -- --db ${P}z --role ${P}z --drop --no-migrate
 # What the real catalog would report for the engineers' DBs (they were made by ff-db.sh, not the kit: no marker).
 FF_SSE_PRE=$'REFUSE role ff_sse exists but was not created by the kit (no floorfunds-kit marker)\nREFUSE role ff_sse_admin_api exists but was not created by the kit (no floorfunds-kit marker)\nREFUSE role ff_sse_login exists but was not created by the kit (no floorfunds-kit marker)\nREFUSE database ff_sse exists but was not created by the kit (no floorfunds-kit marker)\nEXISTS role ff_sse\nEXISTS role ff_sse_admin_api\nEXISTS role ff_sse_login\nEXISTS database ff_sse\n'
 stub_case "--db ff_sse --role ff_sse --force (unmarked) still refused" 5 1 "Refused: database ff_sse exists but was not created by the kit" "$FF_SSE_PRE" -- --db ff_sse --role ff_sse --force --no-migrate
 stub_case "--db ff_sse --role ff_sse --force --drop (unmarked) still refused" 5 1 "never overrides" "$FF_SSE_PRE" -- --db ff_sse --role ff_sse --force --drop --no-migrate
 stub_case "--db ff_sse2 --role ff_sse2 --force --drop (unmarked) still refused" 5 1 "Refused: role ff_sse2 exists but was not created" "${FF_SSE_PRE//ff_sse/ff_sse2}" -- --db ff_sse2 --role ff_sse2 --force --drop --no-migrate
-stub_case "superuser role, even if marked, --force" 5 1 "Refused: role ff_kit_k1z is a superuser" $'REFUSE role ff_kit_k1z is a superuser\nEXISTS role ff_kit_k1z\n' -- --db ff_kit_k1z --role ff_kit_k1z --force --no-migrate
-stub_case "existing kit objects without --force" 5 1 "re-run with .?-?-?[Ff]orce" $'EXISTS role ff_kit_k1z\nEXISTS database ff_kit_k1z\n' -- --db ff_kit_k1z --role ff_kit_k1z --no-migrate
+stub_case "superuser role, even if marked, --force" 5 1 "Refused: role ${P}z is a superuser" "REFUSE role ${P}z is a superuser${NL}EXISTS role ${P}z${NL}" -- --db ${P}z --role ${P}z --force --no-migrate
+stub_case "existing kit objects without --force" 5 1 "re-run with .?-?-?[Ff]orce" "EXISTS role ${P}z${NL}EXISTS database ${P}z${NL}" -- --db ${P}z --role ${P}z --no-migrate
 # --force on the kit's own objects proceeds: 1 preflight + 3 roles + 1 DB, every mutating script is the guarded kit SQL.
-stub_case "existing kit objects with --force proceeds (5 calls)" 0 5 "Done" $'EXISTS role ff_kit_k1z\nEXISTS database ff_kit_k1z\n' -- --db ff_kit_k1z --role ff_kit_k1z --force --no-migrate
-ok "stub: the --force run sent only guarded kit SQL (role.sql x3 marker guard, database.sql guard)" \
-  "$([[ $(grep -c 'refusing to alter a role the kit did not create' "$KIT_STUB_LOG") == 3 && $(grep -c 'refusing to touch a database the kit did not create' "$KIT_STUB_LOG") == 1 ]] && echo 1 || echo 0)"
+stub_case "existing kit objects with --force proceeds (5 calls)" 0 5 "Done" "EXISTS role ${P}z${NL}EXISTS database ${P}z${NL}" -- --db ${P}z --role ${P}z --force --no-migrate
+ok "stub: the --force run sent only guarded kit SQL (role.sql x3 marker guard, database.sql drop + create guards)" \
+  "$([[ $(grep -c 'refusing to alter a role the kit did not create' "$KIT_STUB_LOG") == 3 && $(grep -c 'refusing to touch a database the kit did not create' "$KIT_STUB_LOG") == 2 ]] && echo 1 || echo 0)"
+# KF3: no end marker = fail closed, even with --force and nothing else in the output.
+export KIT_STUB_NO_END=1
+stub_case "KF3 empty preflight output (no end marker) with --force -> refused" 5 1 "preflight returned no end marker" "" -- --db ${P}z --role ${P}z --force --no-migrate
+stub_case "KF3 truncated preflight output (EXISTS lines, no end marker) with --force -> refused" 5 1 "preflight returned no end marker" "EXISTS role ${P}z${NL}EXISTS database ${P}z${NL}" -- --db ${P}z --role ${P}z --force --no-migrate
+unset KIT_STUB_NO_END
+stub_case "KF1 preflight membership finding with --force -> refused" 5 1 "Refused: role ${P}z is a member of role pg_read_all_data" "REFUSE role ${P}z is a member of role pg_read_all_data (a kit role may belong to no role outside the kit)${NL}EXISTS role ${P}z${NL}" -- --db ${P}z --role ${P}z --force --no-migrate
 OLDPW="$FF_DB_PASSWORD"
 for bad in $'nl\nbreak' $'cr\rbreak'; do
-  FF_DB_PASSWORD="$bad" stub_case "K5 owner password with ${bad:0:2} refused" 2 0 "contains a newline or carriage return" "" -- --db ff_kit_k1z --role ff_kit_k1z --no-migrate
-  FF_LOGIN_PASSWORD="$bad" stub_case "K5 login password with ${bad:0:2} refused" 2 0 "contains a newline or carriage return" "" -- --db ff_kit_k1z --role ff_kit_k1z --no-migrate
+  FF_DB_PASSWORD="$bad" stub_case "K5 owner password with ${bad:0:2} refused" 2 0 "contains a newline or carriage return" "" -- --db ${P}z --role ${P}z --no-migrate
+  FF_LOGIN_PASSWORD="$bad" stub_case "K5 login password with ${bad:0:2} refused" 2 0 "contains a newline or carriage return" "" -- --db ${P}z --role ${P}z --no-migrate
 done
 
-# ---------- B. live runs on scratch ff_kit_k1* objects ----------
-echo; echo "=== B. live runs (scratch ff_kit_k1* only) ==="
+# ---------- B. live runs on scratch ${P}* objects ----------
+echo; echo "=== B. live runs (scratch ${P}* only) ==="
 snap() { # fingerprint of everything a refusal must leave alone
   q "SELECT md5(coalesce(string_agg(x, '|' ORDER BY x), '')) FROM (
        SELECT 'r:'||a.rolname||':'||a.oid||':'||a.rolsuper||a.rolcanlogin||a.rolcreatedb||a.rolbypassrls||':'||md5(coalesce(a.rolpassword,''))||':'||coalesce(shobj_description(a.oid,'pg_authid'),'-') x
-         FROM pg_authid a WHERE a.rolname LIKE 'ff\_kit\_k1%'
+         FROM pg_authid a WHERE a.rolname LIKE '$PL%'
        UNION ALL SELECT 'd:'||datname||':'||oid||':'||pg_get_userbyid(datdba)||':'||coalesce(datacl::text,'')||':'||coalesce(shobj_description(oid,'pg_database'),'-')
-         FROM pg_database WHERE datname LIKE 'ff\_kit\_k1%') s"; }
+         FROM pg_database WHERE datname LIKE '$PL%'
+       UNION ALL SELECT 'm:'||m.member::regrole::text||'>'||m.roleid::regrole::text FROM pg_auth_members m
+         JOIN pg_roles a ON a.oid = m.member WHERE a.rolname LIKE '$PL%'
+       UNION ALL SELECT 'a:'||rolname||':'||rolcreaterole||rolreplication FROM pg_roles WHERE rolname LIKE '$PL%') s"; }
 marked() { q "SELECT count(*) FROM (SELECT oid FROM pg_roles WHERE rolname = ANY(string_to_array('$1', ',')) AND shobj_description(oid,'pg_authid')='floorfunds-kit'
                 UNION ALL SELECT oid FROM pg_database WHERE datname='$2' AND shobj_description(oid,'pg_database')='floorfunds-kit') s"; }
 dboid() { q "SELECT coalesce((SELECT oid::text FROM pg_database WHERE datname='$1'), 'none')"; }
@@ -93,45 +108,45 @@ checks() { # checks DB OWNER -> last line of the DB checks (passwords from the c
       LOGIN_CONNECTION_STRING="Host=127.0.0.1;Port=5432;Database=$1;Username=$1_login;Password=$FF_LOGIN_PASSWORD" \
       AUTH_CHECKS_DB="$1" && dotnet run --no-build --project Auth.Data.Checks -- Login.StandIn/fixtures.json 2>&1 | tail -1 ); }
 cleanup() {
-  for d in $(q "SELECT datname FROM pg_database WHERE datname LIKE 'ff\_kit\_k1%'"); do q "DROP DATABASE \"$d\" WITH (FORCE)" >/dev/null; done
-  for r in $(q "SELECT rolname FROM pg_roles WHERE rolname LIKE 'ff\_kit\_k1%'"); do q "DROP ROLE \"$r\"" >/dev/null; done
+  for d in $(q "SELECT datname FROM pg_database WHERE datname LIKE '$PL%'"); do q "DROP DATABASE \"$d\" WITH (FORCE)" >/dev/null; done
+  for r in $(q "SELECT rolname FROM pg_roles WHERE rolname LIKE '$PL%'"); do q "DROP ROLE \"$r\"" >/dev/null; done
 }
 cleanup
 export FF_DB_PASSWORD="$(PW)" FF_ADMIN_API_PASSWORD="$(PW)" FF_LOGIN_PASSWORD="$(PW)"
 
 # B1 setup.sh fresh, --role != --db (K2)
-rc=$(SH --db ff_kit_k1a --role ff_kit_k1a_owner --seed)
-ok "[sh] fresh ff_kit_k1a (--role ff_kit_k1a_owner) -> rc 0; DB + 3 roles carry the kit marker" "$([[ $rc == 0 && $(marked ff_kit_k1a_owner,ff_kit_k1a_admin_api,ff_kit_k1a_login ff_kit_k1a) == 4 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
-r=$(checks ff_kit_k1a ff_kit_k1a_owner); ok "[sh] DB checks on ff_kit_k1a with --role != --db (K2) -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
-s0=$(snap); rc=$(SH --db ff_kit_k1a --role ff_kit_k1a_owner --seed)
+rc=$(SH --db ${P}a --role ${P}a_owner --seed)
+ok "[sh] fresh ${P}a (--role ${P}a_owner) -> rc 0; DB + 3 roles carry the kit marker" "$([[ $rc == 0 && $(marked ${P}a_owner,${P}a_admin_api,${P}a_login ${P}a) == 4 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
+r=$(checks ${P}a ${P}a_owner); ok "[sh] DB checks on ${P}a with --role != --db (K2) -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
+s0=$(snap); rc=$(SH --db ${P}a --role ${P}a_owner --seed)
 ok "[sh] re-run without --force -> rc 5, nothing changed" "$([[ $rc == 5 && $(snap) == "$s0" ]] && grep -q 're-run with --force' "$T/out" && echo 1 || echo 0)" "rc=$rc"
-rc=$(SH --db ff_kit_k1a --role ff_kit_k1a_owner --drop)
+rc=$(SH --db ${P}a --role ${P}a_owner --drop)
 ok "[sh] --drop without --force -> rc 2, nothing changed" "$([[ $rc == 2 && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
-oid0=$(dboid ff_kit_k1a); h0=$(pwhash ff_kit_k1a_owner)
-TRICKY="k1'q\\b-$(PW)"; rc=$(FF_DB_PASSWORD="$TRICKY" SH --db ff_kit_k1a --role ff_kit_k1a_owner --force)
+oid0=$(dboid ${P}a); h0=$(pwhash ${P}a_owner)
+TRICKY="k1'q\\b-$(PW)"; rc=$(FF_DB_PASSWORD="$TRICKY" SH --db ${P}a --role ${P}a_owner --force)
 ok "[sh] --force on the kit's own objects -> rc 0, same DB oid, owner password re-set (quote+backslash password logs in)" \
-  "$([[ $rc == 0 && $(dboid ff_kit_k1a) == "$oid0" && $(pwhash ff_kit_k1a_owner) != "$h0" ]] && PGPASSWORD="$TRICKY" psql -X -tA -h 127.0.0.1 -U ff_kit_k1a_owner -d ff_kit_k1a -c 'select 1' >/dev/null 2>&1 && echo 1 || echo 0)" "rc=$rc"
-rc=$(SH --db ff_kit_k1a --role ff_kit_k1a_owner --force --drop --seed)
-ok "[sh] --force --drop -> rc 0, DB recreated (new oid), still marked" "$([[ $rc == 0 && $(dboid ff_kit_k1a) != "$oid0" && $(marked x ff_kit_k1a) == 1 ]] && echo 1 || echo 0)" "rc=$rc"
-r=$(checks ff_kit_k1a ff_kit_k1a_owner); ok "[sh] DB checks after --force --drop -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
+  "$([[ $rc == 0 && $(dboid ${P}a) == "$oid0" && $(pwhash ${P}a_owner) != "$h0" ]] && PGPASSWORD="$TRICKY" psql -X -tA -h 127.0.0.1 -U ${P}a_owner -d ${P}a -c 'select 1' >/dev/null 2>&1 && echo 1 || echo 0)" "rc=$rc"
+rc=$(SH --db ${P}a --role ${P}a_owner --force --drop --seed)
+ok "[sh] --force --drop -> rc 0, DB recreated (new oid), still marked" "$([[ $rc == 0 && $(dboid ${P}a) != "$oid0" && $(marked x ${P}a) == 1 ]] && echo 1 || echo 0)" "rc=$rc"
+r=$(checks ${P}a ${P}a_owner); ok "[sh] DB checks after --force --drop -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
 
 # B2 setup.ps1 fresh, --role == --db
-rc=$(PS -Db ff_kit_k1b -Role ff_kit_k1b -Seed)
-ok "[ps1] fresh ff_kit_k1b -> rc 0; DB + 3 roles carry the kit marker" "$([[ $rc == 0 && $(marked ff_kit_k1b,ff_kit_k1b_admin_api,ff_kit_k1b_login ff_kit_k1b) == 4 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
-r=$(checks ff_kit_k1b ff_kit_k1b); ok "[ps1] DB checks on ff_kit_k1b -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
-s0=$(snap); rc=$(PS -Db ff_kit_k1b -Role ff_kit_k1b)
+rc=$(PS -Db ${P}b -Role ${P}b -Seed)
+ok "[ps1] fresh ${P}b -> rc 0; DB + 3 roles carry the kit marker" "$([[ $rc == 0 && $(marked ${P}b,${P}b_admin_api,${P}b_login ${P}b) == 4 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
+r=$(checks ${P}b ${P}b); ok "[ps1] DB checks on ${P}b -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
+s0=$(snap); rc=$(PS -Db ${P}b -Role ${P}b)
 ok "[ps1] re-run without -Force -> rc 5, nothing changed" "$([[ $rc == 5 && $(snap) == "$s0" ]] && grep -q 're-run with -Force' "$T/out" && echo 1 || echo 0)" "rc=$rc"
-rc=$(PS -Db ff_kit_k1b -Role ff_kit_k1b -Drop)
+rc=$(PS -Db ${P}b -Role ${P}b -Drop)
 ok "[ps1] -Drop without -Force -> rc 2, nothing changed" "$([[ $rc == 2 && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
-oid0=$(dboid ff_kit_k1b); rc=$(PS -Db ff_kit_k1b -Role ff_kit_k1b -Force -Drop -Seed)
-ok "[ps1] -Force -Drop -> rc 0, DB recreated (new oid), still marked" "$([[ $rc == 0 && $(dboid ff_kit_k1b) != "$oid0" && $(marked x ff_kit_k1b) == 1 ]] && echo 1 || echo 0)" "rc=$rc"
-r=$(checks ff_kit_k1b ff_kit_k1b); ok "[ps1] DB checks after -Force -Drop -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
+oid0=$(dboid ${P}b); rc=$(PS -Db ${P}b -Role ${P}b -Force -Drop -Seed)
+ok "[ps1] -Force -Drop -> rc 0, DB recreated (new oid), still marked" "$([[ $rc == 0 && $(dboid ${P}b) != "$oid0" && $(marked x ${P}b) == 1 ]] && echo 1 || echo 0)" "rc=$rc"
+r=$(checks ${P}b ${P}b); ok "[ps1] DB checks after -Force -Drop -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
 
 # B3 hand-made UNMARKED scratch objects (stand-ins for "someone else's DB/role") + a marked superuser
-q "CREATE ROLE ff_kit_k1u NOLOGIN" >/dev/null; q "CREATE DATABASE ff_kit_k1u OWNER ff_kit_k1u" >/dev/null
-q "CREATE ROLE ff_kit_k1r NOLOGIN" >/dev/null
-q "CREATE ROLE ff_kit_k1d_login NOLOGIN" >/dev/null
-q "CREATE ROLE ff_kit_k1s NOLOGIN SUPERUSER" >/dev/null; q "COMMENT ON ROLE ff_kit_k1s IS 'floorfunds-kit'" >/dev/null
+q "CREATE ROLE ${P}u NOLOGIN" >/dev/null; q "CREATE DATABASE ${P}u OWNER ${P}u" >/dev/null
+q "CREATE ROLE ${P}r NOLOGIN" >/dev/null
+q "CREATE ROLE ${P}d_login NOLOGIN" >/dev/null
+q "CREATE ROLE ${P}s NOLOGIN SUPERUSER" >/dev/null; q "COMMENT ON ROLE ${P}s IS 'floorfunds-kit'" >/dev/null
 live_refuse() { # NAME MSG -- sh-args
   local name="$1" msg="$2"; shift 3
   for which in sh ps1; do
@@ -140,28 +155,87 @@ live_refuse() { # NAME MSG -- sh-args
     ok "[$which] $name -> rc 5, /$msg/, nothing changed" "$([[ $rc == 5 && $(snap) == "$s0" ]] && grep -Eq -- "$msg" "$T/out" && echo 1 || echo 0)" "rc=$rc out=$(tr '\n' ' ' <"$T/out" | cut -c1-300)"
   done
 }
-live_refuse "unmarked DB+role ff_kit_k1u with --force --drop" "database ff_kit_k1u exists but was not created by the kit" -- --db ff_kit_k1u --role ff_kit_k1u --force --drop --no-migrate
-live_refuse "unmarked --role ff_kit_k1r with --force (new DB not created)" "role ff_kit_k1r exists but was not created by the kit" -- --db ff_kit_k1n --role ff_kit_k1r --force --no-migrate
-live_refuse "unmarked app role ff_kit_k1d_login with --force" "role ff_kit_k1d_login exists but was not created by the kit" -- --db ff_kit_k1d --role ff_kit_k1d_o --force --no-migrate
-live_refuse "marked SUPERUSER ff_kit_k1s with --force" "role ff_kit_k1s is a superuser" -- --db ff_kit_k1m --role ff_kit_k1s --force --no-migrate
-live_refuse "kit role ff_kit_k1a_owner owning another DB with --force" "role ff_kit_k1a_owner owns database ff_kit_k1a" -- --db ff_kit_k1c --role ff_kit_k1a_owner --force --no-migrate
-live_refuse "kit DB ff_kit_k1a owned by another kit role with --force --drop" "database ff_kit_k1a is owned by ff_kit_k1a_owner, not by --role ff_kit_k1b" -- --db ff_kit_k1a --role ff_kit_k1b --force --drop --no-migrate
-ok "live: no DB ff_kit_k1n/k1d/k1m/k1c and no role ff_kit_k1d_o were created by the refused runs" \
-  "$([[ $(q "SELECT count(*) FROM pg_database WHERE datname IN ('ff_kit_k1n','ff_kit_k1d','ff_kit_k1m','ff_kit_k1c')") == 0 && $(q "SELECT count(*) FROM pg_roles WHERE rolname='ff_kit_k1d_o'") == 0 ]] && echo 1 || echo 0)"
-ok "live: ff_kit_k1s is still SUPERUSER NOLOGIN; ff_kit_k1u/k1r/k1d_login still NOLOGIN and unmarked" \
-  "$([[ $(q "SELECT count(*) FROM pg_roles WHERE (rolname='ff_kit_k1s' AND rolsuper AND NOT rolcanlogin) OR (rolname IN ('ff_kit_k1u','ff_kit_k1r','ff_kit_k1d_login') AND NOT rolcanlogin AND shobj_description(oid,'pg_authid') IS NULL)") == 4 ]] && echo 1 || echo 0)"
+live_refuse "unmarked DB+role ${P}u with --force --drop" "database ${P}u exists but was not created by the kit" -- --db ${P}u --role ${P}u --force --drop --no-migrate
+live_refuse "unmarked --role ${P}r with --force (new DB not created)" "role ${P}r exists but was not created by the kit" -- --db ${P}n --role ${P}r --force --no-migrate
+live_refuse "unmarked app role ${P}d_login with --force" "role ${P}d_login exists but was not created by the kit" -- --db ${P}d --role ${P}d_o --force --no-migrate
+live_refuse "marked SUPERUSER ${P}s with --force" "role ${P}s is a superuser" -- --db ${P}m --role ${P}s --force --no-migrate
+live_refuse "kit role ${P}a_owner owning another DB with --force" "role ${P}a_owner owns database ${P}a" -- --db ${P}c --role ${P}a_owner --force --no-migrate
+live_refuse "kit DB ${P}a owned by another kit role with --force --drop" "database ${P}a is owned by ${P}a_owner, not by --role ${P}b" -- --db ${P}a --role ${P}b --force --drop --no-migrate
+ok "live: no DB ${P}n/k1d/k1m/k1c and no role ${P}d_o were created by the refused runs" \
+  "$([[ $(q "SELECT count(*) FROM pg_database WHERE datname IN ('${P}n','${P}d','${P}m','${P}c')") == 0 && $(q "SELECT count(*) FROM pg_roles WHERE rolname='${P}d_o'") == 0 ]] && echo 1 || echo 0)"
+ok "live: ${P}s is still SUPERUSER NOLOGIN; ${P}u/${P}r/${P}d_login still NOLOGIN and unmarked" \
+  "$([[ $(q "SELECT count(*) FROM pg_roles WHERE (rolname='${P}s' AND rolsuper AND NOT rolcanlogin) OR (rolname IN ('${P}u','${P}r','${P}d_login') AND NOT rolcanlogin AND shobj_description(oid,'pg_authid') IS NULL)") == 4 ]] && echo 1 || echo 0)"
+
+# B5 KF1: privileged memberships / attributes on the kit's own (marked) roles; --force never overrides.
+q "CREATE ROLE ${P}byp NOLOGIN BYPASSRLS" >/dev/null; q "CREATE ROLE ${P}cr NOLOGIN CREATEROLE" >/dev/null
+q "CREATE ROLE ${P}cdb NOLOGIN CREATEDB" >/dev/null; q "CREATE ROLE ${P}plain NOLOGIN" >/dev/null
+q "CREATE ROLE ${P}msu NOLOGIN SUPERUSER" >/dev/null; q "COMMENT ON ROLE ${P}msu IS 'floorfunds-kit'" >/dev/null
+q "CREATE ROLE ${P}mk NOLOGIN" >/dev/null; q "COMMENT ON ROLE ${P}mk IS 'floorfunds-kit'" >/dev/null   # marked, but not this run's
+A="--db ${P}a --role ${P}a_owner --force --no-migrate"
+kf1_member() { # GRANTED MEMBER MSG
+  q "GRANT \"$1\" TO \"$2\"" >/dev/null
+  # shellcheck disable=SC2086
+  live_refuse "KF1 $2 member of $1 with --force" "$3" -- $A
+  ok "KF1 membership $2 -> $1 still present after the refused runs (refusal changed nothing)" "$([[ $(q "SELECT count(*) FROM pg_auth_members WHERE member='$2'::regrole AND roleid='$1'::regrole") == 1 ]] && echo 1 || echo 0)"
+  q "REVOKE \"$1\" FROM \"$2\"" >/dev/null
+}
+kf1_member pg_read_all_data ${P}a_owner "role ${P}a_owner is a member of role pg_read_all_data"
+kf1_member pg_write_server_files ${P}a_admin_api "role ${P}a_admin_api is a member of role pg_write_server_files"
+kf1_member pg_monitor ${P}a_login "role ${P}a_login is a member of role pg_monitor"
+kf1_member ${P}byp ${P}a_login "role ${P}a_login is a member of role ${P}byp"
+kf1_member ${P}cr ${P}a_owner "role ${P}a_owner is a member of role ${P}cr"
+kf1_member ${P}cdb ${P}a_owner "role ${P}a_owner is a member of role ${P}cdb"
+kf1_member ${P}msu ${P}a_owner "role ${P}a_owner is a member of role ${P}msu"
+kf1_member ${P}plain ${P}a_admin_api "role ${P}a_admin_api is a member of role ${P}plain"
+kf1_member ${P}mk ${P}a_owner "role ${P}a_owner is a member of role ${P}mk"
+# transitive: owner -> (this run's kit role) admin_api -> pg_read_all_data
+q "GRANT ${P}a_admin_api TO ${P}a_owner" >/dev/null
+kf1_member pg_read_all_data ${P}a_admin_api "role ${P}a_owner is a member of role pg_read_all_data"
+q "REVOKE ${P}a_admin_api FROM ${P}a_owner" >/dev/null
+kf1_attr() { # ATTR ROLE
+  q "ALTER ROLE \"$2\" $1" >/dev/null
+  # shellcheck disable=SC2086
+  live_refuse "KF1 kit role $2 with $1 and --force" "role $2 has $1" -- $A
+  q "ALTER ROLE \"$2\" NO$1" >/dev/null
+}
+kf1_attr BYPASSRLS ${P}a_owner; kf1_attr CREATEROLE ${P}a_admin_api; kf1_attr REPLICATION ${P}a_login; kf1_attr CREATEDB ${P}a_owner
+oid0=$(dboid ${P}a); rc=$(SH $A)
+ok "[sh] KF1 after every grant/attribute was reverted: --force on ${P}a -> rc 0, same DB oid" "$([[ $rc == 0 && $(dboid ${P}a) == "$oid0" ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
+mapfile -t pa < <(ps1args $A); rc=$(PS "${pa[@]}")
+ok "[ps1] KF1 after every grant/attribute was reverted: -Force on ${P}a -> rc 0, same DB oid" "$([[ $rc == 0 && $(dboid ${P}a) == "$oid0" ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
 
 # B4 defence in depth: the mutating kit SQL itself refuses unmarked objects (if the preflight were bypassed / raced)
 s0=$(snap)
-out=$( { printf "\\\\set r 'ff_kit_k1u'\n\\\\set p 'x'\n"; cat "$DBDIR/kit/role.sql"; } | sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -f - 2>&1); rc=$?
-ok "kit/role.sql directly on unmarked ff_kit_k1u -> error, role unchanged" "$([[ $rc != 0 && $out == *'refusing to alter a role the kit did not create'* && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
-out=$( { printf "\\\\set r 'ff_kit_k1s'\n\\\\set p 'x'\n"; cat "$DBDIR/kit/role.sql"; } | sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -f - 2>&1); rc=$?
-ok "kit/role.sql directly on marked superuser ff_kit_k1s -> error, still superuser" "$([[ $rc != 0 && $out == *'refusing to alter'* && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
-out=$(sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=ff_kit_k1u -v role=ff_kit_k1u -v drop=1 -f - <"$DBDIR/kit/database.sql" 2>&1); rc=$?
-ok "kit/database.sql drop=1 directly on unmarked ff_kit_k1u -> error, DB not dropped/regranted" "$([[ $rc != 0 && $out == *'refusing to touch a database the kit did not create'* && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
+out=$( { printf "\\\\set r '${P}u'\n\\\\set p 'x'\n"; cat "$DBDIR/kit/role.sql"; } | sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}a -v role=${P}a_owner -f - 2>&1); rc=$?
+ok "kit/role.sql directly on unmarked ${P}u -> error, role unchanged" "$([[ $rc != 0 && $out == *'refusing to alter a role the kit did not create'* && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
+out=$( { printf "\\\\set r '${P}s'\n\\\\set p 'x'\n"; cat "$DBDIR/kit/role.sql"; } | sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}a -v role=${P}a_owner -f - 2>&1); rc=$?
+ok "kit/role.sql directly on marked superuser ${P}s -> error, still superuser" "$([[ $rc != 0 && $out == *'refusing to alter'* && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
+out=$(sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}u -v role=${P}u -v drop=1 -f - <"$DBDIR/kit/database.sql" 2>&1); rc=$?
+ok "kit/database.sql drop=1 directly on unmarked ${P}u -> error, DB not dropped/regranted" "$([[ $rc != 0 && $out == *'refusing to touch a database the kit did not create'* && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
+
+# KF2: the DO-block guards themselves (preflight bypassed), on the kit's own marked roles.
+roledirect() { { printf "\\\\set r '%s'\n\\\\set p 'x'\n" "$1"; cat "$DBDIR/kit/role.sql"; } | sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}a -v role=${P}a_owner -f - 2>&1; }
+q "GRANT pg_read_all_data TO ${P}a_login" >/dev/null; s0=$(snap); h0=$(pwhash ${P}a_login)
+out=$(roledirect ${P}a_login); rc=$?
+ok "kit/role.sql DO block directly on marked ${P}a_login with pg_read_all_data -> error, password and membership unchanged" "$([[ $rc != 0 && $out == *'member of role(s) outside the kit: pg_read_all_data'* && $(snap) == "$s0" && $(pwhash ${P}a_login) == "$h0" ]] && echo 1 || echo 0)" "rc=$rc"
+q "REVOKE pg_read_all_data FROM ${P}a_login" >/dev/null
+q "ALTER ROLE ${P}a_login BYPASSRLS" >/dev/null; s0=$(snap)
+out=$(roledirect ${P}a_login); rc=$?
+ok "kit/role.sql DO block directly on marked ${P}a_login with BYPASSRLS -> error, BYPASSRLS not silently stripped" "$([[ $rc != 0 && $out == *'BYPASSRLS, CREATEROLE, CREATEDB or REPLICATION'* && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
+q "ALTER ROLE ${P}a_login NOBYPASSRLS" >/dev/null
+s0=$(snap); out=$(roledirect ${P}k2new); rc=$?
+ok "kit/role.sql DO block creates a new role and its marker together" "$([[ $rc == 0 && $(marked ${P}k2new x) == 1 ]] && echo 1 || echo 0)" "rc=$rc"
+q "CREATE DATABASE ${P}sdb OWNER ${P}s" >/dev/null; q "COMMENT ON DATABASE ${P}sdb IS 'floorfunds-kit'" >/dev/null
+s0=$(snap)
+for d in 0 1; do
+  out=$(sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}sdb -v role=${P}s -v drop=$d -f - <"$DBDIR/kit/database.sql" 2>&1); rc=$?
+  ok "kit/database.sql DO block (drop=$d) directly on a MARKED DB owned by marked SUPERUSER ${P}s -> error, not dropped/regranted" "$([[ $rc != 0 && $out == *'wrong or superuser owner'* && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
+done
+out=$(sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -d postgres -v db=${P}u -v role=${P}u -v drop=0 -f - <"$DBDIR/kit/database.sql" 2>&1); rc=$?
+ok "kit/database.sql DO block (drop=0) directly on unmarked ${P}u -> error, not marked or regranted" "$([[ $rc != 0 && $out == *'refusing to touch a database the kit did not create'* && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
 
 cleanup
-ok "cleanup: no ff_kit_k1* DB or role left" "$([[ $(q "SELECT (SELECT count(*) FROM pg_database WHERE datname LIKE 'ff\_kit\_k1%') + (SELECT count(*) FROM pg_roles WHERE rolname LIKE 'ff\_kit\_k1%')") == 0 ]] && echo 1 || echo 0)"
+ok "cleanup: no ${P}* DB or role left" "$([[ $(q "SELECT (SELECT count(*) FROM pg_database WHERE datname LIKE '$PL%') + (SELECT count(*) FROM pg_roles WHERE rolname LIKE '$PL%')") == 0 ]] && echo 1 || echo 0)"
 rm -rf "$T"
 echo; echo "$pass passed, $fail failed"
 [[ $fail == 0 ]]

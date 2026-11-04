@@ -6,7 +6,9 @@
   (role passwords) or the child's PGPASSWORD env var (admin / owner login).
     0. read-only preflight (db/kit/preflight.sql) BEFORE any change: refuses
        postgres/template DBs, superusers, and any existing role or DB the kit did
-       not create (no 'floorfunds-kit' marker); -Force never overrides that.
+       not create (no 'floorfunds-kit' marker), kit roles with BYPASSRLS/CREATEROLE/
+       CREATEDB/REPLICATION or a membership outside the kit (KF1), and a preflight
+       output without its end marker (KF3); -Force never overrides that.
        Re-running on the kit's own (marked) objects needs -Force (K1, TL 8:32).
     1. owner login role + a database it owns (superuser step; marked 'floorfunds-kit')
     2. the S2a app roles <db>_admin_api and <db>_login (superuser step; spec 8.2)
@@ -118,6 +120,10 @@ function Get-KitSql([string]$name) { [System.IO.File]::ReadAllText((Join-Path $K
 # 0. K1 preflight: read-only, before anything is changed.
 Write-Host "Preflight (read-only): $Db, $Role, $AdminApiRole, $LoginRole..."
 $pre = @((Invoke-Psql (Get-KitSql 'preflight.sql') @('-tA', '-v', "api_role=$AdminApiRole", '-v', "login_role=$LoginRole") -Capture -FailCode 5) -split "`r?`n" | Where-Object { $_ })
+# KF3: fail closed. The preflight always ends with this line; empty or truncated output is a refusal.
+if (-not $pre.Count -or $pre[-1] -cne 'END floorfunds-kit-preflight') {
+  [Console]::Error.WriteLine('Refused: the preflight returned no end marker (empty or incomplete output), so the catalog could not be checked. Nothing was changed.'); exit 5
+}
 $refuse = @($pre | Where-Object { $_.StartsWith('REFUSE ') })
 if ($refuse.Count) {
   foreach ($l in $refuse) { [Console]::Error.WriteLine('Refused: ' + $l.Substring(7)) }

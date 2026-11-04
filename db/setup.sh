@@ -3,7 +3,8 @@
 # 4 migrations failed, 5 refused (nothing changed) or a kit SQL guard aborted.
 #   0. read-only preflight (db/kit/preflight.sql) BEFORE any change: refuses postgres/template DBs, superusers,
 #      and any existing role or DB the kit did not create (no 'floorfunds-kit' marker); --force never overrides
-#      that. Re-running on the kit's own (marked) objects needs --force (K1, TL 8:32).
+#      that; nor kit roles with BYPASSRLS/CREATEROLE/CREATEDB/REPLICATION or any role membership outside the kit
+#      (KF1); output without the preflight's end marker is a refusal (KF3). Re-running on the kit's own (marked) objects needs --force (K1, TL 8:32).
 #   1. owner login role + a database it owns (superuser step; created objects are marked 'floorfunds-kit')
 #   2. the two S2a app roles <db>_admin_api and <db>_login (superuser step; spec §8.2)
 #   3. db/migrations.sql applied AS THE OWNER (idempotent script from the EF runner;
@@ -45,7 +46,9 @@ Usage: db/setup.sh [--db NAME] [--role NAME] [--password PW] [--host H] [--port 
                    kit-marked DB owned by --role is ever dropped.
   Always refused (even with --force): --db postgres/template0/template1 or any template DB,
   any superuser role, any existing role or DB without the kit marker, a DB owned by
-  another role, a kit role that owns another DB. Exit 5, before anything is changed.
+  another role, a kit role that owns another DB, a kit role with BYPASSRLS/CREATEROLE/CREATEDB/
+  REPLICATION or a member of any role outside the kit, or a preflight without its end marker.
+  Exit 5, before anything is changed.
   --no-migrate     stop after the roles; do not apply db/migrations.sql
   --migrations F   script to apply (default: db/migrations.sql next to this file)
   --seed           also load db/seed/*.sql (TEST-ONLY fake data; never on a real DB)
@@ -128,6 +131,10 @@ pw_set() { # psql quoted-variable escaping: ' -> '' and \ -> \\
 echo "Preflight (read-only): $DB, $ROLE, $ADMIN_API_ROLE, $LOGIN_ROLE..."
 PRE="$(run_psql -tA -v api_role="$ADMIN_API_ROLE" -v login_role="$LOGIN_ROLE" -f - <"$KIT/preflight.sql")" \
   || { echo "Preflight failed (see the psql error above). Nothing was changed." >&2; exit 5; }
+# KF3: fail closed. The preflight always ends with this line; empty or truncated output is a refusal.
+if [[ "$(tail -n 1 <<<"$PRE")" != "END floorfunds-kit-preflight" ]]; then
+  echo "Refused: the preflight returned no end marker (empty or incomplete output), so the catalog could not be checked. Nothing was changed." >&2; exit 5
+fi
 if grep -q '^REFUSE ' <<<"$PRE"; then
   sed -n 's/^REFUSE /Refused: /p' <<<"$PRE" >&2
   echo "Refused (--force never overrides this). Nothing was changed." >&2; exit 5
