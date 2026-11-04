@@ -41,9 +41,9 @@ print("denied notfromhub", val(a,env("auth.app_access.denied","denied",{"reason"
 print("envelope cachd_client_id", val(a,env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]},scope={"cachd_client_id":u(),"partner_id":u()})))
 print("envelope cachd_client_id not uuid (expect err)", bool(val(a,env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]},scope={"cachd_client_id":"x"}))))
 print("reset_requested", val(a,env("auth.password.reset_requested","success",{"channel":"email"})))
-print("provider.changed", val(a,env("auth.provider.changed","success",{"location_id":u(),"before":{"kind":"database"},"after":{"kind":"entra"},"approval_id":"ap1"})))
-print("provider.changed no approval (expect err)", bool(val(a,env("auth.provider.changed","success",{"location_id":u(),"before":{},"after":{}}))))
-for t in ["auth.identity.linked","auth.identity.unlinked","auth.bootstrap.completed","auth.mfa.policy_exclusion_detected","auth.provider.change_requested"]:
+# v1.1 (S2a, DEC-096): approval_id removed, details closed; full positive/negative cases in contract/check_v1_1_s2a.py
+print("provider.changed v1 shape with approval_id (v1.1: expect err)", bool(val(a,env("auth.provider.changed","success",{"location_id":u(),"before":{"kind":"database"},"after":{"kind":"entra"},"approval_id":"ap1"}))))
+for t in ["auth.identity.linked","auth.identity.unlinked","auth.bootstrap.completed","auth.mfa.policy_exclusion_detected"]:  # v1.1: change_requested removed (DEC-096)
     print("not-emitted", t, val(a,env(t,"success",{})))
 print("iam other (expect err)", bool(val(a,env("iam.role.assigned","success",{}))))
 at=s["device-attestation.schema.json"]
@@ -112,7 +112,9 @@ exp("attest no typ", val(at,dict(good,header={k:v for k,v in good["header"].item
 exp("attest no aud", val(at,dict(good,claims={k:v for k,v in good["claims"].items() if k!="aud"})), True)
 exp("attest device_id 128 chars ok", val(at,dict(good,header=dict(good["header"],kid="d"*128),claims=dict(good["claims"],device_id="d"*128))), False)
 exp("attest device_id 129 chars", val(at,dict(good,claims=dict(good["claims"],device_id="d"*129))), True)
-exp("audit auth.provider.change_requested", val(a,env("auth.provider.change_requested","success",{})), False)
+exp("audit auth.provider.change_requested (v1.1: removed, DEC-096 / LD §17 item 15)", val(a,env("auth.provider.change_requested","success",{})), True)
+exp("v1.1 provider.changed v1 shape with approval_id now rejected", val(a,env("auth.provider.changed","success",{"location_id":u(),"before":{"kind":"database"},"after":{"kind":"entra"},"approval_id":"ap1"})), True)
+exp("v1.1 provider.changed empty before/after rejected", val(a,env("auth.provider.changed","success",{"location_id":u(),"before":{},"after":{}})), True)
 exp("audit old iam.permission.change_requested", val(a,env("iam.permission.change_requested","success",{})), True)
 exp("audit scope with location_ids", val(a,env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]},scope={"partner_id":u(),"cachd_client_id":u(),"location_ids":[u()]})), False)
 exp("audit scope.client_id (old name)", val(a,env("auth.login.succeeded","success",{"provider_kind":"database","amr":["pwd"]},scope={"client_id":u()})), True)
