@@ -133,6 +133,25 @@ Lock files (locked mode): `Auth.Data` `6d686c7ecd199bae7b9a16a4c416315f`; `Auth.
 - **K1+K5 (next commit)**: every DB/role the kit creates carries `COMMENT ... IS 'floorfunds-kit'`. Read-only preflight `db/kit/preflight.sql`; hard refusals (exit 5, before any changing SQL; `--force` never overrides): `postgres` / template DBs, role `postgres` / `pg_*`, any superuser role, any existing unmarked role or DB, a `--role` owning another DB, an existing `--db` not owned by `--role`. Existing kit objects need `--force`; `--drop` needs `--force`. `ALTER DATABASE OWNER` removed; `ALTER ROLE` only on marked non-superusers, re-checked inside `db/kit/role.sql` / `db/kit/database.sql`. K5: newline/CR in a password → exit 2.
 - Tests `db/tests/k1-kit-tests.sh` (stub psql for the system DBs and `ff_sse`/`ff_sse2`, live scratch `ff_kit_k1*` objects otherwise, both scripts): 76 passed, 0 failed (`/tmp/sse-llc1/run/k1-tests.out`).
 
+## P3 — S2a admin API (Mohanraj 8:44; TL 8:43; on top of 3e12b8d / f986aaf)
+
+- **Projects**: `src/Admin.Api` (Web SDK, `CreateSlimBuilder`; only package `Microsoft.IdentityModel.JsonWebTokens` 8.19.2, already in use and locked; ProjectReference `Auth.Data`) and `src/Admin.Api.Checks` (exe; only framework/project references). Lock files: `Admin.Api/packages.lock.json` and `Admin.Api.Checks/packages.lock.json`, the latter generated once with `dotnet restore Admin.Api.Checks -p:RestoreLockedMode=false` (no new packages; NU3018 not suppressed, revocation mode not changed); builds then run in locked mode.
+- **Endpoints** (interim `/admin` host, `aud` = `backoffice-api`): `GET`/`PUT /api/orgs/locations/{location_id}/login-config`, `GET …/login-config/changes`, `POST /api/orgs/locations` (create needs a provider choice). Check order is exactly spec §4: 401 → 403 forbidden (+`not_admin` event on writes) → 404 (+`forbidden_scope` on out-of-scope writes; identical body to a missing location) → 428/400 If-Match → 409 with `current_row_version` → 400 malformed_body → 422 validation_failed `fields[]` (+`tenant_bound_elsewhere`) → 403 not_super_admin (+event) → 400 reason_required → commit. Denied events are written in their own outbox-only transaction after the request transaction is rolled back.
+- **K4**: `app.*` GUCs only via `set_config(name, value, true)` (= `SET LOCAL`) inside the transaction, from the validated token identity (never from headers, query or body); parameterised SQL only; audit columns (`updated_by`, `updated_at`, `row_version`, `created_by`, `created_at`) and `partner_id` in a PUT body → 422 `unknown_field`; secret_ref account id and region allowlisted from `SecretRef:AllowedAccountIds` / `SecretRef:AllowedRegions` → 422 `secret_ref_format`, value never echoed; crafted cross-partner tests (spoofed `X-Partner-Id` / `X-Admin-Type` / `X-Forwarded-User` headers, `app.*` query params, SQL-like `display_name`, body `partner_id` / `admin_type`, pooled-connection GUC leak, RLS backstop).
+- **Startup refusal** (exit 2, message names the key, never the value): `Entra:Authority` not an https base URL, `Entra:ClientId` not a GUID, empty/invalid allowlists, no RSA key at `BackofficeAuth:JwksPath`, schema missing or containing an unknown keyword, and the DB role guard (superuser, BYPASSRLS, or member of an auth object owner → refuse). `oidc_authority` / `oidc_client_id` are server-filled from `Entra:Authority` / `Entra:ClientId`; `secret_ref` is write-only (never selected back, never logged; only exception type and SqlState are logged).
+- **Outbox**: every envelope is validated with `JsonSchemaLite` against `contract/audit-events.schema.json` before insert; invalid → 500, nothing committed (fail closed). Cross-checked by `Admin.Api.Checks/crosscheck.py` (Python jsonschema Draft 2020-12 + FormatChecker, date-time by an RFC 3339 regex because the venv has no rfc3339-validator and no package was added) on every emitted event plus 9 mutations each; API responses are validated against `contract/location-login-config.schema.json`.
+- **Tests** (`AUTH_CHECKS_DB=ff_sse dotnet run --project Admin.Api.Checks -- <outdir>`, then `crosscheck.py <outdir>`): ports 18130 (API) and 18131 (fail-closed instance) from the 18130–18139 range only; fake ids only (account 000000000000, `FAKE-test-only/…` ARNs, tenants …fa11–fa13). The checks refuse a DB that is not ff_sse / ff_kit_* or whose S2a tables are not empty, and delete their rows in a finally block (tables re-checked empty). Result: **218 passed, 0 failed**; crosscheck 260 docs / 0 disagreements, 82 responses valid. Mutation spot-check (scope check and downgrade gate disabled at runtime) → 7 checks fail as expected; source restored (md5 unchanged).
+- **Open questions (not guessed; behaviour chosen is the conservative one)**:
+  - OQ-P3-1: org:V reader reachability under the interim host (S2a has no role store; interim directory maps super → Super Admin, partner → Partner Admin). A reader's RLS GUC is set to the location's real partner, decided server-side. Custom roles are ignored (built-in only).
+  - OQ-P3-2: no `not_admin` event on create: the envelope needs `scope.location_ids` ≥ 1 without `admin_type`, which a create cannot have. Likewise an update `not_admin` on a missing location writes no event.
+  - OQ-P3-3: 500 responses have no body.
+  - OQ-P3-4: a failure writing a denied event → 500 (instead of the 4xx).
+  - OQ-P3-5: attempted_fields in denied events = the editable key names present in the body (names only).
+  - OQ-P3-6: a no-op PUT → 200 with the current view, nothing written, no event, row_version unchanged.
+  - OQ-P3-7: changed_fields on create are relative to the column defaults.
+  - OQ-P3-8: POST parses the body before the scope check (the partner comes from the body).
+  - OQ-P3-9: unknown keys are echoed in `fields[].field` only if they match `^[A-Za-z0-9_.-]{1,64}$`, otherwise `*`; body cap 64 KiB (Kestrel 1 MiB); duplicate JSON keys → 400 malformed_body.
+
 ## Decisions (this slice)
 
 - Project names: `Login.Abstractions` (mandated by F9). The data project will be `src/Auth.Data` (matches the `auth` schema; shared by the admin API and the login service, so not `Login.*`).
@@ -142,7 +161,7 @@ Lock files (locked mode): `Auth.Data` `6d686c7ecd199bae7b9a16a4c416315f`; `Auth.
 
 ## Assumptions / open
 
-See spec §13 (A-21 server-filled OIDC keep/startup validation; A-22 Entra partner match). Open for P3: validating outbox envelopes against `audit-events.schema.json` in .NET needs a JSON Schema package (none approved).
+See spec §13 (A-21 server-filled OIDC keep/startup validation; A-22 Entra partner match). The P3 need for a .NET JSON Schema validator is met by the in-repo `src/Admin.Api/JsonSchemaLite.cs` (no package); the P3 open questions are listed under P3 below.
 
 ## Sources (md5)
 
