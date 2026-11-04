@@ -532,20 +532,26 @@ await Check("concurrency: raw §8.5 UPDATE ... WHERE row_version = stale -> 0 ro
 });
 
 // ================= 8. readers (as login) =================
-var cfgReader = new NpgsqlLocationLoginConfigReader(loginDs);
+// [TLD 2026-11-04 10:02 Q1] deployment config is the source of truth for oidc_* / secret_ref: these values differ from the row's
+// (row: Iss(T1) / FakeArn), so the checks below prove the reader returns config, never the per-row copy. Same check count (162).
+const string CfgArn = "arn:aws:secretsmanager:us-west-2:000000000000:secret:FAKE-test-only/deploy-cfg-AbCdEf"; // SSE2-FAKE-TEST-ONLY
+const string CfgClientId = "5f0c3e1a-00cc-4000-8000-0000000000cc"; // SSE2-FAKE-TEST-ONLY
+var entraCfg = new Auth.Data.EntraDeployment("https://login.microsoftonline.com", CfgClientId, new SecretReference(CfgArn)); // host-validated values (TLD 10:12)
+var cfgReader = new NpgsqlLocationLoginConfigReader(loginDs, entraCfg);
 var extReader = new NpgsqlExternalLoginReader(loginDs);
 var ulReader = new NpgsqlUserLocationReader(loginDs);
-await Check("reader config: GetAsync(pci-main) -> entra row, tenant T1, row_version 1, SecretRef reveals fake ARN, ToString redacted", async () =>
+await Check("reader config: GetAsync(pci-main) -> entra row, tenant T1, row_version 1, oidc_* and SecretRef from deployment config not the row (TLD 10:02 Q1), ToString redacted", async () =>
 {
     var c = await cfgReader.GetAsync(L_PCI, default);
     return c is not null && c.ProviderKind == ProviderKind.Entra && c.PartnerId == P_PCI && c.Slug == "pci-main" && c.EntraAllowedTenantIds.SequenceEqual([T1])
-        && c.OidcAuthority == Iss(T1) && c.AllowDbFallback && c.MfaRequired && c.RowVersion == 1 && c.SecretRef?.Reveal() == FakeArn
+        && c.OidcAuthority == "https://login.microsoftonline.com" && c.OidcClientId == CfgClientId && c.AllowDbFallback && c.MfaRequired && c.RowVersion == 1
+        && c.SecretRef?.Reveal() == CfgArn && CfgArn != FakeArn
         && !c.ToString().Contains("000000000000") && !JsonSerializer.Serialize(c).Contains("000000000000");
 });
 await Check("reader config: GetAsync(nevada-main) -> database, SecretRef null, row_version 2 (after concurrency check)", async () =>
 {
     var c = await cfgReader.GetAsync(L_NV, default);
-    return c is { ProviderKind: ProviderKind.Database, SecretRef: null, OidcAuthority: null, RowVersion: 2 } && c.EntraAllowedTenantIds.Count == 0;
+    return c is { ProviderKind: ProviderKind.Database, SecretRef: null, OidcAuthority: null, OidcClientId: null, RowVersion: 2 } && c.EntraAllowedTenantIds.Count == 0;
 });
 await Check("reader config: unknown id -> null", async () => await cfgReader.GetAsync(Guid.NewGuid(), default) is null);
 await Check("reader config: GetBySlugAsync(\" PCI-Main \") normalises -> pci-main", async () => (await cfgReader.GetBySlugAsync(" PCI-Main ", default))?.LocationId == L_PCI);
@@ -621,10 +627,10 @@ await Check("reader user_location: c01@pci-main true; c01@nevada-main false; c03
 var badCs = new NpgsqlConnectionStringBuilder(loginCs) { Password = "wrong-" + Guid.NewGuid().ToString("N"), Pooling = false }.ConnectionString;
 await using (var badDs = NpgsqlDataSource.Create(badCs))
 {
-    await Throws<PostgresException>("F8: config GetAsync with DB auth failure -> throws (28P01)", () => new NpgsqlLocationLoginConfigReader(badDs).GetAsync(L_PCI, default), e => e.SqlState == "28P01");
-    await Throws<PostgresException>("F8: config GetBySlugAsync with DB failure -> throws", () => new NpgsqlLocationLoginConfigReader(badDs).GetBySlugAsync("pci-main", default));
+    await Throws<PostgresException>("F8: config GetAsync with DB auth failure -> throws (28P01)", () => new NpgsqlLocationLoginConfigReader(badDs, entraCfg).GetAsync(L_PCI, default), e => e.SqlState == "28P01");
+    await Throws<PostgresException>("F8: config GetBySlugAsync with DB failure -> throws", () => new NpgsqlLocationLoginConfigReader(badDs, entraCfg).GetBySlugAsync("pci-main", default));
     await Check("F8: GetBySlugAsync(malformed) -> null without touching the DB (broken data source)", async () =>
-        await new NpgsqlLocationLoginConfigReader(badDs).GetBySlugAsync("pci_main!", default) is null);
+        await new NpgsqlLocationLoginConfigReader(badDs, entraCfg).GetBySlugAsync("pci_main!", default) is null);
     await Throws<PostgresException>("F8: FindUserAsync with DB failure -> throws", () => new NpgsqlExternalLoginReader(badDs).FindUserAsync(ProviderKind.Entra, Iss(T1), T1, S1, default));
     await Throws<PostgresException>("F8: IsAssignedAsync with DB failure -> throws (never false)", () => new NpgsqlUserLocationReader(badDs).IsAssignedAsync(U_C01, L_PCI, default));
 }

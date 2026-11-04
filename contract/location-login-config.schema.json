@@ -184,7 +184,7 @@
       }
     },
     "secret_view": {
-      "description": "The only secret information ever returned [SRC: LD \u00a74.1 L171]. rotated_at = time of the latest change row whose changed_fields contains secret_ref (ASSUMPTION A-3); null when set is false.",
+      "description": "The only secret information ever returned [SRC: LD \u00a74.1 L171], and only to a Super Admin (login_config_view_super) [TLD 2026-11-04 10:02 Q2]. set = the location is entra (its secret is deployment config Entra:SecretRef, never the per-row copy) [TLD 2026-11-04 10:02 Q1]. rotated_at = time of the latest change row whose changed_fields contains secret_ref (ASSUMPTION A-3); null when set is false.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -219,7 +219,7 @@
       }
     },
     "login_config_view_super": {
-      "description": "GET / PUT 200 / POST 201 body for a SUPER ADMIN caller: includes the server-filled oidc_authority / oidc_client_id [TLD 2026-11-04 7:41]. Closed: no secret_ref key (additionalProperties false). row_version mirrors the ETag.",
+      "description": "GET / PUT 200 / POST 201 body for a SUPER ADMIN caller: includes the server-filled oidc_authority / oidc_client_id [TLD 2026-11-04 7:41] and secret {set, rotated_at} [TLD 2026-11-04 10:02 Q2: Super Admin only], all from deployment config, never the per-row copy [TLD 2026-11-04 10:02 Q1]. Closed: no secret_ref key (additionalProperties false). row_version mirrors the ETag.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -314,7 +314,7 @@
       }
     },
     "login_config_view_restricted": {
-      "description": "GET / PUT 200 / POST 201 body for a Partner Admin or an org:V reader: oidc_authority and oidc_client_id are NOT present [TLD 2026-11-04 7:41]. Closed: no secret_ref key.",
+      "description": "GET / PUT 200 / POST 201 body for a Partner Admin or an org:V reader: oidc_authority and oidc_client_id are NOT present [TLD 2026-11-04 7:41], and neither is secret {set, rotated_at}: the key is omitted, not null [TLD 2026-11-04 10:02 Q2; UX mockup cbb3ab4b]. Closed (additionalProperties false): no secret_ref, no secret, no oidc_* key.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -325,7 +325,6 @@
         "provider_kind",
         "display_name",
         "entra_allowed_tenant_ids",
-        "secret",
         "allow_db_fallback",
         "mfa_required",
         "row_version",
@@ -356,9 +355,6 @@
         },
         "entra_allowed_tenant_ids": {
           "$ref": "#/$defs/tenant_ids"
-        },
-        "secret": {
-          "$ref": "#/$defs/secret_view"
         },
         "allow_db_fallback": {
           "type": "boolean"
@@ -644,7 +640,7 @@
       ]
     },
     "access_rules": {
-      "description": "Machine-readable pins of TLD 2026-11-04 7:39 / 7:41 (spec \u00a76.1). check_v1_1_s2a.py validates the spec's access_rules block against this and runs negative cases.",
+      "description": "Machine-readable pins of TLD 2026-11-04 7:39 / 7:41 / 10:02 (spec \u00a76.1). check_v1_1_s2a.py validates the spec's access_rules block against this and runs negative cases.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -652,6 +648,7 @@
         "out_of_scope_location",
         "history_visible_to",
         "oidc_fields_visible_to",
+        "secret_visible_to",
         "reason_trimmed_length",
         "server_filled_fields",
         "server_filled_config_keys"
@@ -720,6 +717,12 @@
           }
         },
         "oidc_fields_visible_to": {
+          "const": [
+            "super_admin"
+          ]
+        },
+        "secret_visible_to": {
+          "description": "secret {set, rotated_at} is in Super Admin responses only (GET, PUT 200, POST 201); Partner Admin and org:V responses omit the key [TLD 2026-11-04 10:02 Q2].",
           "const": [
             "super_admin"
           ]

@@ -8,11 +8,19 @@ using Npgsql;
 
 namespace Auth.Data.Readers;
 
-public sealed class NpgsqlLocationLoginConfigReader(NpgsqlDataSource dataSource) : ILocationLoginConfigReader
+/// <summary>
+/// [TLD 2026-11-04 10:02 Q1] OidcAuthority, OidcClientId and SecretRef of an entra location come from <paramref name="entra"/>
+/// (deployment config Entra:Authority / Entra:ClientId / Entra:SecretRef), on every read; the row's oidc_authority, oidc_client_id
+/// and secret_ref columns are not selected (not the source of truth; V11-ROWSECRETCLEANUP). Database locations get null for all three.
+/// So what the login service feeds to ISecretResolver follows config after a restart, with no row rewrite.
+/// </summary>
+public sealed class NpgsqlLocationLoginConfigReader(NpgsqlDataSource dataSource, EntraDeployment entra) : ILocationLoginConfigReader
 {
+    private readonly EntraDeployment _entra = entra ?? throw new ArgumentNullException(nameof(entra));
+
     private const string Select = """
         SELECT l.location_id, l.partner_id, l.slug, c.provider_kind, c.display_name, c.entra_allowed_tenant_ids,
-               c.oidc_authority, c.oidc_client_id, c.secret_ref, c.allow_db_fallback, c.mfa_required, c.row_version
+               c.allow_db_fallback, c.mfa_required, c.row_version
           FROM auth.location l
           JOIN auth.location_login_config c ON c.location_id = l.location_id
         """;
@@ -35,12 +43,13 @@ public sealed class NpgsqlLocationLoginConfigReader(NpgsqlDataSource dataSource)
         cmd.Parameters.Add(p);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         if (!await r.ReadAsync(ct)) return null;
-        var secret = r.IsDBNull(8) ? null : r.GetString(8);
+        var kind = ProviderKindText.Parse(r.GetString(3));
+        var isEntra = kind == ProviderKind.Entra;
         var cfg = new LocationLoginConfig(
-            r.GetGuid(0), r.GetGuid(1), r.GetString(2), ProviderKindText.Parse(r.GetString(3)), r.GetString(4),
-            r.GetFieldValue<Guid[]>(5), r.IsDBNull(6) ? null : r.GetString(6), r.IsDBNull(7) ? null : r.GetString(7),
-            r.GetBoolean(9), r.GetBoolean(10), r.GetInt64(11))
-        { SecretRef = secret is null ? null : new SecretReference(secret) };
+            r.GetGuid(0), r.GetGuid(1), r.GetString(2), kind, r.GetString(4), r.GetFieldValue<Guid[]>(5),
+            isEntra ? _entra.Authority : null, isEntra ? _entra.ClientId : null,
+            r.GetBoolean(6), r.GetBoolean(7), r.GetInt64(8))
+        { SecretRef = isEntra ? _entra.SecretRef : null };
         if (await r.ReadAsync(ct)) throw new InvalidOperationException("location_login_config: more than one row for a unique key.");
         return cfg;
     }

@@ -16,7 +16,7 @@ public sealed record Caller(AdminIdentity Id, AdminGrant Grant, string RequestId
 }
 
 sealed record LlcRow(Guid LocationId, Guid PartnerId, string Slug, string Name, string ProviderKind, string DisplayName, Guid[] Tenants,
-    string? OidcAuthority, string? OidcClientId, bool SecretSet, bool AllowDbFallback, bool MfaRequired, long RowVersion,
+    bool AllowDbFallback, bool MfaRequired, long RowVersion,
     Guid CreatedBy, DateTime CreatedAt, Guid UpdatedBy, DateTime UpdatedAt, DateTime? RotatedAt)
 {
     public CurrentConfig Current => new(ProviderKind, Tenants, AllowDbFallback, MfaRequired);
@@ -165,11 +165,12 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     static async Task<LlcRow?> LoadAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid location, Guid filterPartner, bool forUpdate)
     {
-        // Server query filter on partner_id (LD L173) in addition to RLS; secret_ref itself is never selected.
+        // Server query filter on partner_id (LD L173) in addition to RLS. The row's oidc_authority / oidc_client_id / secret_ref copies are
+        // never selected: deployment config is the source of truth [TLD 2026-11-04 10:02 Q1; V11-ROWSECRETCLEANUP].
         await using var cmd = new NpgsqlCommand(
             """
-            SELECT l.partner_id, l.slug, l.name, c.provider_kind, c.display_name, c.entra_allowed_tenant_ids, c.oidc_authority, c.oidc_client_id,
-                   c.secret_ref IS NOT NULL, c.allow_db_fallback, c.mfa_required, c.row_version, c.created_by, c.created_at, c.updated_by, c.updated_at,
+            SELECT l.partner_id, l.slug, l.name, c.provider_kind, c.display_name, c.entra_allowed_tenant_ids,
+                   c.allow_db_fallback, c.mfa_required, c.row_version, c.created_by, c.created_at, c.updated_by, c.updated_at,
                    (SELECT max(ch.at) FROM auth.location_login_config_change ch WHERE ch.location_id = l.location_id AND 'secret_ref' = ANY (ch.changed_fields))
             FROM auth.location l JOIN auth.location_login_config c ON c.location_id = l.location_id
             WHERE l.location_id = $1 AND l.partner_id = $2
@@ -179,14 +180,13 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         await using var r = await cmd.ExecuteReaderAsync();
         if (!await r.ReadAsync()) return null;
         return new LlcRow(location, r.GetGuid(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetFieldValue<Guid[]>(5),
-            r.IsDBNull(6) ? null : r.GetString(6), r.IsDBNull(7) ? null : r.GetString(7), r.GetBoolean(8), r.GetBoolean(9), r.GetBoolean(10),
-            r.GetInt64(11), r.GetGuid(12), r.GetFieldValue<DateTime>(13), r.GetGuid(14), r.GetFieldValue<DateTime>(15),
-            r.IsDBNull(16) ? null : r.GetFieldValue<DateTime>(16));
+            r.GetBoolean(6), r.GetBoolean(7), r.GetInt64(8), r.GetGuid(9), r.GetFieldValue<DateTime>(10), r.GetGuid(11), r.GetFieldValue<DateTime>(12),
+            r.IsDBNull(13) ? null : r.GetFieldValue<DateTime>(13));
     }
 
     static string T(DateTime d) => AuditOutbox.Ts(new DateTimeOffset(DateTime.SpecifyKind(d, DateTimeKind.Utc)));
 
-    static JsonObject View(LlcRow r, bool super)
+    JsonObject View(LlcRow r, bool super)
     {
         var v = new JsonObject
         {
@@ -194,8 +194,16 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             ["provider_kind"] = r.ProviderKind, ["display_name"] = r.DisplayName,
             ["entra_allowed_tenant_ids"] = new JsonArray(r.Tenants.Select(t => (JsonNode)JsonValue.Create(t.ToString("D"))!).ToArray()),
         };
-        if (super) { v["oidc_authority"] = r.OidcAuthority; v["oidc_client_id"] = r.OidcClientId; }
-        v["secret"] = new JsonObject { ["set"] = r.SecretSet, ["rotated_at"] = r.RotatedAt is { } ra ? T(ra) : null };
+        // [TLD 2026-11-04 10:02 Q1] oidc_* and secret.set follow deployment config (Entra:Authority / Entra:ClientId / Entra:SecretRef) for
+        // every entra location, never the row copy. [TLD 2026-11-04 10:02 Q2] oidc_* AND secret are Super Admin only: for a Partner Admin
+        // or an org:V reader the keys are omitted (not null), as login_config_view_restricted and UX mockup cbb3ab4b.
+        if (super)
+        {
+            var isEntra = r.ProviderKind == "entra";
+            v["oidc_authority"] = isEntra ? opt.EntraAuthority : null;
+            v["oidc_client_id"] = isEntra ? opt.EntraClientId : null;
+            v["secret"] = new JsonObject { ["set"] = isEntra, ["rotated_at"] = isEntra && r.RotatedAt is { } ra ? T(ra) : null }; // null when not set (secret_view)
+        }
         v["allow_db_fallback"] = r.AllowDbFallback; v["mfa_required"] = r.MfaRequired; v["row_version"] = r.RowVersion;
         v["created_by"] = r.CreatedBy.ToString("D"); v["created_at"] = T(r.CreatedAt);
         v["updated_by"] = r.UpdatedBy.ToString("D"); v["updated_at"] = T(r.UpdatedAt);
@@ -370,19 +378,18 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         }
         if (down.Count > 0 && n!.Reason is null) throw Err(400, "reason_required");
 
-        // Step 11: new state; the server owns oidc_* and secret_ref (A-21: Entra -> Entra keeps the stored values;
-        // TLD 2026-11-04 9:49, D-51: secret_ref is Entra:SecretRef, set on a switch to entra, cleared on a switch to database).
+        // Step 11: new state; the server owns oidc_* and secret_ref (TLD 2026-11-04 9:49, D-51). [TLD 2026-11-04 10:02 Q1] deployment
+        // config is the source of truth and the row columns are a non-authoritative copy kept only for the DB CHECK (db/ frozen;
+        // V11-ROWSECRETCLEANUP): set from config on a switch to entra, cleared on a switch to database, left untouched (never read,
+        // never rewritten) on Entra -> Entra. changed_fields names them only on a provider switch.
         var entra = n!.ProviderKind == "entra";
-        var keepSecret = entra && row.ProviderKind == "entra";
-        var (authority, clientId) = !entra ? (null, null)
-            : row.ProviderKind == "entra" ? (row.OidcAuthority, row.OidcClientId) : (opt.EntraAuthority, opt.EntraClientId);
+        var wasEntra = row.ProviderKind == "entra";
+        var keepCopy = entra && wasEntra;
         var changed = new List<string>();
         if (n.ProviderKind != row.ProviderKind) changed.Add("provider_kind");
         if (n.DisplayName != row.DisplayName) changed.Add("display_name");
         if (!n.Tenants.SequenceEqual(row.Tenants)) changed.Add("entra_allowed_tenant_ids");
-        if (authority != row.OidcAuthority) changed.Add("oidc_authority");
-        if (clientId != row.OidcClientId) changed.Add("oidc_client_id");
-        if (entra ? !keepSecret : row.SecretSet) changed.Add("secret_ref");
+        if (entra != wasEntra) { changed.Add("oidc_authority"); changed.Add("oidc_client_id"); changed.Add("secret_ref"); }
         if (n.AllowDbFallback != row.AllowDbFallback) changed.Add("allow_db_fallback");
         if (n.MfaRequired != row.MfaRequired) changed.Add("mfa_required");
         if (changed.Count == 0)
@@ -394,8 +401,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         var now = Now();
         await using (var up = new NpgsqlCommand(
             """
-            UPDATE auth.location_login_config SET provider_kind = $3, display_name = $4, entra_allowed_tenant_ids = $5, oidc_authority = $6,
-                   oidc_client_id = $7, secret_ref = CASE WHEN $8 THEN secret_ref ELSE $9 END, allow_db_fallback = $10, mfa_required = $11,
+            UPDATE auth.location_login_config SET provider_kind = $3, display_name = $4, entra_allowed_tenant_ids = $5,
+                   oidc_authority = CASE WHEN $8 THEN oidc_authority ELSE $6 END, oidc_client_id = CASE WHEN $8 THEN oidc_client_id ELSE $7 END,
+                   secret_ref = CASE WHEN $8 THEN secret_ref ELSE $9 END, allow_db_fallback = $10, mfa_required = $11,
                    updated_by = $12, updated_at = $13, row_version = row_version + 1
             WHERE location_id = $1 AND row_version = $2
             """, c, tx))
@@ -405,9 +413,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             up.Parameters.Add(new() { Value = n.ProviderKind });
             up.Parameters.Add(new() { Value = n.DisplayName });
             up.Parameters.Add(new() { Value = n.Tenants });
-            up.Parameters.Add(new() { Value = (object?)authority ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
-            up.Parameters.Add(new() { Value = (object?)clientId ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
-            up.Parameters.Add(new() { Value = keepSecret });
+            up.Parameters.Add(new() { Value = entra ? opt.EntraAuthority : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+            up.Parameters.Add(new() { Value = entra ? opt.EntraClientId : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+            up.Parameters.Add(new() { Value = keepCopy });
             up.Parameters.Add(new() { Value = entra ? opt.EntraSecretRef : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
             up.Parameters.Add(new() { Value = n.AllowDbFallback });
             up.Parameters.Add(new() { Value = n.MfaRequired });

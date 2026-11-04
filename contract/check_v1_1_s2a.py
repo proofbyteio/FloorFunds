@@ -123,7 +123,13 @@ exp("restricted view + oidc_authority rejected", errs(LLC, RV, m(rview, oidc_aut
 exp("restricted view + oidc_client_id rejected", errs(LLC, RV, m(rview, oidc_client_id="5f4e3d2c-1b0a-4f9e-8d7c-6b5a4f3e2d1c")), True)
 exp("super view without oidc_authority rejected", errs(LLC, VIEW, m(view, oidc_authority=DEL)), True)
 exp("super view without oidc_client_id rejected", errs(LLC, VIEW, m(view, oidc_client_id=DEL)), True)
-exp("restricted view = super view minus oidc keys", [] if rview == {k: v for k, v in view.items() if not k.startswith("oidc_")} else ["differ"], False)
+exp("10:02 restricted view = super view minus oidc keys and secret", [] if rview == {k: v for k, v in view.items() if not k.startswith("oidc_") and k != "secret"} else ["differ"], False)
+# secret {set, rotated_at} visible to Super Admin only [TLD 2026-11-04 10:02 Q2, mockup cbb3ab4b]
+exp("10:02 restricted view + secret rejected", errs(LLC, RV, m(rview, secret={"set": True, "rotated_at": "2026-10-30T17:05:00Z"})), True)
+exp("10:02 restricted view + secret null rejected (omitted, not null)", errs(LLC, RV, m(rview, secret=None)), True)
+exp("10:02 super view without secret rejected", errs(LLC, VIEW, m(view, secret=DEL)), True)
+exp("10:02 restricted schema declares no secret / does not require it", ["present"] if "secret" in L["login_config_view_restricted"]["properties"] or "secret" in L["login_config_view_restricted"]["required"] else [], False)
+exp("10:02 post_201_db (restricted) has no secret key", ["present"] if "secret" in EX["post_201_db"] else [], False)
 exp("restricted view + secret_ref rejected", errs(LLC, RV, m(rview, secret_ref=FAKE)), True)
 exp("provider_kind other rejected", errs(LLC, W, m(ent, provider_kind="saml")), True)
 exp("database + tenant rejected", errs(LLC, W, m(db, entra_allowed_tenant_ids=["9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"])), True)
@@ -173,6 +179,8 @@ exp("access_rules history + org_v rejected", errs(LLC, AR, m(ar, history_visible
 exp("access_rules history + other partner rejected", errs(LLC, AR, m(ar, history_visible_to=["super_admin", "partner_admin_own_partner", "partner_admin_other_partner"])), True)
 exp("access_rules history org_v 200 rejected", errs(LLC, AR, m(ar, history_refused__org_v_reader=200)), True)
 exp("access_rules oidc visible to partner rejected", errs(LLC, AR, m(ar, oidc_fields_visible_to=["super_admin", "partner_admin_own_partner"])), True)
+exp("10:02 access_rules secret visible to partner rejected", errs(LLC, AR, m(ar, secret_visible_to=["super_admin", "partner_admin_own_partner"])), True)
+exp("10:02 access_rules without secret_visible_to rejected", errs(LLC, AR, m(ar, secret_visible_to=DEL)), True)
 exp("access_rules reason 1..500 rejected", errs(LLC, AR, m(ar, reason_trimmed_length={"min": 1, "max": 500})), True)
 exp("access_rules config key rename rejected", errs(LLC, AR, m(ar, server_filled_config_keys={"oidc_authority": "Entra:Instance", "oidc_client_id": "Entra:ClientId", "secret_ref": "Entra:SecretRef"})), True)
 exp("9:49 access_rules secret_ref config key rename rejected", errs(LLC, AR, m(ar, server_filled_config_keys={"oidc_authority": "Entra:Authority", "oidc_client_id": "Entra:ClientId", "secret_ref": "Entra:ClientSecret"})), True)
@@ -325,6 +333,23 @@ for _pin in ["**`secret_ref` [TLD 2026-11-04 9:49, D-51] (TL 7:40 D-51 ruling: o
 exp("spec 9:49: no secret_ref_required / secret_ref_format rule row left", ["stale"] if any(f"| `{c}` |" in spec for c in ["secret_ref_required", "secret_ref_format"]) else [], False)
 exp("spec 9:49: V11-ACTORNAME in §12", [] if "V11-ACTORNAME" in spec.split("## 12.")[1].split("## 13.")[0] else ["missing"], False)
 exp("spec 9:49: no request example carries secret_ref", ["present"] if any("secret_ref" in v for k, v in EX.items() if k.startswith(("put_req", "post_req"))) else [], False)
+
+# ---- 13. TLD 2026-11-04 10:02: Q1 config is the source of truth, Q2 secret Super Admin only, Q3 confirmed ----
+_s12 = spec.split("## 12.")[1].split("## 13.")[0]
+for _pin in ["**Config is the source of truth [TLD 2026-11-04 10:02] (Q1):**", "nothing reads that copy (cleanup: V11-ROWSECRETCLEANUP, §12)",
+             "A config change therefore applies to **all** entra locations after a restart, with no row rewrite",
+             "**`secret {set, rotated_at}` is Super Admin only [TLD 2026-11-04 10:02] (Q2, UX mockup cbb3ab4b):**", "**omitted, not null,**",
+             "`NpgsqlLocationLoginConfigReader` no longer selects `oidc_authority`, `oidc_client_id` or `secret_ref`", "`Auth.Data.EntraDeployment`",
+             "**TLD 10:02 [TLD 2026-11-04 10:02]:** **Q1**", "**Q3** confirmed: both `secret_ref_required` and `secret_ref_format` are removed", "| TLD 10:02 |"]:
+    exp("spec pin 10:02: " + _pin[:60], [] if _pin in spec else ["missing"], False)
+exp("spec 10:02: V11-ROWSECRETCLEANUP in §12", [] if "V11-ROWSECRETCLEANUP" in _s12 else ["missing"], False)
+exp("spec 10:02: no stale 'Entra → Entra edits keep the stored values'", ["stale"] if "Entra → Entra edits keep the stored value" in spec else [], False)
+exp("spec 10:02: q1-q3 no longer listed as OPEN", ["stale"] if "**OPEN (SSE, for TL):** (q1)" in spec else [], False)
+for _pin in ["**Config is read once at startup; changes apply after a restart, no hot reload [TLD 2026-11-04 10:12].**",
+             "`EntraDeployment` is a plain carrier and does not validate", "**TLD 10:12 [TLD 2026-11-04 10:12]:**", "C1-2 (SSE2 review of db8f360) is Info only", "| TLD 10:12 |"]:
+    exp("spec pin 10:12: " + _pin[:60], [] if _pin in spec else ["missing"], False)
+exp("spec 10:12: no stale 'validated with the same rules and messages as the admin API'", ["stale"] if "validated with the same rules and messages as the admin API" in spec else [], False)
+exp("spec 10:02: access_rules example pins secret_visible_to super_admin", [] if EX["access_rules"].get("secret_visible_to") == ["super_admin"] else ["missing"], False)
 
 print("v1.1-S2a checks: %d passed, %d failed" % (PASSES[0], len(FAIL)), "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)

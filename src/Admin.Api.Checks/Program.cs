@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Admin.Api;
+using Auth.Data.Readers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -33,7 +34,8 @@ if (!(dbName == "ff_sse" || System.Text.RegularExpressions.Regex.IsMatch(dbName,
 { Console.Error.WriteLine("refuse: AUTH_CHECKS_DB must be ff_sse or ff_kit_<name> (never ff_sse2, postgres or a template)"); return 2; }
 var ownerCs = Env("CONNECTION_STRING");
 var adminCs = Env("ADMIN_API_CONNECTION_STRING");
-if (new[] { ownerCs, adminCs }.Any(cs => new NpgsqlConnectionStringBuilder(cs).Database != dbName))
+var loginCs = Env("LOGIN_CONNECTION_STRING"); // <db>_login, read-only: the login readers (TLD 10:02 Q1 restart check)
+if (new[] { ownerCs, adminCs, loginCs }.Any(cs => new NpgsqlConnectionStringBuilder(cs).Database != dbName))
 { Console.Error.WriteLine("refuse: every connection string's Database must equal AUTH_CHECKS_DB"); return 2; }
 var outDir = args.Length > 0 ? args[0] : null;
 
@@ -364,8 +366,8 @@ try
         var b = Obj(rA1.Body);
         Ok("create: ETag \"1\", Location header, Cache-Control no-store, no Server header",
             rA1.ETag == "\"1\"" && rA1.Location == $"/api/orgs/locations/{A1:D}/login-config" && rA1.CacheControl == "no-store" && rA1.Server is null);
-        Ok("create: restricted view (no oidc_* keys), secret not set", !b.ContainsKey("oidc_authority") && !b.ContainsKey("oidc_client_id")
-            && (bool)b["secret"]!["set"]! == false && b["secret"]!["rotated_at"] is null && (long)b["row_version"]! == 1);
+        Ok("create: restricted view (no oidc_* keys)", !b.ContainsKey("oidc_authority") && !b.ContainsKey("oidc_client_id") && (long)b["row_version"]! == 1);
+        Ok("Q2 create: PA 201 response has NO secret key (omitted, not null) [TLD 10:02 Q2, mockup cbb3ab4b]", !b.ContainsKey("secret"), rA1.Body);
         Ok("create: slug server-generated (4x4 base32)", System.Text.RegularExpressions.Regex.IsMatch((string)b["slug"]!, "^[0-9a-hjkmnp-tv-z]{4}(-[0-9a-hjkmnp-tv-z]{4}){3}$"));
         Ok("create: created_by/updated_by = token sub", (string)b["created_by"]! == U_PA.ToString() && (string)b["updated_by"]! == U_PA.ToString());
         var ev = await NewEvents();
@@ -384,7 +386,8 @@ try
     {
         var b = Obj(rB1.Body);
         Ok("create: super view shows server-filled oidc_* from Entra:Authority / Entra:ClientId",
-            (string?)b["oidc_authority"] == Authority && (string?)b["oidc_client_id"] == ClientId && (bool)b["secret"]!["set"]! && b["secret"]!["rotated_at"] is not null);
+            (string?)b["oidc_authority"] == Authority && (string?)b["oidc_client_id"] == ClientId);
+        Ok("Q2 create: SA 201 response has secret {set: true, rotated_at} [TLD 10:02 Q2]", b["secret"] is JsonObject so && so.Count == 2 && (bool)so["set"]! && so["rotated_at"] is not null, rB1.Body);
         var ev = await NewEvents();
         Ok("create: SA event lists oidc_* and secret_ref in changed_fields, no value",
             ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["admin_type"]! == "super"
@@ -496,9 +499,14 @@ try
     {
         var r = await Get(Cfg(A1), PA);
         Ok("get: PA own -> 200 restricted view, ETag", r.Status == 200 && r.ETag == "\"1\"" && !Obj(r.Body).ContainsKey("oidc_authority"));
+        Ok("Q2 get: PA -> no secret key (omitted, not null) [TLD 10:02 Q2]", r.Status == 200 && !Obj(r.Body).ContainsKey("secret"), r.Body);
         ForSchema("login_config_view_restricted", r);
         r = await Get(Cfg(B1), SA);
         Ok("get: SA any -> 200 super view with oidc_*", r.Status == 200 && (string?)Obj(r.Body)["oidc_client_id"] == ClientId);
+        Ok("Q2 get: SA -> secret {set, rotated_at} present [TLD 10:02 Q2]", Obj(r.Body)["secret"] is JsonObject gs && gs.Count == 2 && (bool)gs["set"]! && gs.ContainsKey("rotated_at"), r.Body);
+        var saDb = await Get(Cfg(A1), SA);
+        Ok("Q2 get: SA on a database location -> secret {set: false, rotated_at: null} present", Obj(saDb.Body)["secret"] is JsonObject ds && !(bool)ds["set"]! && ds["rotated_at"] is null, saDb.Body);
+        ForSchema("login_config_view_super", saDb);
         ForSchema("login_config_view_super", r);
         var miss = await Get(Cfg(missing), PA);
         var oos = await Get(Cfg(B1), PA);
@@ -507,11 +515,14 @@ try
         Ok("get: bad id -> 404", Err(await Get("/api/orgs/locations/not-a-uuid/login-config", SA), 404, "not_found"));
         r = await Get(Cfg(A1), RD);
         Ok("get: org:V reader of the location -> 200 restricted", r.Status == 200 && !Obj(r.Body).ContainsKey("oidc_authority"));
+        Ok("Q2 get: org:V -> no secret key (omitted, not null) [TLD 10:02 Q2]", r.Status == 200 && !Obj(r.Body).ContainsKey("secret"), r.Body);
         ForSchema("login_config_view_restricted", r);
         Ok("get: org:V reader of another location -> 404", Err(await Get(Cfg(A2), RD), 404, "not_found"));
         Ok("get: no role -> 403 forbidden", Err(await Get(Cfg(A1), NO), 403, "forbidden"));
         Ok("get: custom role -> 403 forbidden", Err(await Get(Cfg(A1), CU), 403, "forbidden"));
         Ok("get: reads write no event", (await NewEvents()).Count == 0);
+        Ok("Q2 create/PUT: org:V never gets a view body (403 forbidden, no secret key; 2 not_admin events)", Err(await Post(RD, Create(P_A, "RD try", DbCfg())), 403, "forbidden")
+            && Err(await Put(A1, RD, DbCfg(), "\"1\""), 403, "forbidden") && (await NewEvents()).Count == 2);
     }
 
     // ================= 4. PUT =================
@@ -565,13 +576,16 @@ try
         Ok("put: reason 501 chars -> reason_length (also on a non-downgrade)", HasField(r, "reason", "reason_length"));
         r = await Put(A1, PA, With(EntraCfg(T3), "reason", " " + new string('r', 500) + new string(' ', 1499)), "\"1\"");
         Ok("put: reason 500 after trim (2000 raw) accepted by validation", r.Status == 200, r.Body);
-        Ok("put: db -> entra (tenant only) stores secret_ref = Entra:SecretRef (TLD 9:49)", r.Status == 200 && (bool)Obj(r.Body)["secret"]!["set"]!
+        Ok("put: db -> entra (tenant only) stores secret_ref = Entra:SecretRef (TLD 9:49); PA response has no secret key (Q2)", r.Status == 200 && !Obj(r.Body).ContainsKey("secret")
             && await OScalar<string>("SELECT secret_ref FROM auth.location_login_config WHERE location_id=$1", A1) == DeployArn, r.Body);
         // That PUT applied (db -> entra T3). Put it back to database for the next steps.
         await NewEvents();
         r = await Put(A1, PA, DbCfg(), "\"2\"");
-        Ok("put: entra -> database (no secret_ref in body) -> 200, oidc + secret cleared by the server (TLD 9:49)", r.Status == 200 && r.ETag == "\"3\"" && (bool)Obj(r.Body)["secret"]!["set"]! == false
+        Ok("put: entra -> database (no secret_ref in body) -> 200, oidc + secret cleared by the server (TLD 9:49)", r.Status == 200 && r.ETag == "\"3\"" && !Obj(r.Body).ContainsKey("secret")
             && await OScalar<long>("SELECT count(*) FROM auth.location_login_config WHERE location_id=$1 AND oidc_authority IS NULL AND oidc_client_id IS NULL AND secret_ref IS NULL", A1) == 1, r.Body);
+        var saAfterDb = Obj((await Get(Cfg(A1), SA)).Body);
+        Ok("Q2 get: SA on a database location with past secret_ref change rows -> secret {set: false, rotated_at: null} (secret_view rule)",
+            saAfterDb["secret"] is JsonObject dbs && !(bool)dbs["set"]! && dbs["rotated_at"] is null, saAfterDb.ToJsonString());
         var evDb = await NewEvents();
         Ok("put: entra -> database event changed_fields lists secret_ref (cleared), no value", evDb.Count == 1 && Valid(evDb[0])
             && evDb[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["provider_kind", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret_ref"])
@@ -591,7 +605,7 @@ try
 
         // Spec example: PA database -> entra with a secret (applies immediately, oidc_* server-filled).
         r = await Put(A1, PA, EntraCfg(T3), "\"3\"");
-        Ok("put: PA db -> entra -> 200, ETag \"4\", restricted view", r.Status == 200 && r.ETag == "\"4\"" && !Obj(r.Body).ContainsKey("oidc_authority") && (bool)Obj(r.Body)["secret"]!["set"]!, r.Body);
+        Ok("put: PA db -> entra -> 200, ETag \"4\", restricted view", r.Status == 200 && r.ETag == "\"4\"" && !Obj(r.Body).ContainsKey("oidc_authority") && !Obj(r.Body).ContainsKey("secret"), r.Body);
         ForSchema("login_config_view_restricted", r);
         var ev = await NewEvents();
         Ok("put: update event changed_fields provider_kind, tenants, oidc_*, secret_ref; before/after; no secret value",
@@ -615,6 +629,7 @@ try
         Ok("put: SA mfa off, whitespace reason -> 400 reason_required", Err(r, 400, "reason_required"));
         r = await Put(A1, SA, With(EntraCfg(T3, mfa: false), "reason", "Client's Entra conditional access already enforces MFA; ticket OPS-1234"), "\"4\"");
         Ok("put: SA mfa off + reason -> 200 super view", r.Status == 200 && (bool)Obj(r.Body)["mfa_required"]! == false && Obj(r.Body).ContainsKey("oidc_authority"));
+        Ok("Q2 put: SA 200 response has secret {set: true, rotated_at} [TLD 10:02 Q2]", Obj(r.Body)["secret"] is JsonObject ps && ps.Count == 2 && (bool)ps["set"]! && ps["rotated_at"] is not null, r.Body);
         ForSchema("login_config_view_super", r);
         ev = await NewEvents();
         Ok("put: SA downgrade event admin_type super + reason", ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["admin_type"]! == "super" && (string?)ev[0]["details"]!["reason"] is { Length: > 10 });
@@ -633,7 +648,7 @@ try
         ev = await NewEvents();
         Ok("put: entra -> entra edit -> changed_fields [display_name] only, stored secret_ref kept, rotated_at unchanged", r.Status == 200 && ev.Count == 1
             && ev[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["display_name"])
-            && (string?)Obj(r.Body)["secret"]!["rotated_at"] == rot0 && rot0 is not null
+            && !Obj(r.Body).ContainsKey("secret") && (string?)Obj((await Get(Cfg(A1), SA)).Body)["secret"]!["rotated_at"] == rot0 && rot0 is not null
             && await OScalar<string>("SELECT secret_ref FROM auth.location_login_config WHERE location_id=$1", A1) == Arn("llc/pre-d51-row"), r.Body);
         await OExec("UPDATE auth.location_login_config SET secret_ref = $2 WHERE location_id = $1", A1, DeployArn);
         r = await Put(A1, PA, EntraCfg(T3, display: "  Riverbend Casino North  "), "\"8\"");
@@ -669,6 +684,55 @@ try
         r = await Put(missing, NO, DbCfg(), "\"8\"");
         Ok("put: no role on a missing location -> 403 forbidden, no event", Err(r, 403, "forbidden") && (await NewEvents()).Count == 0);
         Ok("put: B1 untouched by any partner A caller", Rv(B1) == 1);
+    }
+
+    // ================= 4b. config is the source of truth (TLD 2026-11-04 10:02 Q1) =================
+    // Entra location B1 was created under Entra:SecretRef = DeployArn. "Restart" with a different allowlisted Entra:SecretRef and
+    // Entra:ClientId: what the login reader feeds to ISecretResolver (LocationLoginConfig.SecretRef) and the Super Admin view follow
+    // the new config, and the row is not rewritten (its copy still says DeployArn; nothing reads it; V11-ROWSECRETCLEANUP).
+    {
+        await using var loginDs = NpgsqlDataSource.Create(loginCs);
+        string RotArn = Arn("deploy/app-reg-rotated"), RotClient = "5f0c3e1a-00cc-4000-8000-0000000000dd"; // SSE2-FAKE-TEST-ONLY
+        async Task<string> RowSnap() => await OScalar<string>(
+            "SELECT concat_ws('|', secret_ref, oidc_authority, oidc_client_id, row_version::text, updated_at::text, updated_by::text) FROM auth.location_login_config WHERE location_id=$1", B1);
+        var snap0 = await RowSnap();
+        var changes0 = await Count("location_login_config_change");
+        var before = await new NpgsqlLocationLoginConfigReader(loginDs, Opts().Validated().Entra()).GetAsync(B1, default);
+        Ok("Q1: reader under the first Entra:SecretRef -> SecretRef = DeployArn, client id from Entra:ClientId", before?.SecretRef?.Reveal() == DeployArn && before.OidcClientId == ClientId);
+        var opts2 = Opts() with { EntraSecretRef = RotArn, EntraClientId = RotClient.ToUpperInvariant() };
+        var port2 = FreePort(port);
+        await using (var app2 = await AdminApiHost.BuildAsync(opts2 with { Urls = $"http://127.0.0.1:{port2}" }, dir))
+        {
+            await app2.StartAsync();
+            using var http2 = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port2}") };
+            using var req = new HttpRequestMessage(HttpMethod.Get, Cfg(B1));
+            req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", SA);
+            using var resp = await http2.SendAsync(req);
+            var body = Obj(await resp.Content.ReadAsStringAsync());
+            Ok("Q1: after restart with a new allowlisted Entra:SecretRef / Entra:ClientId, SA view shows the new client id and secret.set",
+                (int)resp.StatusCode == 200 && (string?)body["oidc_client_id"] == RotClient && (string?)body["oidc_authority"] == Authority && (bool)body["secret"]!["set"]!, body.ToJsonString());
+            await app2.StopAsync();
+        }
+        var after = await new NpgsqlLocationLoginConfigReader(loginDs, opts2.Validated().Entra()).GetAsync(B1, default);
+        Ok("Q1: after restart the reader (resolver input) returns the NEW Entra:SecretRef and client id, not the row copy",
+            after?.SecretRef?.Reveal() == RotArn && after.OidcClientId == RotClient && after.OidcAuthority == Authority && after.RowVersion == before!.RowVersion);
+        Ok("Q1: the row was not rewritten (secret_ref copy still DeployArn, row_version/updated_* same), no change row, no event",
+            await RowSnap() == snap0 && snap0.StartsWith(DeployArn + "|", StringComparison.Ordinal) && await Count("location_login_config_change") == changes0
+            && (await NewEvents()).Count == 0);
+        Ok("Q1: EntraDeployment prints [redacted] (no ARN)", !opts2.Validated().Entra().ToString().Contains("arn:") && !after!.ToString().Contains("arn:"));
+        await Check("Q1: reader refuses a null EntraDeployment (fail closed)", () =>
+        {
+            try { _ = new NpgsqlLocationLoginConfigReader(loginDs, null!); return Task.FromResult(false); }
+            catch (ArgumentNullException) { return Task.FromResult(true); }
+        });
+        // TLD 10:12: the rules stay in Admin.Api (AdminApiOptions.Validated); Entra() runs them, so a non-allowlisted value never
+        // reaches a reader, and the refusal names the key only.
+        await Check("Q1/TLD 10:12: Entra() runs the Admin.Api validator (non-allowlisted Entra:SecretRef -> refused, key named, no ARN)", () =>
+        {
+            var bad = "arn:aws:secretsmanager:us-west-2:111111111111:secret:FAKE-not-allowlisted-AbCdEf"; // SSE2-FAKE-TEST-ONLY
+            try { _ = (Opts() with { EntraSecretRef = bad }).Entra(); return Task.FromResult(false); }
+            catch (InvalidOperationException e) { return Task.FromResult(e.Message.Contains("Entra:SecretRef") && !e.Message.Contains("arn:") && !e.Message.Contains("111111111111")); }
+        });
     }
 
     // ================= 5. history =================

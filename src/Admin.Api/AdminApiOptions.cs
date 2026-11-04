@@ -1,4 +1,6 @@
 using System.Text.RegularExpressions;
+using Auth.Data;
+using Login.Abstractions;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 
@@ -90,5 +92,15 @@ public sealed record AdminApiOptions
         if (v.Length > 2048) return false;
         var m = ArnRe.Match(v);
         return m.Success && SecretRegions.Contains(m.Groups[1].Value) && SecretAccountIds.Contains(m.Groups[2].Value);
+    }
+
+    /// <summary>
+    /// The deployment Entra values for the login readers and the views [TLD 2026-11-04 10:02 Q1]. Runs Validated() first (the rules
+    /// above, unchanged since db8f360, TLD 10:12), so an invalid value never reaches a reader. Built once at startup; no hot reload.
+    /// </summary>
+    public EntraDeployment Entra()
+    {
+        var v = Validated();
+        return new EntraDeployment(v.EntraAuthority, v.EntraClientId, new SecretReference(v.EntraSecretRef));
     }
 }
