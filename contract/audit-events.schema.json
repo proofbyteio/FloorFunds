@@ -157,10 +157,10 @@
               "pattern": "^[0-9a-f]{64}$"
             },
             "reason": {
-              "description": "Known codes: remote_session [SRC: LD L418]; locked, mfa_missing, tenant_mismatch, stale_auth_time [SRC: PLAN L146]; bad_credentials covers both unknown user and wrong password (no existence oracle), outbox_unavailable [TL Decision 2026-11-02, OQ-24] (LD §16.19.5); no password_expired reason [TL Decision 2026-11-02, OQ-24]. rate_limited is not an outbox reason (LD §8 L431). Full list per LD §16.19.5 [TL Decision 2026-11-02, OQ-24].",
+              "description": "Known codes: remote_session [SRC: LD L418]; locked, mfa_missing, tenant_mismatch, stale_auth_time [SRC: PLAN L146]; bad_credentials covers both unknown user and wrong password (no existence oracle), outbox_unavailable [TL Decision 2026-11-02, OQ-24] (LD §16.19.5); no password_expired reason [TL Decision 2026-11-02, OQ-24]. rate_limited is not an outbox reason (LD §8 L431). Full list per LD §16.19.5 [TL Decision 2026-11-02, OQ-24]. v1.1: not_location_user = an Entra sign-in refused because the user is not a user of that location (partner_id null or not the location's partner, or no auth.user_location assignment; spec A-22) [TLD 2026-11-04 8:30].",
               "type": "string",
               "pattern": "^[a-z_]+$",
-              "examples": ["bad_credentials", "locked", "mfa_missing", "tenant_mismatch", "stale_auth_time", "remote_session"]
+              "examples": ["bad_credentials", "locked", "mfa_missing", "tenant_mismatch", "stale_auth_time", "remote_session", "not_location_user"]
             },
             "config_row_version": { "description": "OPTIONAL in v1.1: auth.location_login_config.row_version the sign-in used (Entra and database locations) [TLD 2026-11-04 7:45, SSE2 F16].", "type": "integer", "minimum": 1 },
             "provider_kind": { "$ref": "#/$defs/provider_kind" }

@@ -240,5 +240,14 @@ exp("login.failed config_row_version 3 ok", errs(AE, None, m(lf, details__config
 exp("login.failed config_row_version null rejected", errs(AE, None, m(lf, details__config_row_version=None)), True)
 exp("login.failed config_row_version -1 rejected", errs(AE, None, m(lf, details__config_row_version=-1)), True)
 
+# ---- 8. TLD 2026-11-04 8:30: not_location_user on auth.login.failed; 8:44 K4 spec pins ----
+exp("login.failed not_location_user ok", errs(AE, None, m(lf, details__reason="not_location_user")), False)
+exp("login.failed not_location_user + config_row_version ok", errs(AE, None, m(lf, details__reason="not_location_user", details__config_row_version=2)), False)
+exp("login.failed reason with upper case still rejected", errs(AE, None, m(lf, details__reason="Not_Location_User")), True)
+_lfr = S[AE]["$defs"]["auth.login.failed"]["properties"]["details"]["properties"]["reason"]
+exp("login.failed reason lists not_location_user (examples + description)", [] if ("not_location_user" in _lfr["examples"] and "not_location_user" in _lfr["description"]) else ["missing"], False)
+for _pin in ["### 7.4 `not_location_user` on `auth.login.failed`", "**Trust boundary [TLD 2026-11-04 8:44, K4].**", "**V11-RLSROLES**", "`SecretRef:AllowedAccountIds`", "`updated_by`, `updated_at` (and `partner_id` in a PUT body)"]:
+    exp("spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+
 print("v1.1-S2a checks: %d passed, %d failed" % (PASSES[0], len(FAIL)), "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)
