@@ -51,7 +51,14 @@ match+assigned signs in; no partner ids leaked), ENT_04f (mismatch vs unassigned
   `GetAsync`/`GetBySlugAsync` call and is mutable in tests via `Mutate`. `FixtureConfig.Build` no longer takes
   authority/client/secret and `WithoutSecret` is gone. The harness has one deployment client id, one ref
   `arn:sse2-fake-test-only:secret:deployment-9q7z` and one generated secret (SSE2-FAKE-TEST-ONLY), replacing
-  `ref-{a,b,c}`. A stand-in fixture JSON needs a `"deployment"` object; row-level oidc/secret fields are ignored.
+  `ref-{a,b,c}`.
+- **Future stand-in Entra fixture JSON** (`StandIn:Entra:Fixture`, read by `EntraFixture.Load` with web JSON defaults,
+  so camelCase keys): it needs a top-level `"deployment"` object with Authority, ClientId and SecretRef, e.g.
+  `"deployment": {"authority": "...", "clientId": "...", "secretRef": "..."}`. Per-location oidc and secret fields
+  (`oidcAuthority`, `oidcClientId`, `secretRef` on a location row) are ignored: every read overwrites them from
+  `deployment` for entra rows and nulls them for database rows. Without `deployment`, entra sign-in fails closed with
+  `client_missing`. No such JSON is committed yet (f76d18a's stand-in uses `FixtureEntraStore` but ships none; S2b C1
+  needed no stand-in patch).
 - Tests: ENT_CFG_01 (null ref → `client_missing`; database rows get nulls), ENT_CFG_01b (deployment ref unresolvable →
   `secret_unresolved`), ENT_CFG_03/03b/03c (a changed ref+secret, client id or authority reaches the next request; no
   cache), ENT_CFG_04 (no deployment ref → `client_missing` at request time, including between challenge and callback and
