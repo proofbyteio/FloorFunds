@@ -55,6 +55,38 @@ static class UiHost
         Guid Id(JsonObject o) => Guid.Parse((string)o["location_id"]!);
         readerLocations.Add(Id(l1)); readerLocations.Add(Id(l2)); // org:V reader of L1/L2 only
 
+        // ---- hostile API text (SSE2 1ec73d38: live XSS probe; TLD 2026-11-04 14:18 (A)) ----
+        // L5 carries the payloads in every free-text field the API accepts (location name, display_name, reason). The probes
+        // put them in fields the API must refuse (UUID / unknown keys); their outcomes are reported, API validation is unchanged.
+        string[] xp = ["<img src=x onerror=window.__xss=1>", "<script>window.__xss=1</script>", "\"><svg onload=window.__xss=1>", "javascript:window.__xss=1"];
+        string xName = string.Join(" ", xp), xDname = string.Join(" ", xp[..3]), xReason = string.Join(" ", xp[3], xp[0], xp[1], xp[2]);
+        var l5 = await Create(partnerA, xName, new { provider_kind = "database", display_name = xDname, entra_allowed_tenant_ids = Array.Empty<string>(),
+            allow_db_fallback = false, mfa_required = true, reason = xReason });
+        readerLocations.Add(Id(l5));
+        async Task<JsonObject> Probe(string label, object body)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, "/api/orgs/locations")
+            { Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json") };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", personas["sa"].Token);
+            using var res = await api.SendAsync(req);
+            var fields = new JsonArray();
+            if (JsonNode.Parse(await res.Content.ReadAsStringAsync()) is JsonObject eb && eb["fields"] is JsonArray fa)
+                foreach (var f in fa) fields.Add($"{(string?)f?["field"]}:{(string?)f?["code"]}");
+            return new JsonObject { ["probe"] = label, ["status"] = (int)res.StatusCode, ["fields"] = fields };
+        }
+        var probes = new JsonArray
+        {
+            await Probe("tenant id = javascript: URL", new { partner_id = partnerA.ToString("D"), name = "UI XSS probe 1", login_config = new { provider_kind = "entra", display_name = "UI Casino A",
+                entra_allowed_tenant_ids = new[] { xp[3] }, allow_db_fallback = false, mfa_required = true } }),
+            await Probe("tenant id = <img onerror>", new { partner_id = partnerA.ToString("D"), name = "UI XSS probe 2", login_config = new { provider_kind = "entra", display_name = "UI Casino A",
+                entra_allowed_tenant_ids = new[] { xp[0] }, allow_db_fallback = false, mfa_required = true } }),
+            await Probe("partner_id = <svg onload>", new { partner_id = xp[2], name = "UI XSS probe 3", login_config = Db("UI Casino A") }),
+            await Probe("oidc_authority = javascript: URL (only link-like field)", new { partner_id = partnerA.ToString("D"), name = "UI XSS probe 4", login_config = new { provider_kind = "entra",
+                display_name = "UI Casino A", entra_allowed_tenant_ids = new[] { tenants[2].ToString("D") }, oidc_authority = xp[3], allow_db_fallback = false, mfa_required = true } }),
+            await Probe("provider_kind = <script>", new { partner_id = partnerA.ToString("D"), name = "UI XSS probe 5", login_config = new { provider_kind = xp[1], display_name = "UI Casino A",
+                entra_allowed_tenant_ids = Array.Empty<string>(), allow_db_fallback = false, mfa_required = true } }),
+        };
+
         // ---- static + proxy host ----
         var b = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [] });
         b.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
@@ -105,6 +137,7 @@ static class UiHost
             ["partner_a"] = partnerA.ToString("D"), ["partner_b"] = partnerB.ToString("D"),
             ["l1"] = Id(l1).ToString("D"), ["l2"] = Id(l2).ToString("D"), ["l3"] = Id(l3).ToString("D"), ["l4"] = Id(l4).ToString("D"),
             ["t_free"] = tenants[2].ToString("D"), ["t_taken"] = tenants[1].ToString("D"),
+            ["l5"] = Id(l5).ToString("D"), ["xss"] = new JsonObject { ["name"] = xName, ["display_name"] = xDname, ["reason"] = xReason, ["probes"] = probes },
             ["users"] = new JsonObject(personas.Where(kv => kv.Value.Token.Length > 0).Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)JsonValue.Create(Sub(kv.Value.Token))))),
         };
         Console.WriteLine("UIHOST " + info.ToJsonString());
@@ -123,6 +156,28 @@ static class UiHost
             await using (var r = await cmd.ExecuteReaderAsync()) while (await r.ReadAsync()) byType[$"{r.GetString(0)} {r.GetString(1)}"] = r.GetInt64(2);
             summary["changes_by_actor"] = byActor; summary["events_by_type_actor"] = byType;
             await using (var cmd = new NpgsqlCommand("SELECT count(*) FROM auth.location", c)) summary["locations"] = (long)(await cmd.ExecuteScalarAsync())!;
+            // TLD 14:18 (A): the stores keep the hostile text byte-for-byte (UTF-8 hex), no server-side HTML escaping anywhere.
+            var x = new JsonObject();
+            async Task<JsonArray> Hex(string sql)
+            {
+                var a = new JsonArray();
+                await using var cmd = new NpgsqlCommand(sql, c); cmd.Parameters.Add(new() { Value = Id(l5) });
+                await using var r = await cmd.ExecuteReaderAsync(); while (await r.ReadAsync()) a.Add(r.IsDBNull(0) ? null : r.GetString(0));
+                return a;
+            }
+            x["location_name_hex"] = await Hex("SELECT encode(convert_to(name, 'UTF8'), 'hex') FROM auth.location WHERE location_id = $1");
+            x["display_name_hex"] = await Hex("SELECT encode(convert_to(display_name, 'UTF8'), 'hex') FROM auth.location_login_config WHERE location_id = $1");
+            x["change_reason_hex"] = await Hex("SELECT encode(convert_to(reason, 'UTF8'), 'hex') FROM auth.location_login_config_change WHERE location_id = $1 ORDER BY row_version");
+            x["outbox_reason_hex"] = await Hex("SELECT encode(convert_to(envelope->'details'->>'reason', 'UTF8'), 'hex') FROM auth.audit_outbox "
+                + "WHERE event_type = 'auth.provider.changed' AND envelope->'details'->>'location_id' = $1::text ORDER BY (envelope->'details'->>'row_version')::bigint");
+            await using (var cmd = new NpgsqlCommand(
+                """
+                SELECT (SELECT count(*) FROM auth.location WHERE name ~ '&(lt|gt|quot|amp|apos|#[0-9x])')
+                     + (SELECT count(*) FROM auth.location_login_config WHERE display_name ~ '&(lt|gt|quot|amp|apos|#[0-9x])')
+                     + (SELECT count(*) FROM auth.location_login_config_change WHERE reason ~ '&(lt|gt|quot|amp|apos|#[0-9x])')
+                     + (SELECT count(*) FROM auth.audit_outbox WHERE envelope::text ~ '&(lt|gt|quot|amp|apos|#[0-9x])')
+                """, c)) x["html_entity_rows"] = (long)(await cmd.ExecuteScalarAsync())!;
+            summary["xss"] = x;
         }
         Console.WriteLine("UIHOST-DB " + summary.ToJsonString());
         return 0;

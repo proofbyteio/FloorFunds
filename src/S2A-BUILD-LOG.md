@@ -357,6 +357,31 @@ Branch `fix/db-kit-kf` off 3e12b8d (kept apart from P3). No migration, spec or a
 - **Evidence after the TLD 13:15 KF-A P3 amend [TLD 2026-11-04 13:15] [KF-A]:** `/tmp/sse-llc1/p4d-evidence.txt` at the rebased P4 HEAD (new file; p4a–p4c left as they were; P3 evidence `/tmp/sse-llc1/p3q-evidence.txt`).
 - **Evidence after the TLD 13:54 P3 amend [TLD 2026-11-04 13:54]:** `/tmp/sse-llc1/p4e-evidence.txt` at the rebased P4 HEAD (new file; p4a–p4d left as they were; P3 evidence `/tmp/sse-llc1/p3r-evidence.txt`). From p4e on, nothing on 5432 is inspected with sudo: `ff_scratch_*` leftovers are counted as `ff_scratchadm`, `ff_sse` tables as the `ff_sse` owner role [TLD 13:54 item 3].
 
+### P4c — live XSS e2e (SSE2 GO on P3 9c0967a / P4 98605e5, review `/tmp/sse2-fverify/RANGE-9c0967a-98605e5-P4-REVIEW.md` md5 1ec73d3829399efce066146f369045a1, snapshot `/tmp/sse-llc1/RANGE-9c0967a-98605e5-P4-REVIEW.1ec73d38.snapshot.md`) [SSE2 1ec73d38] [TLD 2026-11-04 14:18] (one new test-only commit on top of 1a42e66; unpushed)
+- **Why:** SSE2's XSS PASS was a code read only [SSE2 1ec73d38 Info]; this makes it a live check. SSE2's GO names 9c0967a / 98605e5; the local P3 is now 435b539 (TLD 13:54 amend) and P4 is rebased to 1a42e66, so the GO is on the earlier SHAs (TL to confirm it carries over).
+- **Seed (`UiHost.cs`, `--ui-host` only):** L5 is created through the API (Super Admin, Partner A) with the payloads `<img src=x onerror=window.__xss=1>`, `<script>window.__xss=1</script>`, `"><svg onload=window.__xss=1>` and `javascript:window.__xss=1` in the location name, the display_name and the create reason. All three are accepted (they are trimmed text within length). The org:V reader can see L5.
+- **Refused payloads (validation unchanged):** each is 422. A javascript: URL as a tenant id gives `entra_allowed_tenant_ids/0:tenant_id_format`. `<img onerror>` as a tenant id gives the same. `<svg onload>` as partner_id gives `partner_id:partner_id_format`. A javascript: URL as oidc_authority (server config, the only link-like field) gives `login_config/oidc_authority:field_not_writable`. `<script>` as provider_kind gives `provider_kind_invalid`. No API field is rendered as a link (the only `<a>` elements are skip-link, conflict-reload and #tenant, all static).
+- **e2e step "XSS hostile API text":** covers the Super Admin view and edit, the Partner Admin view, edit and save (the display name set to the javascript: URL), the org:V view-only page, and the change history (the reason cell).
+  - It asserts `window.__xss` is undefined, and that #title, document.title, #bc-location, #saved-loc, the history reason and the #dname value are literal (textContent / value).
+  - It asserts that img/svg/iframe stay at 0, script stays at 1 and the anchors at the 3 static ones, with no `on*` attribute and no `javascript:` attribute value.
+  - It asserts there are no CSP violations, exceptions or console errors/warnings.
+- **TLD 14:18 (A), stored byte-for-byte:** the UIHOST-DB summary reads these as UTF-8 hex through the ff_sse owner/test role (no sudo) and the e2e compares them to the seeded strings:
+  - `auth.location.name`;
+  - `location_login_config.display_name`;
+  - `location_login_config_change.reason`;
+  - the `auth.audit_outbox` `auth.provider.changed` envelope `details.reason`.
+  - It also checks that 0 rows contain an HTML entity, so the page is the only place the text is encoded.
+  - The location name and display_name are not copied into the change or outbox rows: the audit state holds only provider_kind, tenants, fallback and MFA. (A) is therefore checked on the reason in both audit stores, and on the name and display_name in their own tables.
+- **DB counts updated:** SA 7 / PA 4 change rows, 7 locations.
+- **Mutations (`/tmp/sse-llc1/run/p4f-mut.sh`; each one restored by cp and its md5 compared):**
+  - mut6 switches the history cells to `innerHTML`. Caught: extra img/svg/script, the reason not literal, and a CSP inline-handler violation.
+  - mut7 adds server-side `WebUtility.HtmlEncode` on the location name. Caught: the name is not literal in the title or breadcrumb, the stored hex differs, and an entity row appears. The project is rebuilt around it.
+  - mut1a–mut5 are rerun.
+- **Evidence:** `/tmp/sse-llc1/p4f-evidence.txt` at the new HEAD (new file; p4a–p4e left as they were). No sudo: `ff_scratch_*` leftovers are counted as `ff_scratchadm`.
+- **P3 designed sudo checks re-run [TLD 2026-11-04 14:18 (B)]:** `/tmp/sse-llc1/p3s-evidence.txt`, produced at 435b539 in a detached worktree and labelled CURRENT. It runs k1-kit-tests.sh (new prefix), M(b), KF-A (c) and the server-log read, with `sudo -u postgres` only inside those 4. For those 4 it supersedes the "past" label in p3r; p3r is left untouched.
+- **Backlog [SSE2 1ec73d38 Low]:** re-review CSRF once the cookie-auth `/admin` host lands (OQ-S2a-1). This XSS step does not test CSRF.
+- **Open:** the reason_length copy is still TO CONFIRM [SSE2 1ec73d38 Info].
+
 ## P3 follow-up — TLD 11:57 o1–o3 + TLD 12:04 F1 + SSE2 de9c1946 F2 [TLD 2026-11-04 11:57] [TLD 2026-11-04 12:04] (third amend of the unpushed 6a71fbf)
 
 Review: `/tmp/sse2-fverify/RANGE-06dc8ac-6a71fbf-REVIEW.md` md5 de9c1946 (snapshot `/tmp/sse-llc1/RANGE-06dc8ac-6a71fbf-REVIEW.de9c1946.snapshot.md`). Evidence: `/tmp/sse-llc1/p3o-evidence.txt` (new file; p3f, p3h–p3n untouched).

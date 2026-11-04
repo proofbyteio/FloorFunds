@@ -260,6 +260,60 @@ await step("PA partner-create", async () => {
   ok("org:V reader create -> 403 forbidden + request id (F-A3)", e2.length === 1 && e2[0].code === "forbidden" && RID.test(e2[0].rid), e2);
 });
 
+await step("XSS hostile API text", async () => {
+  // SSE2 1ec73d38 (live probe of the code-read XSS PASS) + TLD 2026-11-04 14:18 (A). UiHost seeded L5 through the API with the payloads in
+  // the location name, display_name and the create reason; the probes put them in fields the API must refuse.
+  const X = H.xss, loc = H.l5;
+  console.log("INFO xss probes " + JSON.stringify(X.probes));
+  ok("XSS probes: the API refuses the payloads in UUID / enum / server-only fields (422, field named), validation unchanged",
+    X.probes.length === 5 && X.probes.every(p => p.status === 422 && p.fields.length >= 1), X.probes);
+  // A clean page of the same kind is the baseline for img/svg/script and attribute counts.
+  const dom = () => ev(`(() => { const all = [...document.querySelectorAll("*")];
+    return { img: document.querySelectorAll("img").length, svg: document.querySelectorAll("svg").length, script: document.querySelectorAll("script").length,
+      iframe: document.querySelectorAll("iframe,object,embed").length,
+      on: all.filter(e => [...e.attributes].some(a => /^on/i.test(a.name))).map(e => e.tagName),
+      js: all.filter(e => [...e.attributes].some(a => /^\\s*javascript:/i.test(a.value))).map(e => e.tagName + " " + [...e.attributes].map(a => a.name).join(",")),
+      xss: typeof window.__xss, anchors: document.querySelectorAll("a").length }; })()`);
+  await open(page("sa", H.l4)); const base = await dom();
+  ok("XSS baseline (clean SA view): 0 img/svg/iframe, 1 script (the module), no on* attribute, no javascript: value", base.img === 0 && base.svg === 0 && base.script === 1
+    && base.iframe === 0 && base.on.length === 0 && base.js.length === 0 && base.xss === "undefined", base);
+  const clean = async (label) => { await sleep(300); const d = await dom();
+    ok(`XSS ${label}: window.__xss undefined, no extra img/svg/script/iframe/a, no on* attribute, no javascript: attribute`, d.xss === "undefined" && d.img === 0 && d.svg === 0
+      && d.script === 1 && d.iframe === 0 && d.on.length === 0 && d.js.length === 0 && d.anchors === base.anchors, d); };
+  const p0 = problems.length;
+  const lit = async (label, persona) => {
+    ok(`XSS ${label}: name literal in title, breadcrumb and document.title (textContent)`, await txt("#title") === `Sign-in method: ${X.name}`.replace(/\s+/g, " ")
+      && await ev(`document.querySelector("#bc-location").textContent`) === X.name && await ev(`document.title`) === `Sign-in method: ${X.name}`,
+      [await ev(`document.querySelector("#title").textContent`), await ev(`document.title`)]);
+  };
+  await open(page("sa", loc));
+  await lit("SA view", "sa");
+  let r = await rows();
+  ok("XSS SA view: history reason cell = the payload text, literally; Who = SA actor id", r.length === 1 && r[0][2] === H.users.sa && r[0][3].endsWith(`. Reason: ${X.reason}`), r);
+  await clean("SA view");
+  await click("#btn-change");
+  ok("XSS SA edit: title literal, display name input value literal", await ev(`document.querySelector("#title").textContent`) === `Edit sign-in method: ${X.name}`
+    && await ev(`document.querySelector("#dname").value`) === X.display_name);
+  await clean("SA edit");
+  await open(page("pa", loc));
+  await lit("PA view", "pa");
+  ok("XSS PA view: history reason literal", (await rows())[0]?.[3].endsWith(`. Reason: ${X.reason}`), await rows());
+  await clean("PA view");
+  await click("#btn-change");
+  ok("XSS PA edit: display name input value literal", await ev(`document.querySelector("#dname").value`) === X.display_name);
+  const js = "javascript:window.__xss=1";
+  await type("#dname", js); await save();
+  ok("XSS PA save (display name -> javascript: URL): saved banner shows the name literally, history row 2 by the PA", await vis("#banner-saved")
+    && await ev(`document.querySelector("#saved-loc").textContent`) === X.name && (await rows()).length === 2 && (await rows())[0][2] === H.users.pa, [await txt("#banner-saved"), await rows()]);
+  await clean("PA saved");
+  await open(page("rd", loc));
+  ok("XSS org:V view: view-only chip, name literal, history hidden", await txt("#role-chip-text") === "View only (org:V)" && await ev(`document.querySelector("#bc-location").textContent`) === X.name
+    && await ev(`document.title`) === `Sign-in method: ${X.name}` && !(await vis("#card-history")));
+  await clean("org:V view");
+  ok("XSS: no CSP violation, exception or console error/warning on the hostile pages", problems.length === p0, problems.slice(p0));
+  H.xssPaJs = js;
+});
+
 // ---------- global ----------
 ok("no CSP violation, script exception or console error/warning on any page", problems.length === 0, problems);
 ok("no request left 127.0.0.1 (ui host only)", outside.length === 0, outside);
@@ -273,8 +327,15 @@ const D = dbm ? JSON.parse(dbm[1]) : null;
 ok("real PG: the host reported its DB summary", D !== null);
 if (D) {
   ok("real PG: org:V reader wrote no change row (F-A3)", !(H.users.rd in D.changes_by_actor), D.changes_by_actor);
-  ok("real PG: change rows = 4 seeds + PA edit + SA downgrade + PA conflict PUT + SA create + PA create", D.changes_by_actor[H.users.sa] === 6 && D.changes_by_actor[H.users.pa] === 3, D.changes_by_actor);
-  ok("real PG: 6 locations (refused creates added none)", D.locations === 6, D.locations);
+  ok("real PG: change rows = 5 seeds (L1-L4 + hostile L5) + PA edit + SA downgrade + PA conflict PUT + SA create + PA create + PA hostile save", D.changes_by_actor[H.users.sa] === 7 && D.changes_by_actor[H.users.pa] === 4, D.changes_by_actor);
+  ok("real PG: 7 locations (refused creates and XSS probes added none)", D.locations === 7, D.locations);
+  // TLD 2026-11-04 14:18 (A): stored byte-for-byte, no server-side HTML escaping; the page is the only place the text is made safe.
+  const hex = (s) => Buffer.from(s, "utf8").toString("hex"), x = D.xss ?? {};
+  ok("real PG (A): auth.location.name = the hostile name, byte-for-byte (UTF-8)", JSON.stringify(x.location_name_hex) === JSON.stringify([hex(H.xss.name)]), x.location_name_hex);
+  ok("real PG (A): display_name = the javascript: text the Partner Admin saved, byte-for-byte", JSON.stringify(x.display_name_hex) === JSON.stringify([hex(H.xssPaJs ?? "")]), x.display_name_hex);
+  ok("real PG (A): change history reason = the hostile reason byte-for-byte (create row), null on the PA save", JSON.stringify(x.change_reason_hex) === JSON.stringify([hex(H.xss.reason), null]), x.change_reason_hex);
+  ok("real PG (A): outbox auth.provider.changed details.reason = the hostile reason byte-for-byte, null on the PA save", JSON.stringify(x.outbox_reason_hex) === JSON.stringify([hex(H.xss.reason), null]), x.outbox_reason_hex);
+  ok("real PG (A): no HTML entity (&lt; &gt; &quot; &amp; &apos; &#) in location, config, change or outbox rows", x.html_entity_rows === 0, x.html_entity_rows);
   ok("real PG: no auth.provider.changed by the reader", !(`auth.provider.changed ${H.users.rd}` in D.events_by_type_actor), D.events_by_type_actor);
   console.log("INFO db " + JSON.stringify(D));
 }
