@@ -200,7 +200,7 @@ function syncForm() {
     // MFA back on [Confirmed DEC-106, Mohanraj PM t145u] = UX D-106 `partner-mfa-off` (md5 2b17464c): while the saved value is
     // off the checkbox is enabled with the D-106 hint; ticking needs no reason (no reason field, no downgrade banner) and
     // unticking before Save only undoes the edit. Once saved on, it is the partner-edit lock again.
-    // Backup sign-in back off for a Partner Admin (allowed by the API, spec §4 / §6): Confirmed DEC-118 (PM Nov 5 2026 6:58 AM PT).
+    // Backup sign-in back off for a Partner Admin (allowed by the API, spec §4 / §6): Confirmed DEC-118/120/121 (own partner only; no reason needed).
     const ps = partnerMfaState(before);
     body.dataset.partnerState = ps;
     const mfaLocked = ps !== "partner-mfa-off";

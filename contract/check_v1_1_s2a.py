@@ -499,9 +499,10 @@ exp("DEC-106 ev_changed_pa_mfa_on: partner actor, changed_fields [mfa_required],
 exp("DEC-106 ev_changed_pa_mfa_on without actor rejected", errs(AE, None, m(_em, actor=DEL)), True)
 exp("DEC-106 ev_changed_pa_mfa_on without details.before rejected", errs(AE, None, m(_em, details__before=DEL)), True)
 for _pin in ["| DEC-106 | Mohanraj, PM chat t145u", "and since DEC-106 (PM t145u) that Partner Admins and Super Admins can both turn MFA back on",
-             "`mfa_required` → true [Confirmed DEC-106] (no reason needed;", "`allow_db_fallback` → false [**Confirmed DEC-118** (PM, Nov 5 2026 6:58 AM PT); LD L181, row 164;",
-             "`mfa_required` → true Confirmed DEC-106; `allow_db_fallback` → false Confirmed DEC-118]",
-             "own partner only: another partner's location gets steps 3–4 (404 `not_found`, event `forbidden_scope`), DEC-111 does not apply here (interim TLD 06:59 (1))",
+             "`mfa_required` → true [Confirmed DEC-106] (no reason needed;", "`allow_db_fallback` → false [**Confirmed DEC-118/120/121** (DEC-118 PM, Nov 5 2026 6:58 AM PT); LD L181, row 164;",
+             "`mfa_required` → true Confirmed DEC-106; `allow_db_fallback` → false Confirmed DEC-118/120/121]",
+             "own partner only: another partner's location gets steps 3–4 (404 `not_found`, event `forbidden_scope`) [Confirmed DEC-120; DEC-111's cross-partner exception covers the reason-length bounds only]",
+             "no reason needed, a reason that is sent follows §3.2 [Confirmed DEC-121]",
              "**Partner Admin, MFA off (`partner-mfa-off`) [Confirmed DEC-106] [D-106, md5 2b17464c]:**",
              "\"Off at this location now. Turn it on to add a second step at sign-in. Once saved, only a Super Admin can turn it off again.\"",
              "`partner-create` keeps MFA ticked and locked"]:

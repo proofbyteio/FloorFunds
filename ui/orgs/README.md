@@ -59,7 +59,7 @@ Super Admin pages have no `data-partner-state`.
 ## Open items (not decided here)
 
 - **Settled, no longer open:** the reason length default, 10 to 500 characters, Confirmed DEC-108 (PM, Nov 5 2026 6:47 AM PT; Mohanraj verbatim "10 to 500"). It stays configurable (DEC-107); the page does not check length on the client and shows the bounds the server reports (UX D-106 / D-108 copy).
-- **Settled, no longer open:** a Partner Admin may turn backup sign-in back off, Confirmed DEC-118 (PM, Nov 5 2026 6:58 AM PT), own partner only. The API allows it (spec §4, §6) and the page leaves the fallback control as it was: locked ("Only a Super Admin can turn this on.") while the saved value is off, and not locked with no hint while it is on. Turning it on stays Super Admin only with a reason (DEC-096). Turning MFA back on is settled: see `partner-mfa-off` below.
+- **Settled, no longer open:** a Partner Admin may turn backup sign-in back off, Confirmed DEC-118/120/121 (PM, Nov 5 2026): own partner's locations only (DEC-120), no written reason needed, and a reason that is sent still follows the length rule (DEC-121). The API allows it (spec §4, §6) and the page leaves the fallback control as it was: locked ("Only a Super Admin can turn this on.") while the saved value is off, and not locked with no hint while it is on. Turning it on stays Super Admin only with a reason (DEC-096). Turning MFA back on is settled: see `partner-mfa-off` below.
 - **TO CONFIRM (Mohanraj):**
   - The test sign-in deferral. There is no Test sign-in button and no gate on Save (spec §11, §12).
 - OQ-S2a-1: the host app, how it supplies `data-admin-type` and the bearer. The e2e host is a stand-in.
