@@ -238,7 +238,7 @@ await step("PA partner-mfa-off", async () => {
   let s0 = await st();
   ok("DEC-106 partner-mfa-off: saved MFA off -> MFA checkbox enabled (no aria-disabled, not disabled), unticked, exact D-106 hint (described by)", s0.ps === "partner-mfa-off" && s0.aria === null
     && !(await ev(`document.querySelector("#mfa").disabled`)) && s0.checked === false && s0.hint === HINT && (await attr("#mfa", "aria-describedby")).includes("mfa-hint"), s0);
-  ok("DEC-106 partner-mfa-off: no reason field, no downgrade banner; backup sign-in stays aria-disabled 'Only a Super Admin can turn this on.' (fallback back off TO CONFIRM)",
+  ok("DEC-106 partner-mfa-off: no reason field, no downgrade banner; backup sign-in stays aria-disabled 'Only a Super Admin can turn this on.' (fallback back off: Confirmed DEC-118)",
     !s0.reason && !s0.banner && s0.fb === "true" && s0.fbHint === "Only a Super Admin can turn this on.", s0);
   await mouseClick("#mfa"); const s1 = await st();
   ok("DEC-106 partner-mfa-off: ticking turns MFA on, still no reason field or downgrade banner, same hint", s1.checked === true && !s1.reason && !s1.banner && s1.hint === HINT && s1.aria === null, s1);

@@ -499,12 +499,14 @@ exp("DEC-106 ev_changed_pa_mfa_on: partner actor, changed_fields [mfa_required],
 exp("DEC-106 ev_changed_pa_mfa_on without actor rejected", errs(AE, None, m(_em, actor=DEL)), True)
 exp("DEC-106 ev_changed_pa_mfa_on without details.before rejected", errs(AE, None, m(_em, details__before=DEL)), True)
 for _pin in ["| DEC-106 | Mohanraj, PM chat t145u", "and since DEC-106 (PM t145u) that Partner Admins and Super Admins can both turn MFA back on",
-             "`mfa_required` → true [Confirmed DEC-106] (no reason needed;", "`allow_db_fallback` → false [TLD; LD L181, row 164; **TO CONFIRM** with Mohanraj, DEC-106 does not state it;",
-             "`mfa_required` → true Confirmed DEC-106; `allow_db_fallback` → false TLD, TO CONFIRM]",
+             "`mfa_required` → true [Confirmed DEC-106] (no reason needed;", "`allow_db_fallback` → false [**Confirmed DEC-118** (PM, Nov 5 2026 6:58 AM PT); LD L181, row 164;",
+             "`mfa_required` → true Confirmed DEC-106; `allow_db_fallback` → false Confirmed DEC-118]",
+             "own partner only: another partner's location gets steps 3–4 (404 `not_found`, event `forbidden_scope`), DEC-111 does not apply here (interim TLD 06:59 (1))",
              "**Partner Admin, MFA off (`partner-mfa-off`) [Confirmed DEC-106] [D-106, md5 2b17464c]:**",
              "\"Off at this location now. Turn it on to add a second step at sign-in. Once saved, only a Super Admin can turn it off again.\"",
              "`partner-create` keeps MFA ticked and locked"]:
     exp("DEC-106 spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+exp("DEC-118 spec: the Partner Admin fallback-back-off TO CONFIRM labels are gone", [k for k in ["**TO CONFIRM** with Mohanraj, DEC-106 does not state it", "`allow_db_fallback` → false TLD, TO CONFIRM]", "turning backup sign-in back off: **TO CONFIRM**", "Partner Admin backup-sign-in-back-off wording (TO CONFIRM"] if k in spec], False)
 exp("DEC-106 spec: the old 'upgrades being confirmed with Mohanraj' labels are gone", [k for k in ["TLD 2026-11-04 7:44 labels this as TL's, being confirmed with Mohanraj]", "Partner Admin upgrades (MFA back on, fallback back off) being allowed", "[Confirmed DEC-096, DEC-098; upgrades TLD]"] if k in spec], False)
 _row = [l for l in spec.splitlines() if l.startswith("| Partner Admin, own partner |")]
 exp("DEC-106 §6 matrix: Partner Admin own partner keeps mfa->true and fallback->false allowed, downgrades 403 not_super_admin (rules unchanged)",

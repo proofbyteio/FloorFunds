@@ -537,6 +537,19 @@ Branch `fix/db-kit-kf` off 3e12b8d (kept apart from P3). No migration, spec or a
   - Until then the bounds stay deployment config (`LoginConfig:ReasonMinLength` / `ReasonMaxLength`, startup snapshot); no Partner Admin edit path.
 - Evidence: `/tmp/sse-llc1/p4p-evidence.txt` (full suites + mut1a–mut36, detached worktree at this commit). Older evidence untouched.
 
+### P4n: DEC-118 PA fallback-off confirmed [DEC-118, PM Nov 5 2026 6:58 AM PT] (one new commit on top of e415214 (P4m); unpushed)
+
+- Source: PM log, position 715, Nov 5 2026 6:58 AM PT, verbatim per PM "Yes, Partner Admin and Super Admin can both turn the password fallback back off". Per TL relay; Mohanraj's own message was not found in the PM transcript (position 714 is the PM's acknowledgement only), so it is not independently verified. Closes the DEC-106 TO CONFIRM on a Partner Admin turning backup sign-in (`allow_db_fallback`) back off.
+- Relabel only, no behaviour change: TO CONFIRM -> Confirmed DEC-118 in the spec (label rule, §1 DEC-106 row, §4 upgrades paragraph, §6 sources, §11 `partner-mfa-off`, §12 open-items line), `contract/README.md` (DEC-106 row), `check_v1_1_s2a.py` (spec pins moved with the text, plus a pin that the old TO CONFIRM labels are gone), `ui/orgs/README.md` (moved from TO CONFIRM to Settled), the `llc-page.mjs` comment and the e2e pin label. No schema, API, error-code or UI behaviour change; `errors.md` untouched.
+- Admin check renamed: "DEC-118 pin (Confirmed DEC-118, ...): PA own fallback back off, no reason -> 200 (behaviour unchanged) ...". The assertion is unchanged.
+- Unchanged: turning backup sign-in on stays Super Admin only with a reason (DEC-096); "DEC-106: PA fallback on again -> 403 not_super_admin" kept as is.
+- Interim TLD 06:59 applies:
+  - (1) Partner Admin own partner only here. Another partner's location stays 404 `not_found` with a `forbidden_scope` event (steps 3–4). DEC-111 does not apply to this setting.
+  - (2) No reason is required to turn backup sign-in off, but a reason that is sent still follows §3.2.
+- New Admin check (no existing check pinned this case; the general "put: PA other partner" check uses a database body): "DEC-118 put: PB (other partner) fallback back off -> 404 not_found + forbidden_scope event, fallback stays on, nothing changed". New mutation mut37 lets another partner's Partner Admin through the scope check for an Entra body that turns fallback off; it must be caught by that check.
+- History lines left as they were: the P4j TO CONFIRM line and the P4m "Not changed" line (both describe the state at their commits); lines 358 / 381 unchanged.
+- Evidence: `/tmp/sse-llc1/p4p-evidence.txt` (full suites + mut1a–mut37, detached worktree at this commit; covers P4m and P4n). An earlier p4p attempt at e415214 was stopped for DEC-118 and is not cited.
+
 ## P3 follow-up — TLD 11:57 o1–o3 + TLD 12:04 F1 + SSE2 de9c1946 F2 [TLD 2026-11-04 11:57] [TLD 2026-11-04 12:04] (third amend of the unpushed 6a71fbf)
 
 Review: `/tmp/sse2-fverify/RANGE-06dc8ac-6a71fbf-REVIEW.md` md5 de9c1946 (snapshot `/tmp/sse-llc1/RANGE-06dc8ac-6a71fbf-REVIEW.de9c1946.snapshot.md`). Evidence: `/tmp/sse-llc1/p3o-evidence.txt` (new file; p3f, p3h–p3n untouched).

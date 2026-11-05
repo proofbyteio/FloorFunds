@@ -1991,8 +1991,8 @@ try
     // ================= 7j. DEC-106 [Mohanraj, PM t145u; UX D-106 md5 2b17464c] =================
     // Partner Admins and Super Admins can both turn MFA back on (create and PUT), no reason needed; a given reason follows §3.2
     // (blank -> null, else reason_length). MFA off stays Super Admin only with a reason (403 not_super_admin / 400 reason_required).
-    // Another partner's location -> 404 not_found + forbidden_scope. Partner Admin turning backup sign-in back off: TO CONFIRM,
-    // the current behaviour (200) is pinned here unchanged. No new error code.
+    // Another partner's location -> 404 not_found + forbidden_scope. Partner Admin turning backup sign-in back off: Confirmed DEC-118
+    // (PM Nov 5 2026 6:58 AM PT), own partner only (interim TLD 06:59 (1)); the current behaviour (200) is pinned here unchanged. No new error code.
     {
         const string Why = "Client's Entra conditional access already enforces MFA; ticket OPS-1234";
         var cr = await Post(SA, Create(P_A, "DEC-106 MFA off", With(DbCfg(mfa: false), "reason", Why)));
@@ -2083,14 +2083,20 @@ try
         Ok("DEC-106 create: PA with MFA on, no reason -> 201, created event (partner, reason null)", r.Status == 201 && ev.Count == 1 && Valid(ev[0])
             && (string)ev[0]["admin_type"]! == "partner" && ev[0]["details"]!["reason"] is null, Tag(r));
 
-        // TO CONFIRM (Mohanraj): Partner Admin turning backup sign-in back off. Current behaviour pinned, unchanged: 200, no reason.
+        // Confirmed DEC-118 (PM Nov 5 2026 6:58 AM PT): Partner Admin turning backup sign-in back off. Current behaviour pinned, unchanged: 200, no reason.
+        // Interim TLD 06:59 (1): own partner only; another partner's PA gets 404 not_found + forbidden_scope (DEC-111 does not apply here).
         Guid T6 = Guid.Parse("5f0c3e1a-00fa-4000-8000-00000000fa16");
         cr = await Post(SA, Create(P_A, "DEC-106 fallback on", With(EntraCfg(T6, fallback: true), "reason", "Pilot fallback per OPS-77")));
         Guid F1 = cr.Status == 201 ? LocOf(cr) : Guid.Empty;
         await NewEvents();
+        rv = Rv(F1); ch = await Count("location_login_config_change");
+        r = await Put(F1, PB, EntraCfg(T6, fallback: false), $"\"{rv}\"");
+        Ok("DEC-118 put: PB (other partner) fallback back off -> 404 not_found + forbidden_scope event, fallback stays on, nothing changed (TLD 06:59 (1))", cr.Status == 201 && Err(r, 404, "not_found")
+            && Denied(await NewEvents(), "forbidden_scope", F1, "partner", "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required")
+            && Rv(F1) == rv && await OScalar<bool>("SELECT allow_db_fallback FROM auth.location_login_config WHERE location_id=$1", F1) && await Count("location_login_config_change") == ch, Tag(r));
         r = await Put(F1, PA, EntraCfg(T6, fallback: false), $"\"{Rv(F1)}\"");
         ev = await NewEvents();
-        Ok("DEC-106 TO CONFIRM pin: PA own fallback back off, no reason -> 200 (current behaviour kept), partner event changed_fields [allow_db_fallback]", cr.Status == 201 && r.Status == 200
+        Ok("DEC-118 pin (Confirmed DEC-118, PM Nov 5 2026 6:58 AM PT): PA own fallback back off, no reason -> 200 (behaviour unchanged), partner event changed_fields [allow_db_fallback]", cr.Status == 201 && r.Status == 200
             && (bool)Obj(r.Body)["allow_db_fallback"]! == false && ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["admin_type"]! == "partner"
             && ev[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["allow_db_fallback"]), Tag(r));
         r = await Put(F1, PA, EntraCfg(T6, fallback: true), $"\"{Rv(F1)}\"");
