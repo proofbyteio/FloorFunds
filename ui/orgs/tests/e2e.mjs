@@ -374,7 +374,8 @@ await step("P4i limits fallback", async () => {
     return go();
   };
   listeners.push(lsn);
-  const HINT_C = "10 to 500 characters. Saved in the audit log. Required only if you turn off the second step or turn on backup sign-in.";
+  // UX D-108 (md5 9318c2f8) [TLD 2026-11-04 18:35 / 18:37]: with fallback limits the hint and the 422 copy show no numbers.
+  const HINT_C = "Saved in the audit log. In Create: required only if you turn off the second step or turn on backup sign-in.";
   await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/login-config/limits", requestStage: "Request" }] });
   const createCases = [
     ["limits fetch fails (network)", { kind: "fail" }],
@@ -388,14 +389,14 @@ await step("P4i limits fallback", async () => {
   for (const [name, m] of createCases) {
     mode = m; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
     const got = { state: await ev(`document.body.dataset.state`), hint: await txt("#reason-hint"), lname: await vis("#lname") };
-    ok(`P4i create: ${name} -> form shown, reason hint falls back to 10 / 500`, got.state === "create" && got.lname && got.hint === HINT_C, got);
+    ok(`P4i create: ${name} -> form shown, fallback limits, D-108 hint (no numbers)`, got.state === "create" && got.lname && got.hint === HINT_C, got);
   }
-  // The fallback bounds are also the 422 copy (the c50 API's own bound is 50, so its 422 names 10 / 500 only through the fallback).
+  // With fallback limits the 422 reason_length copy is D-108's (no numbers), not the c50 API's 50 / 200.
   mode = createCases[0][1]; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
   await type("#lname", "UI Cage P4i"); await type("#dname", "UI Casino A"); await mouseClick("#mfa"); await type("#reason", "too short"); await save();
   const e = await shownError();
-  ok("P4i create (fallback): a 9-character reason -> 422 copy 'Enter a reason of 10 to 500 characters.', still on /new", e.length === 1 && e[0].code === "validation_failed"
-    && await txt("#reason-err") === "Enter a reason of 10 to 500 characters." && await ev(`location.pathname.endsWith("/new")`), [e, await txt("#reason-err")]);
+  ok("P4i create (fallback): a 9-character reason -> 422 copy 'This reason is too short or too long. Edit it and try again.' (D-108), still on /new", e.length === 1 && e[0].code === "validation_failed"
+    && await txt("#reason-err") === "This reason is too short or too long. Edit it and try again." && await ev(`location.pathname.endsWith("/new")`), [e, await txt("#reason-err")]);
   mode = { kind: "fake", status: 401, body: "" }; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
   ok("P4i create: limits 401 is an access answer, not a fallback (page error, no form)", await ev(`document.body.dataset.state`) === "error" && !(await vis("#lname")), await ev(`document.body.dataset.state`));
   await cdp("Fetch.disable");
@@ -410,11 +411,85 @@ await step("P4i limits fallback", async () => {
     mode = { kind: "edit", edit }; await open(`/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`); mode = null;
     await click("#btn-change"); await mouseClick("#mfa");
     const got = { state: await ev(`document.body.dataset.state`), hint: await txt("#reason-hint") };
-    ok(`P4i edit: ${name} -> reason hint falls back to 10 / 500`, got.hint === "10 to 500 characters. Saved in the audit log.", got);
+    ok(`P4i edit: ${name} -> fallback limits, D-108 hint (no numbers)`, got.hint === HINT_C, got);
   }
   await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(lsn), 1);
   await open(page("sa", H.l1));
   ok("P4i: nothing was saved (L1 still MFA on)", await txt("#cur-mfa") === "Yes", await txt("#cur-mfa"));
+});
+// P4k [TLD 2026-11-04 18:35, SSE2 7b90e26f]: LOW-1 field-error clear; limits 403 / redirect / 3xx / non-JSON -> page error;
+// limits timeout (AbortController, injected short timeout) -> fallback; D-108 fallback copy vs the server's numbered copy.
+// All answers are faked in the browser with CDP Fetch (nothing reaches the API's write path).
+await step("P4k follow-ups", async () => {
+  let mode = null, post = null; const seen = [];
+  const lsn = (msg) => {
+    if (msg.sessionId !== S) return;
+    if (msg.method === "Network.requestWillBeSent" && msg.params.redirectResponse) seen.push(msg.params.request.url);
+    if (msg.method !== "Fetch.requestPaused") return;
+    const p = msg.params, id = p.requestId, go = () => cdp("Fetch.continueRequest", { requestId: id }).catch(() => {});
+    if (p.request.method === "POST" && post) { const f = post.shift(); return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: f.status, responseHeaders: [{ name: "Content-Type", value: "application/json" }, { name: "X-Request-ID", value: "01a1a94d-0000-7000-8000-000000000418" }], body: Buffer.from(JSON.stringify(f.body)).toString("base64") }).catch(() => {}); }
+    if (!mode || p.request.method !== "GET" || !/\/api\/orgs\/login-config\/limits$/.test(p.request.url)) return go();
+    if (mode.kind === "stall") return; // never answered: only the page's abort ends it
+    return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: mode.status, responseHeaders: mode.headers, body: Buffer.from(mode.body).toString("base64") }).catch(() => {});
+  };
+  listeners.push(lsn);
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/login-config/limits", requestStage: "Request" }, { urlPattern: "*/api/orgs/locations", requestStage: "Request" }] });
+  const JSON_CT = [{ name: "Content-Type", value: "application/json" }];
+  const HINT_F = "Saved in the audit log. In Create: required only if you turn off the second step or turn on backup sign-in.";
+  // LOW-1: a 422 on every mapped field, then a retry that answers 500: each field is back to its own describedby, not invalid.
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`);
+  await type("#lname", "UI Cage P4k"); await type("#dname", "UI Casino A");
+  const F = [["lname", "lname-err"], ["dname", "dname-err"], ["tenant", "tenant-err"], ["reason", "reason-err"], ["fallback", "fallback-err"], ["mfa", "fallback-err"]];
+  const snap = async () => { const o = {}; for (const [id] of F) o[id] = { inv: await attr("#" + id, "aria-invalid"), desc: await attr("#" + id, "aria-describedby") }; return o; };
+  const base = await snap();
+  post = [{ status: 422, body: { error: "validation_failed", fields: [{ field: "name", code: "name_invalid" }, { field: "login_config/display_name", code: "display_name_invalid" },
+    { field: "login_config/entra_allowed_tenant_ids", code: "tenant_count" }, { field: "login_config/reason", code: "reason_length" },
+    { field: "login_config/allow_db_fallback", code: "fallback_not_applicable" }, { field: "login_config/mfa_required", code: "type" }] } },
+    { status: 500, body: { error: "internal_error" } }];
+  await save(); const s1 = await snap();
+  await save(); const s2 = await snap(); post = null;
+  for (const [id, eid] of F) {
+    ok(`P4k LOW-1: #${id} 422 -> aria-invalid + ${eid} in aria-describedby; retry -> cleared, other ids kept`,
+      s1[id].inv === "true" && (s1[id].desc ?? "").split(" ").includes(eid) && s2[id].inv === null && (s2[id].desc ?? "") === (base[id].desc ?? "")
+      && !(s2[id].desc ?? "").split(" ").includes(eid), { base: base[id], s1: s1[id], s2: s2[id] });
+  }
+  ok("P4k LOW-1: retry shows the 500 banner and no field error", (await shownError())[0]?.code === "internal_error" && await ev(`[...document.querySelectorAll(".field__error")].every(e => e.hidden)`), await shownError());
+  // Limits answers that are page errors (no fallback, no form).
+  const errCases = [
+    ["limits 403", { status: 403, headers: JSON_CT, body: JSON.stringify({ error: "forbidden" }) }, null],
+    ["limits redirect (302 followed)", { status: 302, headers: [{ name: "Location", value: `${H.ui}/p4k-sign-in` }], body: "" }, "401"],
+    ["limits 3xx not followed (300, no Location)", { status: 300, headers: JSON_CT, body: "{}" }, "401"],
+    ["limits 200 text/html", { status: 200, headers: [{ name: "Content-Type", value: "text/html" }], body: "<!doctype html><title>Sign in</title>" }, "401"],
+  ];
+  for (const [name, m, code] of errCases) {
+    seen.length = 0; mode = { kind: "fake", ...m }; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
+    const got = { state: await ev(`document.body.dataset.state`), lname: await vis("#lname"), err: await shownError(), seen: [...seen] };
+    ok(`P4k create: ${name} -> page error${code ? " shown as a 401" : ""}, no form, no fallback`, got.state === "error" && !got.lname && got.err.length === 1
+      && (code === null || got.err[0].code === code) && (!/302/.test(name) || got.seen.some(u => u.endsWith("/p4k-sign-in"))), got);
+  }
+  // A JSON 200 with an invalid body still falls back.
+  mode = { kind: "fake", status: 200, headers: JSON_CT, body: "not json" }; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
+  ok("P4k create: limits JSON 200 with an unparseable body -> fallback (form, D-108 hint)", await ev(`document.body.dataset.state`) === "create" && await txt("#reason-hint") === HINT_F, await txt("#reason-hint"));
+  // Timeout: a stalled limits GET is aborted (injected 400 ms instead of LIMITS_TIMEOUT_MS) and falls back like a failed fetch.
+  const { identifier } = await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "globalThis.__llcLimitsTimeoutMs = 400;" });
+  mode = { kind: "stall" }; const t0 = Date.now(); await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); const dt = Date.now() - t0; mode = null;
+  await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+  const gotT = { state: await ev(`document.body.dataset.state`), lname: await vis("#lname"), hint: await txt("#reason-hint"), dt };
+  ok("P4k create: stalled limits GET -> aborted, fallback form with the D-108 hint (no numbers)", gotT.state === "create" && gotT.lname && gotT.hint === HINT_F && dt < 8000, gotT);
+  await type("#lname", "UI Cage P4k"); await type("#dname", "UI Casino A"); await mouseClick("#mfa"); await type("#reason", "too short"); await save();
+  ok("P4k create (timeout fallback): 9-character reason -> real 422, D-108 copy 'This reason is too short or too long. Edit it and try again.'",
+    await txt("#reason-err") === "This reason is too short or too long. Edit it and try again." && !/\d/.test(await txt("#reason-err")), await txt("#reason-err"));
+  await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(lsn), 1);
+  // Server path: the c50 API's own limits (50 / 200) -> the numbered hint and 422 copy stay.
+  await open(`/c50/sa/orgs/${H.partner_a}/locations/new`);
+  ok("P4k create (server limits): hint '50 to 200 characters. Saved in the audit log. Required only ...'",
+    await txt("#reason-hint") === "50 to 200 characters. Saved in the audit log. Required only if you turn off the second step or turn on backup sign-in.", await txt("#reason-hint"));
+  await type("#lname", "UI Cage P4k"); await type("#dname", "UI Casino A"); await mouseClick("#mfa"); await type("#reason", "too short"); await save();
+  ok("P4k create (server limits): 9-character reason -> real 422 'Enter a reason of 50 to 200 characters.'", await txt("#reason-err") === "Enter a reason of 50 to 200 characters.", await txt("#reason-err"));
+  await open(`/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`); await click("#btn-change"); await mouseClick("#mfa");
+  ok("P4k edit (server limits): hint '50 to 200 characters. Saved in the audit log.'", await txt("#reason-hint") === "50 to 200 characters. Saved in the audit log.", await txt("#reason-hint"));
+  await open(page("sa", H.l1));
+  ok("P4k: nothing was saved (L1 still MFA on)", await txt("#cur-mfa") === "Yes", await txt("#cur-mfa"));
 });
 await step("PA partner-create", async () => {
   await open(`/as/pa/orgs/${H.partner_a}/locations/new`);

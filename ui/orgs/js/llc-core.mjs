@@ -145,3 +145,30 @@ export function limitsFrom(o) {
 export function limitsOrFallback(o) {
   return limitsFrom(o) ?? { min: REASON_BOUNDS.min, max: REASON_BOUNDS.max };
 }
+
+/** [SSE2 7b90e26f LOW-1, TLD 2026-11-04 18:35] the error slot a field's 422 copy goes in: the MFA checkbox has none of its
+ *  own and shares backup sign-in's (#fallback-err). setFieldError adds this id to aria-describedby; clearFieldError removes it. */
+export function errIdFor(id) {
+  return id === "mfa" ? "fallback-err" : id + "-err";
+}
+
+/** [TLD 2026-11-04 18:35 item 4] the create page aborts GET /orgs/login-config/limits after this long and falls back
+ *  as on a failed fetch. Tests may pass a shorter positive integer (override); anything else -> LIMITS_TIMEOUT_MS. */
+export const LIMITS_TIMEOUT_MS = 10000;
+export function limitsTimeout(override) {
+  return Number.isInteger(override) && override > 0 ? override : LIMITS_TIMEOUT_MS;
+}
+
+/** [TLD 2026-11-04 18:35 items 2 and 5] what the create page does with the limits answer r (api(): status, body, json, redirected).
+ *  "error401": a redirect (followed, or a 3xx answer) or a 200 that is not JSON (a sign-in page) -> page error as a 401.
+ *  "error": 401 / 403 -> page error from the answer (an access answer, never a fallback).
+ *  "server": a JSON 200 whose limits pass limitsFrom -> { limits }.
+ *  "fallback": network failure, timeout (status null), any other status, or a JSON 200 with missing / invalid limits. */
+export function limitsOutcome(r) {
+  if (r.status === null) return { kind: "fallback" };
+  if (r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "error401" };
+  if (r.status === 401 || r.status === 403) return { kind: "error" };
+  if (r.status === 200 && !r.json) return { kind: "error401" };
+  const limits = r.status === 200 ? limitsFrom(r.body) : null;
+  return limits ? { kind: "server", limits } : { kind: "fallback" };
+}

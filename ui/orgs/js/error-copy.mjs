@@ -43,5 +43,10 @@ export const FIELD = Object.freeze({
  *  (create) or the location GET's reason_min_length / reason_max_length (edit). */
 export function reasonLengthCopy(min, max) { return `Enter a reason of ${min} to ${max} characters.`; }
 
+/** UX D-108 (reviews/sse-error-copy-review.md md5 9318c2f8, TLD 2026-11-04 18:35 / 18:37): when the limits did not load and the
+ *  page uses the fallback bounds (REASON_BOUNDS), it shows no numbers (the server may enforce tighter ones). */
+export const REASON_HINT_FALLBACK = "Saved in the audit log. In Create: required only if you turn off the second step or turn on backup sign-in.";
+export const REASON_LENGTH_FALLBACK = "This reason is too short or too long. Edit it and try again.";
+
 /** X-Request-ID display (approved D-102): own last line of every top-level error banner, never under a field; shown on every error banner so support can find the server log line (`request_id=<value>`). */
 export function requestIdText(id) { return id ? `Request ID: ${id}` : ""; }

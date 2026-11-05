@@ -2,8 +2,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, formatPT, changeDetails, fieldTarget,
-  ifMatchFrom, fallbackText, limitsFrom, limitsOrFallback, REASON_BOUNDS, partnerMfaState, PARTNER_MFA_OFF_HINT } from "../js/llc-core.mjs";
-import { TOP_LEVEL, FIELD, requestIdText, reasonLengthCopy } from "../js/error-copy.mjs";
+  ifMatchFrom, fallbackText, limitsFrom, limitsOrFallback, REASON_BOUNDS, partnerMfaState, PARTNER_MFA_OFF_HINT,
+  errIdFor, LIMITS_TIMEOUT_MS, limitsTimeout, limitsOutcome } from "../js/llc-core.mjs";
+import { TOP_LEVEL, FIELD, requestIdText, reasonLengthCopy, REASON_HINT_FALLBACK, REASON_LENGTH_FALLBACK } from "../js/error-copy.mjs";
 
 const P = "5f0c3e1a-0001-4000-8000-000000000001", L = "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8";
 
@@ -124,4 +125,34 @@ test("DEC-106 / D-106: partner MFA state from the SAVED value; upgrade is not a 
   assert.equal(partnerMfaState({ mfa_required: true, allow_db_fallback: false }), "partner-edit");
   assert.equal(PARTNER_MFA_OFF_HINT, "Off at this location now. Turn it on to add a second step at sign-in. Once saved, only a Super Admin can turn it off again.");
   assert.equal(isDowngrade({ mfa_required: false, allow_db_fallback: false }, { mfa_required: true, allow_db_fallback: false }), false);
+});
+
+test("TLD 18:35 LOW-1: field -> error slot (setFieldError and clearFieldError share it; mfa -> fallback-err)", () => {
+  for (const [id, e] of [["lname", "lname-err"], ["dname", "dname-err"], ["tenant", "tenant-err"], ["reason", "reason-err"], ["fallback", "fallback-err"], ["mfa", "fallback-err"]])
+    assert.equal(errIdFor(id), e, id);
+});
+test("TLD 18:35 items 2 / 4 / 5: limits answer -> page error, server limits or fallback; 10 s timeout", () => {
+  const j = (status, body, extra = {}) => ({ status, body, json: true, redirected: false, ...extra });
+  assert.deepEqual(limitsOutcome(j(401, null)), { kind: "error" });
+  assert.deepEqual(limitsOutcome(j(403, { error: "forbidden" })), { kind: "error" });
+  assert.deepEqual(limitsOutcome(j(200, { reason_min_length: 10, reason_max_length: 500 }, { redirected: true })), { kind: "error401" });
+  for (const s of [300, 302, 303, 304, 307, 308]) assert.deepEqual(limitsOutcome(j(s, null)), { kind: "error401" }, String(s));
+  assert.deepEqual(limitsOutcome({ status: 200, body: null, json: false, redirected: false }), { kind: "error401" });
+  assert.deepEqual(limitsOutcome({ status: null, body: null, json: false, redirected: false }), { kind: "fallback" }); // network / timeout
+  assert.deepEqual(limitsOutcome(j(500, { error: "internal_error" })), { kind: "fallback" });
+  assert.deepEqual(limitsOutcome(j(404, null)), { kind: "fallback" });
+  assert.deepEqual(limitsOutcome(j(200, {})), { kind: "fallback" });
+  assert.deepEqual(limitsOutcome(j(200, null)), { kind: "fallback" }); // JSON content-type, unparseable body
+  assert.deepEqual(limitsOutcome(j(200, { reason_min_length: 5, reason_max_length: 500 })), { kind: "fallback" });
+  assert.deepEqual(limitsOutcome(j(200, { reason_min_length: 50, reason_max_length: 200 })), { kind: "server", limits: { min: 50, max: 200 } });
+  assert.equal(LIMITS_TIMEOUT_MS, 10000);
+  assert.equal(limitsTimeout(undefined), 10000);
+  assert.equal(limitsTimeout(300), 300);
+  for (const bad of [0, -1, 1.5, "300", null]) assert.equal(limitsTimeout(bad), 10000, String(bad));
+});
+test("UX D-108 (TLD 18:37): fallback copy has no numbers; server copy keeps them", () => {
+  assert.equal(REASON_HINT_FALLBACK, "Saved in the audit log. In Create: required only if you turn off the second step or turn on backup sign-in.");
+  assert.equal(REASON_LENGTH_FALLBACK, "This reason is too short or too long. Edit it and try again.");
+  assert.ok(!/\d/.test(REASON_HINT_FALLBACK + REASON_LENGTH_FALLBACK));
+  assert.equal(reasonLengthCopy(50, 200), "Enter a reason of 50 to 200 characters.");
 });
