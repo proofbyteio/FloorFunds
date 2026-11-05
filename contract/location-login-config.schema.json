@@ -62,7 +62,7 @@
       "pattern": "^\\S(?:.*\\S)?$"
     },
     "reason": {
-      "description": "Written reason [Confirmed DEC-096, DEC-098]. The server trims it; whitespace-only counts as absent. Non-null after trim: 10..500 characters [TLD 2026-11-04 7:39, OQ-S2a-7] (else 422 reason_length). Required for a downgrade (absent/null/blank -> 400 reason_required). Stored trimmed in the change row and the event. Raw input capped at 2000 characters.",
+      "description": "Written reason [Confirmed DEC-096, DEC-098]. The server trims it; whitespace-only counts as absent. Non-null after trim: LoginConfig:ReasonMinLength..LoginConfig:ReasonMaxLength code points [DEC-107; TLD 2026-11-04 16:32 Q1=A], deployment config snapshotted at startup (interim defaults 10 (TO CONFIRM) and 500), always inside the DB's 10..500 (CHECK llcc_reason), so this schema pins 10..500 and the server applies the configured bounds (else 422 reason_length). The bounds in effect: GET reason_min_length / reason_max_length, and GET /api/orgs/login-config/limits. Required for a downgrade (absent/null/blank -> 400 reason_required). Stored trimmed in the change row and the event. Raw input capped at 2000 characters.",
       "oneOf": [
         {
           "type": "null"
@@ -196,8 +196,15 @@
         }
       }
     },
+    "reason_length_limit": {
+      "description": "DEC-107 [TLD 2026-11-04 16:32]: a reason bound in effect (code points after trim), from LoginConfig:ReasonMinLength / LoginConfig:ReasonMaxLength, snapshotted at startup. The API refuses to start unless 10 <= min <= max <= 500 (DB CHECK llcc_reason, db/migrations.sql L94), so every value is in 10..500. Read-only: a client sending reason_min_length / reason_max_length in a write gets 422 unknown_field.",
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 500,
+      "readOnly": true
+    },
     "login_config_view_super": {
-      "description": "GET / PUT 200 / POST 201 body for a SUPER ADMIN caller: includes the server-filled oidc_authority / oidc_client_id [TLD 2026-11-04 7:41] and secret {set} [TLD 2026-11-04 10:02 Q2: Super Admin only; rotated_at dropped, TLD 2026-11-04 10:42], all from deployment config, never the per-row copy [TLD 2026-11-04 10:02 Q1]. Closed: no secret_ref key (additionalProperties false). row_version mirrors the ETag.",
+      "description": "GET / PUT 200 / POST 201 body for a SUPER ADMIN caller: includes the server-filled oidc_authority / oidc_client_id [TLD 2026-11-04 7:41] and secret {set} [TLD 2026-11-04 10:02 Q2: Super Admin only; rotated_at dropped, TLD 2026-11-04 10:42], all from deployment config, never the per-row copy [TLD 2026-11-04 10:02 Q1]. Closed: no secret_ref key (additionalProperties false). row_version mirrors the ETag. reason_min_length / reason_max_length: GET 200 only [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)], see login_config_get_* / login_config_saved_*.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -288,11 +295,17 @@
         "updated_at": {
           "type": "string",
           "format": "date-time"
+        },
+        "reason_min_length": {
+          "$ref": "#/$defs/reason_length_limit"
+        },
+        "reason_max_length": {
+          "$ref": "#/$defs/reason_length_limit"
         }
       }
     },
     "login_config_view_restricted": {
-      "description": "GET / PUT 200 / POST 201 body for a Partner Admin or an org:V reader: oidc_authority and oidc_client_id are NOT present [TLD 2026-11-04 7:41], and neither is secret {set}: the key is omitted, not null [TLD 2026-11-04 10:02 Q2; UX mockup cbb3ab4b]. Closed (additionalProperties false): no secret_ref, no secret, no oidc_* key.",
+      "description": "GET / PUT 200 / POST 201 body for a Partner Admin or an org:V reader: oidc_authority and oidc_client_id are NOT present [TLD 2026-11-04 7:41], and neither is secret {set}: the key is omitted, not null [TLD 2026-11-04 10:02 Q2; UX mockup cbb3ab4b]. Closed (additionalProperties false): no secret_ref, no secret, no oidc_* key. reason_min_length / reason_max_length: GET 200 only [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)], see login_config_get_* / login_config_saved_*.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -357,6 +370,12 @@
         "updated_at": {
           "type": "string",
           "format": "date-time"
+        },
+        "reason_min_length": {
+          "$ref": "#/$defs/reason_length_limit"
+        },
+        "reason_max_length": {
+          "$ref": "#/$defs/reason_length_limit"
         }
       }
     },
@@ -370,6 +389,99 @@
           "$ref": "#/$defs/login_config_view_restricted"
         }
       ]
+    },
+    "login_config_get_super": {
+      "description": "GET /api/orgs/locations/{location_id}/login-config 200 body (super): login_config_view_super plus reason_min_length and reason_max_length, the reason bounds in effect (screen 9 Edit) [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)].",
+      "allOf": [
+        {
+          "$ref": "#/$defs/login_config_view_super"
+        },
+        {
+          "required": [
+            "reason_min_length",
+            "reason_max_length"
+          ]
+        }
+      ]
+    },
+    "login_config_get_restricted": {
+      "description": "GET /api/orgs/locations/{location_id}/login-config 200 body (restricted): login_config_view_restricted plus reason_min_length and reason_max_length, the reason bounds in effect (screen 9 Edit) [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)].",
+      "allOf": [
+        {
+          "$ref": "#/$defs/login_config_view_restricted"
+        },
+        {
+          "required": [
+            "reason_min_length",
+            "reason_max_length"
+          ]
+        }
+      ]
+    },
+    "login_config_saved_super": {
+      "description": "PUT 200 / POST 201 body (super): login_config_view_super, unchanged by DEC-107: no reason_min_length / reason_max_length [TLD 2026-11-04 16:32 Q2=(ii)].",
+      "allOf": [
+        {
+          "$ref": "#/$defs/login_config_view_super"
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "reason_min_length"
+                ]
+              },
+              {
+                "required": [
+                  "reason_max_length"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "login_config_saved_restricted": {
+      "description": "PUT 200 / POST 201 body (restricted): login_config_view_restricted, unchanged by DEC-107: no reason_min_length / reason_max_length [TLD 2026-11-04 16:32 Q2=(ii)].",
+      "allOf": [
+        {
+          "$ref": "#/$defs/login_config_view_restricted"
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "reason_min_length"
+                ]
+              },
+              {
+                "required": [
+                  "reason_max_length"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "login_config_limits": {
+      "description": "GET /api/orgs/login-config/limits 200 body [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)]: exactly the reason bounds in effect, read-only from the startup snapshot, for screen 9 Create (no location yet). The server guarantees reason_min_length <= reason_max_length (startup rule; not expressible here). Read rule = the location GET's step 2 (org:V): 401 unauthenticated, 403 forbidden without org:V.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason_min_length",
+        "reason_max_length"
+      ],
+      "properties": {
+        "reason_min_length": {
+          "$ref": "#/$defs/reason_length_limit"
+        },
+        "reason_max_length": {
+          "$ref": "#/$defs/reason_length_limit"
+        }
+      }
     },
     "audited_state": {
       "description": "The before/after shape shared by the change row and auth.provider.changed. Exactly these four keys; never secret_ref [SRC: LD \u00a74.1 L184 'before/after provider kind and tenant ids, no secrets'] [Confirmed DEC-096/098 for the two flags].",
@@ -484,6 +596,7 @@
                   },
                   {
                     "type": "string",
+                    "minLength": 10,
                     "maxLength": 500,
                     "pattern": "^\\s*\\S[\\s\\S]{8,498}\\S\\s*$"
                   }
@@ -516,7 +629,7 @@
       ]
     },
     "field_error_code": {
-      "description": "Per-field codes inside a 422 (spec \u00a75.2). field_not_writable = a server-filled key (oidc_authority, oidc_client_id [TLD 2026-11-04 7:41]; secret_ref [TLD 2026-11-04 9:49, D-51]) in the body, any value; reason_length = reason not 10..500 after trim [TLD 2026-11-04 7:39]. secret_ref_required and secret_ref_format were removed at TLD 9:49 (no client-supplied secret_ref left to require or check).",
+      "description": "Per-field codes inside a 422 (spec \u00a75.2). field_not_writable = a server-filled key (oidc_authority, oidc_client_id [TLD 2026-11-04 7:41]; secret_ref [TLD 2026-11-04 9:49, D-51]) in the body, any value; reason_length = a non-blank reason not LoginConfig:ReasonMinLength..LoginConfig:ReasonMaxLength code points after trim (defaults 10..500; always inside 10..500) [TLD 2026-11-04 7:39; DEC-107, TLD 2026-11-04 16:32]. secret_ref_required and secret_ref_format were removed at TLD 9:49 (no client-supplied secret_ref left to require or check).",
       "enum": [
         "required",
         "unknown_field",
@@ -707,9 +820,18 @@
           ]
         },
         "reason_trimmed_length": {
+          "description": "DEC-107 [TLD 2026-11-04 16:32 Q1=A]: the reason length (code points after trim) is deployment config, snapshotted at startup; interim defaults min 10 (TO CONFIRM) and max 500; startup requires hard_bounds.min <= min <= max <= hard_bounds.max (DB CHECK llcc_reason). Widening the hard bounds needs a migration (DB-WIDEN).",
           "const": {
-            "min": 10,
-            "max": 500
+            "min_config_key": "LoginConfig:ReasonMinLength",
+            "max_config_key": "LoginConfig:ReasonMaxLength",
+            "default": {
+              "min": 10,
+              "max": 500
+            },
+            "hard_bounds": {
+              "min": 10,
+              "max": 500
+            }
           }
         },
         "server_filled_fields": {

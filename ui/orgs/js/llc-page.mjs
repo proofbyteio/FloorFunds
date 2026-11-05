@@ -1,13 +1,14 @@
 // S2a P4 screen 9: DOM + fetch for location-sign-in.html. Pure rules live in llc-core.mjs; error copy (approved D-102)
 // is in error-copy.mjs. The page never sends oidc_* or secret_ref and shows only secret.set (spec §3.0, D-51).
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, METHOD_LABEL, fallbackText, formatPT,
-  changeDetails, fieldTarget, ifMatchFrom } from "./llc-core.mjs";
-import { TOP_LEVEL, FIELD, requestIdText } from "./error-copy.mjs";
+  changeDetails, fieldTarget, ifMatchFrom, limitsFrom } from "./llc-core.mjs";
+import { TOP_LEVEL, FIELD, requestIdText, reasonLengthCopy } from "./error-copy.mjs";
 
 const $ = (id) => document.getElementById(id);
 const body = document.body;
 const apiBase = (body.dataset.apiBase || "/api").replace(/\/$/, "");
-const st = { route: null, kind: "unknown", view: null, ifMatch: null, history: null, mode: "loading" };
+// limits = { min, max } reason bounds from the API (DEC-107): create from /orgs/login-config/limits, edit from the GET.
+const st = { route: null, kind: "unknown", view: null, ifMatch: null, history: null, mode: "loading", limits: null };
 
 function show(el, on) { el.hidden = !on; }
 function text(el, s) { el.textContent = s ?? ""; }
@@ -172,8 +173,10 @@ function syncForm() {
     const down = isDowngrade(before, f);
     show($("banner-downgrade"), down);
     show($("f-reason"), down || create);
-    text($("reason-hint"), create ? "Saved in the audit log. Required only if you turn off the second step or turn on backup sign-in."
-      : "Saved in the audit log.");
+    // UX D-106 (md5 2b17464c): "{min} to {max} characters. Saved in the audit log." with the API's numbers (DEC-107).
+    const len = st.limits ? `${st.limits.min} to ${st.limits.max} characters. ` : "";
+    text($("reason-hint"), len + (create ? "Saved in the audit log. Required only if you turn off the second step or turn on backup sign-in."
+      : "Saved in the audit log."));
   } else {
     // Locks only the downgrade direction relative to the saved value (create: relative to MFA on / backup off).
     // Partner Admin turning MFA back on / backup back off (allowed by the API, spec §6): TO CONFIRM (Mohanraj).
@@ -204,7 +207,8 @@ function applyErrors(r) {
         first ??= "tenant";
         continue;
       }
-      if (target && setFieldError(target, FIELD[fe.code] ?? FIELD.other)) first ??= target;
+      const msg = fe.code === "reason_length" && st.limits ? reasonLengthCopy(st.limits.min, st.limits.max) : FIELD[fe.code] ?? FIELD.other;
+      if (target && setFieldError(target, msg)) first ??= target;
     }
     if (tenantTaken) showBanner("banner-tenant", r.requestId); else showError("validation_failed", r.requestId, "validation_failed");
     return;
@@ -274,6 +278,10 @@ async function start() {
     st.kind = createKind(body.dataset.adminType);
     setChip(st.kind, st.route.partnerId);
     text($("bc-page"), "New location");
+    // DEC-107 [TLD 2026-11-04 16:32 Q2]: no location yet, so the reason bounds come from the limits endpoint.
+    const lr = await api("GET", "/orgs/login-config/limits");
+    st.limits = lr.status === 200 ? limitsFrom(lr.body) : null;
+    if (!st.limits) { show($("banner-loading"), false); applyErrors(lr.status === 200 ? { ...lr, status: 500 } : lr); body.dataset.state = "error"; return; }
     fillForm({ provider_kind: "database", display_name: "", entra_allowed_tenant_ids: [], mfa_required: true, allow_db_fallback: false, name: "" });
     setMode("create");
     return;
@@ -281,6 +289,9 @@ async function start() {
   const r = await api("GET", `/orgs/locations/${encodeURIComponent(st.route.locationId)}/login-config`);
   if (r.status !== 200 || !r.body) { show($("banner-loading"), false); applyErrors(r); body.dataset.state = "error"; return; }
   st.view = r.body; st.ifMatch = ifMatchFrom(r.etag, r.body.row_version);
+  // DEC-107: the GET carries the reason bounds in effect; a PUT 200 body does not, so st.limits outlives st.view.
+  st.limits = limitsFrom(r.body);
+  if (!st.limits) { show($("banner-loading"), false); showError("500", r.requestId, "limits"); body.dataset.state = "error"; return; }
   // Only a Super Admin or own-partner Partner Admin may read history (C2). The super view is recognised by its `secret` key;
   // a restricted view asks /changes: 200 = Partner Admin, 403 = org:V reader (history hidden, no form).
   const h = await loadHistory();

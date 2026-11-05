@@ -217,7 +217,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     static string T(DateTime d) => AuditOutbox.Ts(new DateTimeOffset(DateTime.SpecifyKind(d, DateTimeKind.Utc)));
 
-    JsonObject View(LlcRow r, bool super)
+    JsonObject View(LlcRow r, bool super, bool limits = false)
     {
         var v = new JsonObject
         {
@@ -239,13 +239,16 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         v["allow_db_fallback"] = r.AllowDbFallback; v["mfa_required"] = r.MfaRequired; v["row_version"] = r.RowVersion;
         v["created_by"] = r.CreatedBy.ToString("D"); v["created_at"] = T(r.CreatedAt);
         v["updated_by"] = r.UpdatedBy.ToString("D"); v["updated_at"] = T(r.UpdatedAt);
+        // DEC-107 [TLD 2026-11-04 16:32 Q2=(ii)]: the GET only (screen 9 Edit) carries the reason bounds from the startup snapshot;
+        // the PUT 200 / POST 201 bodies stay unchanged.
+        if (limits) { v["reason_min_length"] = opt.ReasonMinLength; v["reason_max_length"] = opt.ReasonMaxLength; }
         return v;
     }
 
-    IResult ViewResult(HttpContext ctx, int status, LlcRow r, Caller who)
+    IResult ViewResult(HttpContext ctx, int status, LlcRow r, Caller who, bool limits = false)
     {
         ctx.Response.Headers.ETag = $"\"{r.RowVersion}\"";
-        return Json(status, View(r, who.IsSuper));
+        return Json(status, View(r, who.IsSuper, limits));
     }
 
     /// <summary>tenant_bound_elsewhere (§5.2), under per-tenant advisory locks taken in sorted order (§8.5).</summary>
@@ -314,7 +317,19 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         await SetScopeAsync(c, tx, who.IsSuper ? "super" : "partner", who.IsSuper ? null : who.IsPartnerAdmin ? who.Id.PartnerId : real);
         var row = await LoadAsync(c, tx, loc, who.IsPartnerAdmin ? who.Id.PartnerId!.Value : real, false) ?? throw Err(404, "not_found");
         await tx.CommitAsync();
-        return ViewResult(ctx, 200, row, who);
+        return ViewResult(ctx, 200, row, who, limits: true);
+    });
+
+    // ---------- GET /api/orgs/login-config/limits (DEC-107, TLD 2026-11-04 16:32 Q2=(ii)) ----------
+
+    /// <summary>
+    /// The reason bounds for screen 9 Create (no location yet, so no GET to carry them): exactly reason_min_length / reason_max_length,
+    /// read-only from the startup snapshot. Same read rule as the GET's step 2 (org:V); 401 / 403 as everywhere. No DB access.
+    /// </summary>
+    public Task<IResult> LimitsAsync(HttpContext ctx) => Run(ctx, who =>
+    {
+        if (!who.IsAdmin && who.Grant.OrgViewLocations.Count == 0) throw Err(403, "forbidden");
+        return Task.FromResult(Json(200, new JsonObject { ["reason_min_length"] = opt.ReasonMinLength, ["reason_max_length"] = opt.ReasonMaxLength }));
     });
 
     // ---------- GET /api/orgs/locations/{id}/login-config/changes ----------

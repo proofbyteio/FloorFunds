@@ -50,14 +50,14 @@ for name, schema, kind, body in blocks:
     if kind == "request":
         real = [p for p, k, v in walk(inst) if isinstance(v, str) and ARN.search(v) and ":000000000000:" not in v]
         exp(f"example {name} uses only fake ARNs (account 000000000000)", real, False)
-names_needed = {"get_200_entra", "get_200_entra_restricted", "err_404", "access_rules", "put_req_pa_db_to_entra", "put_req_sa_mfa_off", "put_req_entra_to_db", "post_req_create_db", "post_201_db", "changes_200", "err_409", "err_422", "err_403_not_super_admin", "ev_changed_pa_upgrade", "ev_changed_sa_mfa_off", "ev_changed_created", "ev_denied_not_super_admin", "ev_denied_forbidden_scope", "ev_denied_tenant_bound_sa_create", "ev_denied_not_admin_create"}
+names_needed = {"get_200_entra", "get_200_entra_restricted", "err_404", "access_rules", "put_req_pa_db_to_entra", "put_req_sa_mfa_off", "put_req_entra_to_db", "post_req_create_db", "post_201_db", "changes_200", "err_409", "err_422", "err_403_not_super_admin", "ev_changed_pa_upgrade", "ev_changed_sa_mfa_off", "ev_changed_created", "ev_denied_not_super_admin", "ev_denied_forbidden_scope", "ev_denied_tenant_bound_sa_create", "ev_denied_not_admin_create", "limits_200"}
 exp("all required examples present", sorted(names_needed - EX.keys()), False)
 
 # ---- 2. no response/event schema declares secret_ref ----
 L = S["location-login-config.schema.json"]["$defs"]; A = S["audit-events.schema.json"]["$defs"]
 def declares_secret(o):
     return any(k == "secret_ref" for p, k, v in walk(o) if "/properties/" in p + "/" and p.split("/")[-2] == "properties")
-for d in ["login_config_view", "login_config_view_super", "login_config_view_restricted", "secret_view", "change_history", "audited_state", "error_response"]:
+for d in ["login_config_view", "login_config_view_super", "login_config_view_restricted", "login_config_get_super", "login_config_get_restricted", "login_config_saved_super", "login_config_saved_restricted", "login_config_limits", "secret_view", "change_history", "audited_state", "error_response"]:
     exp(f"schema llc $defs.{d} has no secret_ref property", ["declares secret_ref"] if declares_secret(L[d]) else [], False)
 for d in ["auth.provider.changed", "provider_state", "auth.config.change_denied.location_login_config", "auth.config.change_denied.config"]:
     exp(f"schema audit $defs.{d} has no secret_ref property", ["declares secret_ref"] if declares_secret(A[d]) else [], False)
@@ -396,7 +396,7 @@ exp("D-103: no live MK9 pin to 939e41bd / 9dae6040 left", [k for k in ["MK9 939e
 _s11 = spec.split("## 11. UI notes")[1].split("## 12.")[0]
 for _pin in ["**approved by UX under D-102** (review md5 8c7d5274)", "\"It may have been removed, or you may not have access to it.\"",
              "\"Only a Super Admin can make this change.\" / \"Nothing was saved. Turning off the second step or allowing backup sign-in needs a Super Admin.\"",
-             "\"This reason is too short or too long. Change it, then try again.\" (TO CONFIRM", "**Request ID line [D-102]:**", "never on field errors",
+             "`reason_length` \"Enter a reason of {min} to {max} characters.\" [DEC-107] [TLD 2026-11-04 16:32]", "**Request ID line [D-102]:**", "never on field errors",
              "(**V11-CREATE-SECRETCARD**, §12)", "(**V11-PARTNERNAME**, §12)", "waits on OQ-S2a-1 [TLD 2026-11-04 11:57]"]:
     exp("§11 pin D-102 / 11:57: " + _pin[:50], [] if _pin in _s11 else ["missing"], False)
 exp("§11: no stale 'SSE PROPOSAL FOR UX, NOT APPROVED' / PROPOSAL-error-copy path as the live file", [k for k in ["labelled \"SSE PROPOSAL FOR UX, NOT APPROVED\"", "live in `ui/orgs/js/PROPOSAL-error-copy.mjs`"] if k in _s11], False)
@@ -447,6 +447,48 @@ exp("RANGE4 Sources row (SSE2 review 04dba71d)", [] if "| RANGE4 | `/tmp/sse2-fv
 for _pin in ["**KF-A [TLD 2026-11-04 13:15]:**", "never cleartext in `CREATE/ALTER ROLE`", "only `SCRAM-SHA-256$4096:` may follow", "**Scratch lock per kit DB [TLD 2026-11-04 13:15 #5]:**", "do not block each other", "exits 2 with the key named, never its value"]:
     exp("13:15 §14: " + _pin[:40], [] if _pin in _s14 else ["missing"], False)
 exp("04dba71d Info §13: EntraDeployment getters Authority / ClientId / SecretRef + redacted ToString allowed, reflection allows exactly those", [] if "**Allowed public getters [SSE2 review 9771ad3..1b9f5bd Info] [SSE2 review 04dba71d]:**" in spec and "allows exactly these members and fails on any other public member" in spec else ["missing"], False)
+
+# ---- DEC-107 [PM t149u/t150u] [TLD 2026-11-04 16:32 Q1=A, Q2=(ii)]: configurable reason bounds inside the DB's 10..500 ----
+LIM = "#/$defs/login_config_limits"; lim = EX["limits_200"]
+exp("DEC-107 limits_200 example is exactly {reason_min_length, reason_max_length}", [] if sorted(lim) == ["reason_max_length", "reason_min_length"] else [sorted(lim)], False)
+exp("DEC-107 limits extra key rejected", errs(LLC, LIM, m(lim, reason_trimmed_length=10)), True)
+exp("DEC-107 limits without reason_max_length rejected", errs(LLC, LIM, m(lim, reason_max_length=DEL)), True)
+exp("DEC-107 limits min 9 (below DB floor) rejected", errs(LLC, LIM, m(lim, reason_min_length=9)), True)
+exp("DEC-107 limits max 501 (above DB ceiling) rejected", errs(LLC, LIM, m(lim, reason_max_length=501)), True)
+exp("DEC-107 limits string value rejected", errs(LLC, LIM, m(lim, reason_min_length="10")), True)
+exp("DEC-107 limits 50/200 accepted", errs(LLC, LIM, m(lim, reason_min_length=50, reason_max_length=200)), False)
+_g = EX["get_200_entra"]; _gr = EX["get_200_entra_restricted"]; _p = EX["post_201_db"]
+exp("DEC-107 GET super without reason_min_length rejected", errs(LLC, "#/$defs/login_config_get_super", m(_g, reason_min_length=DEL)), True)
+exp("DEC-107 GET restricted without reason_max_length rejected", errs(LLC, "#/$defs/login_config_get_restricted", m(_gr, reason_max_length=DEL)), True)
+exp("DEC-107 GET reason_max_length 501 rejected", errs(LLC, "#/$defs/login_config_get_super", m(_g, reason_max_length=501)), True)
+exp("DEC-107 GET reason_min_length 9 rejected", errs(LLC, "#/$defs/login_config_get_restricted", m(_gr, reason_min_length=9)), True)
+exp("DEC-107 POST 201 / PUT 200 (saved) with reason_min_length rejected", errs(LLC, "#/$defs/login_config_saved_restricted", m(_p, reason_min_length=10)), True)
+exp("DEC-107 saved super with reason_max_length rejected", errs(LLC, "#/$defs/login_config_saved_super", {k: v for k, v in _g.items() if k not in ("reason_min_length",)}), True)
+exp("DEC-107 saved super without the bounds accepted", errs(LLC, "#/$defs/login_config_saved_super", {k: v for k, v in _g.items() if not k.startswith("reason_")}), False)
+for _d, _b in [("login_config_write", EX["put_req_pa_db_to_entra"]), ("create_location_request", EX["post_req_create_db"])]:
+    exp(f"DEC-107 {_d} with reason_min_length rejected (unknown_field)", errs(LLC, f"#/$defs/{_d}", m(_b, reason_min_length=10)), True)
+exp("DEC-107 create login_config with reason_max_length rejected", errs(LLC, "#/$defs/create_location_request", m(EX["post_req_create_db"], login_config__reason_max_length=500)), True)
+exp("DEC-107 access_rules: the old fixed {min 10, max 500} rejected", errs(LLC, AR, m(ar, reason_trimmed_length={"min": 10, "max": 500})), True)
+exp("DEC-107 access_rules: hard bounds widened to 1..500 rejected (DB-WIDEN)", errs(LLC, AR, m(ar, reason_trimmed_length={**ar["reason_trimmed_length"], "hard_bounds": {"min": 1, "max": 500}})), True)
+exp("DEC-107 access_rules: default min 100 rejected (t151u)", errs(LLC, AR, m(ar, reason_trimmed_length={**ar["reason_trimmed_length"], "default": {"min": 100, "max": 500}})), True)
+exp("DEC-107 access_rules pins the config keys", [] if ar["reason_trimmed_length"]["min_config_key"] == "LoginConfig:ReasonMinLength" and ar["reason_trimmed_length"]["max_config_key"] == "LoginConfig:ReasonMaxLength" else ["keys"], False)
+_rl = S["location-login-config.schema.json"]["$defs"]["reason_length_limit"]
+exp("DEC-107 reason_length_limit is integer 10..500", [] if (_rl.get("type"), _rl.get("minimum"), _rl.get("maximum")) == ("integer", 10, 500) else [str(_rl)], False)
+exp("DEC-107 change_history reason of 9 chars rejected", errs(LLC, "#/$defs/change_history", m(EX["changes_200"], items=[{**EX["changes_200"]["items"][0], "reason": "x" * 9}])), True)
+exp("DEC-107 change_history reason of 501 chars rejected", errs(LLC, "#/$defs/change_history", m(EX["changes_200"], items=[{**EX["changes_200"]["items"][0], "reason": "x" * 501}])), True)
+_ev = EX["ev_changed_sa_mfa_off"]
+for _n, _ok in [(9, True), (10, False), (500, False), (501, True)]:
+    exp(f"DEC-107 auth.provider.changed reason {_n} chars {'rejected' if _ok else 'accepted'}", errs(AE, None, m(_ev, details__reason="x" * _n)), _ok)
+exp("DEC-107 auth.provider.changed reason 9 astral rejected", errs(AE, None, m(_ev, details__reason="\U0001F608" * 9)), True)
+exp("DEC-107 auth.provider.changed reason 10 astral accepted", errs(AE, None, m(_ev, details__reason="\U0001F608" * 10)), False)
+_s3 = spec.split("### 3.2")[0]
+for _pin in ["### 3.5 `GET /api/orgs/login-config/limits` [DEC-107] [TLD 2026-11-04 16:32 Q2=(ii)]", "**Reason bounds [DEC-107] [TLD 2026-11-04 16:32 Q2=(ii)]:**",
+             "**`LoginConfig:ReasonMinLength` to `LoginConfig:ReasonMaxLength` code points after trimming**", "the API refuses to start unless 10 ≤ min ≤ max ≤ 500",
+             "code defaults min 10 (**TO CONFIRM**) and max 500", "| DEC-107 | PM t149u/t150u", "| TLD 16:32 |", "| D-106 |", "`2b17464c29521b9b479155d6cc96f144`",
+             "**DB-WIDEN** (follow-up, not S2a)", "PQ-238 (who may change it) is open"]:
+    exp("DEC-107 spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+exp("DEC-107 spec: no fixed '10–500 characters after trimming' / old interim copy left as live text", [k for k in ["**10–500 characters after trimming**", "(TO CONFIRM: once Mohanraj confirms 10 to 500", "\"Saved in the audit log.\", 10 to 500 characters;", "non-blank reason not 10..500 chars after trim", "`reason` (null or trimmed 10..500)."] if k in spec], False)
+exp("DEC-107 spec: default min 100 appears nowhere as a default", [k for k in ["default min 100", "min 100"] if k in spec], False)
 
 print("v1.1-S2a checks: %d passed, %d failed" % (PASSES[0], len(FAIL)), "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)

@@ -2,8 +2,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, formatPT, changeDetails, fieldTarget,
-  ifMatchFrom, fallbackText } from "../js/llc-core.mjs";
-import { TOP_LEVEL, FIELD, requestIdText } from "../js/error-copy.mjs";
+  ifMatchFrom, fallbackText, limitsFrom } from "../js/llc-core.mjs";
+import { TOP_LEVEL, FIELD, requestIdText, reasonLengthCopy } from "../js/error-copy.mjs";
 
 const P = "5f0c3e1a-0001-4000-8000-000000000001", L = "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8";
 
@@ -68,6 +68,7 @@ test("history formatting: PT and actor-id details", () => {
 test("422 field mapping, If-Match", () => {
   assert.equal(fieldTarget("entra_allowed_tenant_ids/0"), "tenant");
   assert.equal(fieldTarget("reason"), "reason");
+  assert.equal(fieldTarget("login_config/reason"), "reason"); // DEC-107: the create path
   assert.equal(fieldTarget("oidc_authority"), null);
   assert.equal(ifMatchFrom('"7"', 7), '"7"');
   assert.equal(ifMatchFrom('W/"7"', 7), '"7"');
@@ -78,12 +79,21 @@ test("422 field mapping, If-Match", () => {
 test("approved D-102 copy: every top-level and field entry has text; request id display", () => {
   for (const [k, v] of Object.entries(TOP_LEVEL)) { assert.ok(v.title && v.text, k); }
   for (const [k, v] of Object.entries(FIELD)) assert.ok(v, k);
-  assert.ok(!/10|500/.test(FIELD.reason_length), "reason length numbers stay TO CONFIRM");
+  assert.equal(FIELD.reason_length, undefined, "DEC-107: reason_length copy comes from reasonLengthCopy(min, max), no fixed text");
   assert.equal(requestIdText("abc"), "Request ID: abc");
   assert.equal(requestIdText(null), "");
   // D-102 exact changes (review md5 8c7d5274)
   assert.equal(TOP_LEVEL.not_found.text, "It may have been removed, or you may not have access to it.");
   assert.equal(TOP_LEVEL.not_super_admin.title, "Only a Super Admin can make this change.");
   assert.equal(TOP_LEVEL.not_super_admin.text, "Nothing was saved. Turning off the second step or allowing backup sign-in needs a Super Admin.");
-  assert.equal(FIELD.reason_length, "This reason is too short or too long. Change it, then try again.");
+});
+
+test("DEC-107: reason length copy and limits from the API, no fixed numbers", () => {
+  assert.equal(reasonLengthCopy(10, 500), "Enter a reason of 10 to 500 characters.");
+  assert.equal(reasonLengthCopy(50, 200), "Enter a reason of 50 to 200 characters.");
+  assert.deepEqual(limitsFrom({ reason_min_length: 50, reason_max_length: 200 }), { min: 50, max: 200 });
+  assert.deepEqual(limitsFrom({ reason_min_length: 10, reason_max_length: 500, other: 1 }), { min: 10, max: 500 });
+  for (const bad of [null, undefined, {}, { reason_min_length: 10 }, { reason_min_length: "10", reason_max_length: 500 }, { reason_min_length: 10.5, reason_max_length: 500 },
+    { reason_min_length: 300, reason_max_length: 200 }, { reason_min_length: 0, reason_max_length: 200 }])
+    assert.equal(limitsFrom(bad), null, JSON.stringify(bad));
 });

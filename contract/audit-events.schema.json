@@ -371,7 +371,7 @@
             "changed_fields": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/login_config_field" } },
             "before": { "oneOf": [ { "$ref": "#/$defs/provider_state" }, { "type": "null" } ] },
             "after": { "$ref": "#/$defs/provider_state" },
-            "reason": { "description": "Stored and emitted TRIMMED: null, or 10..500 characters after trim [TLD 2026-11-04 7:39, OQ-S2a-7].", "oneOf": [ { "type": "null" }, { "type": "string", "maxLength": 500, "pattern": "^\\s*\\S[\\s\\S]{8,498}\\S\\s*$" } ] }
+            "reason": { "description": "Stored and emitted TRIMMED: null, or 10..500 characters after trim [TLD 2026-11-04 7:39, OQ-S2a-7]; the server applies LoginConfig:ReasonMinLength..ReasonMaxLength, always inside 10..500 (DB CHECK llcc_reason) [DEC-107, TLD 2026-11-04 16:32 Q1=A].", "oneOf": [ { "type": "null" }, { "type": "string", "minLength": 10, "maxLength": 500, "pattern": "^\\s*\\S[\\s\\S]{8,498}\\S\\s*$" } ] }
           }
         }
       },

@@ -11,6 +11,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Admin.Api;
 using Auth.Data.Readers;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -92,6 +93,9 @@ AdminApiOptions Opts(string? cs = null, string? schema = null) => new()
     SecretAccountIds = new HashSet<string> { "000000000000" }, SecretRegions = new HashSet<string> { "us-west-2" },
     TokenIssuer = Issuer, SigningKeys = [publicKey], AuditSchemaPath = schema ?? schemaPath,
 };
+
+// DEC-107: the default reason bounds, from the one named constant each (never retyped in the tests below).
+const int Mn = AdminApiOptions.DefaultReasonMinLength, Mx = AdminApiOptions.DefaultReasonMaxLength;
 
 // ---------- startup refusal (fail closed) ----------
 void Refuses(string name, Func<AdminApiOptions, AdminApiOptions> mutate, string keyword)
@@ -246,6 +250,47 @@ await Check("startup: Admin.Api process exits 2 on missing Entra:SecretRef (TLD 
     return code == 2 && err.Contains("admin-api refused to start: config Entra:SecretRef");
 });
 
+// ---------- DEC-107 [PM t149u/t150u; TLD 2026-11-04 16:32 Q1=A]: reason length config, snapshotted at startup ----------
+Ok($"DEC-107 startup: code defaults are one constant each (min {Mn} TO CONFIRM, max {Mx}); hard bounds = DB CHECK llcc_reason 10..500 (db/migrations.sql L94)",
+    Mn == 10 && Mx == 500 && AdminApiOptions.ReasonFloor == 10 && AdminApiOptions.ReasonCeiling == 500 && Opts().Validated() is { ReasonMinLength: Mn, ReasonMaxLength: Mx });
+bool ReasonCfgAccepted(int mn, int mx) { try { var v = (Opts() with { ReasonMinLength = mn, ReasonMaxLength = mx }).Validated(); return v.ReasonMinLength == mn && v.ReasonMaxLength == mx; } catch (InvalidOperationException) { return false; } }
+Ok("DEC-107 startup: 10..500, 50..200, 10..10 and 500..500 accepted (10 <= min <= max <= 500)", ReasonCfgAccepted(10, 500) && ReasonCfgAccepted(50, 200) && ReasonCfgAccepted(10, 10) && ReasonCfgAccepted(500, 500));
+foreach (var (rn, mn, mx) in new[] { ("min 9 (below the DB floor)", 9, 500), ("min 0", 0, 500), ("min -1", -1, 500), ("max 501 (above the DB ceiling)", 10, 501),
+                                     ("max 2000", 10, 2000), ("min > max (201 > 200)", 201, 200), ("min 500 > max 10", 500, 10), ("int.MinValue / int.MaxValue", int.MinValue, int.MaxValue) })
+    Refuses($"DEC-107 startup: LoginConfig {rn} refused (Q1=A)", o => o with { ReasonMinLength = mn, ReasonMaxLength = mx },
+        "config LoginConfig:ReasonMinLength / LoginConfig:ReasonMaxLength must satisfy 10 <= min <= max <= 500 (DB CHECK llcc_reason)");
+await Check("DEC-107 startup: FromConfiguration reads LoginConfig:ReasonMinLength / ReasonMaxLength (50/200), absent -> the constants; a later config change does not reach the options (snapshot)", async () =>
+{
+    var jwks = Path.Combine(Path.GetTempPath(), $"p4j-jwks-{Guid.NewGuid():N}.json");
+    var jwk = JsonWebKeyConverter.ConvertFromRSASecurityKey(publicKey);
+    await File.WriteAllTextAsync(jwks, JsonSerializer.Serialize(new { keys = new[] { new { kty = "RSA", kid = jwk.Kid, use = "sig", n = jwk.N, e = jwk.E } } }));
+    try
+    {
+        Dictionary<string, string?> Base() => new() { ["ADMIN_API_CONNECTION_STRING"] = adminCs, ["Entra:Authority"] = Authority, ["Entra:ClientId"] = ClientId, ["Entra:SecretRef"] = DeployArn,
+            ["SecretRef:AllowedAccountIds"] = "000000000000", ["SecretRef:AllowedRegions"] = "us-west-2", ["BackofficeAuth:Issuer"] = Issuer, ["BackofficeAuth:JwksPath"] = jwks };
+        var o0 = AdminApiOptions.FromConfiguration(new ConfigurationBuilder().AddInMemoryCollection(Base()).Build()).Validated();
+        var d = Base(); d["LoginConfig:ReasonMinLength"] = "50"; d["LoginConfig:ReasonMaxLength"] = "200";
+        var cfg = new ConfigurationBuilder().AddInMemoryCollection(d).Build();
+        var o = AdminApiOptions.FromConfiguration(cfg).Validated();
+        cfg["LoginConfig:ReasonMinLength"] = "60"; cfg["LoginConfig:ReasonMaxLength"] = "70";
+        return o0.ReasonMinLength == Mn && o0.ReasonMaxLength == Mx && o.ReasonMinLength == 50 && o.ReasonMaxLength == 200 && cfg["LoginConfig:ReasonMinLength"] == "60";
+    }
+    finally { File.Delete(jwks); }
+});
+foreach (var (pn, vals, key) in new (string, (string k, string v)[], string)[]
+{
+    ("LoginConfig:ReasonMinLength 5 (below the DB floor)", [("LoginConfig__ReasonMinLength", "5")], "must satisfy 10 <= min <= max <= 500"),
+    ("LoginConfig:ReasonMaxLength 501 (above the DB ceiling)", [("LoginConfig__ReasonMaxLength", "501")], "must satisfy 10 <= min <= max <= 500"),
+    ("min 300 > max 200", [("LoginConfig__ReasonMinLength", "300"), ("LoginConfig__ReasonMaxLength", "200")], "must satisfy 10 <= min <= max <= 500"),
+    ("LoginConfig:ReasonMinLength not an integer", [("LoginConfig__ReasonMinLength", "TENX")], "config LoginConfig:ReasonMinLength must be an integer"),
+    ("LoginConfig:ReasonMaxLength not an integer (12.5)", [("LoginConfig__ReasonMaxLength", "12.5")], "config LoginConfig:ReasonMaxLength must be an integer"),
+})
+    await Check($"DEC-107 startup: Admin.Api process exits 2 on {pn}, message names the key, value not echoed", async () =>
+    {
+        var (code, err) = await RunAdminApi(e => { foreach (var (k, v) in vals) e[k] = v; });
+        return code == 2 && err.Contains("admin-api refused to start: config LoginConfig:Reason") && err.Contains(key) && !err.Contains("TENX") && !err.Contains("12.5");
+    });
+
 // ---------- port ----------
 int FreePort(int skip = -1)
 {
@@ -298,7 +343,7 @@ var oldHeader = 0; // responses carrying the pre-9:20 X-Correlation-Id header
 bool IsCorr(string? v) => v is not null && Guid.TryParseExact(v, "D", out var g) && g.Version == 7;
 var responsesForSchema = new List<(string def, string body)>();
 const string HarnessErrorBody = "{\"error\":\"harness_transport_error\",\"fields\":[]}";
-async Task<R> Send(HttpMethod m, string path, string? token, string? body = null, string? ifMatch = null, Action<HttpRequestMessage>? edit = null)
+async Task<R> Send(HttpMethod m, string path, string? token, string? body = null, string? ifMatch = null, Action<HttpRequestMessage>? edit = null, HttpClient? via = null)
 {
     using var req = new HttpRequestMessage(m, path);
     if (token is not null) req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token);
@@ -308,7 +353,7 @@ async Task<R> Send(HttpMethod m, string path, string? token, string? body = null
     HttpResponseMessage res0; string text;
     // [SSE2 review 06dc8ac..ba85c77 (3fac1d52) Info, MD4] A transport failure (broken pipe, reset) on one request records a FAIL with the
     // exception types and returns a placeholder response, so the run carries on and ends with a clean FAIL count instead of aborting.
-    try { res0 = await http.SendAsync(req); text = await res0.Content.ReadAsStringAsync(); }
+    try { res0 = await (via ?? http).SendAsync(req); text = await res0.Content.ReadAsStringAsync(); }
     catch (Exception e) when (e is IOException or SocketException || e is HttpRequestException { InnerException: IOException or SocketException })
     {
         Ok($"transport: {m} {path} got a response", false, $"{e.GetType().Name}{(e.InnerException is { } ie ? "/" + ie.GetType().Name + ": " + ie.Message : ": " + e.Message)}");
@@ -397,7 +442,18 @@ try
     {
         var personas = new Dictionary<string, UiHost.Persona>
         { ["sa"] = new(SA, "super"), ["pa"] = new(PA, "partner"), ["pb"] = new(PB, "partner"), ["rd"] = new(RD, "partner"), ["anon"] = new("", "partner") };
-        exitCode = await UiHost.RunAsync(uiDir, port, FreePort(port), personas, readerLocations, P_A, P_B, [T1, T2, T3], ownerDs);
+        // DEC-107 [TLD 2026-11-04 16:32]: a second API with LoginConfig 50/200 behind /c50/..., so the e2e can show the page takes
+        // the numbers from the API (limits in Create, the GET in Edit), not from its own code. Same DB and directory; started first
+        // so FreePort skips its port for the UI host.
+        var c50Port = FreePort(port);
+        var c50 = await AdminApiHost.BuildAsync(Opts() with { Urls = $"http://127.0.0.1:{c50Port}", ReasonMinLength = 50, ReasonMaxLength = 200 }, dir);
+        try
+        {
+            await c50.StartAsync();
+            exitCode = await UiHost.RunAsync(uiDir, port, FreePort(port), personas, readerLocations, P_A, P_B, [T1, T2, T3], ownerDs, c50Port);
+            await c50.StopAsync();
+        }
+        finally { await c50.DisposeAsync(); }
         goto uiHostDone; // leaves the try: the finally below stops the API and empties the tables
     }
     var missing = Guid.Parse("5f0c3e1a-0bad-4000-8000-00000000dead");
@@ -446,7 +502,7 @@ try
     var rA1 = await Post(PA, Create(P_A, "Riverbend Cage 2", DbCfg()));
     var A1 = rA1.Status == 201 ? LocOf(rA1) : Guid.Empty;
     Ok("create: PA own partner database -> 201", rA1.Status == 201, rA1.Body);
-    ForSchema("login_config_view_restricted", rA1);
+    ForSchema("login_config_saved_restricted", rA1); // DEC-107: POST 201 carries no reason bounds
     {
         var b = Obj(rA1.Body);
         Ok("create: ETag \"1\", Location header, Cache-Control no-store, no Server header",
@@ -467,7 +523,7 @@ try
     var rB1 = await Post(SA, Create(P_B, "North Valley Cage 1", EntraCfg(T1)));
     var B1 = rB1.Status == 201 ? LocOf(rB1) : Guid.Empty;
     Ok("create: SA entra in partner B -> 201", rB1.Status == 201, rB1.Body);
-    ForSchema("login_config_view_super", rB1);
+    ForSchema("login_config_saved_super", rB1);
     {
         var b = Obj(rB1.Body);
         Ok("create: super view shows server-filled oidc_* from Entra:Authority / Entra:ClientId",
@@ -585,14 +641,16 @@ try
         var r = await Get(Cfg(A1), PA);
         Ok("get: PA own -> 200 restricted view, ETag", r.Status == 200 && r.ETag == "\"1\"" && !Obj(r.Body).ContainsKey("oidc_authority"));
         Ok("Q2 get: PA -> no secret key (omitted, not null) [TLD 10:02 Q2]", r.Status == 200 && !Obj(r.Body).ContainsKey("secret"), r.Body);
-        ForSchema("login_config_view_restricted", r);
+        ForSchema("login_config_get_restricted", r);
+        Ok($"DEC-107 get: PA -> reason_min_length {Mn}, reason_max_length {Mx} (startup snapshot)", (int?)Obj(r.Body)["reason_min_length"] == Mn && (int?)Obj(r.Body)["reason_max_length"] == Mx, r.Body);
         r = await Get(Cfg(B1), SA);
         Ok("get: SA any -> 200 super view with oidc_*", r.Status == 200 && (string?)Obj(r.Body)["oidc_client_id"] == ClientId);
         Ok("Q2 get: SA -> secret {set: true} present, nothing else (no rotated_at) [TLD 10:02 Q2, TLD 10:42]", Obj(r.Body)["secret"] is JsonObject gs && gs.Count == 1 && (bool)gs["set"]! && !gs.ContainsKey("rotated_at"), r.Body);
         var saDb = await Get(Cfg(A1), SA);
         Ok("Q2 get: SA on a database location -> secret {set: false} present, nothing else [TLD 10:42]", Obj(saDb.Body)["secret"] is JsonObject ds && ds.Count == 1 && !(bool)ds["set"]!, saDb.Body);
-        ForSchema("login_config_view_super", saDb);
-        ForSchema("login_config_view_super", r);
+        ForSchema("login_config_get_super", saDb);
+        ForSchema("login_config_get_super", r);
+        Ok($"DEC-107 get: SA (entra and database) -> reason_min_length {Mn}, reason_max_length {Mx}", new[] { r, saDb }.All(x => (int?)Obj(x.Body)["reason_min_length"] == Mn && (int?)Obj(x.Body)["reason_max_length"] == Mx), r.Body);
         var miss = await Get(Cfg(missing), PA);
         var oos = await Get(Cfg(B1), PA);
         Ok("get: PA other partner -> 404, body identical to missing", Err(oos, 404, "not_found") && oos.Body == miss.Body && Err(miss, 404, "not_found"));
@@ -601,7 +659,8 @@ try
         r = await Get(Cfg(A1), RD);
         Ok("get: org:V reader of the location -> 200 restricted", r.Status == 200 && !Obj(r.Body).ContainsKey("oidc_authority"));
         Ok("Q2 get: org:V -> no secret key (omitted, not null) [TLD 10:02 Q2]", r.Status == 200 && !Obj(r.Body).ContainsKey("secret"), r.Body);
-        ForSchema("login_config_view_restricted", r);
+        ForSchema("login_config_get_restricted", r);
+        Ok($"DEC-107 get: org:V -> reason_min_length {Mn}, reason_max_length {Mx}", (int?)Obj(r.Body)["reason_min_length"] == Mn && (int?)Obj(r.Body)["reason_max_length"] == Mx, r.Body);
         Ok("get: org:V reader of another location -> 404", Err(await Get(Cfg(A2), RD), 404, "not_found"));
         Ok("get: no role -> 403 forbidden", Err(await Get(Cfg(A1), NO), 403, "forbidden"));
         Ok("get: custom role -> 403 forbidden", Err(await Get(Cfg(A1), CU), 403, "forbidden"));
@@ -657,10 +716,10 @@ try
         Ok("put: braced tenant -> tenant_id_format; switch to entra with only the tenant -> no secret_ref error (TLD 9:49)", HasField(r, "entra_allowed_tenant_ids/0", "tenant_id_format") && !r.Body.Contains("secret_ref"));
         r = await Put(A1, PA, With(EntraCfg(T3), "secret_ref", 42), "\"1\"");
         Ok("put: secret_ref number -> field_not_writable (not type)", HasField(r, "secret_ref", "field_not_writable") && !HasField(r, "secret_ref", "type"));
-        r = await Put(A1, PA, With(EntraCfg(T3), "reason", new string('r', 501)), "\"1\"");
-        Ok("put: reason 501 chars -> reason_length (also on a non-downgrade)", HasField(r, "reason", "reason_length"));
-        r = await Put(A1, PA, With(EntraCfg(T3), "reason", " " + new string('r', 500) + new string(' ', 1499)), "\"1\"");
-        Ok("put: reason 500 after trim (2000 raw) accepted by validation", r.Status == 200, r.Body);
+        r = await Put(A1, PA, With(EntraCfg(T3), "reason", new string('r', Mx + 1)), "\"1\"");
+        Ok($"put: reason {Mx + 1} chars (max + 1) -> reason_length (also on a non-downgrade)", HasField(r, "reason", "reason_length"));
+        r = await Put(A1, PA, With(EntraCfg(T3), "reason", " " + new string('r', Mx) + new string(' ', 1999 - Mx)), "\"1\"");
+        Ok($"put: reason {Mx} (max) after trim (2000 raw) accepted by validation", r.Status == 200, r.Body);
         Ok("put: db -> entra (tenant only) stores secret_ref = Entra:SecretRef (TLD 9:49); PA response has no secret key (Q2)", r.Status == 200 && !Obj(r.Body).ContainsKey("secret")
             && await OScalar<string>("SELECT secret_ref FROM auth.location_login_config WHERE location_id=$1", A1) == DeployArn, r.Body);
         // That PUT applied (db -> entra T3). Put it back to database for the next steps.
@@ -691,7 +750,7 @@ try
         // Spec example: PA database -> entra with a secret (applies immediately, oidc_* server-filled).
         r = await Put(A1, PA, EntraCfg(T3), "\"3\"");
         Ok("put: PA db -> entra -> 200, ETag \"4\", restricted view", r.Status == 200 && r.ETag == "\"4\"" && !Obj(r.Body).ContainsKey("oidc_authority") && !Obj(r.Body).ContainsKey("secret"), r.Body);
-        ForSchema("login_config_view_restricted", r);
+        ForSchema("login_config_saved_restricted", r); // DEC-107: PUT 200 carries no reason bounds
         var ev = await NewEvents();
         Ok("put: update event changed_fields provider_kind, tenants, oidc_*, secret_ref; before/after; no secret value",
             ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["action"]! == "update" && (long)ev[0]["details"]!["row_version"]! == 4
@@ -715,7 +774,7 @@ try
         r = await Put(A1, SA, With(EntraCfg(T3, mfa: false), "reason", "Client's Entra conditional access already enforces MFA; ticket OPS-1234"), "\"4\"");
         Ok("put: SA mfa off + reason -> 200 super view", r.Status == 200 && (bool)Obj(r.Body)["mfa_required"]! == false && Obj(r.Body).ContainsKey("oidc_authority"));
         Ok("Q2 put: SA 200 response has secret {set: true} and nothing else (no rotated_at) [TLD 10:02 Q2, TLD 10:42]", Obj(r.Body)["secret"] is JsonObject ps && ps.Count == 1 && (bool)ps["set"]! && !ps.ContainsKey("rotated_at"), r.Body);
-        ForSchema("login_config_view_super", r);
+        ForSchema("login_config_saved_super", r);
         ev = await NewEvents();
         Ok("put: SA downgrade event admin_type super + reason", ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["admin_type"]! == "super" && (string?)ev[0]["details"]!["reason"] is { Length: > 10 });
         r = await Put(A1, PA, EntraCfg(T3, mfa: false, display: "Riverbend Casino East"), "\"5\"");
@@ -1509,7 +1568,8 @@ try
         await Accepted("499 BMP + 1 astral (500 code points, 501 UTF-16 units)", Rep("r", 499) + Devil);
         await Accepted("500 astral padded with spaces (trimmed)", "   " + Rep(Devil, 500) + "  ");
         await RefusedLen("501 astral", Rep(Devil, 501));
-        await RefusedLen("9 astral", Rep(Devil, 9));
+        await RefusedLen($"{Mn - 1} astral (min - 1)", Rep(Devil, Mn - 1));
+        await Accepted($"{Mn} astral (min, DEC-107)", Rep(Devil, Mn));
         await Accepted("BMP 10", Rep("b", 10));
         await Accepted("BMP 500", Rep("b", 500));
         await RefusedLen("BMP 9", Rep("b", 9));
@@ -1537,7 +1597,7 @@ try
             ("249 astral + 3 ASCII (252 code points, 501 UTF-16 units)", Rep(Devil, 249) + "abc", true), ("251 astral", Rep(Devil, 251), true),
             ("300 astral", Rep(Devil, 300), true), ("500 astral", Rep(Devil, 500), true), ("499 BMP + 1 astral", Rep("d", 499) + Devil, true),
             ("501 astral", Rep(Devil, 501), false), ("500 code points mixed, padded", "  " + Rep(Devil + "d", 250) + " ", true),
-            ("9 astral", Rep(Devil, 9), false), ("10 astral", Rep(Devil, 10), true), // SSE2 9b3b546d Info 2
+            ($"{Mn - 1} astral", Rep(Devil, Mn - 1), false), ($"{Mn} astral", Rep(Devil, Mn), true), // SSE2 9b3b546d Info 2; DEC-107: min - 1 / min from the constant
         };
         foreach (var (dl, reason, okWant) in downCases)
         {
@@ -1770,6 +1830,162 @@ try
         var errs7h = mainLog.Entries.Skip(logMark).ToList();
         Ok("F-SURR: no request in 7h failed (no Error log line, no InvalidOperationException, no 500)",
             errs7h.Count == 0 && !shownS.Any(x => x.EndsWith(": 500")), string.Join(" | ", errs7h.Select(e => $"{e.ExType}: {e.Text}")));
+    }
+
+    // ================= 7i. DEC-107 [PM t149u/t150u; TLD 2026-11-04 16:32 Q1=A, Q2=(ii)] =================
+    // The reason length comes from LoginConfig:ReasonMinLength / ReasonMaxLength (startup snapshot, inside the DB's 10..500).
+    // Boundaries are computed from the constants (this host) and from a second host started with 50/200. The location GET carries
+    // the bounds, PUT 200 / POST 201 bodies do not; GET /api/orgs/login-config/limits serves Create. No new error code.
+    {
+        string Rep(string u, int n) => string.Concat(Enumerable.Repeat(u, n));
+        const string Devil = "\U0001F608";
+        const string Limits = "/api/orgs/login-config/limits";
+        string Fields(R r) => r.Status == 422 ? string.Join(",", Obj(r.Body)["fields"]!.AsArray().Select(f => $"{f!["field"]}:{f["code"]}")) : "";
+        bool NoBounds(R r) => r.Body.Length > 0 && !Obj(r.Body).ContainsKey("reason_min_length") && !Obj(r.Body).ContainsKey("reason_max_length");
+        int k = 0;
+
+        // ---- limits endpoint on this host (defaults), permissions as the location GET ----
+        await NewEvents();
+        foreach (var (who, tok) in new[] { ("SA", SA), ("PA", PA), ("PB", PB), ("RD (org:V reader)", RD) })
+        {
+            var r = await Get(Limits, tok);
+            var o = r.Status == 200 ? Obj(r.Body) : new JsonObject();
+            Ok($"DEC-107 limits: {who} -> 200 exactly {{reason_min_length: {Mn}, reason_max_length: {Mx}}}", r.Status == 200 && o.Count == 2
+                && (int?)o["reason_min_length"] == Mn && (int?)o["reason_max_length"] == Mx && r.CacheControl == "no-store", r.Body);
+            if (r.Status == 200) ForSchema("login_config_limits", r);
+        }
+        {
+            var r = await Get(Limits, null);
+            Ok("DEC-107 limits: no token -> 401, no body, WWW-Authenticate: Bearer", r.Status == 401 && r.Body.Length == 0 && r.WwwAuth is { } wa && wa.StartsWith("Bearer", StringComparison.Ordinal), $"{r.Status} {r.WwwAuth}");
+            r = await Get(Limits, Token("super", U_SA, edit: c => c["aud"] = "login-api"));
+            Ok("DEC-107 limits: wrong aud -> 401", r.Status == 401 && r.Body.Length == 0);
+            Ok("DEC-107 limits: no role -> 403 forbidden", Err(await Get(Limits, NO), 403, "forbidden"));
+            Ok("DEC-107 limits: custom role -> 403 forbidden", Err(await Get(Limits, CU), 403, "forbidden"));
+            Ok("DEC-107 limits: POST / PUT on the limits path are not routes (405/404, never 200)", (await Send(HttpMethod.Post, Limits, SA, "{}")).Status is 404 or 405
+                && (await Send(HttpMethod.Put, Limits, SA, "{}")).Status is 404 or 405);
+            Ok("DEC-107 limits: reads write no event", (await NewEvents()).Count == 0);
+        }
+
+        // ---- a write naming reason_min_length / reason_max_length -> the existing 422 unknown_field ----
+        {
+            var rC = await Post(SA, Create(P_B, "DEC-107 probe", DbCfg()));
+            var LL = rC.Status == 201 ? LocOf(rC) : Guid.Empty;
+            Ok("DEC-107 create: 201 body carries no reason bounds", rC.Status == 201 && NoBounds(rC), rC.Body);
+            ForSchema("login_config_saved_super", rC);
+            await NewEvents();
+            var rv = Rv(LL); var ch = await Count("location_login_config_change");
+            var r = await Put(LL, SA, With(With(DbCfg(display: "DEC-107 x"), "reason_min_length", 50), "reason_max_length", 200), $"\"{rv}\"");
+            Ok("DEC-107 PUT: reason_min_length / reason_max_length in the body -> 422 unknown_field (both), nothing written",
+                HasField(r, "reason_min_length", "unknown_field") && HasField(r, "reason_max_length", "unknown_field") && Rv(LL) == rv && (await NewEvents()).Count == 0, r.Body);
+            r = await Post(SA, Create(P_B, "DEC-107 probe 2", With(DbCfg(), "reason_max_length", 200)));
+            Ok("DEC-107 create: login_config.reason_max_length -> 422 login_config/reason_max_length unknown_field", HasField(r, "login_config/reason_max_length", "unknown_field"), r.Body);
+            r = await Post(SA, new Dictionary<string, object?> { ["partner_id"] = P_B.ToString("D"), ["name"] = "DEC-107 probe 3", ["login_config"] = DbCfg(), ["reason_min_length"] = 50 });
+            Ok("DEC-107 create: top-level reason_min_length -> 422 reason_min_length unknown_field; nothing written", HasField(r, "reason_min_length", "unknown_field")
+                && (await NewEvents()).Count == 0 && await Count("location_login_config_change") == ch, r.Body);
+        }
+
+        // ---- boundaries: (this host, constants) and (second host, 50/200); API response + change row + outbox ----
+        async Task Bounds(string tag, HttpClient? via, int mn, int mx)
+        {
+            Task<R> PutV(Guid loc, object body, string ifm) => Send(HttpMethod.Put, Cfg(loc), SA, J(body), ifm, via: via);
+            Task<R> PostV(object body) => Send(HttpMethod.Post, "/api/orgs/locations", SA, J(body), via: via);
+            var lim = await Send(HttpMethod.Get, Limits, RD, via: via);
+            Ok($"DEC-107 {tag}: limits (org:V) -> exactly {mn}/{mx}", lim.Status == 200 && Obj(lim.Body).Count == 2 && (int?)Obj(lim.Body)["reason_min_length"] == mn && (int?)Obj(lim.Body)["reason_max_length"] == mx, lim.Body);
+            if (lim.Status == 200) ForSchema("login_config_limits", lim);
+            var rc = await PostV(Create(P_B, $"DEC-107 {tag} bounds", DbCfg()));
+            var L = rc.Status == 201 ? LocOf(rc) : Guid.Empty;
+            await NewEvents();
+            var g = await Send(HttpMethod.Get, Cfg(L), SA, via: via);
+            Ok($"DEC-107 {tag}: location GET carries reason_min_length {mn}, reason_max_length {mx}", g.Status == 200 && (int?)Obj(g.Body)["reason_min_length"] == mn && (int?)Obj(g.Body)["reason_max_length"] == mx, g.Body);
+            if (g.Status == 200) ForSchema("login_config_get_super", g);
+            async Task Write(string label, string reason, bool down, string want) // want: "200:<trimmed>" | "200:null" | "422" | "400"
+            {
+                var rv = Rv(L); var ch = await Count("location_login_config_change");
+                if (down)
+                {   // MFA back on first (an upgrade, no reason) so the next write is a downgrade
+                    if (!await OScalar<bool>("SELECT mfa_required FROM auth.location_login_config WHERE location_id=$1", L))
+                    { await PutV(L, DbCfg(display: $"DEC-107 {k++}"), $"\"{rv}\""); await NewEvents(); rv = Rv(L); ch = await Count("location_login_config_change"); }
+                }
+                var r = await PutV(L, With(DbCfg(display: $"DEC-107 {k++}", mfa: !down), "reason", reason), $"\"{rv}\"");
+                var ev = await NewEvents();
+                bool ok;
+                if (want.StartsWith("200:", StringComparison.Ordinal))
+                {
+                    string? w = want == "200:null" ? null : want[4..];
+                    var row = await OScalar<string>("SELECT coalesce(reason, '<SQL NULL>') FROM auth.location_login_config_change WHERE location_id=$1 ORDER BY at DESC, change_id LIMIT 1", L);
+                    var ob = await OScalar<string>("SELECT coalesce(envelope->'details'->>'reason', '<SQL NULL>') FROM auth.audit_outbox WHERE envelope->'target'->>'id' = $1 ORDER BY occurred_at DESC LIMIT 1", L.ToString("D"));
+                    ok = r.Status == 200 && NoBounds(r) && ev.Count == 1 && Valid(ev[0]) && (string?)ev[0]["details"]!["reason"] == w
+                        && row == (w ?? "<SQL NULL>") && ob == (w ?? "<SQL NULL>") && Rv(L) == rv + 1;
+                    if (ok && r.Status == 200) ForSchema("login_config_saved_super", r);
+                }
+                else if (want == "422")
+                    ok = r.Status == 422 && Fields(r) == "reason:reason_length" && ev.Count == 0 && Rv(L) == rv && await Count("location_login_config_change") == ch;
+                else ok = Err(r, 400, "reason_required") && ev.Count == 0 && Rv(L) == rv && await Count("location_login_config_change") == ch;
+                Ok($"DEC-107 {tag}: PUT {(down ? "MFA off" : "display_name")}, {label} -> {(want.StartsWith("200:") ? (want == "200:null" ? "200, reason null" : "200") : want)}; response, change row, outbox",
+                    ok, $"{r.Status} {Fields(r)} ev={ev.Count} {(r.Body.Length > 160 ? r.Body[..160] : r.Body)}");
+            }
+            string X(int n) => Rep("x", n);
+            await Write($"{mn - 1} chars (min - 1)", X(mn - 1), false, "422");
+            await Write($"{mn} chars (min)", X(mn), false, "200:" + X(mn));
+            await Write($"{mx} chars (max)", X(mx), false, "200:" + X(mx));
+            await Write($"{mx + 1} chars (max + 1)", X(mx + 1), false, "422");
+            await Write($"{mn} chars padded with spaces/tab (trimmed)", "  \t" + X(mn) + "   ", false, "200:" + X(mn));
+            await Write($"{mn - 1} chars padded to {mn + 4} raw (padding not counted)", "  " + X(mn - 1) + "   ", false, "422");
+            await Write($"{mx} chars padded (trimmed)", " " + X(mx) + " ", false, "200:" + X(mx));
+            await Write($"whitespace-only ({mx + 5} spaces), not a downgrade", Rep(" ", mx + 5), false, "200:null");
+            await Write($"{mn} astral (min)", Rep(Devil, mn), false, "200:" + Rep(Devil, mn));
+            await Write($"{mn - 1} astral (min - 1)", Rep(Devil, mn - 1), false, "422");
+            await Write($"{mx} astral (max)", Rep(Devil, mx), false, "200:" + Rep(Devil, mx));
+            await Write($"{mx + 1} astral (max + 1)", Rep(Devil, mx + 1), false, "422");
+            await Write($"whitespace-only ({mn} spaces) on a downgrade", Rep(" ", mn), true, "400");
+            await Write($"{mn - 1} chars on a downgrade", X(mn - 1), true, "422");
+            await Write($"{mn} chars padded on a downgrade", "   " + X(mn) + " ", true, "200:" + X(mn));
+            await Write($"{mx + 1} chars on a downgrade", X(mx + 1), true, "422");
+            await Write($"{mx} chars on a downgrade", X(mx), true, "200:" + X(mx));
+            // create path: login_config.reason
+            foreach (var (cl, reason, want) in new[] { ($"{mn - 1}", X(mn - 1), "422"), ($"{mn} padded", "  " + X(mn) + "  ", X(mn)), ($"{mx}", X(mx), X(mx)), ($"{mx + 1}", X(mx + 1), "422"),
+                                                       ("whitespace-only", Rep(" ", mn + 1), "null"), ($"{mn} astral", Rep(Devil, mn), Rep(Devil, mn)), ($"{mn - 1} astral", Rep(Devil, mn - 1), "422") })
+            {
+                var ch = await Count("location_login_config_change");
+                var r = await PostV(Create(P_B, $"DEC-107 {tag} create {k++}", With(DbCfg(), "reason", reason)));
+                var ev = await NewEvents();
+                bool ok;
+                if (want == "422") ok = r.Status == 422 && Fields(r) == "login_config/reason:reason_length" && ev.Count == 0 && await Count("location_login_config_change") == ch;
+                else
+                {
+                    string? w = want == "null" ? null : want;
+                    ok = r.Status == 201 && NoBounds(r) && ev.Count == 1 && Valid(ev[0]) && (string?)ev[0]["details"]!["reason"] == w
+                        && await OScalar<string>("SELECT coalesce(reason, '<SQL NULL>') FROM auth.location_login_config_change WHERE location_id=$1", LocOf(r)) == (w ?? "<SQL NULL>");
+                    if (ok) ForSchema("login_config_saved_super", r);
+                }
+                Ok($"DEC-107 {tag}: create, reason {cl} -> {(want == "422" ? "422 login_config/reason:reason_length" : want == "null" ? "201, reason null" : "201")}; response, change row, outbox", ok, $"{r.Status} {Fields(r)} ev={ev.Count}");
+            }
+            // a downgrade create with a blank reason -> 400 reason_required
+            {
+                var ch = await Count("location_login_config_change");
+                var r = await PostV(Create(P_B, $"DEC-107 {tag} create {k++}", With(DbCfg(mfa: false), "reason", Rep(" ", mx))));
+                Ok($"DEC-107 {tag}: create MFA off, whitespace-only reason -> 400 reason_required, nothing written", Err(r, 400, "reason_required") && (await NewEvents()).Count == 0 && await Count("location_login_config_change") == ch, r.Body);
+            }
+        }
+        await Bounds($"default {Mn}/{Mx}", null, Mn, Mx);
+        var port5 = FreePort(port);
+        var log5 = new CaptureLogger();
+        await using (var app5 = await AdminApiHost.BuildAsync(Opts() with { Urls = $"http://127.0.0.1:{port5}", ReasonMinLength = 50, ReasonMaxLength = 200 }, dir, extraLogger: log5))
+        {
+            await app5.StartAsync();
+            using var http5 = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port5}") };
+            await Bounds("config 50/200", http5, 50, 200);
+            var r = await Send(HttpMethod.Get, Cfg(A1), RD, via: http5);
+            Ok("DEC-107 config 50/200: org:V GET -> restricted view with reason_min_length 50, reason_max_length 200", r.Status == 200 && !Obj(r.Body).ContainsKey("oidc_authority")
+                && (int?)Obj(r.Body)["reason_min_length"] == 50 && (int?)Obj(r.Body)["reason_max_length"] == 200, r.Body);
+            if (r.Status == 200) ForSchema("login_config_get_restricted", r);
+            Ok("DEC-107 config 50/200: limits no token -> 401; no role -> 403 forbidden", (await Send(HttpMethod.Get, Limits, null, via: http5)).Status == 401
+                && Err(await Send(HttpMethod.Get, Limits, NO, via: http5), 403, "forbidden"));
+            Ok("DEC-107 config 50/200: no Error log line on the second host", log5.Entries.Count == 0, string.Join(" | ", log5.Entries.Select(e => $"{e.ExType}: {e.Text}")));
+            await app5.StopAsync();
+        }
+        var lim0 = await Get(Limits, SA);
+        Ok($"DEC-107: this host still answers {Mn}/{Mx} after the 50/200 host ran (per-host snapshot)", (int?)Obj(lim0.Body)["reason_min_length"] == Mn && (int?)Obj(lim0.Body)["reason_max_length"] == Mx, lim0.Body);
     }
 
     // ================= 8. secrets never leave =================

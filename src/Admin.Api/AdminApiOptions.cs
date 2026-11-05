@@ -38,11 +38,30 @@ public sealed record AdminApiOptions
     /// </summary>
     public TimeSpan BodyReadTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// DEC-107 (PM t149u/t150u; TLD 2026-11-04 16:32 Q1=A): the screen 9 reason length, counted in code points after trim, from
+    /// LoginConfig:ReasonMinLength / LoginConfig:ReasonMaxLength. Snapshotted once at startup (like Entra:*); no hot reload.
+    /// Interim code defaults, one constant each: min TO CONFIRM (Mohanraj; t151u via TL: not 100), max 500.
+    /// </summary>
+    public const int DefaultReasonMinLength = 10; // TO CONFIRM (Mohanraj)
+    public const int DefaultReasonMaxLength = 500;
+    /// <summary>
+    /// Hard bounds for the two keys = the DB CHECK llcc_reason (db/migrations.sql L94: char_length(reason) BETWEEN 10 AND 500, frozen),
+    /// so config can never accept a reason the DB refuses [TLD 2026-11-04 16:32 Q1=A]. Startup requires
+    /// ReasonFloor &lt;= min &lt;= max &lt;= ReasonCeiling. Widening needs a new migration (follow-up DB-WIDEN, PQ-238).
+    /// </summary>
+    public const int ReasonFloor = 10, ReasonCeiling = 500;
+    public int ReasonMinLength { get; init; } = DefaultReasonMinLength;
+    public int ReasonMaxLength { get; init; } = DefaultReasonMaxLength;
+
     public static AdminApiOptions FromConfiguration(IConfiguration c)
     {
         string Req(string k) => c[k] is { Length: > 0 } v ? v : throw new InvalidOperationException($"config {k} is required");
         static HashSet<string> List(string? v) =>
             (v ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.Ordinal);
+        int Int(string k, int dflt) => c[k] is not { } v ? dflt
+            : int.TryParse(v, System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n
+            : throw new InvalidOperationException($"config {k} must be an integer");
         var jwksPath = Req("BackofficeAuth:JwksPath");
         var jwks = new JsonWebKeySet(File.ReadAllText(jwksPath));
         return new AdminApiOptions
@@ -57,6 +76,8 @@ public sealed record AdminApiOptions
             SigningKeys = jwks.GetSigningKeys().ToList(),
             AuditSchemaPath = c["Audit:SchemaPath"] is { Length: > 0 } p ? p : Path.Combine(AppContext.BaseDirectory, "contract", "audit-events.schema.json"),
             Urls = c["Urls"] ?? "",
+            ReasonMinLength = Int("LoginConfig:ReasonMinLength", DefaultReasonMinLength),
+            ReasonMaxLength = Int("LoginConfig:ReasonMaxLength", DefaultReasonMaxLength),
         };
     }
 
@@ -87,6 +108,8 @@ public sealed record AdminApiOptions
         if (!File.Exists(AuditSchemaPath)) throw new InvalidOperationException("audit-events.schema.json not found (Audit:SchemaPath)");
         _ = new NpgsqlConnectionStringBuilder(ConnectionString);
         if (BodyReadTimeout <= TimeSpan.Zero || BodyReadTimeout > TimeSpan.FromSeconds(60)) throw new InvalidOperationException("BodyReadTimeout must be in (0, 60] s");
+        if (ReasonMinLength < ReasonFloor || ReasonMaxLength > ReasonCeiling || ReasonMinLength > ReasonMaxLength)
+            throw new InvalidOperationException($"config LoginConfig:ReasonMinLength / LoginConfig:ReasonMaxLength must satisfy {ReasonFloor} <= min <= max <= {ReasonCeiling} (DB CHECK llcc_reason)");
         return this with { EntraClientId = entra.ClientId };
     }
 

@@ -27,7 +27,7 @@ static class UiHost
     { [".css"] = "text/css; charset=utf-8", [".mjs"] = "text/javascript; charset=utf-8", [".ttf"] = "font/ttf" };
 
     public static async Task<int> RunAsync(string uiDir, int apiPort, int uiPort, IReadOnlyDictionary<string, Persona> personas,
-        HashSet<Guid> readerLocations, Guid partnerA, Guid partnerB, Guid[] tenants, NpgsqlDataSource ownerDs)
+        HashSet<Guid> readerLocations, Guid partnerA, Guid partnerB, Guid[] tenants, NpgsqlDataSource ownerDs, int c50Port)
     {
         uiDir = Path.GetFullPath(uiDir);
         var page = await File.ReadAllTextAsync(Path.Combine(uiDir, "location-sign-in.html"));
@@ -35,6 +35,8 @@ static class UiHost
         if (!page.Contains(hostAttrs, StringComparison.Ordinal)) { Console.Error.WriteLine("ui-host: page has no host attributes"); return 2; }
 
         using var api = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{apiPort}") };
+        // DEC-107: the same API code started with LoginConfig 50/200 (Program.cs), proxied under /c50/{persona}/...
+        using var api50 = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{c50Port}") };
         // ---- seed via the API as the Super Admin ----
         async Task<JsonObject> Create(Guid partner, string name, object cfg)
         {
@@ -156,12 +158,14 @@ static class UiHost
         await using var app = b.Build();
         app.Use((c, next) => { c.Response.OnStarting(() => { c.Response.Headers.ContentSecurityPolicy = Csp; c.Response.Headers.XFrameOptions = "DENY";
             c.Response.Headers.XContentTypeOptions = "nosniff"; c.Response.Headers.CacheControl = "no-store"; return Task.CompletedTask; }); return next(c); });
-        app.MapGet("/as/{persona}/orgs/{**rest}", (string persona, string rest) =>
+        IResult Page(string prefix, string persona)
         {
             if (!personas.TryGetValue(persona, out var p)) return Results.NotFound();
-            var html = page.Replace(hostAttrs, $"data-api-base=\"/as/{persona}/api\" data-admin-type=\"{p.AdminType}\"", StringComparison.Ordinal);
+            var html = page.Replace(hostAttrs, $"data-api-base=\"/{prefix}/{persona}/api\" data-admin-type=\"{p.AdminType}\"", StringComparison.Ordinal);
             return Results.Text(html, "text/html; charset=utf-8");
-        });
+        }
+        app.MapGet("/as/{persona}/orgs/{**rest}", (string persona, string rest) => Page("as", persona));
+        app.MapGet("/c50/{persona}/orgs/{**rest}", (string persona, string rest) => Page("c50", persona));
         app.MapGet("/ui/orgs/{**path}", (string path) =>
         {
             var ext = Path.GetExtension(path);
@@ -170,7 +174,7 @@ static class UiHost
             if (!allowed || !full.StartsWith(uiDir + Path.DirectorySeparatorChar, StringComparison.Ordinal) || !File.Exists(full)) return Results.NotFound();
             return Results.File(full, Types[ext]);
         });
-        app.Map("/as/{persona}/api/{**rest}", async (HttpContext c, string persona, string rest) =>
+        async Task Proxy(HttpContext c, HttpClient target, string persona, string rest)
         {
             if (!personas.TryGetValue(persona, out var p)) { c.Response.StatusCode = 404; return; }
             using var req = new HttpRequestMessage(new HttpMethod(c.Request.Method), "/api/" + rest + c.Request.QueryString.Value);
@@ -183,13 +187,15 @@ static class UiHost
                 req.Content = new ByteArrayContent(ms.ToArray());
                 if (c.Request.ContentType is { } ct) req.Content.Headers.TryAddWithoutValidation("Content-Type", ct);
             }
-            using var res = await api.SendAsync(req);
+            using var res = await target.SendAsync(req);
             c.Response.StatusCode = (int)res.StatusCode;
             foreach (var h in new[] { "ETag", "X-Request-ID", "Location", "WWW-Authenticate" })
                 if (res.Headers.TryGetValues(h, out var v)) c.Response.Headers[h] = string.Join(",", v);
             if (res.Content.Headers.ContentType is { } rct) c.Response.ContentType = rct.ToString();
             await res.Content.CopyToAsync(c.Response.Body);
-        });
+        }
+        app.Map("/as/{persona}/api/{**rest}", (HttpContext c, string persona, string rest) => Proxy(c, api, persona, rest));
+        app.Map("/c50/{persona}/api/{**rest}", (HttpContext c, string persona, string rest) => Proxy(c, api50, persona, rest));
         await app.StartAsync();
 
         var info = new JsonObject

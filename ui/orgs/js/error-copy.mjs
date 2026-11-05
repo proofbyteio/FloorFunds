@@ -3,8 +3,9 @@
 // with three changes (not_found.text, not_super_admin, FIELD.reason_length); everything else as written. MK9
 // (09-location-method.html md5 90d2a8fa, D-103) draws copy only for 409 concurrency_conflict and 422 tenant_bound_elsewhere;
 // those two stay in location-sign-in.html as drawn. Codes: spec §5.1 / §5.2 (contract/v1.1-S2a-location-login-config.md).
-// TO CONFIRM (Mohanraj, via TL): the reason length (10 to 500 characters) is a TL Decision being confirmed, so the
-// reason_length copy does not state the numbers yet; the server's rule is the only check.
+// DEC-107 [PM t149u/t150u; TLD 2026-11-04 16:32]: the reason length comes from deployment config, so the reason_length copy
+// is built from the numbers the API returns (UX D-106, 09-location-method.html md5 2b17464c): reasonLengthCopy(min, max).
+// The server's rule is the only check; the page never hardcodes the numbers.
 
 /** Top-level error -> { title, text }. `null` status = network failure (no response). */
 export const TOP_LEVEL = Object.freeze({
@@ -33,11 +34,14 @@ export const FIELD = Object.freeze({
   tenant_id_format: "Enter the tenant ID in the format 00000000-0000-0000-0000-000000000000 (not all zeros).",
   field_not_allowed: "A tenant ID can't be used with username and password sign-in.",
   fallback_not_applicable: "Backup sign-in is only for Microsoft sign-in.",
-  // D-102 change 3. TO CONFIRM (Mohanraj): 10 to 500 characters; once confirmed this becomes "Enter a reason of 10 to 500 characters."
-  reason_length: "This reason is too short or too long. Change it, then try again.",
+  // reason_length: see reasonLengthCopy below (DEC-107, UX D-106; replaces D-102 change 3).
   reason_required: "Say why you are lowering sign-in security.",
   other: "Check this field.",
 });
+
+/** 422 reason_length copy with the bounds in effect (UX D-106 md5 2b17464c, DEC-107): from GET /orgs/login-config/limits
+ *  (create) or the location GET's reason_min_length / reason_max_length (edit). */
+export function reasonLengthCopy(min, max) { return `Enter a reason of ${min} to ${max} characters.`; }
 
 /** X-Request-ID display (approved D-102): own last line of every top-level error banner, never under a field; shown on every error banner so support can find the server log line (`request_id=<value>`). */
 export function requestIdText(id) { return id ? `Request ID: ${id}` : ""; }

@@ -127,7 +127,8 @@ public static class LoginConfigValidator
             {
                 var raw = rs.GetString()!;
                 var t = raw.Trim();
-                if (Runes(raw) > 2000 || (t.Length > 0 && Runes(t) is < 10 or > 500)) errs.Add(new(prefix + "reason", "reason_length"));
+                // DEC-107: bounds from LoginConfig:ReasonMinLength / ReasonMaxLength (startup snapshot, inside the DB's 10..500).
+                if (Runes(raw) > 2000 || (t.Length > 0 && (Runes(t) < opt.ReasonMinLength || Runes(t) > opt.ReasonMaxLength))) errs.Add(new(prefix + "reason", "reason_length"));
                 else if (t.Length > 0) reason = t;
             }
         }

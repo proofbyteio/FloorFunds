@@ -96,6 +96,9 @@ export function changeDetails(c) {
 
 /** 422 field path -> the page's input id (spec §5 example: "entra_allowed_tenant_ids/0"). */
 export function fieldTarget(path) {
+  // DEC-107: a create 422 names the reason "login_config/reason"; it lands on the same field as the PUT's "reason".
+  // (Other login_config/* create paths are unchanged here: outside DEC-107's scope, reported as an open question.)
+  if (String(path) === "login_config/reason") return "reason";
   const top = String(path).split("/")[0];
   return ({ display_name: "dname", entra_allowed_tenant_ids: "tenant", reason: "reason", name: "lname",
     allow_db_fallback: "fallback", mfa_required: "mfa", provider_kind: "method" })[top] ?? null;
@@ -105,4 +108,12 @@ export function fieldTarget(path) {
 export function ifMatchFrom(etag, rowVersion) {
   if (typeof etag === "string" && /^"\d+"$/.test(etag)) return etag;
   return Number.isInteger(rowVersion) ? `"${rowVersion}"` : null;
+}
+
+/** DEC-107 [TLD 2026-11-04 16:32 Q2]: the reason bounds from GET /orgs/login-config/limits or the location GET
+ *  (reason_min_length / reason_max_length) -> { min, max }, or null when missing or not 1 <= min <= max integers.
+ *  The page never falls back to numbers of its own. */
+export function limitsFrom(o) {
+  const min = o && o.reason_min_length, max = o && o.reason_max_length;
+  return Number.isInteger(min) && Number.isInteger(max) && min >= 1 && min <= max ? { min, max } : null;
 }

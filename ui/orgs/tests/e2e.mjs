@@ -179,6 +179,34 @@ await step("PA partner-edit", async () => {
   ok("partner-edit save: history newest first, Who = PA actor id, Database → Microsoft", r.length === 2 && r[0][2] === H.users.pa && r[0][3].startsWith("Database → Microsoft"), r);
   ok("partner-edit save: still no server card for a Partner Admin", !(await vis("#card-connection")));
 });
+// DEC-107 [TLD 2026-11-04 16:32 Q2=(ii)]: the page takes the reason bounds from the API. /c50/... is the same page and API code,
+// started with LoginConfig 50/200 (ui-host); nothing is written here (every save is a 422).
+await step("DEC-107 limits and config 50/200", async () => {
+  const lim = async (pfx, who) => { const r = await fetch(`${H.ui}/${pfx}/${who}/api/orgs/login-config/limits`); const t = await r.text(); return [r.status, t, r.headers.get("WWW-Authenticate")]; };
+  let [st, b] = await lim("as", "sa");
+  ok("limits via the UI host: SA 200 exactly {reason_min_length: 10, reason_max_length: 500}", st === 200 && b === JSON.stringify({ reason_min_length: 10, reason_max_length: 500 }), [st, b]);
+  [st, b] = await lim("as", "rd");
+  ok("limits via the UI host: org:V reader 200", st === 200 && JSON.parse(b).reason_max_length === 500, [st, b]);
+  const a = await lim("as", "anon");
+  ok("limits via the UI host: no token 401, no body, WWW-Authenticate Bearer", a[0] === 401 && a[1] === "" && /^Bearer/.test(a[2] ?? ""), a);
+  [st, b] = await lim("c50", "sa");
+  ok("limits on the 50/200 API: 200 exactly {50, 200}", st === 200 && b === JSON.stringify({ reason_min_length: 50, reason_max_length: 200 }), [st, b]);
+  const r30 = "DEC-107 e2e: thirty chars ok.."; // 30 characters: inside 10..500, below 50
+  await open(`/c50/sa/orgs/${H.partner_a}/locations/${H.l2}/sign-in`); await click("#btn-change"); await mouseClick("#mfa");
+  ok("c50 Edit: reason hint uses the GET's 50 / 200", await txt("#reason-hint") === "50 to 200 characters. Saved in the audit log.", await txt("#reason-hint"));
+  await type("#reason", r30); await save();
+  let e = await shownError();
+  ok("c50 Edit: a 30-character reason -> 422 reason_length, copy 'Enter a reason of 50 to 200 characters.'", e.length === 1 && e[0].code === "validation_failed"
+    && await txt("#reason-err") === "Enter a reason of 50 to 200 characters." && await noRidOnFields(), [e, await txt("#reason-err")]);
+  await open(`/c50/sa/orgs/${H.partner_a}/locations/new`);
+  ok("c50 Create: reason hint uses the limits endpoint's 50 / 200", await txt("#reason-hint") === "50 to 200 characters. Saved in the audit log. Required only if you turn off the second step or turn on backup sign-in.", await txt("#reason-hint"));
+  await type("#lname", "UI Cage c50"); await type("#dname", "UI Casino A"); await mouseClick("#mfa"); await type("#reason", r30); await save();
+  e = await shownError();
+  ok("c50 Create: a 30-character reason -> 422, copy 'Enter a reason of 50 to 200 characters.', still on /new", e.length === 1 && e[0].code === "validation_failed"
+    && await txt("#reason-err") === "Enter a reason of 50 to 200 characters." && await ev(`location.pathname.endsWith("/new")`), [e, await txt("#reason-err")]);
+  await open(page("sa", H.l2));
+  ok("c50: nothing was saved (L2 still MFA on, no new history row)", await txt("#cur-mfa") === "Yes" && (await rows()).length === 1, [await txt("#cur-mfa"), (await rows()).length]);
+});
 await step("SA downgrade", async () => {
   await open(page("sa", H.l2));
   await click("#btn-change");
@@ -186,14 +214,14 @@ await step("SA downgrade", async () => {
   ok("SA edit: no reason field before a downgrade; server card stays", !(await vis("#f-reason")) && await vis("#card-connection"));
   await mouseClick("#mfa");
   ok("downgrade: warning banner, reason field, title 'Lower sign-in security: UI Cage 2'", await vis("#banner-downgrade") && await vis("#reason") && await txt("#title") === "Lower sign-in security: UI Cage 2"
-    && await txt("#reason-hint") === "Saved in the audit log.");
+    && await txt("#reason-hint") === "10 to 500 characters. Saved in the audit log.", await txt("#reason-hint"));
   await save();
   let e = await shownError();
   ok("downgrade without reason: 400 reason_required, reason field error, request id", e.length === 1 && e[0].code === "reason_required" && RID.test(e[0].rid) && await vis("#reason-err") && await attr("#reason", "aria-invalid") === "true", e);
   await type("#reason", "short"); await save();
   e = await shownError();
   ok("downgrade with a short reason: server 422 reason_length shown on the field (no client-side length rule)", e.length === 1 && e[0].code === "validation_failed" && await vis("#reason-err") && RID.test(e[0].rid), [e, await txt("#reason-err")]);
-  ok("D-102 #3: reason_length field copy (numbers stay TO CONFIRM)", await txt("#reason-err") === "This reason is too short or too long. Change it, then try again.", await txt("#reason-err"));
+  ok("DEC-107: reason_length field copy with the GET's numbers", await txt("#reason-err") === "Enter a reason of 10 to 500 characters.", await txt("#reason-err"));
   ok("D-102: no Request ID under fields (reason error shown); the top-level banner has it", await noRidOnFields() && ridOk(await ridInfo("#banner-error")));
   await type("#reason", "UI e2e: conditional access enforces MFA (ticket UI-1)"); await save();
   ok("downgrade with a reason: saved", await vis("#banner-saved") && await txt("#cur-mfa") === "No");
@@ -236,6 +264,7 @@ await step("SA create", async () => {
   await open(`/as/sa/orgs/${H.partner_a}/locations/new`);
   ok("create (Super Admin): title, chip, name + reason fields, no server card, no history", await txt("#title") === "Create location" && await txt("#role-chip-text") === "Super Admin"
     && await vis("#lname") && await vis("#reason") && !(await vis("#card-connection")) && !(await vis("#card-history")) && await txt("#btn-save") === "Create location" && await txt("#bc-page") === "New location");
+  ok("DEC-107 create: reason hint uses the limits endpoint's 10 / 500", await txt("#reason-hint") === "10 to 500 characters. Saved in the audit log. Required only if you turn off the second step or turn on backup sign-in.", await txt("#reason-hint"));
   await type("#lname", "UI Cage 5"); await type("#dname", "UI Casino A"); await save();
   await until(`location.pathname.endsWith("/sign-in") && document.body.dataset.state === "saved"`);
   ok("create (Super Admin): goes to the new location's page with the saved banner; hash cleared", await ev(`document.body.dataset.state`) === "saved" && await ev(`location.hash`) === ""
