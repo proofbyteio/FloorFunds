@@ -402,10 +402,14 @@ var lite = JsonSchemaLite.Load(await File.ReadAllTextAsync(schemaPath));
 bool Valid(JsonObject e) => lite.Validate(e).Count == 0;
 // targetId null = a not_admin create whose body gave no valid partner_id: target.id and scope.partner_id both absent (OQ-P3-10).
 // details.location_id: the location on update, JSON null on create [TLD 9:04, OQ-P3-2].
-bool Denied(List<JsonObject> evs, string reason, Guid? targetId, string? adminType, string op, params string[] attempted) =>
+// SSE2 follow-up (1): scopePartner = the expected scope.partner_id (create: the body's partner = targetId; update: the LOCATION's
+// partner), actorPartner = the caller's partner in details.actor_partner_id (null = key absent: Super Admin or not_admin).
+bool Denied(List<JsonObject> evs, string reason, Guid? targetId, Guid? scopePartner, Guid? actorPartner, string? adminType, string op, params string[] attempted) =>
     evs.Count == 1 && Valid(evs[0]) && (string)evs[0]["event_type"]! == "auth.config.change_denied" && (string)evs[0]["details"]!["reason"]! == reason
     && (string?)evs[0]["target"]!["id"] == targetId?.ToString("D")
-    && (op != "create" || (string?)evs[0]["scope"]!["partner_id"] == targetId?.ToString("D"))
+    && (op != "create" || scopePartner == targetId)
+    && (string?)evs[0]["scope"]!["partner_id"] == scopePartner?.ToString("D")
+    && (actorPartner is { } ap ? (string?)evs[0]["details"]!["actor_partner_id"] == ap.ToString("D") : !evs[0]["details"]!.AsObject().ContainsKey("actor_partner_id"))
     && evs[0]["details"]!.AsObject().ContainsKey("location_id")
     && (op == "create" ? evs[0]["details"]!["location_id"] is null && evs[0]["scope"]!["location_ids"]!.AsArray().Count == 0
                        : (string?)evs[0]["details"]!["location_id"] == targetId?.ToString("D"))
@@ -538,17 +542,17 @@ try
     {
         var r = await Post(PA, Create(P_B, "Sneaky", DbCfg()));
         Ok("create: PA other partner -> 404 not_found (identical body)", Err(r, 404, "not_found") && r.Body == """{"error":"not_found"}""");
-        Ok("create: PA other partner -> forbidden_scope event (target partner, scope [])", Denied(await NewEvents(), "forbidden_scope", P_B, "partner", "create",
+        Ok("create: PA other partner -> forbidden_scope event (target partner, scope [])", Denied(await NewEvents(), "forbidden_scope", P_B, P_B, P_A, "partner", "create",
             "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"));
         Ok("create: nothing created for partner B by PA", await OScalar<long>("SELECT count(*) FROM auth.location WHERE partner_id=$1", P_B) == 1);
     }
     {
         var r = await Post(PA, Create(P_A, "No MFA", DbCfg(mfa: false)));
         Ok("create: PA mfa_required=false -> 403 not_super_admin", Err(r, 403, "not_super_admin"));
-        Ok("create: not_super_admin event (attempted mfa_required)", Denied(await NewEvents(), "not_super_admin", P_A, "partner", "create", "mfa_required"));
+        Ok("create: not_super_admin event (attempted mfa_required)", Denied(await NewEvents(), "not_super_admin", P_A, P_A, P_A, "partner", "create", "mfa_required"));
         r = await Post(PA, Create(P_A, "Fallback", EntraCfg(T2, fallback: true)));
         Ok("create: PA allow_db_fallback=true -> 403 not_super_admin + event", Err(r, 403, "not_super_admin")
-            && Denied(await NewEvents(), "not_super_admin", P_A, "partner", "create", "allow_db_fallback"));
+            && Denied(await NewEvents(), "not_super_admin", P_A, P_A, P_A, "partner", "create", "allow_db_fallback"));
     }
     Guid A2;
     {
@@ -589,7 +593,7 @@ try
         Ok("create: field errors write no event", (await NewEvents()).Count == 0);
         r = await Post(SA, Create(P_A, "Tenant thief", EntraCfg(T1)));
         Ok("create: SA tenant bound to partner B -> 422 tenant_bound_elsewhere", HasField(r, "login_config/entra_allowed_tenant_ids/0", "tenant_bound_elsewhere"));
-        Ok("create: tenant_bound_elsewhere event (super, target partner A)", Denied(await NewEvents(), "tenant_bound_elsewhere", P_A, "super", "create", "entra_allowed_tenant_ids"));
+        Ok("create: tenant_bound_elsewhere event (super, target partner A)", Denied(await NewEvents(), "tenant_bound_elsewhere", P_A, P_A, null, "super", "create", "entra_allowed_tenant_ids"));
         r = await Send(HttpMethod.Post, "/api/orgs/locations", SA, "[1,2]");
         Ok("create: non-object body -> 400 malformed_body", Err(r, 400, "malformed_body"));
         r = await Send(HttpMethod.Post, "/api/orgs/locations", SA, """{"partner_id":"x","partner_id":"y"}""");
@@ -601,11 +605,11 @@ try
         {
             r = await Post(t, Create(P_A, "x", DbCfg()));
             Ok($"create: {n} -> 403 forbidden + not_admin event (target partner A, location_id null, no admin_type/actor_partner_id)", Err(r, 403, "forbidden")
-                && Denied(await NewEvents(), "not_admin", P_A, null, "create", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"));
+                && Denied(await NewEvents(), "not_admin", P_A, P_A, null, null, "create", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"));
         }
         r = await Post(RD, Create(P_B, "x", With(EntraCfg(T3), "secret_ref", Arn("rd"))));
         Ok("create: reader naming partner B -> 403 + not_admin event targeting partner B (from the body)", Err(r, 403, "forbidden")
-            && Denied(await NewEvents(), "not_admin", P_B, null, "create", "provider_kind", "display_name", "entra_allowed_tenant_ids", "secret_ref", "allow_db_fallback", "mfa_required"));
+            && Denied(await NewEvents(), "not_admin", P_B, P_B, null, null, "create", "provider_kind", "display_name", "entra_allowed_tenant_ids", "secret_ref", "allow_db_fallback", "mfa_required"));
         var bigName = new string('a', 2 * 1024 * 1024);
         var unreadable = new (string n, Func<HttpContent> body)[]
         {
@@ -624,10 +628,10 @@ try
             Ok($"create #8: unauthenticated + {n} -> 401 (never 400/413), no body, no event", r.Status == 401 && r.Body.Length == 0 && r.WwwAuth == "Bearer" && (await NewEvents()).Count == 0, $"{r.Status}");
             r = await Send(HttpMethod.Post, "/api/orgs/locations", NO, edit: Body);
             Ok($"create #8: no permission + {n} -> 403 forbidden (never 400/413) + not_admin event, partner unknown (OQ-P3-10)", Err(r, 403, "forbidden")
-                && Denied(await NewEvents(), "not_admin", null, null, "create"), $"{r.Status} {r.Body}");
+                && Denied(await NewEvents(), "not_admin", null, null, null, null, "create"), $"{r.Status} {r.Body}");
             r = await Send(HttpMethod.Put, Cfg(A1), CU, ifMatch: "\"1\"", edit: Body);
             Ok($"put #8: no permission + {n} -> 403 forbidden (never 400/413) + not_admin event (attempted none)", Err(r, 403, "forbidden")
-                && Denied(await NewEvents(), "not_admin", A1, null, "update"), $"{r.Status} {r.Body}");
+                && Denied(await NewEvents(), "not_admin", A1, P_A, null, null, "update"), $"{r.Status} {r.Body}");
         }
         r = await Send(HttpMethod.Post, "/api/orgs/locations", SA, "{\"name\":\"" + bigName + "\"}");
         Ok("create: SA body over 1 MiB -> 413 payload_too_large (handler cap, TLD 9:28 P3-2; never 400/500)", Err(r, 413, "payload_too_large"), $"{r.Status}");
@@ -762,10 +766,10 @@ try
         // Downgrades.
         r = await Put(A1, PA, EntraCfg(T3, mfa: false), "\"4\"");
         Ok("put: PA mfa off -> 403 not_super_admin", Err(r, 403, "not_super_admin"));
-        Ok("put: not_super_admin event (attempted mfa_required, actor_partner_id)", Denied(ev = await NewEvents(), "not_super_admin", A1, "partner", "update", "mfa_required")
+        Ok("put: not_super_admin event (attempted mfa_required, actor_partner_id)", Denied(ev = await NewEvents(), "not_super_admin", A1, P_A, P_A, "partner", "update", "mfa_required")
             && (string?)ev[0]["details"]!["actor_partner_id"] == P_A.ToString());
         r = await Put(A1, PA, EntraCfg(T3, fallback: true), "\"4\"");
-        Ok("put: PA fallback on -> 403 not_super_admin + event", Err(r, 403, "not_super_admin") && Denied(await NewEvents(), "not_super_admin", A1, "partner", "update", "allow_db_fallback"));
+        Ok("put: PA fallback on -> 403 not_super_admin + event", Err(r, 403, "not_super_admin") && Denied(await NewEvents(), "not_super_admin", A1, P_A, P_A, "partner", "update", "allow_db_fallback"));
         Ok("put: refused downgrades change nothing", Rv(A1) == 4);
         r = await Put(A1, SA, EntraCfg(T3, mfa: false), "\"4\"");
         Ok("put: SA mfa off, no reason -> 400 reason_required, no event", Err(r, 400, "reason_required") && (await NewEvents()).Count == 0);
@@ -800,7 +804,7 @@ try
         // Tenant rule (Super Admin too).
         r = await Put(A1, SA, EntraCfg(T1), "\"8\"");
         Ok("put: SA tenant bound to partner B -> 422 tenant_bound_elsewhere", HasField(r, "entra_allowed_tenant_ids/0", "tenant_bound_elsewhere"));
-        Ok("put: tenant_bound_elsewhere event (super)", Denied(await NewEvents(), "tenant_bound_elsewhere", A1, "super", "update", "entra_allowed_tenant_ids"));
+        Ok("put: tenant_bound_elsewhere event (super)", Denied(await NewEvents(), "tenant_bound_elsewhere", A1, P_A, null, "super", "update", "entra_allowed_tenant_ids"));
         r = await Put(A2, SA, EntraCfg(T3), "\"2\"");
         Ok("put: tenant on another location of the SAME partner is allowed", r.Status == 200, r.Body);
         await NewEvents();
@@ -814,16 +818,16 @@ try
         Ok("put: reader on a missing location -> 403, no event (TLD 9:04 #2)", Err(miss2, 403, "forbidden") && (await NewEvents()).Count == 0);
         r = await Put(B1, PA, DbCfg(), "\"1\"");
         Ok("put: PA other partner -> 404 identical body + forbidden_scope event", Err(r, 404, "not_found") && r.Body == miss.Body
-            && Denied(await NewEvents(), "forbidden_scope", B1, "partner", "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"));
+            && Denied(await NewEvents(), "forbidden_scope", B1, P_B, P_A, "partner", "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"));
         r = await Put(B1, PA, DbCfg(), null);
         Ok("put: PA other partner without If-Match -> still 404 (step 3-4 before 5)", Err(r, 404, "not_found") && (await NewEvents()).Count == 1);
         r = await Put(A1, RD, With(DbCfg(), "secret_ref", null), "\"8\"");
         ev = await NewEvents();
         Ok("put: org:V reader -> 403 forbidden + not_admin event without admin_type/actor_partner_id", Err(r, 403, "forbidden")
-            && Denied(ev, "not_admin", A1, null, "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "secret_ref", "allow_db_fallback", "mfa_required")
+            && Denied(ev, "not_admin", A1, P_A, null, null, "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "secret_ref", "allow_db_fallback", "mfa_required")
             && !ev[0]["details"]!.AsObject().ContainsKey("actor_partner_id"));
         r = await Put(A1, CU, DbCfg(), "\"8\"");
-        Ok("put: custom role with the permission -> 403 forbidden + not_admin event", Err(r, 403, "forbidden") && Denied(await NewEvents(), "not_admin", A1, null, "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"));
+        Ok("put: custom role with the permission -> 403 forbidden + not_admin event", Err(r, 403, "forbidden") && Denied(await NewEvents(), "not_admin", A1, P_A, null, null, "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"));
         r = await Put(missing, NO, DbCfg(), "\"8\"");
         Ok("put: no role on a missing location -> 403 forbidden, no event", Err(r, 403, "forbidden") && (await NewEvents()).Count == 0);
         Ok("put: B1 untouched by any partner A caller", Rv(B1) == 1);
@@ -916,7 +920,7 @@ try
         Ok("K4 crafted: PA PUT on partner B with X-Partner-Id/X-Admin-Type headers, app.* query, SQL-ish display_name -> 404",
             Err(r, 404, "not_found") && r.Body == """{"error":"not_found"}""");
         Ok("K4 crafted: recorded as forbidden_scope against partner B (attribution from the server, not the request)",
-            Denied(await NewEvents(), "forbidden_scope", B1, "partner", "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "secret_ref", "allow_db_fallback", "mfa_required"));
+            Denied(await NewEvents(), "forbidden_scope", B1, P_B, P_A, "partner", "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "secret_ref", "allow_db_fallback", "mfa_required"));
         Ok("K4 crafted: partner B row unchanged", Rv(B1) == 1 && await OScalar<string>("SELECT display_name FROM auth.location_login_config WHERE location_id=$1", B1) == "Riverbend Casino");
         r = await Send(HttpMethod.Get, Cfg(B1) + qs, PA, edit: Craft);
         Ok("K4 crafted: PA GET partner B with crafted headers/query -> 404", Err(r, 404, "not_found"));
@@ -926,7 +930,7 @@ try
         r = await Send(HttpMethod.Put, Cfg(A2) + qs, PA, withPartner, $"\"{Rv(A2)}\"", Craft);
         Ok("K4 crafted: partner_id / admin_type in an own-location PUT body -> 422 unknown_field", HasField(r, "partner_id", "unknown_field") && HasField(r, "admin_type", "unknown_field"));
         r = await Send(HttpMethod.Post, "/api/orgs/locations" + qs, PA, J(Create(P_B, injected, DbCfg())), edit: Craft);
-        Ok("K4 crafted: PA create under partner B with crafted headers -> 404 + forbidden_scope", Err(r, 404, "not_found") && Denied(await NewEvents(), "forbidden_scope", P_B, "partner", "create",
+        Ok("K4 crafted: PA create under partner B with crafted headers -> 404 + forbidden_scope", Err(r, 404, "not_found") && Denied(await NewEvents(), "forbidden_scope", P_B, P_B, P_A, "partner", "create",
             "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"));
         // Parameterised SQL: the SQL-ish text is stored literally on an own location and changes nothing else.
         var a2v = Rv(A2);
@@ -1192,10 +1196,10 @@ try
             && u.H.GetValueOrDefault("Connection") == "close" && IsCorr(u.H.GetValueOrDefault(LoginConfigApi.RequestIdHeader)) && (await NewEvents()).Count == 0, $"{u.Status} {u.ReadErr}");
         var f = await Raw("PUT", Cfg(A1), CU, MiB8, false, $"\"{rvA1}\"");
         Ok("413 vs #8: unpermitted PUT declared 8 MiB -> 403 forbidden (never 413) + not_admin event (attempted none), no reset", f.ReadErr is null && f.Status == 403
-            && f.Body == "{\"error\":\"forbidden\"}" && Denied(await NewEvents(), "not_admin", A1, null, "update"), $"{f.Status} {f.ReadErr}");
+            && f.Body == "{\"error\":\"forbidden\"}" && Denied(await NewEvents(), "not_admin", A1, P_A, null, null, "update"), $"{f.Status} {f.ReadErr}");
         f = await Raw("POST", "/api/orgs/locations", NO, MiB8, true);
         Ok("413 vs #8: unpermitted POST chunked 8 MiB -> 403 forbidden (never 413) + not_admin event (partner unknown), no reset", f.ReadErr is null && f.Status == 403
-            && Denied(await NewEvents(), "not_admin", null, null, "create"), $"{f.Status} {f.ReadErr}");
+            && Denied(await NewEvents(), "not_admin", null, null, null, null, "create"), $"{f.Status} {f.ReadErr}");
         // P3-3 unchanged: steps 5-6 still answer before the size (stale If-Match + oversize -> 409).
         var st409 = await Raw("PUT", Cfg(A1), SA, KiB400, false, "\"99\"");
         Ok("P3-3 unchanged: stale If-Match + declared 400 KiB -> 409 concurrency_conflict, Connection: close, no reset", st409.ReadErr is null && st409.Status == 409
@@ -1347,10 +1351,10 @@ try
             && (await NewEvents()).Count == 0, $"{s.Status} {s.Ms} ms");
         s = await Stall("PUT", Cfg(A1), CU, 4000, 100, ifMatch: $"\"{rvA1}\"");
         Ok("P3-7 vs #8: unpermitted slow PUT -> 403 forbidden (never 408) + not_admin event (attempted none)",
-            s.ReadErr is null && s.Status == 403 && s.Body == "{\"error\":\"forbidden\"}" && Denied(await NewEvents(), "not_admin", A1, null, "update"), $"{s.Status} {s.Body}");
+            s.ReadErr is null && s.Status == 403 && s.Body == "{\"error\":\"forbidden\"}" && Denied(await NewEvents(), "not_admin", A1, P_A, null, null, "update"), $"{s.Status} {s.Body}");
         s = await Stall("POST", "/api/orgs/locations", NO, 6000, 2000);
         Ok("P3-7 vs #8: unpermitted slow POST -> 403 forbidden (never 408) + not_admin event (partner unknown)",
-            s.ReadErr is null && s.Status == 403 && Denied(await NewEvents(), "not_admin", null, null, "create"), $"{s.Status} {s.Body}");
+            s.ReadErr is null && s.Status == 403 && Denied(await NewEvents(), "not_admin", null, null, null, null, "create"), $"{s.Status} {s.Body}");
         w = await Settle(mark);
         Ok("P3-7 vs #8: the 401/403 slow-body requests log no 408 Warning", w.All(e => !e.Text.Contains("408")), string.Join(" | ", w.Select(e => e.Text)));
 
@@ -1806,13 +1810,13 @@ try
             var ev = await NewEvents();
             shownS.Add($"not_admin create key {fl}: {r.Status}");
             Ok($"F-SURR: not_admin create, {fl} surrogate in a key name -> 403 forbidden, one valid not_admin event (body unreadable: no attempted fields)",
-                Err(r, 403, "forbidden") && Denied(ev, "not_admin", null, null, "create"), $"{r.Status} ev={ev.Count}");
+                Err(r, 403, "forbidden") && Denied(ev, "not_admin", null, null, null, null, "create"), $"{r.Status} ev={ev.Count}");
             var rv = Rv(LS);
             r = await Send(HttpMethod.Put, Cfg(LS), RD, Splice(With(DbCfg(), Ph, "x"), raw), $"\"{rv}\"");
             ev = await NewEvents();
             shownS.Add($"not_admin put key {fl}: {r.Status}");
             Ok($"F-SURR: not_admin PUT, {fl} surrogate in a key name -> 403 forbidden, one valid not_admin event; row unchanged",
-                Err(r, 403, "forbidden") && Denied(ev, "not_admin", LS, null, "update") && Rv(LS) == rv, $"{r.Status} ev={ev.Count}");
+                Err(r, 403, "forbidden") && Denied(ev, "not_admin", LS, P_B, null, null, "update") && Rv(LS) == rv, $"{r.Status} ev={ev.Count}");
         }
         // Controls: a VALID escaped pair is still text (stored byte-for-byte), so the check refuses only undecodable strings.
         {
@@ -2006,7 +2010,7 @@ try
         var rv = Rv(M1); var ch = await Count("location_login_config_change");
         var r = await Put(M1, PB, DbCfg(mfa: true), $"\"{rv}\"");
         Ok("DEC-106 put: PB (other partner) MFA on -> 404 not_found + forbidden_scope event, nothing changed", Err(r, 404, "not_found")
-            && Denied(await NewEvents(), "forbidden_scope", M1, "partner", "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required")
+            && Denied(await NewEvents(), "forbidden_scope", M1, P_A, P_B, "partner", "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required")
             && Rv(M1) == rv && !await Mfa(M1) && await Count("location_login_config_change") == ch, Tag(r));
 
         // PA own, MFA on, reason given but invalid length -> the existing 422 reason_length, nothing changed.
@@ -2036,7 +2040,7 @@ try
         {
             r = await Put(M1, PA, body, $"\"{rv}\"");
             Ok($"DEC-106 put: PA own MFA off, {lbl} -> 403 not_super_admin + not_super_admin event (mfa_required), nothing changed", Err(r, 403, "not_super_admin")
-                && Denied(await NewEvents(), "not_super_admin", M1, "partner", "update", "mfa_required") && Rv(M1) == rv && await Mfa(M1)
+                && Denied(await NewEvents(), "not_super_admin", M1, P_A, P_A, "partner", "update", "mfa_required") && Rv(M1) == rv && await Mfa(M1)
                 && await Count("location_login_config_change") == ch, Tag(r));
         }
 
@@ -2077,7 +2081,7 @@ try
         var locs = await Count("location");
         r = await Post(PA, Create(P_A, "DEC-106 PA create MFA off", With(DbCfg(mfa: false), "reason", Why)));
         Ok("DEC-106 create: PA with MFA off (+ reason) -> 403 not_super_admin + event, no location", Err(r, 403, "not_super_admin")
-            && Denied(await NewEvents(), "not_super_admin", P_A, "partner", "create", "mfa_required") && await Count("location") == locs, Tag(r));
+            && Denied(await NewEvents(), "not_super_admin", P_A, P_A, P_A, "partner", "create", "mfa_required") && await Count("location") == locs, Tag(r));
         r = await Post(PA, Create(P_A, "DEC-106 PA create MFA on", DbCfg(mfa: true)));
         ev = await NewEvents();
         Ok("DEC-106 create: PA with MFA on, no reason -> 201, created event (partner, reason null)", r.Status == 201 && ev.Count == 1 && Valid(ev[0])
@@ -2091,9 +2095,12 @@ try
         Guid F1 = cr.Status == 201 ? LocOf(cr) : Guid.Empty;
         await NewEvents();
         rv = Rv(F1); ch = await Count("location_login_config_change");
+        // SSE2 follow-up (5): the cross-partner 404 must be byte-identical to a missing location's 404 (no existence oracle).
+        var miss120 = await Put(missing, PB, EntraCfg(T6, fallback: false), "\"1\"");
+        Ok("DEC-120 put: PB on a missing location -> 404, no event (reference body)", Err(miss120, 404, "not_found") && (await NewEvents()).Count == 0, Tag(miss120));
         r = await Put(F1, PB, EntraCfg(T6, fallback: false), $"\"{rv}\"");
-        Ok("DEC-120 put: PB (other partner) fallback back off -> 404 not_found + forbidden_scope event, fallback stays on, nothing changed (Confirmed DEC-120)", cr.Status == 201 && Err(r, 404, "not_found")
-            && Denied(await NewEvents(), "forbidden_scope", F1, "partner", "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required")
+        Ok("DEC-120 put: PB (other partner) fallback back off -> 404 not_found (body identical to the missing-location 404) + forbidden_scope event, fallback stays on, nothing changed (Confirmed DEC-120)", cr.Status == 201 && Err(r, 404, "not_found") && r.Body == miss120.Body
+            && Denied(await NewEvents(), "forbidden_scope", F1, P_A, P_B, "partner", "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required")
             && Rv(F1) == rv && await OScalar<bool>("SELECT allow_db_fallback FROM auth.location_login_config WHERE location_id=$1", F1) && await Count("location_login_config_change") == ch, Tag(r));
         r = await Put(F1, PA, With(EntraCfg(T6, fallback: false), "reason", new string('x', Mn - 1)), $"\"{rv}\"");
         Ok($"DEC-121 put: PA own fallback back off with a {Mn - 1}-char reason -> 422 reason:reason_length (§3.2), fallback stays on, nothing changed", HasField(r, "reason", "reason_length")
@@ -2105,7 +2112,7 @@ try
             && (bool)Obj(r.Body)["allow_db_fallback"]! == false && ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["admin_type"]! == "partner"
             && ev[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["allow_db_fallback"]), Tag(r));
         r = await Put(F1, PA, EntraCfg(T6, fallback: true), $"\"{Rv(F1)}\"");
-        Ok("DEC-106: PA fallback on again -> 403 not_super_admin (unchanged, DEC-096)", Err(r, 403, "not_super_admin") && Denied(await NewEvents(), "not_super_admin", F1, "partner", "update", "allow_db_fallback"), Tag(r));
+        Ok("DEC-106: PA fallback on again -> 403 not_super_admin (unchanged, DEC-096)", Err(r, 403, "not_super_admin") && Denied(await NewEvents(), "not_super_admin", F1, P_A, P_A, "partner", "update", "allow_db_fallback"), Tag(r));
     }
 
     // ================= 7k. v1.1 Slice A: per-partner reason bounds [Confirmed DEC-109..117] [TLD 06:59, 08:00 Q1-Q3, 08:00b] [LD 12b1d9cd] =================
