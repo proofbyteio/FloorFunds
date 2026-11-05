@@ -62,7 +62,7 @@
       "pattern": "^\\S(?:.*\\S)?$"
     },
     "reason": {
-      "description": "Written reason [Confirmed DEC-096, DEC-098]. The server trims it; whitespace-only counts as absent. Non-null after trim: LoginConfig:ReasonMinLength..LoginConfig:ReasonMaxLength code points [DEC-107; TLD 2026-11-04 16:32 Q1=A], deployment config snapshotted at startup (interim defaults 10 (TO CONFIRM) and 500), always inside the DB's 10..500 (CHECK llcc_reason), so this schema pins 10..500 and the server applies the configured bounds (else 422 reason_length). The bounds in effect: GET reason_min_length / reason_max_length, and GET /api/orgs/login-config/limits. Required for a downgrade (absent/null/blank -> 400 reason_required). Stored trimmed in the change row and the event. Raw input capped at 2000 characters.",
+      "description": "Written reason [Confirmed DEC-096, DEC-098]. The server trims it; whitespace-only counts as absent. Non-null after trim: LoginConfig:ReasonMinLength..LoginConfig:ReasonMaxLength code points [DEC-107; TLD 2026-11-04 16:32 Q1=A], deployment config snapshotted at startup (code defaults 10 and 500, Confirmed DEC-108, PM Nov 5 2026 6:47 AM PT, Mohanraj verbatim \"10 to 500\"), always inside the DB's 10..500 (CHECK llcc_reason), so this schema pins 10..500 and the server applies the configured bounds (else 422 reason_length). The bounds in effect: GET reason_min_length / reason_max_length, and GET /api/orgs/login-config/limits. Required for a downgrade (absent/null/blank -> 400 reason_required). Stored trimmed in the change row and the event. Raw input capped at 2000 characters.",
       "oneOf": [
         {
           "type": "null"
@@ -820,7 +820,7 @@
           ]
         },
         "reason_trimmed_length": {
-          "description": "DEC-107 [TLD 2026-11-04 16:32 Q1=A]: the reason length (code points after trim) is deployment config, snapshotted at startup; interim defaults min 10 (TO CONFIRM) and max 500; startup requires hard_bounds.min <= min <= max <= hard_bounds.max (DB CHECK llcc_reason). Widening the hard bounds needs a migration (DB-WIDEN).",
+          "description": "DEC-107 [TLD 2026-11-04 16:32 Q1=A]: the reason length (code points after trim) is deployment config, snapshotted at startup; code defaults min 10 and max 500 (Confirmed DEC-108, PM Nov 5 2026 6:47 AM PT, Mohanraj verbatim \"10 to 500\"); startup requires hard_bounds.min <= min <= max <= hard_bounds.max (DB CHECK llcc_reason). Widening the hard bounds needs a migration (DB-WIDEN).",
           "const": {
             "min_config_key": "LoginConfig:ReasonMinLength",
             "max_config_key": "LoginConfig:ReasonMaxLength",

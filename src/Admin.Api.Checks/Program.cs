@@ -251,7 +251,7 @@ await Check("startup: Admin.Api process exits 2 on missing Entra:SecretRef (TLD 
 });
 
 // ---------- DEC-107 [PM t149u/t150u; TLD 2026-11-04 16:32 Q1=A]: reason length config, snapshotted at startup ----------
-Ok($"DEC-107 startup: code defaults are one constant each (min {Mn} TO CONFIRM, max {Mx}); hard bounds = DB CHECK llcc_reason 10..500 (db/migrations.sql L94)",
+Ok($"DEC-107 startup: code defaults are one constant each (min {Mn}, max {Mx}; DEC-108 pin: 10 / 500, Confirmed DEC-108, PM Nov 5 2026 6:47 AM PT, Mohanraj verbatim \"10 to 500\"); hard bounds = DB CHECK llcc_reason 10..500 (db/migrations.sql L94)",
     Mn == 10 && Mx == 500 && AdminApiOptions.ReasonFloor == 10 && AdminApiOptions.ReasonCeiling == 500 && Opts().Validated() is { ReasonMinLength: Mn, ReasonMaxLength: Mx });
 bool ReasonCfgAccepted(int mn, int mx) { try { var v = (Opts() with { ReasonMinLength = mn, ReasonMaxLength = mx }).Validated(); return v.ReasonMinLength == mn && v.ReasonMaxLength == mx; } catch (InvalidOperationException) { return false; } }
 Ok("DEC-107 startup: 10..500, 50..200, 10..10 and 500..500 accepted (10 <= min <= max <= 500)", ReasonCfgAccepted(10, 500) && ReasonCfgAccepted(50, 200) && ReasonCfgAccepted(10, 10) && ReasonCfgAccepted(500, 500));

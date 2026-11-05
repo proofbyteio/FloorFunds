@@ -484,7 +484,7 @@ exp("DEC-107 auth.provider.changed reason 10 astral accepted", errs(AE, None, m(
 _s3 = spec.split("### 3.2")[0]
 for _pin in ["### 3.5 `GET /api/orgs/login-config/limits` [DEC-107] [TLD 2026-11-04 16:32 Q2=(ii)]", "**Reason bounds [DEC-107] [TLD 2026-11-04 16:32 Q2=(ii)]:**",
              "**`LoginConfig:ReasonMinLength` to `LoginConfig:ReasonMaxLength` code points after trimming**", "the API refuses to start unless 10 ≤ min ≤ max ≤ 500",
-             "code defaults min 10 (**TO CONFIRM**) and max 500", "| DEC-107 | PM t149u/t150u", "| TLD 16:32 |", "| D-106 |", "`2b17464c29521b9b479155d6cc96f144`",
+             "code defaults min 10 and max 500 (**Confirmed DEC-108**, PM Nov 5 2026 6:47 AM PT; Mohanraj verbatim \"10 to 500\")", "| DEC-107 | PM t149u/t150u", "| TLD 16:32 |", "| D-106 |", "`2b17464c29521b9b479155d6cc96f144`",
              "**DB-WIDEN** (follow-up, not S2a)", "PQ-238 (who may change it) is open"]:
     exp("DEC-107 spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
 exp("DEC-107 spec: no fixed '10–500 characters after trimming' / old interim copy left as live text", [k for k in ["**10–500 characters after trimming**", "(TO CONFIRM: once Mohanraj confirms 10 to 500", "\"Saved in the audit log.\", 10 to 500 characters;", "non-blank reason not 10..500 chars after trim", "`reason` (null or trimmed 10..500)."] if k in spec], False)

@@ -41,9 +41,9 @@ public sealed record AdminApiOptions
     /// <summary>
     /// DEC-107 (PM t149u/t150u; TLD 2026-11-04 16:32 Q1=A): the screen 9 reason length, counted in code points after trim, from
     /// LoginConfig:ReasonMinLength / LoginConfig:ReasonMaxLength. Snapshotted once at startup (like Entra:*); no hot reload.
-    /// Interim code defaults, one constant each: min TO CONFIRM (Mohanraj; t151u via TL: not 100), max 500.
+    /// Code defaults, one constant each: min 10, max 500, Confirmed DEC-108 (PM, Nov 5 2026 6:47 AM PT; Mohanraj verbatim "10 to 500"); t151u via TL: not 100.
     /// </summary>
-    public const int DefaultReasonMinLength = 10; // TO CONFIRM (Mohanraj)
+    public const int DefaultReasonMinLength = 10; // Confirmed DEC-108
     public const int DefaultReasonMaxLength = 500;
     /// <summary>
     /// Hard bounds for the two keys = the DB CHECK llcc_reason (db/migrations.sql L94: char_length(reason) BETWEEN 10 AND 500, frozen),
