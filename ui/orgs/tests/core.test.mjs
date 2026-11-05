@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, formatPT, changeDetails, fieldTarget,
-  ifMatchFrom, fallbackText, limitsFrom, limitsOrFallback, REASON_BOUNDS } from "../js/llc-core.mjs";
+  ifMatchFrom, fallbackText, limitsFrom, limitsOrFallback, REASON_BOUNDS, partnerMfaState, PARTNER_MFA_OFF_HINT } from "../js/llc-core.mjs";
 import { TOP_LEVEL, FIELD, requestIdText, reasonLengthCopy } from "../js/error-copy.mjs";
 
 const P = "5f0c3e1a-0001-4000-8000-000000000001", L = "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8";
@@ -116,4 +116,12 @@ test("TLD 17:28: limits fallback = the server's hard bounds 10 / 500 (llcc_reaso
     assert.deepEqual(limitsOrFallback(bad), { min: 10, max: 500 }, JSON.stringify(bad));
   assert.deepEqual(limitsOrFallback({ reason_min_length: 50, reason_max_length: 200 }), { min: 50, max: 200 });
   assert.deepEqual(limitsOrFallback({ reason_min_length: 10, reason_max_length: 500 }), { min: 10, max: 500 });
+});
+
+test("DEC-106 / D-106: partner MFA state from the SAVED value; upgrade is not a downgrade", () => {
+  assert.equal(partnerMfaState(null), "partner-create");
+  assert.equal(partnerMfaState({ mfa_required: false, allow_db_fallback: false }), "partner-mfa-off");
+  assert.equal(partnerMfaState({ mfa_required: true, allow_db_fallback: false }), "partner-edit");
+  assert.equal(PARTNER_MFA_OFF_HINT, "Off at this location now. Turn it on to add a second step at sign-in. Once saved, only a Super Admin can turn it off again.");
+  assert.equal(isDowngrade({ mfa_required: false, allow_db_fallback: false }, { mfa_required: true, allow_db_fallback: false }), false);
 });

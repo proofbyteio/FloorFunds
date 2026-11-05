@@ -37,6 +37,16 @@ export function isDowngrade(before, after) {
       || (before.allow_db_fallback === false && after.allow_db_fallback === true);
 }
 
+/** Partner Admin layout of the method section (UX D-106, md5 2b17464c) from the SAVED config (null on create):
+ *  "partner-create" (MFA ticked and locked, A-5), "partner-mfa-off" (saved MFA off: the MFA checkbox is enabled, DEC-106)
+ *  or "partner-edit" (saved MFA on: locked, only a Super Admin can turn it off, DEC-098). */
+export function partnerMfaState(saved) {
+  if (!saved) return "partner-create";
+  return saved.mfa_required === false ? "partner-mfa-off" : "partner-edit";
+}
+/** D-106 hint for partner-mfa-off, verbatim. */
+export const PARTNER_MFA_OFF_HINT = "Off at this location now. Turn it on to add a second step at sign-in. Once saved, only a Super Admin can turn it off again.";
+
 /** login_config_write (spec §3.2): exactly the client-editable keys. Never oidc_*, never secret_ref (D-51: server-filled). */
 export function buildWrite(f) {
   const entra = f.method === "entra";

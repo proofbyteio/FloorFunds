@@ -151,7 +151,7 @@ await step("PA partner-edit", async () => {
   ok("PA view: chip 'Partner Admin: <partner id>' (TLD 11:57, V11-PARTNERNAME), history visible, no server card", await txt("#role-chip-text") === `Partner Admin: ${H.partner_a}` && await txt("#role-chip-partner") === H.partner_a && await vis("#card-history") && !(await vis("#card-connection")));
   await click("#btn-change");
   ok("partner-edit: MFA aria-disabled, focusable, hint 'Only a Super Admin can turn this off.'", await attr("#mfa", "aria-disabled") === "true" && !(await ev(`document.querySelector("#mfa").disabled`))
-    && await txt("#mfa-hint") === "Only a Super Admin can turn this off." && (await attr("#mfa", "aria-describedby")).includes("mfa-hint"));
+    && await txt("#mfa-hint") === "Only a Super Admin can turn this off." && (await attr("#mfa", "aria-describedby")).includes("mfa-hint") && await ev(`document.body.dataset.partnerState`) === "partner-edit");
   await mouseClick("#mfa");
   const afterClick = await ev(`document.querySelector("#mfa").checked`);
   await ev(`document.querySelector("#mfa").focus(), true`); await key(" ", "Space");
@@ -228,8 +228,37 @@ await step("SA downgrade", async () => {
   ok("after a success no Request ID line is left visible", await ev(`[...document.querySelectorAll("[data-request-id]")].every(e => e.hidden && e.textContent === "")`));
   const r = await rows();
   ok("downgrade: history row shows second step off and the reason", r[0][2] === H.users.sa && r[0][3] === "second step off. Reason: UI e2e: conditional access enforces MFA (ticket UI-1)", r[0]);
+});
+// DEC-106 [Mohanraj, PM t145u] + UX D-106 (md5 2b17464c) state partner-mfa-off: L2 is saved with MFA off by the step above.
+await step("PA partner-mfa-off", async () => {
+  const HINT = "Off at this location now. Turn it on to add a second step at sign-in. Once saved, only a Super Admin can turn it off again.";
+  const st = async () => ({ ps: await ev(`document.body.dataset.partnerState ?? null`), aria: await attr("#mfa", "aria-disabled"), checked: await ev(`document.querySelector("#mfa").checked`),
+    hint: await txt("#mfa-hint"), reason: await vis("#f-reason"), banner: await vis("#banner-downgrade"), fb: await attr("#fallback", "aria-disabled"), fbHint: await txt("#fb-hint") });
   await open(page("pa", H.l2)); await click("#btn-change");
-  ok("PA after a Super Admin downgrade: MFA back on is not locked (API allows it; TO CONFIRM with Mohanraj)", await attr("#mfa", "aria-disabled") === null && await txt("#mfa-hint") === "");
+  let s0 = await st();
+  ok("DEC-106 partner-mfa-off: saved MFA off -> MFA checkbox enabled (no aria-disabled, not disabled), unticked, exact D-106 hint (described by)", s0.ps === "partner-mfa-off" && s0.aria === null
+    && !(await ev(`document.querySelector("#mfa").disabled`)) && s0.checked === false && s0.hint === HINT && (await attr("#mfa", "aria-describedby")).includes("mfa-hint"), s0);
+  ok("DEC-106 partner-mfa-off: no reason field, no downgrade banner; backup sign-in stays aria-disabled 'Only a Super Admin can turn this on.' (fallback back off TO CONFIRM)",
+    !s0.reason && !s0.banner && s0.fb === "true" && s0.fbHint === "Only a Super Admin can turn this on.", s0);
+  await mouseClick("#mfa"); const s1 = await st();
+  ok("DEC-106 partner-mfa-off: ticking turns MFA on, still no reason field or downgrade banner, same hint", s1.checked === true && !s1.reason && !s1.banner && s1.hint === HINT && s1.aria === null, s1);
+  await mouseClick("#mfa"); const s2 = await st();
+  ok("DEC-106 partner-mfa-off: unticking before Save is allowed (back to off, no reason field, no banner)", s2.checked === false && !s2.reason && !s2.banner && s2.aria === null && s2.hint === HINT, s2);
+  await mouseClick("#mfa");
+  const hist0 = (await rows()).length;
+  await save(); await until(`document.body.dataset.state === "saved"`);
+  const e = await shownError();
+  const api = await (await fetch(`${H.ui}/as/pa/api/orgs/locations/${H.l2}/login-config`)).json();
+  ok("DEC-106 partner-mfa-off: tick + Save -> saved (no error), 'Yes', the API row has mfa_required true", e.length === 0 && await vis("#banner-saved") && await txt("#cur-mfa") === "Yes" && api.mfa_required === true, [e, await txt("#cur-mfa"), api.mfa_required]);
+  const r = await rows();
+  ok("DEC-106 partner-mfa-off: new history row, newest first, Who = PA actor id", r.length === hist0 + 1 && r[0][1] === "auth.provider.changed" && r[0][2] === H.users.pa, r[0]);
+  await open(page("pa", H.l2)); await click("#btn-change");
+  const s3 = await st();
+  ok("DEC-106: once saved on -> partner-edit lock: MFA aria-disabled, ticked, hint 'Only a Super Admin can turn this off.'; fallback still aria-disabled", s3.ps === "partner-edit" && s3.aria === "true"
+    && s3.checked === true && s3.hint === "Only a Super Admin can turn this off." && s3.fb === "true" && !s3.reason && !s3.banner, s3);
+  await open(page("sa", H.l2)); await click("#btn-change");
+  ok("DEC-106: Super Admin unchanged (no partner state, MFA not locked, Super Admin hint)", await ev(`document.body.dataset.partnerState ?? null`) === null && await attr("#mfa", "aria-disabled") === null
+    && await txt("#mfa-hint") === "Turning this off lowers security: Super Admin only, with a reason.");
 });
 await step("conflict", async () => {
   await open(page("sa", H.l4)); await click("#btn-change");
@@ -389,7 +418,8 @@ await step("P4i limits fallback", async () => {
 });
 await step("PA partner-create", async () => {
   await open(`/as/pa/orgs/${H.partner_a}/locations/new`);
-  ok("partner-create: chip 'Partner Admin: <URL partner id>', MFA locked, no reason field, no downgrade banner", await txt("#role-chip-text") === `Partner Admin: ${H.partner_a}` && await attr("#mfa", "aria-disabled") === "true" && !(await vis("#f-reason")) && !(await vis("#banner-downgrade")));
+  ok("partner-create: chip 'Partner Admin: <URL partner id>', MFA locked, no reason field, no downgrade banner", await txt("#role-chip-text") === `Partner Admin: ${H.partner_a}` && await attr("#mfa", "aria-disabled") === "true" && !(await vis("#f-reason")) && !(await vis("#banner-downgrade"))
+    && await ev(`document.body.dataset.partnerState`) === "partner-create" && await txt("#mfa-hint") === "Only a Super Admin can turn this off.");
   await type("#lname", "UI Cage 6"); await mouseClick("#m-entra"); await type("#dname", "UI Casino A"); await type("#tenant", H.t_free); await save();
   await until(`document.body.dataset.state === "saved"`);
   ok("partner-create own partner: created (Microsoft, backup off, MFA on)", await txt("#cur-method") === "Microsoft (Entra ID)" && await txt("#cur-fallback") === "Off" && await txt("#cur-mfa") === "Yes");
@@ -501,8 +531,8 @@ ok("real PG: the host reported its DB summary", D !== null);
 if (D) {
   ok("real PG: org:V reader wrote no change row (F-A3)", !(H.users.rd in D.changes_by_actor), D.changes_by_actor);
   const lenOk = (H.xss.len ?? []).filter(p => p.status === 201).length;
-  ok(`real PG: change rows = 6 seeds (L1-L4 + hostile L5, L6) + ${lenOk} accepted length probes + PA edit + SA downgrade + PA conflict PUT + SA create + PA create + PA hostile save`,
-    D.changes_by_actor[H.users.sa] === 8 + lenOk && D.changes_by_actor[H.users.pa] === 4, D.changes_by_actor);
+  ok(`real PG: change rows = 6 seeds (L1-L4 + hostile L5, L6) + ${lenOk} accepted length probes + PA edit + SA downgrade + PA conflict PUT + SA create + PA create + PA hostile save + PA MFA back on (DEC-106)`,
+    D.changes_by_actor[H.users.sa] === 8 + lenOk && D.changes_by_actor[H.users.pa] === 5, D.changes_by_actor);
   ok(`real PG: ${8 + lenOk} locations (refused creates and XSS probes added none; ${lenOk} accepted length probes)`, D.locations === 8 + lenOk, D.locations);
   // TLD 2026-11-04 14:18 (A): stored byte-for-byte, no server-side HTML escaping; the page is the only place the text is made safe.
   const hex = (s) => Buffer.from(s, "utf8").toString("hex"), x = D.xss ?? {};

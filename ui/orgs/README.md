@@ -11,6 +11,7 @@ It is self-contained and talks only to the admin API. It has no app chrome (OQ-S
 | Theme | `/tmp/sse-llc1/theme.aaae47e3.snapshot.css`, copied verbatim to `theme.css` | aaae47e38fd25078476773adca67cf33 |
 | Fonts (Poppins, OFL) | copied from `ui/login-hub/fonts` (same files the mockup uses) | see `fonts/` |
 | Error copy review (UX, D-102) | `/workspace/cachd-ones/reviews/sse-error-copy-review.md`, snapshot `/tmp/sse-llc1/sse-error-copy-review.8c7d5274.snapshot.md` | 8c7d5274d549d45d18ae0415964e2236 |
+| Mockup 09 state `partner-mfa-off` (UX D-106, DEC-106) | `/workspace/cachd-ones/login-hub-mockups/09-location-method.html`, snapshot `/tmp/sse-llc1/snap/09-location-method.D-106.html` | 2b17464c29521b9b479155d6cc96f144 |
 | UI rulings | TLD 2026-11-04 9:49 (D-51) C2 / C3, TLD 11:57, D-102, D-103, spec §11 | |
 
 D-103: the page, this README, the spec and the build log all cite MK9 90d2a8fa. Against the 9dae6040 snapshot the only changes are that the
@@ -45,11 +46,21 @@ node ui/orgs/tests/e2e.mjs ff_sse          # or a scratch ff_kit_<name> DB; the 
 
 Chrome runs with every host except 127.0.0.1 made unresolvable. When the run ends, the host prints a DB summary read as the owner, including the org:V reader's change rows (must be none), and empties the tables.
 
+## Partner Admin MFA states (DEC-106, UX D-106)
+
+`body[data-partner-state]` (from `partnerMfaState` in `js/llc-core.mjs`, read from the SAVED config):
+
+- `partner-edit`: saved MFA on. MFA `aria-disabled`, hint "Only a Super Admin can turn this off." (DEC-098).
+- `partner-mfa-off`: saved MFA off. MFA enabled and unticked, hint "Off at this location now. Turn it on to add a second step at sign-in. Once saved, only a Super Admin can turn it off again." No reason field, no downgrade banner; unticking before Save is allowed. After Save the page is `partner-edit` again [Confirmed DEC-106, PM t145u].
+- `partner-create`: MFA ticked and locked as `partner-edit` (D-106 notes), so a Partner Admin cannot create with MFA off (API 403 `not_super_admin`).
+
+Super Admin pages have no `data-partner-state`.
+
 ## Open items (not decided here)
 
 - **TO CONFIRM (Mohanraj):**
   - The reason length. The page does not check length on the client. The server's `reason_length` code shows the D-102 copy "This reason is too short or too long. Change it, then try again.", which gives no numbers. Once Mohanraj confirms 10 to 500 characters it becomes "Enter a reason of 10 to 500 characters."
-  - Whether a Partner Admin may undo a downgrade (turn MFA back on or backup back off). The page follows the API, which allows it (spec §6). Those controls are not locked, and no hint is shown.
+  - Whether a Partner Admin may turn backup sign-in back off. The API allows it (spec §4, §6) and the page leaves the fallback control as it was: locked ("Only a Super Admin can turn this on.") while the saved value is off, and not locked with no hint while it is on. Turning MFA back on is settled: see `partner-mfa-off` below.
   - The test sign-in deferral. There is no Test sign-in button and no gate on Save (spec §11, §12).
 - OQ-S2a-1: the host app, how it supplies `data-admin-type` and the bearer. The e2e host is a stand-in.
 - V11-CREATE-SECRETCARD (TLD 11:57): the create state has no "Microsoft app connection" card, as MK9 90d2a8fa draws it. The card appears in the view and edit states once the location exists. Backlog item for showing it during create.

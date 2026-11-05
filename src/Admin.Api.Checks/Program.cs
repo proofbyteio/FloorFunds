@@ -1988,6 +1988,115 @@ try
         Ok($"DEC-107: this host still answers {Mn}/{Mx} after the 50/200 host ran (per-host snapshot)", (int?)Obj(lim0.Body)["reason_min_length"] == Mn && (int?)Obj(lim0.Body)["reason_max_length"] == Mx, lim0.Body);
     }
 
+    // ================= 7j. DEC-106 [Mohanraj, PM t145u; UX D-106 md5 2b17464c] =================
+    // Partner Admins and Super Admins can both turn MFA back on (create and PUT), no reason needed; a given reason follows §3.2
+    // (blank -> null, else reason_length). MFA off stays Super Admin only with a reason (403 not_super_admin / 400 reason_required).
+    // Another partner's location -> 404 not_found + forbidden_scope. Partner Admin turning backup sign-in back off: TO CONFIRM,
+    // the current behaviour (200) is pinned here unchanged. No new error code.
+    {
+        const string Why = "Client's Entra conditional access already enforces MFA; ticket OPS-1234";
+        var cr = await Post(SA, Create(P_A, "DEC-106 MFA off", With(DbCfg(mfa: false), "reason", Why)));
+        Guid M1 = cr.Status == 201 ? LocOf(cr) : Guid.Empty;
+        Ok("DEC-106 setup: SA creates a P_A database location with MFA off + reason -> 201", cr.Status == 201, cr.Body);
+        await NewEvents();
+        async Task<bool> Mfa(Guid l) => await OScalar<bool>("SELECT mfa_required FROM auth.location_login_config WHERE location_id=$1", l);
+        string Tag(R r) => $"{r.Status} {r.Body}";
+
+        // PA, other partner: 404 + forbidden_scope, nothing changes.
+        var rv = Rv(M1); var ch = await Count("location_login_config_change");
+        var r = await Put(M1, PB, DbCfg(mfa: true), $"\"{rv}\"");
+        Ok("DEC-106 put: PB (other partner) MFA on -> 404 not_found + forbidden_scope event, nothing changed", Err(r, 404, "not_found")
+            && Denied(await NewEvents(), "forbidden_scope", M1, "partner", "update", "provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required")
+            && Rv(M1) == rv && !await Mfa(M1) && await Count("location_login_config_change") == ch, Tag(r));
+
+        // PA own, MFA on, reason given but invalid length -> the existing 422 reason_length, nothing changed.
+        r = await Put(M1, PA, With(DbCfg(mfa: true), "reason", new string('x', Mn - 1)), $"\"{rv}\"");
+        Ok($"DEC-106 put: PA own MFA on with a {Mn - 1}-char reason -> 422 reason:reason_length (DEC-107 applies), nothing changed",
+            HasField(r, "reason", "reason_length") && Rv(M1) == rv && !await Mfa(M1) && await Count("location_login_config_change") == ch, Tag(r));
+        await NewEvents();
+
+        // PA own, MFA on, no reason -> 200; row, change row, event.
+        r = await Put(M1, PA, DbCfg(mfa: true), $"\"{rv}\"");
+        var ev = await NewEvents();
+        Ok("DEC-106 put: PA own MFA on, no reason -> 200 restricted view, mfa_required true", r.Status == 200 && (bool)Obj(r.Body)["mfa_required"]! && !Obj(r.Body).ContainsKey("secret") && !Obj(r.Body).ContainsKey("oidc_authority"), Tag(r));
+        if (r.Status == 200) ForSchema("login_config_saved_restricted", r);
+        Ok("DEC-106 put: PA own MFA on -> row mfa_required true, row_version +1, one change row (reason SQL NULL, changed_fields {mfa_required})",
+            await Mfa(M1) && Rv(M1) == rv + 1 && await Count("location_login_config_change") == ch + 1
+            && await OScalar<string>("SELECT coalesce(reason,'<SQL NULL>') || '|' || array_to_string(changed_fields,',') FROM auth.location_login_config_change WHERE location_id=$1 AND row_version=$2", M1, rv + 1) == "<SQL NULL>|mfa_required");
+        Ok("DEC-106 put: PA own MFA on -> one auth.provider.changed (partner, actor U_PA, changed_fields [mfa_required], before false -> after true, reason null), schema-valid",
+            ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["event_type"]! == "auth.provider.changed" && (string)ev[0]["admin_type"]! == "partner"
+            && (string)ev[0]["actor"]!["user_id"]! == U_PA.ToString("D") && (string)ev[0]["target"]!["id"]! == M1.ToString("D")
+            && ev[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["mfa_required"])
+            && (bool)ev[0]["details"]!["before"]!["mfa_required"]! == false && (bool)ev[0]["details"]!["after"]!["mfa_required"]! == true
+            && ev[0]["details"]!.AsObject().ContainsKey("reason") && ev[0]["details"]!["reason"] is null, ev.Count > 0 ? ev[0].ToJsonString() : "none");
+
+        // PA own, MFA off again: with and without a reason -> 403 not_super_admin + event, nothing changed.
+        rv = Rv(M1); ch = await Count("location_login_config_change");
+        foreach (var (lbl, body) in new[] { ("no reason", (object)DbCfg(mfa: false)), ("with a reason", With(DbCfg(mfa: false), "reason", Why)) })
+        {
+            r = await Put(M1, PA, body, $"\"{rv}\"");
+            Ok($"DEC-106 put: PA own MFA off, {lbl} -> 403 not_super_admin + not_super_admin event (mfa_required), nothing changed", Err(r, 403, "not_super_admin")
+                && Denied(await NewEvents(), "not_super_admin", M1, "partner", "update", "mfa_required") && Rv(M1) == rv && await Mfa(M1)
+                && await Count("location_login_config_change") == ch, Tag(r));
+        }
+
+        // SA MFA off: no reason -> 400 reason_required (no event); with a reason -> 200.
+        r = await Put(M1, SA, DbCfg(mfa: false), $"\"{rv}\"");
+        Ok("DEC-106 put: SA MFA off, no reason -> 400 reason_required, no event, nothing changed", Err(r, 400, "reason_required") && (await NewEvents()).Count == 0 && Rv(M1) == rv && await Mfa(M1), Tag(r));
+        r = await Put(M1, SA, With(DbCfg(mfa: false), "reason", Why), $"\"{rv}\"");
+        ev = await NewEvents();
+        Ok("DEC-106 put: SA MFA off + reason -> 200, super event with the reason", r.Status == 200 && !await Mfa(M1) && ev.Count == 1 && Valid(ev[0])
+            && (string)ev[0]["admin_type"]! == "super" && (string?)ev[0]["details"]!["reason"] == Why, Tag(r));
+
+        // PA own, MFA on with a whitespace-only reason -> 200, reason null; then SA off, PA on with a valid reason -> stored.
+        rv = Rv(M1);
+        r = await Put(M1, PA, With(DbCfg(mfa: true), "reason", "            "), $"\"{rv}\"");
+        ev = await NewEvents();
+        Ok("DEC-106 put: PA own MFA on, whitespace-only reason -> 200, reason null (blank -> null, §3.2)", r.Status == 200 && await Mfa(M1) && ev.Count == 1 && Valid(ev[0])
+            && ev[0]["details"]!["reason"] is null && await OScalar<string>("SELECT coalesce(reason,'<SQL NULL>') FROM auth.location_login_config_change WHERE location_id=$1 AND row_version=$2", M1, rv + 1) == "<SQL NULL>", Tag(r));
+        r = await Put(M1, SA, With(DbCfg(mfa: false), "reason", Why), $"\"{Rv(M1)}\"");
+        await NewEvents();
+        rv = Rv(M1);
+        r = await Put(M1, PA, With(DbCfg(mfa: true), "reason", "  Back on after the OPS-1234 review  "), $"\"{rv}\"");
+        ev = await NewEvents();
+        Ok("DEC-106 put: PA own MFA on with a valid reason -> 200, trimmed reason stored in the change row and the event", r.Status == 200 && await Mfa(M1) && ev.Count == 1 && Valid(ev[0])
+            && (string?)ev[0]["details"]!["reason"] == "Back on after the OPS-1234 review"
+            && await OScalar<string>("SELECT reason FROM auth.location_login_config_change WHERE location_id=$1 AND row_version=$2", M1, rv + 1) == "Back on after the OPS-1234 review", Tag(r));
+
+        // SA MFA on -> 200 (super event, no reason).
+        await Put(M1, SA, With(DbCfg(mfa: false), "reason", Why), $"\"{Rv(M1)}\"");
+        await NewEvents();
+        r = await Put(M1, SA, DbCfg(mfa: true), $"\"{Rv(M1)}\"");
+        ev = await NewEvents();
+        Ok("DEC-106 put: SA MFA on, no reason -> 200 super view, super event changed_fields [mfa_required], reason null", r.Status == 200 && Obj(r.Body).ContainsKey("oidc_authority") && await Mfa(M1)
+            && ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["admin_type"]! == "super" && (string)ev[0]["actor"]!["user_id"]! == U_SA.ToString("D")
+            && ev[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["mfa_required"]) && ev[0]["details"]!["reason"] is null, Tag(r));
+        if (r.Status == 200) ForSchema("login_config_saved_super", r);
+
+        // Create: PA with MFA on -> 201 (already §4 A-5); PA with MFA off -> 403 not_super_admin (partner-create keeps MFA locked, D-106).
+        var locs = await Count("location");
+        r = await Post(PA, Create(P_A, "DEC-106 PA create MFA off", With(DbCfg(mfa: false), "reason", Why)));
+        Ok("DEC-106 create: PA with MFA off (+ reason) -> 403 not_super_admin + event, no location", Err(r, 403, "not_super_admin")
+            && Denied(await NewEvents(), "not_super_admin", P_A, "partner", "create", "mfa_required") && await Count("location") == locs, Tag(r));
+        r = await Post(PA, Create(P_A, "DEC-106 PA create MFA on", DbCfg(mfa: true)));
+        ev = await NewEvents();
+        Ok("DEC-106 create: PA with MFA on, no reason -> 201, created event (partner, reason null)", r.Status == 201 && ev.Count == 1 && Valid(ev[0])
+            && (string)ev[0]["admin_type"]! == "partner" && ev[0]["details"]!["reason"] is null, Tag(r));
+
+        // TO CONFIRM (Mohanraj): Partner Admin turning backup sign-in back off. Current behaviour pinned, unchanged: 200, no reason.
+        Guid T6 = Guid.Parse("5f0c3e1a-00fa-4000-8000-00000000fa16");
+        cr = await Post(SA, Create(P_A, "DEC-106 fallback on", With(EntraCfg(T6, fallback: true), "reason", "Pilot fallback per OPS-77")));
+        Guid F1 = cr.Status == 201 ? LocOf(cr) : Guid.Empty;
+        await NewEvents();
+        r = await Put(F1, PA, EntraCfg(T6, fallback: false), $"\"{Rv(F1)}\"");
+        ev = await NewEvents();
+        Ok("DEC-106 TO CONFIRM pin: PA own fallback back off, no reason -> 200 (current behaviour kept), partner event changed_fields [allow_db_fallback]", cr.Status == 201 && r.Status == 200
+            && (bool)Obj(r.Body)["allow_db_fallback"]! == false && ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["admin_type"]! == "partner"
+            && ev[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["allow_db_fallback"]), Tag(r));
+        r = await Put(F1, PA, EntraCfg(T6, fallback: true), $"\"{Rv(F1)}\"");
+        Ok("DEC-106: PA fallback on again -> 403 not_super_admin (unchanged, DEC-096)", Err(r, 403, "not_super_admin") && Denied(await NewEvents(), "not_super_admin", F1, "partner", "update", "allow_db_fallback"), Tag(r));
+    }
+
     // ================= 8. secrets never leave =================
     {
         Ok("secret: no response body contains an ARN or the FAKE secret names", allBodies.All(b => !b.Contains("arn:aws") && !b.Contains("FAKE-test-only") && !b.Contains("secretsmanager")));

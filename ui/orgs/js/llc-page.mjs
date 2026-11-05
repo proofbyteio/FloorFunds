@@ -1,7 +1,7 @@
 // S2a P4 screen 9: DOM + fetch for location-sign-in.html. Pure rules live in llc-core.mjs; error copy (approved D-102)
 // is in error-copy.mjs. The page never sends oidc_* or secret_ref and shows only secret.set (spec §3.0, D-51).
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, METHOD_LABEL, fallbackText, formatPT,
-  changeDetails, fieldTarget, ifMatchFrom, limitsOrFallback } from "./llc-core.mjs";
+  changeDetails, fieldTarget, ifMatchFrom, limitsOrFallback, partnerMfaState, PARTNER_MFA_OFF_HINT } from "./llc-core.mjs";
 import { TOP_LEVEL, FIELD, requestIdText, reasonLengthCopy } from "./error-copy.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -136,7 +136,7 @@ function setMode(mode) {
   else if (mode === "edit") title(`${isDowngrade(st.view, readForm()) && k === "super" ? "Lower sign-in security" : "Edit sign-in method"}: ${name}`);
   else if (st.view) title(`Sign-in method: ${name}`);
   text($("btn-save"), mode === "create" ? "Create location" : "Save");
-  if (edit) syncForm();
+  if (edit) syncForm(); else delete body.dataset.partnerState;
 }
 
 // ---------- form ----------
@@ -168,6 +168,7 @@ function syncForm() {
   show($("c-fallback"), entra);
   const before = create ? null : st.view;
   if (k === "super") {
+    delete body.dataset.partnerState;
     lockFor($("mfa"), false, "mfa-hint", "Turning this off lowers security: Super Admin only, with a reason.");
     lockFor($("fallback"), false, "fb-hint", "Off by default. Turning this on lowers security: Super Admin only, with a reason.");
     const down = isDowngrade(before, f);
@@ -178,11 +179,16 @@ function syncForm() {
     text($("reason-hint"), len + (create ? "Saved in the audit log. Required only if you turn off the second step or turn on backup sign-in."
       : "Saved in the audit log."));
   } else {
-    // Locks only the downgrade direction relative to the saved value (create: relative to MFA on / backup off).
-    // Partner Admin turning MFA back on / backup back off (allowed by the API, spec §6): TO CONFIRM (Mohanraj).
-    const mfaLocked = before ? before.mfa_required === true : true;
+    // Locks only the downgrade direction relative to the SAVED value (create: relative to MFA on / backup off).
+    // MFA back on [Confirmed DEC-106, Mohanraj PM t145u] = UX D-106 `partner-mfa-off` (md5 2b17464c): while the saved value is
+    // off the checkbox is enabled with the D-106 hint; ticking needs no reason (no reason field, no downgrade banner) and
+    // unticking before Save only undoes the edit. Once saved on, it is the partner-edit lock again.
+    // Backup sign-in back off for a Partner Admin (allowed by the API, spec §4 / §6): TO CONFIRM (Mohanraj; DEC-106 does not state it).
+    const ps = partnerMfaState(before);
+    body.dataset.partnerState = ps;
+    const mfaLocked = ps !== "partner-mfa-off";
     const fbLocked = before ? before.allow_db_fallback === false : true;
-    lockFor($("mfa"), mfaLocked, "mfa-hint", mfaLocked ? "Only a Super Admin can turn this off." : "");
+    lockFor($("mfa"), mfaLocked, "mfa-hint", mfaLocked ? "Only a Super Admin can turn this off." : PARTNER_MFA_OFF_HINT);
     lockFor($("fallback"), fbLocked, "fb-hint", fbLocked ? "Only a Super Admin can turn this on." : "");
     show($("banner-downgrade"), false);
     show($("f-reason"), false);

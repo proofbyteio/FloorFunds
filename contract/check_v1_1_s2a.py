@@ -50,7 +50,7 @@ for name, schema, kind, body in blocks:
     if kind == "request":
         real = [p for p, k, v in walk(inst) if isinstance(v, str) and ARN.search(v) and ":000000000000:" not in v]
         exp(f"example {name} uses only fake ARNs (account 000000000000)", real, False)
-names_needed = {"get_200_entra", "get_200_entra_restricted", "err_404", "access_rules", "put_req_pa_db_to_entra", "put_req_sa_mfa_off", "put_req_entra_to_db", "post_req_create_db", "post_201_db", "changes_200", "err_409", "err_422", "err_403_not_super_admin", "ev_changed_pa_upgrade", "ev_changed_sa_mfa_off", "ev_changed_created", "ev_denied_not_super_admin", "ev_denied_forbidden_scope", "ev_denied_tenant_bound_sa_create", "ev_denied_not_admin_create", "limits_200"}
+names_needed = {"put_req_pa_mfa_on", "ev_changed_pa_mfa_on", "get_200_entra", "get_200_entra_restricted", "err_404", "access_rules", "put_req_pa_db_to_entra", "put_req_sa_mfa_off", "put_req_entra_to_db", "post_req_create_db", "post_201_db", "changes_200", "err_409", "err_422", "err_403_not_super_admin", "ev_changed_pa_upgrade", "ev_changed_sa_mfa_off", "ev_changed_created", "ev_denied_not_super_admin", "ev_denied_forbidden_scope", "ev_denied_tenant_bound_sa_create", "ev_denied_not_admin_create", "limits_200"}
 exp("all required examples present", sorted(names_needed - EX.keys()), False)
 
 # ---- 2. no response/event schema declares secret_ref ----
@@ -489,6 +489,26 @@ for _pin in ["### 3.5 `GET /api/orgs/login-config/limits` [DEC-107] [TLD 2026-11
     exp("DEC-107 spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
 exp("DEC-107 spec: no fixed '10–500 characters after trimming' / old interim copy left as live text", [k for k in ["**10–500 characters after trimming**", "(TO CONFIRM: once Mohanraj confirms 10 to 500", "\"Saved in the audit log.\", 10 to 500 characters;", "non-blank reason not 10..500 chars after trim", "`reason` (null or trimmed 10..500)."] if k in spec], False)
 exp("DEC-107 spec: default min 100 appears nowhere as a default", [k for k in ["default min 100", "min 100"] if k in spec], False)
+
+# ---- DEC-106 [Mohanraj, PM t145u] [UX D-106 2b17464c]: Partner Admin and Super Admin can both turn MFA back on, no reason ----
+_pm = EX["put_req_pa_mfa_on"]; _em = EX["ev_changed_pa_mfa_on"]
+exp("DEC-106 put_req_pa_mfa_on: mfa_required true, reason null, fallback false", [] if _pm["mfa_required"] is True and _pm["reason"] is None and _pm["allow_db_fallback"] is False else [_pm], False)
+exp("DEC-106 ev_changed_pa_mfa_on: partner actor, changed_fields [mfa_required], before false -> after true, reason null",
+    [] if _em["admin_type"] == "partner" and _em["actor"]["user_id"] and _em["details"]["changed_fields"] == ["mfa_required"]
+    and _em["details"]["before"]["mfa_required"] is False and _em["details"]["after"]["mfa_required"] is True and _em["details"]["reason"] is None else [_em["details"]], False)
+exp("DEC-106 ev_changed_pa_mfa_on without actor rejected", errs(AE, None, m(_em, actor=DEL)), True)
+exp("DEC-106 ev_changed_pa_mfa_on without details.before rejected", errs(AE, None, m(_em, details__before=DEL)), True)
+for _pin in ["| DEC-106 | Mohanraj, PM chat t145u", "and since DEC-106 (PM t145u) that Partner Admins and Super Admins can both turn MFA back on",
+             "`mfa_required` → true [Confirmed DEC-106] (no reason needed;", "`allow_db_fallback` → false [TLD; LD L181, row 164; **TO CONFIRM** with Mohanraj, DEC-106 does not state it;",
+             "`mfa_required` → true Confirmed DEC-106; `allow_db_fallback` → false TLD, TO CONFIRM]",
+             "**Partner Admin, MFA off (`partner-mfa-off`) [Confirmed DEC-106] [D-106, md5 2b17464c]:**",
+             "\"Off at this location now. Turn it on to add a second step at sign-in. Once saved, only a Super Admin can turn it off again.\"",
+             "`partner-create` keeps MFA ticked and locked"]:
+    exp("DEC-106 spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+exp("DEC-106 spec: the old 'upgrades being confirmed with Mohanraj' labels are gone", [k for k in ["TLD 2026-11-04 7:44 labels this as TL's, being confirmed with Mohanraj]", "Partner Admin upgrades (MFA back on, fallback back off) being allowed", "[Confirmed DEC-096, DEC-098; upgrades TLD]"] if k in spec], False)
+_row = [l for l in spec.splitlines() if l.startswith("| Partner Admin, own partner |")]
+exp("DEC-106 §6 matrix: Partner Admin own partner keeps mfa->true and fallback->false allowed, downgrades 403 not_super_admin (rules unchanged)",
+    [] if len(_row) == 1 and _row[0].split("|")[6:10] == [" ✔ ", " ✔ ", " 403 `not_super_admin` ", " 403 `not_super_admin` "] else _row, False)
 
 print("v1.1-S2a checks: %d passed, %d failed" % (PASSES[0], len(FAIL)), "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)
