@@ -2120,7 +2120,10 @@ try
     // GET, the location PUT/POST reason; event auth.partner_reason_bounds.changed in the same transaction. Test partners are SSE2-FAKE-TEST-ONLY.
     {
         Guid P_C = Guid.Parse("5f0c3e1a-0003-4000-8000-000000000003"), P_D = Guid.Parse("5f0c3e1a-0004-4000-8000-000000000004"),
-             P_E = Guid.Parse("5f0c3e1a-0005-4000-8000-000000000005"), P_F = Guid.Parse("5f0c3e1a-0006-4000-8000-000000000006");
+             P_E = Guid.Parse("5f0c3e1a-0005-4000-8000-000000000005"), P_F = Guid.Parse("5f0c3e1a-0006-4000-8000-000000000006"),
+             P_G = Guid.Parse("5f0c3e1a-0009-4000-8000-000000000009"), P_H = Guid.Parse("5f0c3e1a-000a-4000-8000-00000000000a");
+        // TLD 11:23 identity scope (SSE2 relay; interim pending LS-OQ-61 / PQ-240): updated_by is omitted ONLY for a PA reading ANOTHER partner.
+        bool HasBy(R r, Guid? by) => r.Status == 200 && (by is { } u ? (string?)Obj(r.Body)["updated_by"] == u.ToString("D") : !Obj(r.Body).ContainsKey("updated_by"));
         string Prb(Guid p) => $"/api/orgs/partners/{p:D}/login-config/reason-bounds";
         Task<R> PrbPut(Guid p, string? tok, object body, string? im, HttpClient? via = null) => Send(HttpMethod.Put, Prb(p), tok, J(body), im, via: via);
         object B(object mn, object mx) => new Dictionary<string, object?> { ["reason_min_length"] = mn, ["reason_max_length"] = mx };
@@ -2154,23 +2157,25 @@ try
             var r = await f();
             Ok($"Slice A PUT {label}; no row, no event", want(r) && await PrbSnap(P_C) == "<none>" && (await NewEvents()).Count == 0, Tg(r));
         }
-        await Refused("no token -> 401 Bearer, no body", () => PrbPut(P_C, null, B(20, 300), "\"1\""), r => r.Status == 401 && r.Body == "" && r.WwwAuth == "Bearer");
-        await Refused("org:V reader -> 403 forbidden", () => PrbPut(P_C, RD, B(20, 300), "\"1\""), r => Err(r, 403, "forbidden"));
-        await Refused("no role -> 403 forbidden", () => PrbPut(P_C, NO, B(20, 300), "\"1\""), r => Err(r, 403, "forbidden"));
-        await Refused("custom role (LoginMethodWrite + OrgCreateEdit, not a built-in role) -> 403 forbidden", () => PrbPut(P_C, CU, B(20, 300), "\"1\""), r => Err(r, 403, "forbidden"));
+        await Refused("no token -> 401 Bearer, no body", () => PrbPut(P_C, null, B(20, 300), "\"0\""), r => r.Status == 401 && r.Body == "" && r.WwwAuth == "Bearer");
+        await Refused("org:V reader -> 403 forbidden", () => PrbPut(P_C, RD, B(20, 300), "\"0\""), r => Err(r, 403, "forbidden"));
+        await Refused("no role -> 403 forbidden", () => PrbPut(P_C, NO, B(20, 300), "\"0\""), r => Err(r, 403, "forbidden"));
+        await Refused("custom role (LoginMethodWrite + OrgCreateEdit, not a built-in role) -> 403 forbidden", () => PrbPut(P_C, CU, B(20, 300), "\"0\""), r => Err(r, 403, "forbidden"));
         await Refused("403 wins over a bad body (decided before the body is read)", () => PrbPut(P_C, RD, "{nope", null), r => Err(r, 403, "forbidden"));
-        await Refused("malformed partner id -> 404 not_found", () => Send(HttpMethod.Put, "/api/orgs/partners/xyz/login-config/reason-bounds", SA, J(B(20, 300)), "\"1\""), r => Err(r, 404, "not_found"));
+        await Refused("malformed partner id -> 404 not_found", () => Send(HttpMethod.Put, "/api/orgs/partners/xyz/login-config/reason-bounds", SA, J(B(20, 300)), "\"0\""), r => Err(r, 404, "not_found"));
         await Refused("nil partner id -> 404 not_found (before If-Match)", () => PrbPut(Guid.Empty, SA, B(20, 300), null), r => Err(r, 404, "not_found"));
         await Refused("no If-Match -> 428 precondition_required", () => PrbPut(P_C, SA, B(20, 300), null), r => Err(r, 428, "precondition_required"));
-        foreach (var bad in new[] { "*", "W/\"1\"", "\"1\", \"2\"", "1", "\"0\"", "\"abc\"" })
+        foreach (var bad in new[] { "*", "W/\"0\"", "\"0\", \"1\"", "0", "\"-1\"", "\"00\"", "\"01\"", "\"abc\"" })
             await Refused($"If-Match {bad} -> 400 if_match_invalid", () => PrbPut(P_C, SA, B(20, 300), bad), r => Err(r, 400, "if_match_invalid"));
-        await Refused("unset partner, If-Match \"2\" -> 409 concurrency_conflict, current_row_version 1 (the create constant)",
-            () => PrbPut(P_C, SA, B(20, 300), "\"2\""), r => Err(r, 409, "concurrency_conflict") && (long?)Obj(r.Body)["current_row_version"] == 1);
+        await Refused("unset partner, If-Match \"2\" -> 409 concurrency_conflict, current_row_version 0 (unset, TLD 11:23 A)",
+            () => PrbPut(P_C, SA, B(20, 300), "\"2\""), r => Err(r, 409, "concurrency_conflict") && (long?)Obj(r.Body)["current_row_version"] == 0);
+        await Refused("unset partner, If-Match \"1\" (the retired 08:00 create constant) -> 409 concurrency_conflict, current_row_version 0 (TLD 11:23 A)",
+            () => PrbPut(P_C, SA, B(20, 300), "\"1\""), r => Err(r, 409, "concurrency_conflict") && (long?)Obj(r.Body)["current_row_version"] == 0);
         await Refused("stale If-Match + malformed body -> 409 (concurrency before body)", () => PrbPut(P_C, SA, "{nope", "\"7\""), r => Err(r, 409, "concurrency_conflict"));
-        await Refused("If-Match \"1\" + malformed JSON -> 400 malformed_body", () => PrbPut(P_C, SA, "{nope", "\"1\""), r => Err(r, 400, "malformed_body"));
-        await Refused("If-Match \"1\" + a JSON array -> 400 malformed_body", () => PrbPut(P_C, SA, "[]", "\"1\""), r => Err(r, 400, "malformed_body"));
-        await Refused("duplicate key -> 400 malformed_body", () => PrbPut(P_C, SA, "{\"reason_min_length\":20,\"reason_min_length\":30,\"reason_max_length\":300}", "\"1\""), r => Err(r, 400, "malformed_body"));
-        await Refused("over 64 KiB -> 413 payload_too_large", () => PrbPut(P_C, SA, "{\"reason_min_length\":20,\"reason_max_length\":300,\"pad\":\"" + new string('x', 70_000) + "\"}", "\"1\""),
+        await Refused("If-Match \"0\" + malformed JSON -> 400 malformed_body", () => PrbPut(P_C, SA, "{nope", "\"0\""), r => Err(r, 400, "malformed_body"));
+        await Refused("If-Match \"0\" + a JSON array -> 400 malformed_body", () => PrbPut(P_C, SA, "[]", "\"0\""), r => Err(r, 400, "malformed_body"));
+        await Refused("duplicate key -> 400 malformed_body", () => PrbPut(P_C, SA, "{\"reason_min_length\":20,\"reason_min_length\":30,\"reason_max_length\":300}", "\"0\""), r => Err(r, 400, "malformed_body"));
+        await Refused("over 64 KiB -> 413 payload_too_large", () => PrbPut(P_C, SA, "{\"reason_min_length\":20,\"reason_max_length\":300,\"pad\":\"" + new string('x', 70_000) + "\"}", "\"0\""),
             r => Err(r, 413, "payload_too_large"));
         foreach (var (lbl, body, want) in new (string, object, string)[]
         {
@@ -2188,14 +2193,14 @@ try
             ("row_version in the body", new Dictionary<string, object?> { ["reason_min_length"] = 20, ["reason_max_length"] = 300, ["row_version"] = 1 }, "row_version:unknown_field"),
             ("empty object", new Dictionary<string, object?>(), "reason_min_length:required,reason_max_length:required"),
         })
-            await Refused($"{lbl} -> 422 {want}", () => PrbPut(P_C, SA, body, "\"1\""), r => r.Status == 422 && Err(r, 422, "validation_failed") && Fs(r) == want);
+            await Refused($"{lbl} -> 422 {want}", () => PrbPut(P_C, SA, body, "\"0\""), r => r.Status == 422 && Err(r, 422, "validation_failed") && Fs(r) == want);
 
-        // ---- create (unset partner, If-Match "1") by a Partner Admin of ANOTHER partner: DEC-111 cross-partner write ----
-        var r = await PrbPut(P_C, PA, B(20, 300), "\"1\"");
+        // ---- create (unset partner, If-Match "0" = expect unset, TLD 11:23 A) by a Partner Admin of ANOTHER partner: DEC-111 cross-partner write ----
+        var r = await PrbPut(P_C, PA, B(20, 300), "\"0\"");
         var ev = await NewEvents();
-        Ok("Slice A PUT create: PA (P_A) on P_C with If-Match \"1\" -> 200, ETag \"1\", source partner, 20/300, row_version 1, updated_by U_PA (DEC-111)", r.Status == 200 && r.ETag == "\"1\""
+        Ok("Slice A PUT create: PA (P_A) on P_C with If-Match \"0\" -> 200, ETag \"1\", source partner, 20/300, row_version 1, updated_at, NO updated_by (PA on another partner, TLD 11:23 identity) (DEC-111)", r.Status == 200 && r.ETag == "\"1\""
             && (string?)Obj(r.Body)["source"] == "partner" && (int?)Obj(r.Body)["reason_min_length"] == 20 && (int?)Obj(r.Body)["reason_max_length"] == 300
-            && (long?)Obj(r.Body)["row_version"] == 1 && (string?)Obj(r.Body)["updated_by"] == U_PA.ToString("D") && await PrbSnap(P_C) == "20/300/v1", Tg(r));
+            && (long?)Obj(r.Body)["row_version"] == 1 && HasBy(r, null) && Obj(r.Body).ContainsKey("updated_at") && await PrbSnap(P_C) == "20/300/v1", Tg(r));
         if (r.Status == 200) ForSchema("partner_reason_bounds_view", r);
         Ok("Slice A event (create, cross-partner PA): one auth.partner_reason_bounds.changed, schema-valid; old = config, new = 20/300; actor P_A, target P_C, cross_partner true; no reason",
             ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["event_type"]! == "auth.partner_reason_bounds.changed" && (string)ev[0]["admin_type"]! == "partner"
@@ -2208,15 +2213,30 @@ try
             && (bool)ev[0]["details"]!["cross_partner"]! && !ev[0]["details"]!.AsObject().ContainsKey("reason") && IsCorr((string?)ev[0]["correlation_id"])
             && (string?)ev[0]["correlation_id"] == r.Corr, ev.Count > 0 ? ev[0].ToJsonString() : "none");
         g = await Get(Prb(P_C), PB);
-        Ok("Slice A GET set partner (PB reads P_C): 200, ETag \"1\" = row_version, source partner, 20/300", g.Status == 200 && g.ETag == "\"1\"" && (string?)Obj(g.Body)["source"] == "partner"
-            && (long?)Obj(g.Body)["row_version"] == 1 && (int?)Obj(g.Body)["reason_min_length"] == 20, Tg(g));
+        Ok("Slice A GET set partner (PB reads P_C): 200, ETag \"1\" = row_version, source partner, 20/300, updated_at, NO updated_by (PA cross-partner read, TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"1\"" && (string?)Obj(g.Body)["source"] == "partner"
+            && (long?)Obj(g.Body)["row_version"] == 1 && (int?)Obj(g.Body)["reason_min_length"] == 20 && HasBy(g, null) && Obj(g.Body).ContainsKey("updated_at"), Tg(g));
         if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
+        g = await Get(Prb(P_C), SA);
+        Ok("Slice A GET set partner (SA reads P_C, actor partner null): updated_by U_PA kept (every Super Admin read keeps identity, TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"1\"" && HasBy(g, U_PA), Tg(g));
+        if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
+        // ---- TLD 11:23 A regression: sequential stale create. A delayed second "0" on the now-set partner -> 409 with the current version, never an update ----
+        {
+            var rows0 = await PrbRows();
+            var late = await PrbPut(P_C, PB, B(30, 330), "\"0\"");
+            Ok("Slice A PUT late second create (PB, If-Match \"0\" after the row exists) -> 409 concurrency_conflict, current_row_version 1; row 20/300/v1 unchanged, row count unchanged, no event (TLD 11:23 A)",
+                Err(late, 409, "concurrency_conflict") && (long?)Obj(late.Body)["current_row_version"] == 1 && await PrbSnap(P_C) == "20/300/v1" && await PrbRows() == rows0
+                && (await NewEvents()).Count == 0, Tg(late));
+            if (late.Status == 409) ForSchema("error_response", late);
+            late = await PrbPut(P_C, SA, B(20, 300), "\"0\"");
+            Ok("Slice A PUT late second create with the SAME values (SA, \"0\") -> 409 current_row_version 1 too (precondition before the no-op), no event", Err(late, 409, "concurrency_conflict")
+                && (long?)Obj(late.Body)["current_row_version"] == 1 && await PrbSnap(P_C) == "20/300/v1" && (await NewEvents()).Count == 0, Tg(late));
+        }
 
-        // ---- second "1" on the now-set partner = an update v1 -> v2 (If-Match equals the current version) ----
+        // ---- "1" on the now-set partner = an update v1 -> v2 (If-Match equals the current version) ----
         r = await PrbPut(P_C, SA, B(25, 250), "\"1\"");
         ev = await NewEvents();
-        Ok("Slice A PUT update: SA, If-Match \"1\" (= current) -> 200, ETag \"2\", 25/250, row_version 2", r.Status == 200 && r.ETag == "\"2\"" && (long?)Obj(r.Body)["row_version"] == 2
-            && await PrbSnap(P_C) == "25/250/v2", Tg(r));
+        Ok("Slice A PUT update: SA, If-Match \"1\" (= current) -> 200, ETag \"2\", 25/250, row_version 2, updated_by U_SA (SA keeps identity)", r.Status == 200 && r.ETag == "\"2\"" && (long?)Obj(r.Body)["row_version"] == 2
+            && HasBy(r, U_SA) && await PrbSnap(P_C) == "25/250/v2", Tg(r));
         Ok("Slice A event (update, SA): change_kind updated, action update, row_version 2, old 20/300 -> new 25/250, actor_partner_id null, cross_partner true",
             ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["admin_type"]! == "super" && (string)ev[0]["action"]! == "update" && (string)ev[0]["details"]!["change_kind"]! == "updated"
             && (long)ev[0]["details"]!["row_version"]! == 2 && (int)ev[0]["details"]!["old_reason_min_length"]! == 20 && (int)ev[0]["details"]!["old_reason_max_length"]! == 300
@@ -2233,19 +2253,29 @@ try
             var x = await t;
             Ok($"Slice A PUT {label}; no event", want(x) && await PrbSnap(P_C) == snap && (await NewEvents()).Count == 0, Tg(x));
         }
-        // no-op: same values -> 200, nothing written, no event, no bump
+        // no-op: same values -> 200, nothing written, no event, no bump [TLD 11:23 B: explicitly approved]
         r = await PrbPut(P_C, PA, B(25, 250), "\"2\"");
-        Ok("Slice A PUT no-op (same values) -> 200, ETag \"2\", row_version unchanged, no event", r.Status == 200 && r.ETag == "\"2\"" && (long?)Obj(r.Body)["row_version"] == 2
-            && await PrbSnap(P_C) == "25/250/v2" && (await NewEvents()).Count == 0, Tg(r));
+        Ok("Slice A PUT no-op (same values, TLD 11:23 B) -> 200, ETag \"2\", row_version unchanged, no event; PA on another partner: no updated_by in the PUT view either", r.Status == 200 && r.ETag == "\"2\"" && (long?)Obj(r.Body)["row_version"] == 2
+            && HasBy(r, null) && await PrbSnap(P_C) == "25/250/v2" && (await NewEvents()).Count == 0, Tg(r));
+        if (r.Status == 200) ForSchema("partner_reason_bounds_view", r);
         // own partner: PA on P_A -> cross_partner false; 10/10 and 500/500 edges accepted
-        r = await PrbPut(P_A, PA, B(10, 10), "\"1\"");
+        r = await PrbPut(P_A, PA, B(10, 10), "\"0\"");
         ev = await NewEvents();
-        Ok("Slice A PUT create own partner (PA on P_A, 10/10 edge) -> 200; event cross_partner false, actor_partner_id = target = P_A", r.Status == 200 && ev.Count == 1 && Valid(ev[0])
+        Ok("Slice A PUT create own partner (PA on P_A, 10/10 edge, \"0\") -> 200, updated_by U_PA kept (own partner); event cross_partner false, actor_partner_id = target = P_A", r.Status == 200 && HasBy(r, U_PA) && ev.Count == 1 && Valid(ev[0])
             && !(bool)ev[0]["details"]!["cross_partner"]! && (string)ev[0]["details"]!["actor_partner_id"]! == P_A.ToString("D") && (string)ev[0]["details"]!["target_partner_id"]! == P_A.ToString("D"), Tg(r));
         r = await PrbPut(P_A, PA, B(500, 500), "\"1\"");
         Ok("Slice A PUT own partner 500/500 edge -> 200 v2", r.Status == 200 && r.ETag == "\"2\"" && await PrbSnap(P_A) == "500/500/v2" && (await NewEvents()).Count == 1, Tg(r));
         r = await PrbPut(P_A, PA, B(40, 120), "\"2\"");
         Ok("Slice A PUT own partner 40/120 -> 200 v3", r.Status == 200 && await PrbSnap(P_A) == "40/120/v3" && (await NewEvents()).Count == 1, Tg(r));
+        // TLD 11:23 identity: PA own read keeps updated_by; SA read of a PA-written row keeps it; PB (another partner) does not get it
+        g = await Get(Prb(P_A), PA);
+        Ok("Slice A GET own partner (PA reads P_A): updated_by U_PA kept (TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"3\"" && HasBy(g, U_PA), Tg(g));
+        g = await Get(Prb(P_A), SA);
+        Ok("Slice A GET (SA reads P_A, last written by PA): updated_by U_PA kept (TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"3\"" && HasBy(g, U_PA), Tg(g));
+        g = await Get(Prb(P_A), PB);
+        Ok("Slice A GET (PB reads P_A): bounds 40/120, ETag \"3\", row_version 3, updated_at kept, NO updated_by (TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"3\"" && HasBy(g, null)
+            && (long?)Obj(g.Body)["row_version"] == 3 && (int?)Obj(g.Body)["reason_min_length"] == 40 && (int?)Obj(g.Body)["reason_max_length"] == 120 && Obj(g.Body).ContainsKey("updated_at"), Tg(g));
+        if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
 
         // ---- the resolver everywhere [TLD 08:00 Q3]: limits, location GET, location PUT reason, POST reason ----
         Ok("Slice A limits: PA (own P_A, no param) -> 40/120 (row)", Lim(await Get(LimitsP, PA), 40, 120));
@@ -2293,7 +2323,7 @@ try
             await using var otx = await oc.BeginTransactionAsync();
             await using (var ins = new NpgsqlCommand("INSERT INTO auth.partner_reason_bounds (partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version) VALUES ($1, 33, 333, $2, now(), 1)", oc, otx))
             { ins.Parameters.Add(new() { Value = P_D }); ins.Parameters.Add(new() { Value = U_SA }); await ins.ExecuteNonQueryAsync(); }
-            var racer = PrbPut(P_D, PB, B(44, 444), "\"1\"");
+            var racer = PrbPut(P_D, PB, B(44, 444), "\"0\"");
             var blocked = false;
             for (int i = 0; i < 100 && !blocked; i++)
             {
@@ -2312,16 +2342,62 @@ try
             Ok("Slice A race: the loser retries with the reported version \"1\" -> 200 update v2, one event (change_kind updated)", r2.Status == 200 && r2.ETag == "\"2\"" && await PrbSnap(P_D) == "44/444/v2"
                 && (await NewEvents()) is { Count: 1 } e2 && (string)e2[0]["details"]!["change_kind"]! == "updated", Tg(r2));
         }
-        // two concurrent API first PUTs (non-deterministic order): exactly one 200 create, the other 200 update or 409; never two creates
+        // two concurrent API first PUTs, If-Match "0" each: with "0" = expect unset the outcome no longer depends on the order [TLD 11:23 A]:
+        // raced (23505) or sequential (row seen), the loser is 409 current_row_version 1; exactly one create
         {
-            var a = PrbPut(P_F, SA, B(15, 150), "\"1\""); var b = PrbPut(P_F, PA, B(16, 160), "\"1\"");
+            var a = PrbPut(P_F, SA, B(15, 150), "\"0\""); var b = PrbPut(P_F, PA, B(16, 160), "\"0\"");
             var res = await Task.WhenAll(a, b);
             var evs = await NewEvents();
-            var creates = evs.Count(e => (string?)e["details"]?["change_kind"] == "created");
-            Ok("Slice A race (2 API PUTs, If-Match \"1\" each): no 5xx, exactly one create event, row_version = number of 200s, each 409 carries current_row_version",
-                res.All(x => x.Status is 200 or 409) && creates == 1 && await OScalar<long>("SELECT row_version FROM auth.partner_reason_bounds WHERE partner_id=$1", P_F) == res.Count(x => x.Status == 200)
-                && res.Where(x => x.Status == 409).All(x => (long?)Obj(x.Body)["current_row_version"] >= 1) && evs.Count == res.Count(x => x.Status == 200),
+            Ok("Slice A race (2 API first PUTs, If-Match \"0\" each): exactly one 200 (ETag \"1\") and one 409 concurrency_conflict current_row_version 1, no 5xx, one row at v1 = the winner's values, one create event",
+                res.Count(x => x.Status == 200 && x.ETag == "\"1\"") == 1 && res.Count(x => Err(x, 409, "concurrency_conflict") && (long?)Obj(x.Body)["current_row_version"] == 1) == 1
+                && await PrbSnap(P_F) == (res[0].Status == 200 ? "15/150/v1" : "16/160/v1") && evs.Count == 1 && (string?)evs[0]["details"]?["change_kind"] == "created",
                 string.Join(" | ", res.Select(Tg)));
+        }
+
+        // ---- TLD 11:23 C: an explicit first PUT of the inherited default values still creates v1 + a create event ----
+        {
+            var r0 = await PrbPut(P_G, SA, B(Mn, Mx), "\"0\"");
+            var e0 = await NewEvents();
+            Ok($"Slice A PUT explicit first {Mn}/{Mx} (= the inherited defaults) on unset P_G -> 200 ETag \"1\", source partner, row {Mn}/{Mx}/v1, one create event old = new = {Mn}/{Mx} (TLD 11:23 C)",
+                r0.Status == 200 && r0.ETag == "\"1\"" && (string?)Obj(r0.Body)["source"] == "partner" && await PrbSnap(P_G) == $"{Mn}/{Mx}/v1" && e0.Count == 1 && Valid(e0[0])
+                && (string)e0[0]["details"]!["change_kind"]! == "created" && (int)e0[0]["details"]!["old_reason_min_length"]! == Mn && (int)e0[0]["details"]!["new_reason_max_length"]! == Mx, Tg(r0));
+        }
+
+        // ---- TLD 11:23 D: existing-row parallel update. Two DIFFERENT changes from the same version; a harness row lock (SELECT ... FOR UPDATE,
+        // rolled back; writes nothing) holds both API requests until both are waiting, then releases them together ----
+        {
+            var c0 = await PrbPut(P_H, SA, B(20, 200), "\"0\"");
+            await NewEvents();
+            Ok("Slice A parallel update setup: P_H created at v1", c0.Status == 200 && await PrbSnap(P_H) == "20/200/v1", Tg(c0));
+            var waits0 = await OScalar<long>("SELECT count(*) FROM pg_locks WHERE NOT granted");
+            await using var oc = await ownerDs.OpenConnectionAsync();
+            await using var otx = await oc.BeginTransactionAsync();
+            await using (var lk = new NpgsqlCommand("SELECT 1 FROM auth.partner_reason_bounds WHERE partner_id = $1 FOR UPDATE", oc, otx))
+            { lk.Parameters.Add(new() { Value = P_H }); await lk.ExecuteScalarAsync(); }
+            var ua = PrbPut(P_H, SA, B(30, 300), "\"1\""); var ub = PrbPut(P_H, PA, B(40, 400), "\"1\"");
+            var both = false;
+            for (int i = 0; i < 100 && !both; i++)
+            {
+                await Task.Delay(100);
+                both = await OScalar<long>("SELECT count(*) FROM pg_locks WHERE NOT granted") >= waits0 + 2;
+                if (ua.IsCompleted || ub.IsCompleted) break;
+            }
+            Ok("Slice A parallel update: both API PUTs are waiting on the row at the same time (pg_locks: 2 more NOT granted), neither answered yet", both && !ua.IsCompleted && !ub.IsCompleted);
+            await otx.RollbackAsync();
+            var res = await Task.WhenAll(ua, ub);
+            var evs = await NewEvents();
+            var win = res.Count(x => x.Status == 200) == 1 ? (res[0].Status == 200 ? "30/300/v2" : "40/400/v2") : "?";
+            Ok("Slice A parallel update (TLD 11:23 D): exactly one 200 (ETag \"2\"), the other 409 concurrency_conflict current_row_version 2 (v+1), no 5xx, row = the winner's values at v2, one updated event",
+                res.Count(x => x.Status == 200 && x.ETag == "\"2\"") == 1 && res.Count(x => Err(x, 409, "concurrency_conflict") && (long?)Obj(x.Body)["current_row_version"] == 2) == 1
+                && await PrbSnap(P_H) == win && evs.Count == 1 && (string?)evs[0]["details"]?["change_kind"] == "updated" && (long?)evs[0]["details"]?["row_version"] == 2,
+                string.Join(" | ", res.Select(Tg)));
+            // ---- max-only update (min unchanged) is a real change, not a no-op: v2 -> v3 + one event ----
+            var mn = win.StartsWith("30/") ? 30 : 40;
+            var mo = await PrbPut(P_H, SA, B(mn, 450), "\"2\"");
+            var emo = await NewEvents();
+            Ok("Slice A PUT max-only change (same min, max -> 450) -> 200 ETag \"3\", row max 450 at v3, one event old max -> new max 450 (not a no-op)",
+                mo.Status == 200 && mo.ETag == "\"3\"" && await PrbSnap(P_H) == $"{mn}/450/v3" && emo.Count == 1 && (int)emo[0]["details"]!["new_reason_max_length"]! == 450
+                && (int)emo[0]["details"]!["new_reason_min_length"]! == mn, Tg(mo));
         }
 
         // ---- fail closed: outbox write fails -> 500, no row, no event (same transaction) ----
@@ -2332,7 +2408,7 @@ try
             await using var appF = await AdminApiHost.BuildAsync(Opts(schema: rejectAll) with { Urls = $"http://127.0.0.1:{portF}" }, dir, extraLogger: new CaptureLogger());
             await appF.StartAsync();
             using var hF = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{portF}") };
-            var f1 = await PrbPut(P_E, SA, B(20, 300), "\"1\"", hF);
+            var f1 = await PrbPut(P_E, SA, B(20, 300), "\"0\"", hF);
             var f2 = await PrbPut(P_C, PA, B(26, 260), "\"2\"", hF);
             Ok("Slice A fail closed: create and update with an outbox failure -> 500, no body; no P_E row, P_C unchanged, no event",
                 f1.Status == 500 && f1.Body == "" && f2.Status == 500 && f2.Body == "" && await PrbSnap(P_E) == "<none>" && await PrbSnap(P_C) == "25/250/v2" && (await NewEvents()).Count == 0,
@@ -2352,7 +2428,7 @@ try
                 && (int?)Obj(d5.Body)["reason_max_length"] == 200 && (string?)Obj(d5.Body)["source"] == "default", Tg(d5));
             Ok("Slice A config 50/200: a set partner (P_A) still answers its row 40/120 (row wins over config)", Lim(await Send(HttpMethod.Get, LimitsP, PA, via: h5), 40, 120)
                 && Lim(await Send(HttpMethod.Get, $"{LimitsP}?partner_id={P_E:D}", SA, via: h5), 50, 200));
-            var c5 = await PrbPut(P_E, SA, B(60, 70), "\"1\"", h5);
+            var c5 = await PrbPut(P_E, SA, B(60, 70), "\"0\"", h5);
             var e5 = await NewEvents();
             Ok("Slice A config 50/200: create on P_E -> event old = 50/200 (the config in force), new 60/70", c5.Status == 200 && e5.Count == 1 && Valid(e5[0])
                 && (int)e5[0]["details"]!["old_reason_min_length"]! == 50 && (int)e5[0]["details"]!["old_reason_max_length"]! == 200, Tg(c5));

@@ -213,9 +213,9 @@ await step("DEC-107 limits and config 50/200", async () => {
 await step("Slice A per-partner limits on Create", async () => {
   const PX = "5f0c3e1a-0007-4000-8000-000000000007", PY = "5f0c3e1a-0008-4000-8000-000000000008";
   const HINT = (a, b) => `${a} to ${b} characters. Saved in the audit log. Required only if you turn off the second step or turn on backup sign-in.`;
-  const put = await fetch(`${H.ui}/as/sa/api/orgs/partners/${PX}/login-config/reason-bounds`, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": '"1"' },
+  const put = await fetch(`${H.ui}/as/sa/api/orgs/partners/${PX}/login-config/reason-bounds`, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": '"0"' },
     body: JSON.stringify({ reason_min_length: 20, reason_max_length: 300 }) });
-  ok("Slice A setup: SA PUT reason-bounds 20/300 on a fresh partner -> 200, ETag \"1\"", put.status === 200 && put.headers.get("ETag") === '"1"', put.status);
+  ok("Slice A setup: SA PUT reason-bounds 20/300 on a fresh partner (If-Match \"0\" = expect unset, TLD 11:23 A) -> 200, ETag \"1\"", put.status === 200 && put.headers.get("ETag") === '"1"', put.status);
   const seen = [];
   const spy = (msg) => { if (msg.sessionId === S && msg.method === "Network.requestWillBeSent" && /\/api\/orgs\/login-config\/limits/.test(msg.params.request.url)) seen.push(msg.params.request.url); };
   listeners.push(spy);

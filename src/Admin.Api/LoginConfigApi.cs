@@ -297,8 +297,13 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     sealed record PrbRow(Guid PartnerId, int Min, int Max, Guid UpdatedBy, DateTime UpdatedAt, long RowVersion);
 
-    /// <summary>If-Match for the first PUT on a partner with no row (its GET has no ETag) [TLD 08:00 Q2, 08:00b(1)]; the INSERT is at v1.</summary>
+    /// <summary>If-Match "0" = "expect unset": the first PUT on a partner with no row (its GET has no ETag) [TLD 2026-11-05 11:23 A, replaces
+    /// the 08:00 Q2 "1"]. A partner with a row always has row_version >= 1, so a late second "0" is a 409 and never updates the row.</summary>
+    public const long ReasonBoundsUnsetVersion = 0;
+    /// <summary>The INSERT is at v1 (persisted versions start at 1) [TLD 11:23 A].</summary>
     public const long ReasonBoundsCreateVersion = 1;
+    /// <summary>The reason-bounds PUT accepts "0" (unset) besides the positive versions; the location PUT keeps IfMatchRe (no "0").</summary>
+    static readonly Regex PrbIfMatchRe = new(@"^""(0|[1-9][0-9]{0,17})""\z", RegexOptions.CultureInvariant);
 
     /// <summary>Needs app.* scope super, or partner with app.partner_id set (RLS prb_admin): every caller of the resolver has it.</summary>
     static async Task<PrbRow?> LoadBoundsAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid partner, bool forUpdate)
@@ -332,22 +337,31 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     static JsonObject LimitsJson(ReasonBounds b) => new() { ["reason_min_length"] = b.Min, ["reason_max_length"] = b.Max };
 
-    JsonObject BoundsView(Guid partner, PrbRow? r)
+    /// <summary>
+    /// Identity in the reason-bounds view [TLD 11:23 identity scope, SSE2 relay; interim pending LS-OQ-61 / PQ-240, NOT a DEC]: a Partner Admin
+    /// reading ANOTHER partner's bounds gets no `updated_by`; a Partner Admin on their own partner and every Super Admin keep it. Bounds,
+    /// row_version / ETag and updated_at stay. Applies to every reason-bounds view (GET and the PUT 200 bodies); audit events keep full identity.
+    /// </summary>
+    static bool ShowsBoundsEditor(Caller who, Guid partner) => !(who.Id.AdminType == "partner" && who.Id.PartnerId != partner);
+
+    JsonObject BoundsView(Caller who, Guid partner, PrbRow? r)
     {
         var b = r is null ? ReasonBounds.FromConfig(opt) : new ReasonBounds(r.Min, r.Max);
         var v = new JsonObject { ["partner_id"] = partner.ToString("D"), ["reason_min_length"] = b.Min, ["reason_max_length"] = b.Max, ["source"] = r is null ? "default" : "partner" };
         if (r is not null)
         {
-            v["row_version"] = r.RowVersion; v["updated_by"] = r.UpdatedBy.ToString("D"); v["updated_at"] = T(r.UpdatedAt);
+            v["row_version"] = r.RowVersion;
+            if (ShowsBoundsEditor(who, partner)) v["updated_by"] = r.UpdatedBy.ToString("D");
+            v["updated_at"] = T(r.UpdatedAt);
         }
         return v;
     }
 
-    /// <summary>ETag only when the partner has a row [TLD 08:00 Q2]: an unset partner's GET has none (the first PUT sends If-Match "1").</summary>
-    IResult BoundsResult(HttpContext ctx, Guid partner, PrbRow? r)
+    /// <summary>ETag only when the partner has a row [TLD 08:00 Q2]: an unset partner's GET has none (the first PUT sends If-Match "0", TLD 11:23 A).</summary>
+    IResult BoundsResult(HttpContext ctx, Caller who, Guid partner, PrbRow? r)
     {
         if (r is not null) ctx.Response.Headers.ETag = $"\"{r.RowVersion}\"";
-        return Json(200, BoundsView(partner, r));
+        return Json(200, BoundsView(who, partner, r));
     }
 
     /// <summary>Malformed or nil partner id = 404 not_found (as a malformed location id). S2a has no partner registry: any other id is a partner.</summary>
@@ -365,7 +379,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         await SetScopeAsync(c, tx, who.Id.AdminType, who.Id.PartnerId);
         var row = await LoadBoundsAsync(c, tx, partner, false);
         await tx.CommitAsync();
-        return BoundsResult(ctx, partner, row);
+        return BoundsResult(ctx, who, partner, row);
     });
 
     // ---------- PUT /api/orgs/partners/{partner_id}/login-config/reason-bounds (Slice A) ----------
@@ -373,9 +387,11 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
     /// <summary>
     /// Step order as the location PUT [TLD 08:00 Q1]: 401 / 403 (before the body is read), 404, 428 precondition_required (no If-Match)
     /// / 400 if_match_invalid, 409 concurrency_conflict + current_row_version, then 413 / 400 malformed_body / 422. No 412.
-    /// Unset partner: If-Match "1" creates the row at v1; any other version = 409 with current_row_version 1 (the create constant).
+    /// Unset partner: If-Match "0" (expect unset) creates the row at v1; any other version = 409 with current_row_version 0 [TLD 11:23 A].
+    /// A set partner: "0" = 409 with the current row_version (a late second create never updates the row) [TLD 11:23 A].
     /// Racing first PUTs: one INSERT wins; the other hits the primary key (23505) and gets 409 + the winner's row_version [TLD 08:00b(1)].
-    /// 200 on create and update; ETag = the new row_version. Same values = 200, nothing written, no event. Event in the same transaction.
+    /// 200 on create and update; ETag = the new row_version. Same values on a stored row = 200, nothing written, no event, no bump
+    /// [TLD 11:23 B]; an explicit first PUT always creates v1 + event, even with the inherited default values [TLD 11:23 C].
     /// </summary>
     public Task<IResult> PutReasonBoundsAsync(HttpContext ctx, string partnerId) => Run(ctx, async who =>
     {
@@ -385,14 +401,14 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         var partner = PartnerFromPath(partnerId);
         var im = ctx.Request.Headers.IfMatch;
         if (im.Count == 0) throw Err(428, "precondition_required");
-        if (im.Count != 1 || IfMatchRe.Match(im[0] ?? "") is not { Success: true } m) throw Err(400, "if_match_invalid");
+        if (im.Count != 1 || PrbIfMatchRe.Match(im[0] ?? "") is not { Success: true } m) throw Err(400, "if_match_invalid");
         var expected = long.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
 
         await using var c = await db.OpenConnectionAsync();
         await using var tx = await c.BeginTransactionAsync();
         await SetScopeAsync(c, tx, who.Id.AdminType, who.Id.PartnerId);
         var row = await LoadBoundsAsync(c, tx, partner, true);
-        var current = row?.RowVersion ?? ReasonBoundsCreateVersion;
+        var current = row?.RowVersion ?? ReasonBoundsUnsetVersion;
         if (current != expected) throw Err(409, "concurrency_conflict", b => b["current_row_version"] = current);
         if (read.TooLarge) throw Err(413, "payload_too_large");
         if (ParseObject(read.Bytes) is not { } o) throw Err(400, "malformed_body");
@@ -402,7 +418,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         if (row is not null && old == n)
         {
             await tx.RollbackAsync(); // no-op PUT: nothing written, no event (as the location PUT, OQ-P3-6).
-            return BoundsResult(ctx, partner, row);
+            return BoundsResult(ctx, who, partner, row);
         }
         var now = Now();
         var created = row is null;
@@ -435,7 +451,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             old.Min, old.Max, n.Min, n.Max), CancellationToken.None);
         var saved = await LoadBoundsAsync(c, tx, partner, false) ?? throw new InvalidOperationException("row vanished");
         await tx.CommitAsync();
-        return BoundsResult(ctx, partner, saved);
+        return BoundsResult(ctx, who, partner, saved);
     });
 
     static List<string> DowngradeFields(bool mfaBefore, bool fallbackBefore, LoginConfigInput n)

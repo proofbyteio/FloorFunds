@@ -484,7 +484,7 @@
       }
     },
     "partner_reason_bounds_write": {
-      "description": "v1.1 Slice A. PUT /api/orgs/partners/{partner_id}/login-config/reason-bounds request body: exactly these two integers [DEC-114: 10 <= min <= max <= 500; min > max is 422 reason_bound_order, not expressible here]. No reason field [Confirmed DEC-113]. If-Match is required: the GET's ETag, or \"1\" (the create constant) when the GET had no ETag [TLD 08:00 Q2, 08:00b(1)].",
+      "description": "v1.1 Slice A. PUT /api/orgs/partners/{partner_id}/login-config/reason-bounds request body: exactly these two integers [DEC-114: 10 <= min <= max <= 500; min > max is 422 reason_bound_order, not expressible here]. No reason field [Confirmed DEC-113]. If-Match is required: the GET's ETag, or \"0\" (expect unset) when the GET had no ETag [TLD 2026-11-05 11:23 A; was \"1\", TLD 08:00 Q2]. A late \"0\" on a set partner is 409 with the current row_version.",
       "type": "object",
       "additionalProperties": false,
       "required": ["reason_min_length", "reason_max_length"],
@@ -494,7 +494,7 @@
       }
     },
     "partner_reason_bounds_view": {
-      "description": "v1.1 Slice A. GET and PUT 200 body of /api/orgs/partners/{partner_id}/login-config/reason-bounds. source partner = the partner's stored row (with row_version, updated_by, updated_at; ETag = row_version); source default = no row: the deployment config LoginConfig:* (10/500 as shipped, DEC-115), and no ETag, no row_version [TLD 08:00 Q2/Q3].",
+      "description": "v1.1 Slice A. GET and PUT 200 body of /api/orgs/partners/{partner_id}/login-config/reason-bounds. source partner = the partner's stored row (with row_version, updated_at and, except for a Partner Admin reading ANOTHER partner, updated_by [TLD 11:23 identity scope, SSE2 relay; interim pending LS-OQ-61 / PQ-240, not a DEC]; ETag = row_version); source default = no row: the deployment config LoginConfig:* (10/500 as shipped, DEC-115), and no ETag, no row_version [TLD 08:00 Q2/Q3].",
       "type": "object",
       "additionalProperties": false,
       "required": ["partner_id", "reason_min_length", "reason_max_length", "source"],
@@ -508,7 +508,7 @@
         "updated_at": { "type": "string", "format": "date-time" }
       },
       "if": { "properties": { "source": { "const": "partner" } } },
-      "then": { "required": ["row_version", "updated_by", "updated_at"] },
+      "then": { "required": ["row_version", "updated_at"] },
       "else": { "not": { "anyOf": [{ "required": ["row_version"] }, { "required": ["updated_by"] }, { "required": ["updated_at"] }] } }
     },
     "audited_state": {
@@ -711,9 +711,9 @@
           }
         },
         "current_row_version": {
-          "description": "409 only: lets the UI show the 'Someone else changed this setting' banner [SRC: mockup 09] and reload.",
+          "description": "409 only: lets the UI show the 'Someone else changed this setting' banner [SRC: mockup 09] and reload. 0 only on the reason-bounds PUT (v1.1 Slice A): the partner has no row yet, send If-Match \"0\" [TLD 2026-11-05 11:23 A].",
           "type": "integer",
-          "minimum": 1
+          "minimum": 0
         }
       },
       "allOf": [
