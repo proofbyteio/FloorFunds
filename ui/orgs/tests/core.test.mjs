@@ -70,6 +70,16 @@ test("422 field mapping, If-Match", () => {
   assert.equal(fieldTarget("reason"), "reason");
   assert.equal(fieldTarget("login_config/reason"), "reason"); // DEC-107: the create path
   assert.equal(fieldTarget("oidc_authority"), null);
+  // P4h [TLD 2026-11-04 16:55 Q2]: every create login_config/* write field lands where the PUT name does.
+  for (const [k, id] of [["provider_kind", "method"], ["display_name", "dname"], ["entra_allowed_tenant_ids", "tenant"],
+    ["entra_allowed_tenant_ids/0", "tenant"], ["mfa_required", "mfa"], ["allow_db_fallback", "fallback"], ["reason", "reason"]]) {
+    assert.equal(fieldTarget(k), id, k);
+    assert.equal(fieldTarget("login_config/" + k), id, "login_config/" + k);
+  }
+  assert.equal(fieldTarget("name"), "lname");
+  for (const k of ["partner_id", "login_config", "login_config/name", "login_config/oidc_authority", "login_config/oidc_client_id",
+    "login_config/secret_ref", "login_config/*", "login_config/constructor", "constructor", "__proto__", "*", "login_config/login_config/reason"])
+    assert.equal(fieldTarget(k), null, k);
   assert.equal(ifMatchFrom('"7"', 7), '"7"');
   assert.equal(ifMatchFrom('W/"7"', 7), '"7"');
   assert.equal(ifMatchFrom(null, 3), '"3"');

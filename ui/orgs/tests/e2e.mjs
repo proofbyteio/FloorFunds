@@ -273,6 +273,57 @@ await step("SA create", async () => {
   await click("#btn-change");
   ok("V11-CREATE-SECRETCARD: card shown in the edit view after create", await ev(`document.body.dataset.state`) === "edit" && await vis("#card-connection"));
 });
+// P4h [TLD 2026-11-04 16:55 Q2]: each create 422 under login_config/* (and the top-level name) lands on its form field.
+// Fields the page cannot make invalid by typing (mfa_required, allow_db_fallback, provider_kind) are set in the outgoing
+// POST body with CDP Fetch; the 422 itself is the real API's. Focus: the existing pattern focuses the error banner.
+await step("P4h create field errors", async () => {
+  let tamper = null, respId = null;
+  const lsn = (msg) => {
+    if (msg.sessionId !== S) return;
+    if (msg.method === "Network.responseReceived" && /\/api\/orgs\/locations$/.test(msg.params.response.url) && msg.params.type === "Fetch") respId = msg.params.requestId;
+    if (msg.method !== "Fetch.requestPaused") return;
+    const q = msg.params.request; let post;
+    if (tamper && q.method === "POST" && q.postData !== undefined) { const b = JSON.parse(q.postData); tamper(b); post = Buffer.from(JSON.stringify(b)).toString("base64"); }
+    cdp("Fetch.continueRequest", post === undefined ? { requestId: msg.params.requestId } : { requestId: msg.params.requestId, postData: post }).catch(() => {});
+  };
+  listeners.push(lsn);
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/locations", requestStage: "Request" }] });
+  const attempt = async (fill, tamp) => {
+    await open(`/as/sa/orgs/${H.partner_a}/locations/new`);
+    await type("#lname", "UI Cage P4h"); await type("#dname", "UI Casino A");
+    await fill(); tamper = tamp ?? null; respId = null; await save(); tamper = null;
+    let api = null;
+    try { const r = await cdp("Network.getResponseBody", { requestId: respId }); api = JSON.parse(r.body); } catch (e) { api = { err: String(e) }; }
+    return api;
+  };
+  const cases = [
+    ["name (top-level)", async () => { await type("#lname", " "); }, null, "name", "name_invalid", "lname", "lname-err", "Enter a location name."],
+    ["login_config/display_name", async () => { await type("#dname", "   "); }, null, "login_config/display_name", "display_name_invalid", "dname", "dname-err", "Enter a name of 1 to 100 characters."],
+    ["login_config/entra_allowed_tenant_ids", async () => { await mouseClick("#m-entra"); }, null, "login_config/entra_allowed_tenant_ids", "tenant_count", "tenant", "tenant-err", "Enter one Microsoft tenant ID."],
+    ["login_config/entra_allowed_tenant_ids/0", async () => { await mouseClick("#m-entra"); await type("#tenant", "not-a-tenant"); }, null, "login_config/entra_allowed_tenant_ids/0", "tenant_id_format", "tenant", "tenant-err",
+      "Enter the tenant ID in the format 00000000-0000-0000-0000-000000000000 (not all zeros)."],
+    ["login_config/mfa_required", async () => { }, (b) => { b.login_config.mfa_required = "yes"; }, "login_config/mfa_required", "type", "mfa", "fallback-err", "Check this field."],
+    ["login_config/allow_db_fallback", async () => { }, (b) => { b.login_config.allow_db_fallback = true; b.login_config.reason = "P4h e2e: a valid reason"; }, "login_config/allow_db_fallback", "fallback_not_applicable", "fallback", "fallback-err",
+      "Backup sign-in is only for Microsoft sign-in."],
+    ["login_config/reason", async () => { await mouseClick("#mfa"); await type("#reason", "too short"); }, null, "login_config/reason", "reason_length", "reason", "reason-err", "Enter a reason of 10 to 500 characters."],
+  ];
+  for (const [name, fill, tamp, path, code, id, errId, copy] of cases) {
+    const api = await attempt(fill, tamp);
+    const got = { api, err: await txt("#" + errId), errVis: await vis("#" + errId), inv: await attr("#" + id, "aria-invalid"), desc: await attr("#" + id, "aria-describedby"),
+      banner: await shownError(), focus: await ev(`document.activeElement && document.activeElement.id`), url: await ev(`location.pathname.endsWith("/new")`) };
+    ok(`P4h create: ${name} -> real 422 ${code}; copy on #${errId}, #${id} aria-invalid + aria-describedby, banner focused, still on /new`,
+      api && api.error === "validation_failed" && Array.isArray(api.fields) && api.fields.some(f => f.field === path && f.code === code)
+      && got.err === copy && got.errVis && got.inv === "true" && (got.desc ?? "").split(" ").includes(errId)
+      && got.banner.length === 1 && got.banner[0].code === "validation_failed" && got.focus === "banner-error" && got.url && await noRidOnFields(), got);
+  }
+  // provider_kind: the method radios have no error slot (as in Edit), so the error is banner-only; no field is marked.
+  const api = await attempt(async () => { }, (b) => { b.login_config.provider_kind = "saml"; });
+  const quiet = await ev(`[...document.querySelectorAll(".field__error")].every(e => e.hidden) && !document.querySelector("[aria-invalid]")`);
+  ok("P4h create: login_config/provider_kind -> real 422 provider_kind_invalid; no error slot, banner only (validation_failed, focused)",
+    api && Array.isArray(api.fields) && api.fields.some(f => f.field === "login_config/provider_kind" && f.code === "provider_kind_invalid") && quiet
+    && (await shownError())[0]?.code === "validation_failed" && await ev(`document.activeElement && document.activeElement.id`) === "banner-error", { api, quiet });
+  await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(lsn), 1);
+});
 await step("PA partner-create", async () => {
   await open(`/as/pa/orgs/${H.partner_a}/locations/new`);
   ok("partner-create: chip 'Partner Admin: <URL partner id>', MFA locked, no reason field, no downgrade banner", await txt("#role-chip-text") === `Partner Admin: ${H.partner_a}` && await attr("#mfa", "aria-disabled") === "true" && !(await vis("#f-reason")) && !(await vis("#banner-downgrade")));

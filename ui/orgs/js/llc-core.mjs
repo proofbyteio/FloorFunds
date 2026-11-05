@@ -94,14 +94,22 @@ export function changeDetails(c) {
   return parts.join("; ") || "No change to the method";
 }
 
-/** 422 field path -> the page's input id (spec §5 example: "entra_allowed_tenant_ids/0"). */
+/** 422 field path -> the page's input id (spec §5 example: "entra_allowed_tenant_ids/0").
+ *  PUT paths are the login_config_write names; a create (POST /orgs/locations) names them under "login_config/"
+ *  (LoginConfigInput.ValidateCreate) and its own top-level keys unprefixed ("name"; "partner_id" has no form field).
+ *  [DEC-107: login_config/reason] [TLD 2026-11-04 16:55 Q2: every login_config/* write field, P4h]
+ *  Not mapped (no form field; the page shows the validation_failed banner only): partner_id, login_config itself,
+ *  oidc_authority / oidc_client_id / secret_ref (field_not_writable) and unknown_field keys. provider_kind maps to
+ *  "method", which has no error slot (same as Edit), so it is banner-only too. */
+const WRITE_TARGET = Object.freeze({ provider_kind: "method", display_name: "dname", entra_allowed_tenant_ids: "tenant",
+  mfa_required: "mfa", allow_db_fallback: "fallback", reason: "reason" });
+const CREATE_TARGET = Object.freeze({ name: "lname" });
+const own = (o, k) => (Object.hasOwn(o, k) ? o[k] : null);
 export function fieldTarget(path) {
-  // DEC-107: a create 422 names the reason "login_config/reason"; it lands on the same field as the PUT's "reason".
-  // (Other login_config/* create paths are unchanged here: outside DEC-107's scope, reported as an open question.)
-  if (String(path) === "login_config/reason") return "reason";
-  const top = String(path).split("/")[0];
-  return ({ display_name: "dname", entra_allowed_tenant_ids: "tenant", reason: "reason", name: "lname",
-    allow_db_fallback: "fallback", mfa_required: "mfa", provider_kind: "method" })[top] ?? null;
+  const p = String(path);
+  if (p.startsWith("login_config/")) return own(WRITE_TARGET, p.slice("login_config/".length).split("/")[0]);
+  const top = p.split("/")[0];
+  return own(WRITE_TARGET, top) ?? own(CREATE_TARGET, top);
 }
 
 /** Strong ETag "<n>" -> If-Match value; anything else -> null (never invent one). */
