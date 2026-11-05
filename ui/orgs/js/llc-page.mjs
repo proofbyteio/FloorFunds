@@ -2,8 +2,8 @@
 // is in error-copy.mjs. The page never sends oidc_* or secret_ref and shows only secret.set (spec §3.0, D-51).
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, METHOD_LABEL, fallbackText, formatPT,
   changeDetails, fieldTarget, ifMatchFrom, limitsFrom, limitsOrFallback, partnerMfaState, PARTNER_MFA_OFF_HINT, errIdFor, limitsTimeout,
-  limitsOutcome } from "./llc-core.mjs";
-import { TOP_LEVEL, FIELD, requestIdText, reasonLengthCopy, REASON_HINT_FALLBACK, REASON_LENGTH_FALLBACK } from "./error-copy.mjs";
+  limitsOutcome, locationOutcome } from "./llc-core.mjs";
+import { TOP_LEVEL, FIELD, requestIdText, reasonLengthCopy, reasonHintFallback, REASON_LENGTH_FALLBACK } from "./error-copy.mjs";
 
 const $ = (id) => document.getElementById(id);
 const body = document.body;
@@ -16,8 +16,10 @@ function setLimits(fromServer) { st.limitsFallback = !fromServer; st.limits = fr
 function show(el, on) { el.hidden = !on; }
 function text(el, s) { el.textContent = s ?? ""; }
 
-// timeoutMs (limits GET only, TLD 2026-11-04 18:35 item 4): abort after that long; an abort answers like a failed fetch (status null).
-async function api(method, path, { json, ifMatch, timeoutMs } = {}) {
+// timeoutMs (limits GET, TLD 2026-11-04 18:35 item 4; location GET, TLD 21:11 Q3): abort after that long; an abort answers
+// like a failed fetch (status null). manualRedirect (both GETs, TLD 21:11 Q2): redirect: "manual", so a 3xx (same-site or
+// cross-site, e.g. to login.microsoftonline.com) is never followed and answers as opaque (res.type "opaqueredirect").
+async function api(method, path, { json, ifMatch, timeoutMs, manualRedirect } = {}) {
   const headers = { Accept: "application/json" };
   if (json !== undefined) headers["Content-Type"] = "application/json";
   if (ifMatch) headers["If-Match"] = ifMatch;
@@ -27,15 +29,15 @@ async function api(method, path, { json, ifMatch, timeoutMs } = {}) {
     let res;
     try {
       res = await fetch(apiBase + path, { method, headers, body: json === undefined ? undefined : JSON.stringify(json),
-        credentials: "same-origin", cache: "no-store", signal: ac ? ac.signal : undefined });
+        credentials: "same-origin", cache: "no-store", signal: ac ? ac.signal : undefined, redirect: manualRedirect ? "manual" : "follow" });
     } catch {
-      return { status: null, body: null, requestId: null, etag: null, json: false, redirected: false };
+      return { status: null, body: null, requestId: null, etag: null, json: false, redirected: false, opaque: false };
     }
     let data = null;
     const ct = res.headers.get("Content-Type") || "";
     const isJson = ct.includes("json");
     if (isJson) { try { data = await res.json(); } catch { data = null; } }
-    return { status: res.status, body: data, requestId: res.headers.get("X-Request-ID"), etag: res.headers.get("ETag"), json: isJson, redirected: res.redirected };
+    return { status: res.status, body: data, requestId: res.headers.get("X-Request-ID"), etag: res.headers.get("ETag"), json: isJson, redirected: res.redirected, opaque: res.type === "opaqueredirect" };
   } finally {
     if (timer !== null) clearTimeout(timer);
   }
@@ -188,9 +190,10 @@ function syncForm() {
     show($("banner-downgrade"), down);
     show($("f-reason"), down || create);
     // UX D-106 (md5 2b17464c): "{min} to {max} characters. Saved in the audit log." with the API's numbers (DEC-107).
-    // Fallback limits: UX D-108 (md5 9318c2f8) hint, no length sentence [TLD 2026-11-04 18:35 / 18:37].
+    // Fallback limits: UX D-108 (md5 9318c2f8) hint, no length sentence [TLD 2026-11-04 18:35 / 18:37]; Edit shows only
+    // "Saved in the audit log." (UX D-109, md5 1cab5e82) [TLD 2026-11-04 20:18 / 21:11] (reasonHintFallback, error-copy.mjs).
     const len = st.limits ? `${st.limits.min} to ${st.limits.max} characters. ` : "";
-    text($("reason-hint"), st.limitsFallback ? REASON_HINT_FALLBACK : len + (create ? "Saved in the audit log. Required only if you turn off the second step or turn on backup sign-in."
+    text($("reason-hint"), st.limitsFallback ? reasonHintFallback(create) : len + (create ? "Saved in the audit log. Required only if you turn off the second step or turn on backup sign-in."
       : "Saved in the audit log."));
   } else {
     // Locks only the downgrade direction relative to the SAVED value (create: relative to MFA on / backup off).
@@ -304,7 +307,7 @@ async function start() {
     // a 401 / 403 is an access answer, not a limits value, so it is still shown as the page error.
     // [TLD 2026-11-04 18:35] a redirect, a 3xx or a non-JSON 200 is shown like a 401; the GET is aborted after
     // LIMITS_TIMEOUT_MS (10 s) and then falls back like a failed fetch (limitsOutcome, limitsTimeout in llc-core.mjs).
-    const lr = await api("GET", "/orgs/login-config/limits", { timeoutMs: limitsTimeout(globalThis.__llcLimitsTimeoutMs) });
+    const lr = await api("GET", "/orgs/login-config/limits", { timeoutMs: limitsTimeout(globalThis.__llcLimitsTimeoutMs), manualRedirect: true });
     const lo = limitsOutcome(lr);
     if (lo.kind === "error" || lo.kind === "error401") { show($("banner-loading"), false); applyErrors(lo.kind === "error401" ? { ...lr, status: 401 } : lr); body.dataset.state = "error"; return; }
     setLimits(lo.kind === "server" ? lo.limits : null);
@@ -312,8 +315,11 @@ async function start() {
     setMode("create");
     return;
   }
-  const r = await api("GET", `/orgs/locations/${encodeURIComponent(st.route.locationId)}/login-config`);
-  if (r.status !== 200 || !r.body) { show($("banner-loading"), false); applyErrors(r); body.dataset.state = "error"; return; }
+  // [TLD 2026-11-04 21:11 Q2 / Q3] redirect: "manual" + the same abort as the limits GET; a redirect / non-JSON 200 is shown
+  // as a 401 and a timeout as the page error (locationOutcome), never a form with fallback limits.
+  const r = await api("GET", `/orgs/locations/${encodeURIComponent(st.route.locationId)}/login-config`, { timeoutMs: limitsTimeout(globalThis.__llcLimitsTimeoutMs), manualRedirect: true });
+  const ro = locationOutcome(r);
+  if (ro.kind !== "ok") { show($("banner-loading"), false); applyErrors(ro.kind === "error401" ? { ...r, status: 401 } : r); body.dataset.state = "error"; return; }
   st.view = r.body; st.ifMatch = ifMatchFrom(r.etag, r.body.row_version);
   // DEC-107: the GET carries the reason bounds in effect; a PUT 200 body does not, so st.limits outlives st.view.
   setLimits(limitsFrom(r.body)); // [TLD 2026-11-04 17:28] missing / invalid -> REASON_BOUNDS (D-108 copy, TLD 18:35)

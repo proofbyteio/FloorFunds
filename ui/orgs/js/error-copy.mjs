@@ -47,6 +47,12 @@ export function reasonLengthCopy(min, max) { return `Enter a reason of ${min} to
  *  page uses the fallback bounds (REASON_BOUNDS), it shows no numbers (the server may enforce tighter ones). */
 export const REASON_HINT_FALLBACK = "Saved in the audit log. In Create: required only if you turn off the second step or turn on backup sign-in.";
 export const REASON_LENGTH_FALLBACK = "This reason is too short or too long. Edit it and try again.";
+// UX D-109 (review md5 1cab5e82, TLD 2026-11-04 20:18 / 21:11): when the limits did not load, Edit shows only
+// "Saved in the audit log." (the "In Create: ..." sentence is for Create only); Create keeps REASON_HINT_FALLBACK.
+export const REASON_HINT_FALLBACK_EDIT = "Saved in the audit log.";
+export function reasonHintFallback(create) {
+  return create ? REASON_HINT_FALLBACK : REASON_HINT_FALLBACK_EDIT;
+}
 
 /** X-Request-ID display (approved D-102): own last line of every top-level error banner, never under a field; shown on every error banner so support can find the server log line (`request_id=<value>`). */
 export function requestIdText(id) { return id ? `Request ID: ${id}` : ""; }

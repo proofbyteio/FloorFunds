@@ -166,9 +166,24 @@ export function limitsTimeout(override) {
  *  "fallback": network failure, timeout (status null), any other status, or a JSON 200 with missing / invalid limits. */
 export function limitsOutcome(r) {
   if (r.status === null) return { kind: "fallback" };
+  if (r.opaque) return { kind: "error401" }; // [TLD 2026-11-04 21:11 Q2] redirect: "manual" -> opaqueredirect (any 3xx, cross-site too)
   if (r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "error401" };
   if (r.status === 401 || r.status === 403) return { kind: "error" };
   if (r.status === 200 && !r.json) return { kind: "error401" };
   const limits = r.status === 200 ? limitsFrom(r.body) : null;
   return limits ? { kind: "server", limits } : { kind: "fallback" };
+}
+
+/** [TLD 2026-11-04 21:11 Q2 / Q3, SSE2 70cf9b13 LOW-1] what the edit page does with GET /orgs/locations/{id}/login-config
+ *  (api(): status, body, json, redirected, opaque; fetched with redirect: "manual" and the LIMITS_TIMEOUT_MS abort).
+ *  "error401": an opaqueredirect (any 3xx, e.g. a 302 to login.microsoftonline.com), a followed redirect, a 3xx answer
+ *  or a 200 that is not JSON -> the page error as a 401, no form.
+ *  "error": network failure or timeout (status null) or any other non-200 -> the page error from the answer, no form
+ *  (never the fallback limits; those apply only to a 200 whose limits are missing / invalid).
+ *  "ok": a JSON 200 with a body. */
+export function locationOutcome(r) {
+  if (r.status === null) return { kind: "error" };
+  if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "error401" };
+  if (r.status === 200 && !r.json) return { kind: "error401" };
+  return r.status === 200 && r.body ? { kind: "ok" } : { kind: "error" };
 }

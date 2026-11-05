@@ -411,7 +411,7 @@ await step("P4i limits fallback", async () => {
     mode = { kind: "edit", edit }; await open(`/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`); mode = null;
     await click("#btn-change"); await mouseClick("#mfa");
     const got = { state: await ev(`document.body.dataset.state`), hint: await txt("#reason-hint") };
-    ok(`P4i edit: ${name} -> fallback limits, D-108 hint (no numbers)`, got.hint === HINT_C, got);
+    ok(`P4i edit: ${name} -> fallback limits, D-109 Edit hint 'Saved in the audit log.' (no numbers, no Create sentence)`, got.hint === "Saved in the audit log.", got);
   }
   await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(lsn), 1);
   await open(page("sa", H.l1));
@@ -424,16 +424,16 @@ await step("P4k follow-ups", async () => {
   let mode = null, post = null; const seen = [];
   const lsn = (msg) => {
     if (msg.sessionId !== S) return;
-    if (msg.method === "Network.requestWillBeSent" && msg.params.redirectResponse) seen.push(msg.params.request.url);
     if (msg.method !== "Fetch.requestPaused") return;
     const p = msg.params, id = p.requestId, go = () => cdp("Fetch.continueRequest", { requestId: id }).catch(() => {});
+    if (p.request.url.endsWith("/p4k-sign-in")) { seen.push(p.request.url); return go(); } // only reached if the 302 is followed
     if (p.request.method === "POST" && post) { const f = post.shift(); return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: f.status, responseHeaders: [{ name: "Content-Type", value: "application/json" }, { name: "X-Request-ID", value: "01a1a94d-0000-7000-8000-000000000418" }], body: Buffer.from(JSON.stringify(f.body)).toString("base64") }).catch(() => {}); }
     if (!mode || p.request.method !== "GET" || !/\/api\/orgs\/login-config\/limits$/.test(p.request.url)) return go();
     if (mode.kind === "stall") return; // never answered: only the page's abort ends it
     return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: mode.status, responseHeaders: mode.headers, body: Buffer.from(mode.body).toString("base64") }).catch(() => {});
   };
   listeners.push(lsn);
-  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/login-config/limits", requestStage: "Request" }, { urlPattern: "*/api/orgs/locations", requestStage: "Request" }] });
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/login-config/limits", requestStage: "Request" }, { urlPattern: "*/api/orgs/locations", requestStage: "Request" }, { urlPattern: "*/p4k-sign-in", requestStage: "Request" }] });
   const JSON_CT = [{ name: "Content-Type", value: "application/json" }];
   const HINT_F = "Saved in the audit log. In Create: required only if you turn off the second step or turn on backup sign-in.";
   // LOW-1: a 422 on every mapped field, then a retry that answers 500: each field is back to its own describedby, not invalid.
@@ -457,7 +457,7 @@ await step("P4k follow-ups", async () => {
   // Limits answers that are page errors (no fallback, no form).
   const errCases = [
     ["limits 403", { status: 403, headers: JSON_CT, body: JSON.stringify({ error: "forbidden" }) }, null],
-    ["limits redirect (302 followed)", { status: 302, headers: [{ name: "Location", value: `${H.ui}/p4k-sign-in` }], body: "" }, "401"],
+    ["limits 302 same-site (redirect: manual, not followed)", { status: 302, headers: [{ name: "Location", value: `${H.ui}/p4k-sign-in` }], body: "" }, "401"],
     ["limits 3xx not followed (300, no Location)", { status: 300, headers: JSON_CT, body: "{}" }, "401"],
     ["limits 200 text/html", { status: 200, headers: [{ name: "Content-Type", value: "text/html" }], body: "<!doctype html><title>Sign in</title>" }, "401"],
   ];
@@ -465,7 +465,7 @@ await step("P4k follow-ups", async () => {
     seen.length = 0; mode = { kind: "fake", ...m }; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
     const got = { state: await ev(`document.body.dataset.state`), lname: await vis("#lname"), err: await shownError(), seen: [...seen] };
     ok(`P4k create: ${name} -> page error${code ? " shown as a 401" : ""}, no form, no fallback`, got.state === "error" && !got.lname && got.err.length === 1
-      && (code === null || got.err[0].code === code) && (!/302/.test(name) || got.seen.some(u => u.endsWith("/p4k-sign-in"))), got);
+      && (code === null || got.err[0].code === code) && !got.seen.some(u => u.endsWith("/p4k-sign-in")), got); // TLD 21:11 Q2: redirect: "manual", the 302 is never followed
   }
   // A JSON 200 with an invalid body still falls back.
   mode = { kind: "fake", status: 200, headers: JSON_CT, body: "not json" }; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
@@ -490,6 +490,59 @@ await step("P4k follow-ups", async () => {
   ok("P4k edit (server limits): hint '50 to 200 characters. Saved in the audit log.'", await txt("#reason-hint") === "50 to 200 characters. Saved in the audit log.", await txt("#reason-hint"));
   await open(page("sa", H.l1));
   ok("P4k: nothing was saved (L1 still MFA on)", await txt("#cur-mfa") === "Yes", await txt("#cur-mfa"));
+});
+// P4l [TLD 2026-11-04 21:11 Q2 / Q3, UX D-109 1cab5e82, SSE2 70cf9b13 LOW-1]: redirect: "manual" on the limits GET and the
+// location GET (a cross-site 302 to login.microsoftonline.com is a 401 page error, never followed, never a fallback); the
+// location GET is aborted like the limits GET and a timeout is the page error with no form. Faked with CDP Fetch.
+await step("P4l redirect / timeout", async () => {
+  let mode = null; const seen = [];
+  const LOC = new RegExp(`/api/orgs/locations/${H.l1}/login-config$`), LIM = /\/api\/orgs\/login-config\/limits$/;
+  const lsn = (msg) => {
+    if (msg.sessionId !== S) return;
+    if (msg.method !== "Fetch.requestPaused") return;
+    const p = msg.params, id = p.requestId, go = () => cdp("Fetch.continueRequest", { requestId: id }).catch(() => {});
+    // The redirect targets: Fetch pauses a request only when the browser really makes it (i.e. follows the 302); it is
+    // answered here, so nothing is resolved or sent off the box even then.
+    if (/^https:\/\/login\.microsoftonline\.com\//.test(p.request.url) || p.request.url.endsWith("/p4l-sign-in")) {
+      seen.push(p.request.url);
+      return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: 200, responseHeaders: [{ name: "Content-Type", value: "text/html" }], body: Buffer.from("<!doctype html><title>Sign in</title>").toString("base64") }).catch(() => {});
+    }
+    if (!mode || p.request.method !== "GET" || !mode.url.test(p.request.url)) return go();
+    if (mode.kind === "stall") return; // never answered: only the page's abort ends it
+    return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: mode.status, responseHeaders: mode.headers, body: Buffer.from(mode.body ?? "").toString("base64") }).catch(() => {});
+  };
+  listeners.push(lsn);
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/login-config/limits", requestStage: "Request" }, { urlPattern: `*/api/orgs/locations/${H.l1}/login-config`, requestStage: "Request" },
+    { urlPattern: "https://login.microsoftonline.com/*", requestStage: "Request" }, { urlPattern: "*/p4l-sign-in", requestStage: "Request" }] });
+  const MS = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=p4l&response_type=code";
+  const R302 = (loc) => ({ kind: "fake", status: 302, headers: [{ name: "Location", value: loc }], body: "" });
+  const cases = [
+    ["create: limits 302 to login.microsoftonline.com", `/c50/sa/orgs/${H.partner_a}/locations/new`, LIM, R302(MS)],
+    ["edit: location GET 302 to login.microsoftonline.com", `/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`, LOC, R302(MS)],
+    ["edit: location GET 302 same-site", `/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`, LOC, R302(`${H.ui}/p4l-sign-in`)],
+  ];
+  for (const [name, url, re, m] of cases) {
+    seen.length = 0; const o0 = outside.length; mode = { ...m, url: re }; await open(url); mode = null;
+    // DevTools announces the 302's Location (requestWillBeSent + redirectResponse) before the page's redirect: "manual"
+    // drops it; such an entry is taken off the no-egress list only when the browser never made the request (seen empty).
+    if (seen.length === 0) outside.splice(o0, outside.length - o0, ...outside.slice(o0).filter(u => u !== MS));
+    const got = { state: await ev(`document.body.dataset.state`), lname: await vis("#lname"), change: await vis("#btn-change"), err: await shownError(), seen: [...seen] };
+    ok(`P4l ${name} -> not followed, page error shown as a 401, no form, no fallback`, got.state === "error" && !got.lname && !got.change
+      && got.err.length === 1 && got.err[0].code === "401" && got.seen.length === 0, got);
+  }
+  // Q3: a stalled location GET is aborted (injected 400 ms instead of LIMITS_TIMEOUT_MS) -> page error, no form, no fallback hint.
+  const { identifier } = await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "globalThis.__llcLimitsTimeoutMs = 400;" });
+  mode = { kind: "stall", url: LOC }; const t0 = Date.now(); await open(`/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`); const dt = Date.now() - t0; mode = null;
+  await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+  const gotT = { state: await ev(`document.body.dataset.state`), change: await vis("#btn-change"), hint: await vis("#reason-hint"), err: await shownError(), dt };
+  ok("P4l edit: stalled location GET -> aborted, page error 'Couldn't reach the server.' (network), no form, no fallback limits",
+    gotT.state === "error" && !gotT.change && !gotT.hint && gotT.err.length === 1 && gotT.err[0].code === "network" && dt < 8000, gotT);
+  await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(lsn), 1);
+  // Unfaked: the c50 API answers both GETs normally (manual redirect changes nothing for a 200).
+  await open(`/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`); await click("#btn-change"); await mouseClick("#mfa");
+  ok("P4l edit (server limits, manual redirect): hint '50 to 200 characters. Saved in the audit log.'", await txt("#reason-hint") === "50 to 200 characters. Saved in the audit log.", await txt("#reason-hint"));
+  await open(page("sa", H.l1));
+  ok("P4l: nothing was saved (L1 still MFA on)", await txt("#cur-mfa") === "Yes", await txt("#cur-mfa"));
 });
 await step("PA partner-create", async () => {
   await open(`/as/pa/orgs/${H.partner_a}/locations/new`);

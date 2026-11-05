@@ -3,8 +3,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, formatPT, changeDetails, fieldTarget,
   ifMatchFrom, fallbackText, limitsFrom, limitsOrFallback, REASON_BOUNDS, partnerMfaState, PARTNER_MFA_OFF_HINT,
-  errIdFor, LIMITS_TIMEOUT_MS, limitsTimeout, limitsOutcome } from "../js/llc-core.mjs";
-import { TOP_LEVEL, FIELD, requestIdText, reasonLengthCopy, REASON_HINT_FALLBACK, REASON_LENGTH_FALLBACK } from "../js/error-copy.mjs";
+  errIdFor, LIMITS_TIMEOUT_MS, limitsTimeout, limitsOutcome, locationOutcome } from "../js/llc-core.mjs";
+import { TOP_LEVEL, FIELD, requestIdText, reasonLengthCopy, REASON_HINT_FALLBACK, REASON_LENGTH_FALLBACK,
+  REASON_HINT_FALLBACK_EDIT, reasonHintFallback } from "../js/error-copy.mjs";
 
 const P = "5f0c3e1a-0001-4000-8000-000000000001", L = "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8";
 
@@ -155,4 +156,23 @@ test("UX D-108 (TLD 18:37): fallback copy has no numbers; server copy keeps them
   assert.equal(REASON_LENGTH_FALLBACK, "This reason is too short or too long. Edit it and try again.");
   assert.ok(!/\d/.test(REASON_HINT_FALLBACK + REASON_LENGTH_FALLBACK));
   assert.equal(reasonLengthCopy(50, 200), "Enter a reason of 50 to 200 characters.");
+});
+test("UX D-109 (TLD 20:18 / 21:11): fallback hint is short on Edit, full D-108 hint on Create; 422 fallback copy unchanged", () => {
+  assert.equal(REASON_HINT_FALLBACK_EDIT, "Saved in the audit log.");
+  assert.equal(reasonHintFallback(false), "Saved in the audit log.");
+  assert.equal(reasonHintFallback(true), "Saved in the audit log. In Create: required only if you turn off the second step or turn on backup sign-in.");
+  assert.equal(REASON_LENGTH_FALLBACK, "This reason is too short or too long. Edit it and try again.");
+});
+test("TLD 21:11 Q2 / Q3: opaqueredirect -> 401 page error (limits and location GET); location GET timeout -> page error", () => {
+  const j = (status, body, extra = {}) => ({ status, body, json: true, redirected: false, opaque: false, ...extra });
+  const opq = { status: 0, body: null, json: false, redirected: false, opaque: true }; // fetch redirect: "manual", any 3xx
+  assert.deepEqual(limitsOutcome(opq), { kind: "error401" });
+  assert.deepEqual(locationOutcome(opq), { kind: "error401" });
+  assert.deepEqual(locationOutcome({ status: null, body: null, json: false, redirected: false, opaque: false }), { kind: "error" }); // network / timeout
+  assert.deepEqual(locationOutcome(j(200, { name: "L1" }, { redirected: true })), { kind: "error401" });
+  for (const s of [300, 302, 303, 307, 308]) assert.deepEqual(locationOutcome(j(s, null)), { kind: "error401" }, String(s));
+  assert.deepEqual(locationOutcome({ status: 200, body: null, json: false, redirected: false, opaque: false }), { kind: "error401" });
+  for (const s of [401, 403, 404, 500]) assert.deepEqual(locationOutcome(j(s, { error: "x" })), { kind: "error" }, String(s));
+  assert.deepEqual(locationOutcome(j(200, null)), { kind: "error" });
+  assert.deepEqual(locationOutcome(j(200, { name: "L1" })), { kind: "ok" });
 });
