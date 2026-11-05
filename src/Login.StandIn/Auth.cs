@@ -155,7 +155,7 @@ public static class Attestation
         {
             var parts = jws.Split('.');
             if (parts.Length != 3) return (false, false);
-            var hdr = JsonNode.Parse(Base64UrlEncoder.Decode(parts[0]))!.AsObject();
+            var hdr = StandInJson.ParseObject(Base64UrlEncoder.Decode(parts[0])); if (hdr is null) return (false, false);
             // (2) alg pinned, header allow-list (crit, jwk, jku, x5c, x5u and anything else refused).
             if ((string?)hdr["alg"] != "ES256" || hdr.Count != 3 || (string?)hdr["typ"] != "cachd-attestation+jwt" || hdr["kid"] is not JsonValue) return (false, false);
             var kid = (string)hdr["kid"]!;
@@ -164,7 +164,7 @@ public static class Attestation
             if (!st.Auth.DeviceKeys.TryGetValue(kid, out var key)) return (false, false);
             var sig = Base64UrlEncoder.DecodeBytes(parts[2]);
             if (!key.VerifyData(Encoding.ASCII.GetBytes(parts[0] + "." + parts[1]), sig, HashAlgorithmName.SHA256)) return (false, false);
-            var c = JsonNode.Parse(Base64UrlEncoder.Decode(parts[1]))!.AsObject();
+            var c = StandInJson.ParseObject(Base64UrlEncoder.Decode(parts[1])); if (c is null) return (false, false);
             if ((string?)c["device_id"] != kid) return (false, false);
             // (4) location: the registry records one location per fake device; other_location records a different one.
             var regLoc = dev.Mode == "other_location" ? "standin-other-location" : dev.LocationSlug;

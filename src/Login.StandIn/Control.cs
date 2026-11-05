@@ -80,7 +80,7 @@ public sealed class StandInState
     {
         lock (_gate)
         {
-            Fixtures = JsonNode.Parse(File.ReadAllText(_fixturePath))!.AsObject();
+            Fixtures = StandInJson.ParseObject(File.ReadAllText(_fixturePath)) ?? throw new InvalidDataException("fixtures.json is not a valid JSON object");
             InjectSecrets(Fixtures);
             OutboxFault = "ok"; DeviceRegistryFault = "ok"; SessionCap.Reset();
             _audit.Clear();
@@ -115,7 +115,7 @@ public static class Control
 
     static async Task<JsonObject?> ReadObject(HttpRequest r)
     {
-        try { return (await JsonNode.ParseAsync(r.Body)) as JsonObject; } catch (JsonException) { return null; }
+        return await StandInJson.ParseObjectAsync(r.Body); // F-SURR-LOGIN: parse + full decode, null on any bad text
     }
 
     public static void Map(WebApplication app, StandInState st)
@@ -146,7 +146,8 @@ public static class Control
         {
             var o = await ReadObject(r);
             if (o is null || o.Any(kv => kv.Key is not ("outbox" or "device_registry"))) return Bad();
-            string? ob = o["outbox"]?.GetValue<string>(), dr = o["device_registry"]?.GetValue<string>();
+            // F-SURR-LOGIN: node type checked before GetValue; a nested/array value is 400, not 500.
+            if (!StandInJson.TryOptString(o, "outbox", out var ob) || !StandInJson.TryOptString(o, "device_registry", out var dr)) return Bad();
             if (ob is not (null or "ok" or "fail") || dr is not (null or "ok" or "unavailable")) return Bad();
             st.SetFaults(ob, dr);
             return Results.NoContent();

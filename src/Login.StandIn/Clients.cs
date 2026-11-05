@@ -68,9 +68,9 @@ public static class Clients
         if (parts.Length != 3) return null;
         try
         {
-            var hdr = JsonNode.Parse(Base64UrlEncoder.Decode(parts[0]))!.AsObject();
+            var hdr = StandInJson.ParseObject(Base64UrlEncoder.Decode(parts[0])); if (hdr is null) return null;
             if ((string?)hdr["alg"] != "RS256" || hdr.Any(kv => kv.Key is not ("alg" or "kid" or "typ"))) return null;
-            var cl = JsonNode.Parse(Base64UrlEncoder.Decode(parts[1]))!.AsObject();
+            var cl = StandInJson.ParseObject(Base64UrlEncoder.Decode(parts[1])); if (cl is null) return null;
             var iss = (string?)cl["iss"];
             if (iss is null || (string?)cl["sub"] != iss || !clients.TryGetValue(iss, out var c)) return null;
             if (form.ContainsKey("client_id") && form["client_id"].ToString() != iss) return null;

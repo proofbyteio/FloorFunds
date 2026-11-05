@@ -175,11 +175,8 @@ public static class CageStub
             string? jws = null;
             if (c.Request.ContentType?.StartsWith("application/json", StringComparison.OrdinalIgnoreCase) == true)
             {
-                try
-                {
-                    if ((await System.Text.Json.Nodes.JsonNode.ParseAsync(c.Request.Body)) is JsonObject o && o.Count == 1 && o["device_attestation"] is JsonValue jv && jv.TryGetValue(out string? js)) jws = js;
-                }
-                catch (System.Text.Json.JsonException) { jws = null; }
+                // F-SURR-LOGIN HIGH-1: undecodable text = attestation missing -> the 403 + auth.app_access.denied path below.
+                if ((await StandInJson.ParseObjectAsync(c.Request.Body)) is { Count: 1 } o && o["device_attestation"] is JsonValue jv && jv.TryGetValue(out string? js)) jws = js;
             }
             lock (st.Gate)
             {
@@ -188,7 +185,7 @@ public static class CageStub
                 // BP-2a / 6.7 (TL 10:08, replaces A60): attestation FIRST, purpose cage_action, aud = the Cash Advance server [ASSUMPTION A68].
                 // The JWS names its nonce; take the matching cage tx of THIS session (consumed on every outcome by Check).
                 string? n = null;
-                try { if (jws?.Split('.') is { Length: 3 } pp) n = (string?)System.Text.Json.Nodes.JsonNode.Parse(Microsoft.IdentityModel.Tokens.Base64UrlEncoder.Decode(pp[1]))?["nonce"]; }
+                try { if (jws?.Split('.') is { Length: 3 } pp) { var pl = StandInJson.ParseObject(Microsoft.IdentityModel.Tokens.Base64UrlEncoder.Decode(pp[1])); if (pl is not null && StandInJson.TryOptString(pl, "nonce", out var pn)) n = pn; } } // F-SURR-LOGIN HIGH-2
                 catch (Exception e) when (e is System.Text.Json.JsonException or FormatException or ArgumentException) { n = null; }
                 var tx = st.Auth.Tx.Values.FirstOrDefault(t => t.Purpose == "cage_action" && t.Sid == s.Sid && t.Nonce is not null && t.Nonce == n)
                       ?? st.Auth.Tx.Values.FirstOrDefault(t => t.Purpose == "cage_action" && t.Sid == s.Sid && t.Nonce is not null);

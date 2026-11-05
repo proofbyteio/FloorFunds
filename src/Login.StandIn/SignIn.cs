@@ -268,8 +268,8 @@ public static class SignIn
         app.MapPost("/_standin/agent/attest", async (HttpContext c) =>
         {
             Cors(c, ports.Front);
-            JsonObject? o; try { o = (await JsonNode.ParseAsync(c.Request.Body))?.AsObject(); } catch (System.Text.Json.JsonException) { o = null; }
-            var nonce = (string?)o?["nonce"];
+            var o = await StandInJson.ParseObjectAsync(c.Request.Body); // F-SURR-LOGIN
+            if (o is null || !StandInJson.TryOptString(o, "nonce", out var nonce)) return Results.Json(new { error = "invalid_request" }, statusCode: 400);
             lock (st.Gate)
             {
                 var tx = nonce is null ? null : st.Auth.Tx.Values.FirstOrDefault(t => t.Nonce == nonce);
