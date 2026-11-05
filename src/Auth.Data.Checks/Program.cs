@@ -576,7 +576,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
@@ -604,7 +604,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
         bad.AddRange(dbCols.Keys.Select(k => $"{table}.{k} not in EF model"));
     }
     Ok($"schema: {designModel.GetEntityTypes().Count()} EF tables / {cols} columns == pg_catalog (name, type, nullability)", bad.Count == 0, string.Join("; ", bad));
-    Ok("schema: exactly 9 tables in auth", await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='auth'") == 9);
+    Ok("schema: exactly 10 tables in auth (Slice A: + partner_reason_bounds)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='auth'") == 10);
     Ok("schema: no sequences in auth (F5)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_sequences WHERE schemaname='auth'") == 0);
     Ok("schema: history table in public, not auth", await Scalar<bool>(c, null, "SELECT to_regclass('public.\"__EFMigrationsHistory\"') IS NOT NULL AND to_regclass('auth.\"__EFMigrationsHistory\"') IS NULL"));
     var idx = await Scalar<long>(c, null, "SELECT count(*) FROM pg_indexes WHERE schemaname='auth' AND indexname IN ('location_partner_ix','llc_tenants_gin','llcc_location_at_ix','external_login_user_ix','user_location_location_ix','oidc_replay_expires_ix','session_user_live_ix','session_last_seen_ix','location_slug_key','session_cookie_key_hash_key')");
@@ -640,6 +640,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
         [("audit_outbox", adminRole)] = ["INSERT"], [("audit_outbox", loginRole)] = ["INSERT"],
         [("oidc_replay", adminRole)] = [], [("oidc_replay", loginRole)] = ["SELECT", "INSERT", "DELETE"],
         [("session", adminRole)] = [], [("session", loginRole)] = ["SELECT", "INSERT", "DELETE"],
+        [("partner_reason_bounds", adminRole)] = ["SELECT", "INSERT"], [("partner_reason_bounds", loginRole)] = [],
     };
     var mism = new List<string>();
     foreach (var ((t, r), want) in expect)
@@ -654,6 +655,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     {
         [("location", adminRole)] = ["name"],
         [("location_login_config", adminRole)] = LlcMutable,
+        [("partner_reason_bounds", adminRole)] = ["reason_min_length", "reason_max_length", "updated_by", "updated_at", "row_version"],
         [("session", loginRole)] = ["last_seen_at", "revoked_at", "revoked_reason", "interactive_used_at", "handoff_used_at", "cage_consumed_at", "code_issued"],
     };
     var colMism = new List<string>();
@@ -664,7 +666,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
         foreach (var r in new[] { adminRole, loginRole })
             if (await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.' || $2, $3, 'UPDATE')", r, t, col)
                 != (updAllowed.TryGetValue((t, r), out var ok) && ok.Contains(col))) colMism.Add($"{t}.{col}/{r}");
-    Ok($"grants: column UPDATE ({cols.Count} columns x 2 roles) = location(name) + location_login_config(11 mutable) for admin_api; session(7) for login; nothing else",
+    Ok($"grants: column UPDATE ({cols.Count} columns x 2 roles) = location(name) + location_login_config(11 mutable) + partner_reason_bounds(5 mutable, not partner_id) for admin_api; session(7) for login; nothing else",
         cols.Count > 0 && colMism.Count == 0, string.Join(", ", colMism));
     Ok("grants: admin_api UPDATE on location_login_config location_id/created_at/created_by = none (P2-1)",
         !await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.location_login_config', 'location_id', 'UPDATE') OR has_column_privilege($1, 'auth.location_login_config', 'created_at', 'UPDATE') OR has_column_privilege($1, 'auth.location_login_config', 'created_by', 'UPDATE')", adminRole));
@@ -690,17 +692,18 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     await using (var rr = await cmd.ExecuteReaderAsync())
         while (await rr.ReadAsync())
         {
-            bool want = rr.GetString(0) is "location" or "location_login_config" or "location_login_config_change";
+            bool want = rr.GetString(0) is "location" or "location_login_config" or "location_login_config_change" or "partner_reason_bounds";
             if (rr.GetBoolean(1) != want || rr.GetBoolean(2) != want) rls.Add(rr.GetString(0));
         }
-    Ok("RLS: ENABLE+FORCE on exactly location, location_login_config, location_login_config_change", rls.Count == 0, string.Join(",", rls));
+    Ok("RLS: ENABLE+FORCE on exactly location, location_login_config, location_login_config_change, partner_reason_bounds", rls.Count == 0, string.Join(",", rls));
     // K2 (SSE2 d787f76 review): the owner role is read from pg_database, not assumed equal to the DB name (kit --role != --db).
     var dbOwner = await Scalar<string>(c, null, "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()");
     Ok($"RLS: policy set == spec (owner {dbOwner} from pg_database/admin/login per table; no login policy on change)",
         await Scalar<string>(c, null, "SELECT string_agg(tablename || ':' || policyname || ':' || cmd || ':' || array_to_string(roles, '+'), ' ' ORDER BY tablename, policyname) FROM pg_policies WHERE schemaname='auth'")
         == $"location:location_admin:ALL:{adminRole} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbOwner} " +
            $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbOwner} " +
-           $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbOwner}");
+           $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbOwner} " +
+           $"partner_reason_bounds:prb_admin:ALL:{adminRole} partner_reason_bounds:prb_owner:ALL:{dbOwner}");
 }
 
 // ================= 3. seed == SI1 fixtures =================
@@ -735,6 +738,7 @@ const string StateSql = """
          + (SELECT count(*) FROM auth.location_login_config_change) + (SELECT count(*) FROM auth.external_login)
          + (SELECT count(*) FROM auth.user_location) + (SELECT count(*) FROM auth.session) + (SELECT count(*) FROM auth.oidc_replay)
          + (SELECT count(*) FROM auth.audit_outbox) + (SELECT count(*) FROM auth.app_user WHERE user_id::text LIKE '%-000000000c7_')
+         + (SELECT count(*) FROM auth.partner_reason_bounds)
     """;
 await using (var c = await ownerDs.OpenConnectionAsync())
 {
@@ -756,6 +760,7 @@ async Task CleanupCheckData()
     await Exec(c, tx, "DELETE FROM auth.location_login_config_change WHERE location_id = ANY($1)", locs);
     await Exec(c, tx, "DELETE FROM auth.location_login_config WHERE location_id = ANY($1)", locs);
     await Exec(c, tx, "DELETE FROM auth.location WHERE location_id = ANY($1)", locs);
+    await Exec(c, tx, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { P_PCI, P_NV });
     await tx.CommitAsync();
 }
 // [TLD 2026-11-04 11:21 Q2b] scratch DB for the N3/N1 probes: start-up sweep of leftover MARKED scratch DBs (crashed runs),
@@ -799,6 +804,7 @@ await using (var tx = await c.BeginTransactionAsync())
     await Exec(c, tx, "INSERT INTO auth.external_login (provider_kind, issuer, tenant_id, subject, user_id) VALUES ('entra',$1,$2,$3,$4),('entra',$1,$2,$5,$6),('entra',$1,$2,$7,$8)",
         Iss(T1), T1, S1, U_C01, S2, U_DIS, S3, U_LCK);
     await Exec(c, tx, "INSERT INTO auth.user_location (user_id, location_id) VALUES ($1,$2)", U_C01, L_PCI);
+    await Exec(c, tx, "INSERT INTO auth.partner_reason_bounds VALUES ($1, 20, 300, $2, now(), 1)", P_PCI, ACTOR); // Slice A
     await tx.CommitAsync();
 }
 
@@ -888,6 +894,30 @@ await Check("admin_api: cannot read app_user/external_login/user_location/sessio
     await Try(adminDs, "SELECT 1 FROM auth.app_user") == "42501" && await Try(adminDs, "SELECT 1 FROM auth.external_login") == "42501"
     && await Try(adminDs, "SELECT 1 FROM auth.user_location") == "42501" && await Try(adminDs, "SELECT 1 FROM auth.session") == "42501"
     && await Try(adminDs, "SELECT 1 FROM auth.oidc_replay") == "42501" && await Try(adminDs, "SELECT 1 FROM auth.audit_outbox") == "42501");
+// Slice A (DEC-111 write / LS-OQ-61 read): any admin sees and writes every partner's row; nothing without a scope.
+const string cntPrb = "SELECT count(*) FROM auth.partner_reason_bounds";
+await Check("Slice A RLS prb: no app.admin_type / bogus / partner without app.partner_id -> 0 rows (fail closed)", async () =>
+    await CountAs(adminDs, cntPrb, null, null) == 0 && await CountAs(adminDs, cntPrb, "bogus", P_PCI) == 0 && await CountAs(adminDs, cntPrb, "partner", null) == 0);
+await Check("Slice A RLS prb: super -> 1 row; partner nevada sees the pci row (cross-partner read, TO CONFIRM LS-OQ-61)", async () =>
+    await CountAs(adminDs, cntPrb, "super", null) == 1 && await CountAs(adminDs, cntPrb, "partner", P_NV) == 1);
+await Check("Slice A RLS prb: no scope -> INSERT denied (42501); partner nevada CAN insert/update another partner's row (DEC-111, rolled back)", async () =>
+    await Try(adminDs, $"INSERT INTO auth.partner_reason_bounds VALUES ('{P_NV}', 10, 500, '{ACTOR}', now(), 1)") == "42501"
+    && await Try(adminDs, $"INSERT INTO auth.partner_reason_bounds VALUES (gen_random_uuid(), 10, 500, '{ACTOR}', now(), 1)", "partner", P_NV) == "ok"
+    && await PrbUpdateRows(P_NV) == 1);
+async Task<int> PrbUpdateRows(Guid asPartner)
+{
+    await using var c = await adminDs.OpenConnectionAsync();
+    await using var tx = await c.BeginTransactionAsync();
+    await Exec(c, tx, "SELECT set_config('app.admin_type','partner',true), set_config('app.partner_id',$1,true)", asPartner.ToString());
+    await using var u = new NpgsqlCommand($"UPDATE auth.partner_reason_bounds SET reason_min_length = 11, reason_max_length = 499, updated_by = '{ACTOR}', updated_at = now(), row_version = row_version + 1 WHERE partner_id = '{P_PCI}'", c, tx);
+    var n = await u.ExecuteNonQueryAsync();
+    await tx.RollbackAsync();
+    return n;
+}
+await Check("Slice A grants prb: admin UPDATE partner_id / DELETE / TRUNCATE denied; login SELECT denied (42501)", async () =>
+    await Try(adminDs, $"UPDATE auth.partner_reason_bounds SET partner_id = gen_random_uuid() WHERE partner_id = '{P_PCI}'", "super") == "42501"
+    && await Try(adminDs, "DELETE FROM auth.partner_reason_bounds", "super") == "42501" && await Try(adminDs, "TRUNCATE auth.partner_reason_bounds") == "42501"
+    && await Try(loginDs, cntPrb) == "42501");
 await Check("owner: FORCE RLS + owner policy -> owner sees all rows", async () => await CountAs(ownerDs, cntLoc, null, null) == 2);
 await Check("admin/login: TRUNCATE denied (42501)", async () => await Try(adminDs, "TRUNCATE auth.location_login_config_change") == "42501" && await Try(loginDs, "TRUNCATE auth.oidc_replay") == "42501");
 
@@ -938,6 +968,13 @@ var cases = new (string name, string sql, string state)[]
     ("external_login unknown user (FK)", $"INSERT INTO auth.external_login (provider_kind, issuer, tenant_id, subject, user_id) VALUES ('entra', '{Iss(T1)}', '{T1}', gen_random_uuid(), gen_random_uuid())", "23503"),
     ("user_location unknown user (FK)", $"INSERT INTO auth.user_location (user_id, location_id) VALUES (gen_random_uuid(), '{L_PCI}')", "23503"),
     ("delete location with user_location (RESTRICT)", $"DELETE FROM auth.location_login_config WHERE location_id = '{L_PCI}'; DELETE FROM auth.location_login_config_change WHERE location_id = '{L_PCI}'; DELETE FROM auth.location WHERE location_id = '{L_PCI}'", "23503"),
+    ("prb min 9", $"INSERT INTO auth.partner_reason_bounds VALUES (gen_random_uuid(), 9, 500, '{ACTOR}', now(), 1)", "23514"),
+    ("prb max 501", $"INSERT INTO auth.partner_reason_bounds VALUES (gen_random_uuid(), 10, 501, '{ACTOR}', now(), 1)", "23514"),
+    ("prb min > max", $"INSERT INTO auth.partner_reason_bounds VALUES (gen_random_uuid(), 60, 59, '{ACTOR}', now(), 1)", "23514"),
+    ("prb 10/500 ok", $"INSERT INTO auth.partner_reason_bounds VALUES (gen_random_uuid(), 10, 500, '{ACTOR}', now(), 1)", "ok"),
+    ("prb min = max ok", $"INSERT INTO auth.partner_reason_bounds VALUES (gen_random_uuid(), 42, 42, '{ACTOR}', now(), 1)", "ok"),
+    ("prb row_version 0", $"INSERT INTO auth.partner_reason_bounds VALUES (gen_random_uuid(), 10, 500, '{ACTOR}', now(), 0)", "23514"),
+    ("prb duplicate partner (PK)", $"INSERT INTO auth.partner_reason_bounds VALUES ('{P_PCI}', 10, 500, '{ACTOR}', now(), 1)", "23505"),
     ("audit_outbox event_type mismatch", """INSERT INTO auth.audit_outbox VALUES ('5f0c3e1a-00ff-4000-8000-000000000001', now(), 'a', '{"event_type":"b","event_id":"5f0c3e1a-00ff-4000-8000-000000000001"}')""", "23514"),
     ("audit_outbox event_id mismatch", """INSERT INTO auth.audit_outbox VALUES ('5f0c3e1a-00ff-4000-8000-000000000001', now(), 'a', '{"event_type":"a","event_id":"x"}')""", "23514"),
     ("audit_outbox ok", """INSERT INTO auth.audit_outbox VALUES ('5f0c3e1a-00ff-4000-8000-000000000001', now(), 'a', '{"event_type":"a","event_id":"5f0c3e1a-00ff-4000-8000-000000000001"}')""", "ok"),

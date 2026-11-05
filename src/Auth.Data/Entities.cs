@@ -29,6 +29,17 @@ public sealed class LocationLoginConfigRow
     public long RowVersion { get; set; }
 }
 
+/// <summary>Slice A (DEC-109..117): a partner's own reason bounds; no row = deployment config (TLD 2026-11-05 08:00 Q3).</summary>
+public sealed class PartnerReasonBounds
+{
+    public Guid PartnerId { get; set; }
+    public int ReasonMinLength { get; set; }
+    public int ReasonMaxLength { get; set; }
+    public Guid UpdatedBy { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+    public long RowVersion { get; set; }
+}
+
 public sealed class LocationLoginConfigChange
 {
     public Guid ChangeId { get; set; }

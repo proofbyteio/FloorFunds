@@ -295,3 +295,44 @@ BEGIN
 END $EF$;
 COMMIT;
 
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261105080000_S2aPartnerReasonBounds') THEN
+    CREATE TABLE auth.partner_reason_bounds (
+      partner_id        uuid        NOT NULL,
+      reason_min_length integer     NOT NULL,
+      reason_max_length integer     NOT NULL,
+      updated_by        uuid        NOT NULL,
+      updated_at        timestamptz NOT NULL,
+      row_version       bigint      NOT NULL DEFAULT 1,
+      CONSTRAINT partner_reason_bounds_pkey PRIMARY KEY (partner_id),
+      CONSTRAINT prb_bounds CHECK (reason_min_length >= 10 AND reason_min_length <= reason_max_length AND reason_max_length <= 500),
+      CONSTRAINT prb_row_version CHECK (row_version >= 1)
+    );
+    ALTER TABLE auth.partner_reason_bounds ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.partner_reason_bounds FORCE ROW LEVEL SECURITY;
+    CREATE POLICY prb_owner ON auth.partner_reason_bounds FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+
+    DO $s2a_prb$
+    DECLARE
+      a text := current_database() || '_admin_api';
+      any_admin text := $p$(current_setting('app.admin_type', true) = 'super' OR (current_setting('app.admin_type', true) = 'partner' AND nullif(current_setting('app.partner_id', true), '') IS NOT NULL))$p$;
+    BEGIN
+      EXECUTE format('CREATE POLICY prb_admin ON auth.partner_reason_bounds FOR ALL TO %I USING %s WITH CHECK %s', a, any_admin, any_admin);
+      EXECUTE format('GRANT SELECT, INSERT ON auth.partner_reason_bounds TO %I', a);
+      EXECUTE format('GRANT UPDATE (reason_min_length, reason_max_length, updated_by, updated_at, row_version) ON auth.partner_reason_bounds TO %I', a);
+    END $s2a_prb$;
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261105080000_S2aPartnerReasonBounds') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261105080000_S2aPartnerReasonBounds', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+

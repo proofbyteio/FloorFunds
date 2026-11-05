@@ -17,6 +17,7 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
     public DbSet<AuditOutbox> AuditOutboxs => Set<AuditOutbox>();
     public DbSet<OidcReplay> OidcReplays => Set<OidcReplay>();
     public DbSet<Session> Sessions => Set<Session>();
+    public DbSet<PartnerReasonBounds> PartnerReasonBounds => Set<PartnerReasonBounds>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -139,6 +140,18 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
             b.Property(x => x.CageConsumedAt).HasColumnName("cage_consumed_at").HasColumnType("timestamp with time zone");
             b.Property(x => x.RevokedAt).HasColumnName("revoked_at").HasColumnType("timestamp with time zone");
             b.Property(x => x.RevokedReason).HasColumnName("revoked_reason").HasColumnType("text");
+        });
+        // Slice A (migration 20261105080000_S2aPartnerReasonBounds).
+        modelBuilder.Entity<PartnerReasonBounds>(b =>
+        {
+            b.ToTable("partner_reason_bounds", Schema);
+            b.HasKey(x => x.PartnerId).HasName("partner_reason_bounds_pkey");
+            b.Property(x => x.PartnerId).HasColumnName("partner_id").HasColumnType("uuid").ValueGeneratedNever();
+            b.Property(x => x.ReasonMinLength).HasColumnName("reason_min_length").HasColumnType("integer");
+            b.Property(x => x.ReasonMaxLength).HasColumnName("reason_max_length").HasColumnType("integer");
+            b.Property(x => x.UpdatedBy).HasColumnName("updated_by").HasColumnType("uuid");
+            b.Property(x => x.UpdatedAt).HasColumnName("updated_at").HasColumnType("timestamp with time zone");
+            b.Property(x => x.RowVersion).HasColumnName("row_version").HasColumnType("bigint").IsConcurrencyToken();
         });
     }
 }
