@@ -9,8 +9,8 @@
 
 /** Top-level error -> { title, text }. `null` status = network failure (no response). */
 export const TOP_LEVEL = Object.freeze({
-  network: { title: "Couldn't reach the server.", text: "Nothing was saved. Check your connection, then try again." },
-  401: { title: "Your session has ended.", text: "Nothing was saved. Sign in again, then try again." },
+  network: { title: "Couldn't reach the server.", text: "Check your connection, then try again." }, // [TLD 2026-11-05 15:08 item 2] no "Nothing was saved": not an API answer
+  401: { title: "Your session has ended.", text: "Sign in again, then try again." }, // [TLD 15:08 item 2] shared with an unexpected 3xx: no save claim
   forbidden: { title: "You don't have permission to do this.", text: "Nothing was saved. Ask a Super Admin or your Partner Admin." },
   not_super_admin: { title: "Only a Super Admin can make this change.", text: "Nothing was saved. Turning off the second step or allowing backup sign-in needs a Super Admin." }, // D-102 change 2
   not_found: { title: "This location wasn't found.", text: "It may have been removed, or you may not have access to it." }, // D-102 change 1
@@ -21,21 +21,24 @@ export const TOP_LEVEL = Object.freeze({
   malformed_body: { title: "The request couldn't be read.", text: "Nothing was saved. Reload the page, then try again." },
   validation_failed: { title: "Check the highlighted fields.", text: "Nothing was saved." },
   reason_required: { title: "A reason is required.", text: "Nothing was saved. Say why you are lowering sign-in security." },
-  500: { title: "Something went wrong on our side.", text: "Nothing was saved. Try again in a few minutes." },
-  other: { title: "Something went wrong.", text: "Nothing was saved. Try again." },
+  500: { title: "Something went wrong on our side.", text: "Try again in a few minutes." }, // [TLD 15:08 item 2] a 5xx is not a contract rejection
+  other: { title: "Something went wrong.", text: "Try again." }, // [TLD 15:08 item 2] not a contract rejection
 });
 
-/** [TLD 2026-11-05 07:54 fetch hardening; brief /tmp/sse-llc1/briefs/fetch-hardening.md md5 a451c6cf] TL copy, kept apart from the
- *  UX-approved D-102 set above (no UX review of these yet). Page-side outcomes only: no API error code maps here.
- *  write_unconfirmed: a PUT / POST timeout; the write may have happened, so never "Nothing was saved". The exact TL sentences
- *    (title + text = "We couldn't confirm the save. Reload to check before trying again."); the optional secondary line
- *    ("don't re-submit until you've reloaded") is not used.
- *  history_unavailable: the history GET timed out, was redirected or was not JSON (the softer history copy, verbatim, one line). */
+/** Page-side outcome copy, kept apart from the UX-approved D-102 set above; no API error code maps here.
+ *  [TLD 2026-11-05 15:08 item 6: provisional TLD copy, no separate UX approval needed; TLD 07:54 brief a451c6cf for the first two]
+ *  write_unconfirmed: an Edit save whose outcome is UNKNOWN (timeout, transport failure, unusable answer). Exact, unchanged
+ *    (title + text = "We couldn't confirm the save. Reload to check before trying again."). Save stays locked until a fresh
+ *    successful GET of the location (reload).
+ *  create_unconfirmed_blocked: a Create whose outcome is UNKNOWN. The TL's full create copy ("... Check whether the location was
+ *    created before trying again.") is allowed only with a real recovery path; S2a has none (no lookup surface can tell whether
+ *    THIS create happened), so only its first sentence is shown, as the blocked state, with no advice and no way to unlock.
+ *  history_unavailable: the history GET failed (soft copy, verbatim). */
 export const FETCH_COPY = Object.freeze({
   write_unconfirmed: { title: "We couldn't confirm the save.", text: "Reload to check before trying again." },
+  create_unconfirmed_blocked: { title: "We couldn’t confirm the create.", text: "" },
   history_unavailable: { title: "Couldn't load history — try again", text: "" },
 });
-
 /** 422 field code -> message shown under the field (tenant_bound_elsewhere is MK9 copy, kept in the page). */
 export const FIELD = Object.freeze({
   required: "Fill in this field.",

@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, formatPT, changeDetails, fieldTarget,
   ifMatchFrom, fallbackText, limitsFrom, limitsOrFallback, REASON_BOUNDS, partnerMfaState, PARTNER_MFA_OFF_HINT,
-  errIdFor, LIMITS_TIMEOUT_MS, limitsTimeout, limitsOutcome, locationOutcome, writeOutcome, historyOutcome } from "../js/llc-core.mjs";
+  errIdFor, LIMITS_TIMEOUT_MS, limitsTimeout, limitsOutcome, locationOutcome, writeOutcome, historyOutcome, CONTRACT_ERROR_CODES } from "../js/llc-core.mjs";
 import { TOP_LEVEL, FETCH_COPY, FIELD, requestIdText, reasonLengthCopy, REASON_HINT_FALLBACK, REASON_LENGTH_FALLBACK,
   REASON_HINT_FALLBACK_EDIT, reasonHintFallback } from "../js/error-copy.mjs";
 
@@ -138,7 +138,8 @@ test("TLD 18:35 items 2 / 4 / 5: limits answer -> page error, server limits or f
   assert.deepEqual(limitsOutcome(j(403, { error: "forbidden" })), { kind: "error" });
   assert.deepEqual(limitsOutcome(j(200, { reason_min_length: 10, reason_max_length: 500 }, { redirected: true })), { kind: "error401" });
   for (const s of [300, 302, 303, 304, 307, 308]) assert.deepEqual(limitsOutcome(j(s, null)), { kind: "error401" }, String(s));
-  assert.deepEqual(limitsOutcome({ status: 200, body: null, json: false, redirected: false }), { kind: "error401" });
+  // [TLD 2026-11-05 15:08 item 2] a non-JSON 200 is an invalid answer (page error), not a verified 401 (was error401).
+  assert.deepEqual(limitsOutcome({ status: 200, body: null, json: false, redirected: false }), { kind: "error" });
   assert.deepEqual(limitsOutcome({ status: null, body: null, json: false, redirected: false }), { kind: "fallback" }); // network / timeout
   assert.deepEqual(limitsOutcome(j(500, { error: "internal_error" })), { kind: "fallback" });
   assert.deepEqual(limitsOutcome(j(404, null)), { kind: "fallback" });
@@ -171,7 +172,8 @@ test("TLD 21:11 Q2 / Q3: opaqueredirect -> 401 page error (limits and location G
   assert.deepEqual(locationOutcome({ status: null, body: null, json: false, redirected: false, opaque: false }), { kind: "error" }); // network / timeout
   assert.deepEqual(locationOutcome(j(200, { name: "L1" }, { redirected: true })), { kind: "error401" });
   for (const s of [300, 302, 303, 307, 308]) assert.deepEqual(locationOutcome(j(s, null)), { kind: "error401" }, String(s));
-  assert.deepEqual(locationOutcome({ status: 200, body: null, json: false, redirected: false, opaque: false }), { kind: "error401" });
+  assert.deepEqual(locationOutcome({ status: 200, body: null, json: false, redirected: false, opaque: false }), { kind: "error" }); // [TLD 15:08 item 2] was error401
+  assert.deepEqual(locationOutcome({ status: 200, body: { name: "L1" }, json: false, redirected: false, opaque: false }), { kind: "error" });
   for (const s of [401, 403, 404, 500]) assert.deepEqual(locationOutcome(j(s, { error: "x" })), { kind: "error" }, String(s));
   assert.deepEqual(locationOutcome(j(200, null)), { kind: "error" });
   assert.deepEqual(locationOutcome(j(200, { name: "L1" })), { kind: "ok" });
@@ -182,24 +184,34 @@ const ans = (status, body, extra = {}) => ({ status, body, json: true, redirecte
 const TIMEOUT = { status: null, body: null, json: false, redirected: false, opaque: false, timedOut: true };
 const NETWORK = { ...TIMEOUT, timedOut: false };
 const OPAQUE = { status: 0, body: null, json: false, redirected: false, opaque: true, timedOut: false }; // redirect: "manual", any 3xx
-test("TLD 07:54: write answers (PUT 200 / POST 201): timeout -> unconfirmed; 3xx / redirect / non-JSON 2xx -> as a 401; others unchanged", () => {
-  for (const ok of [200, 201]) {
-    assert.deepEqual(writeOutcome(TIMEOUT, ok), { kind: "unconfirmed" });
-    assert.deepEqual(writeOutcome(NETWORK, ok), { kind: "error" }, "a network failure that is not a timeout keeps the D-102 network copy");
-    assert.deepEqual(writeOutcome(OPAQUE, ok), { kind: "error401" });
-    for (const s of [300, 301, 302, 303, 307, 308]) assert.deepEqual(writeOutcome(ans(s, null, { json: false }), ok), { kind: "error401" }, String(s));
-    assert.deepEqual(writeOutcome(ans(ok, { row_version: 2 }, { redirected: true }), ok), { kind: "error401" });
-    assert.deepEqual(writeOutcome(ans(ok, null, { json: false }), ok), { kind: "error401" }, "non-JSON 2xx = a sign-in page");
-    assert.deepEqual(writeOutcome(ans(204, null, { json: false }), ok), { kind: "error401" });
-    assert.deepEqual(writeOutcome(ans(401, { error: "unauthorized" }), ok), { kind: "error" }, "a real 401 keeps the 401 path (applyErrors)");
-    for (const s of [400, 403, 404, 409, 413, 422, 428, 500]) assert.deepEqual(writeOutcome(ans(s, { error: "x" }), ok), { kind: "error" }, String(s));
-    assert.deepEqual(writeOutcome(ans(ok, null), ok), { kind: "error" });
-    assert.deepEqual(writeOutcome(ans(ok, { location_id: "x", row_version: 1 }), ok), { kind: "ok" });
+test("TLD 15:08 (supersedes 07:54): write answers: ok only with a usable body; 401 / 3xx -> session; contract 4xx -> rejected; all else UNKNOWN", () => {
+  const PUT_OK = { row_version: 2, name: "L1" }, POST_OK = { location_id: "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8" };
+  for (const [ok, good] of [[200, PUT_OK], [201, POST_OK]]) {
+    assert.deepEqual(writeOutcome(ans(ok, good), ok), { kind: "ok" });
+    assert.deepEqual(writeOutcome(TIMEOUT, ok), { kind: "unknown" }, "abort (headers or body)");
+    assert.deepEqual(writeOutcome(NETWORK, ok), { kind: "unknown" }, "non-timeout network failure after dispatch");
+    assert.deepEqual(writeOutcome({ ...ans(ok, good), timedOut: true }, ok), { kind: "unknown" }, "a late answer after the abort never counts");
+    assert.deepEqual(writeOutcome(ans(ok, null, { json: false }), ok), { kind: "unknown" }, "non-JSON 2xx: invalid answer, not a verified 401");
+    assert.deepEqual(writeOutcome(ans(ok, null), ok), { kind: "unknown" }, "JSON 2xx that did not parse");
+    assert.deepEqual(writeOutcome(ans(ok, {}), ok), { kind: "unknown" }, "2xx without the required fields");
+    assert.deepEqual(writeOutcome(ans(204, null, { json: false }), ok), { kind: "unknown" });
+    assert.deepEqual(writeOutcome(OPAQUE, ok), { kind: "session" });
+    for (const s of [300, 301, 302, 303, 307, 308]) assert.deepEqual(writeOutcome(ans(s, null, { json: false }), ok), { kind: "session" }, String(s));
+    assert.deepEqual(writeOutcome(ans(ok, good, { redirected: true }), ok), { kind: "session" });
+    assert.deepEqual(writeOutcome(ans(401, null, { json: false }), ok), { kind: "session" }, "401 (spec: no body)");
+    for (const [st, code] of [[400, "malformed_body"], [400, "if_match_invalid"], [400, "reason_required"], [403, "forbidden"], [403, "not_super_admin"], [404, "not_found"],
+      [408, "request_timeout"], [409, "concurrency_conflict"], [413, "payload_too_large"], [422, "validation_failed"], [428, "precondition_required"]])
+      assert.deepEqual(writeOutcome(ans(st, { error: code }), ok), { kind: "rejected" }, `${st} ${code}`);
+    for (const r of [ans(404, null, { json: false }), ans(429, { error: "rate_limited" }), ans(403, { error: "x" }), ans(500, null, { json: false }), ans(500, { error: "x" }),
+      ans(502, null, { json: false }), ans(503, null, { json: false }), ans(504, null, { json: false })])
+      assert.deepEqual(writeOutcome(r, ok), { kind: "unknown" }, `${r.status} not a contract rejection`);
   }
-  assert.deepEqual(writeOutcome(ans(200, { row_version: 1 }), 201), { kind: "error" }, "POST needs 201");
-  assert.deepEqual(writeOutcome(ans(201, { row_version: 1 }), 200), { kind: "error" }, "PUT needs 200");
-  // a late answer after the abort never counts: timedOut wins over any status
-  assert.deepEqual(writeOutcome({ ...ans(200, { row_version: 2 }), timedOut: true }, 200), { kind: "unconfirmed" });
+  assert.deepEqual(writeOutcome(ans(200, POST_OK), 201), { kind: "unknown" }, "POST needs 201");
+  assert.deepEqual(writeOutcome(ans(201, PUT_OK), 200), { kind: "unknown" }, "PUT needs 200");
+  assert.deepEqual(writeOutcome(ans(201, { location_id: "not-a-uuid" }), 201), { kind: "unknown" });
+  assert.deepEqual(writeOutcome(ans(200, { row_version: "2" }), 200), { kind: "unknown" });
+  assert.deepEqual([...CONTRACT_ERROR_CODES].sort(), ["concurrency_conflict", "forbidden", "if_match_invalid", "malformed_body", "not_found", "not_super_admin",
+    "payload_too_large", "precondition_required", "reason_required", "request_timeout", "unauthenticated", "validation_failed"]);
 });
 test("TLD 07:54: history answers: timeout / 3xx / redirect / non-JSON 200 -> unavailable; 200 items -> ok; the rest by status (C2)", () => {
   assert.deepEqual(historyOutcome(TIMEOUT), { kind: "unavailable" });
@@ -207,18 +219,25 @@ test("TLD 07:54: history answers: timeout / 3xx / redirect / non-JSON 200 -> una
   for (const s of [301, 302, 303, 307, 308]) assert.deepEqual(historyOutcome(ans(s, null, { json: false })), { kind: "unavailable" }, String(s));
   assert.deepEqual(historyOutcome(ans(200, { items: [] }, { redirected: true })), { kind: "unavailable" });
   assert.deepEqual(historyOutcome(ans(200, null, { json: false })), { kind: "unavailable" });
+  assert.deepEqual(historyOutcome(ans(200, null)), { kind: "unavailable" }, "unparseable JSON 200 [TLD 15:08 item 2]");
   assert.deepEqual(historyOutcome(ans(200, { items: [{ change_id: "c" }] })), { kind: "ok", items: [{ change_id: "c" }] });
   assert.deepEqual(historyOutcome(ans(200, { items: [] })), { kind: "ok", items: [] });
   assert.deepEqual(historyOutcome(NETWORK), { kind: "status" }, "network failure: as before (D-102 network copy)");
   for (const s of [401, 403, 404, 500]) assert.deepEqual(historyOutcome(ans(s, { error: "x" })), { kind: "status" }, String(s));
   assert.deepEqual(historyOutcome(ans(200, { other: 1 })), { kind: "status" }, "JSON 200 without items: as before");
 });
-test("TLD 07:54 copy: exact uncertain-write sentences, no 'Nothing was saved'; softer history copy; one session copy for 401 and write 3xx", () => {
+test("TLD 15:08 copy: exact Edit uncertain copy; Create blocked (no reload advice); no 'Nothing was saved' in shared session / transport / generic copy", () => {
   const w = FETCH_COPY.write_unconfirmed;
   assert.equal(`${w.title} ${w.text}`, "We couldn't confirm the save. Reload to check before trying again.");
-  assert.ok(!/nothing was saved/i.test(w.title + w.text) && !/saved\./i.test(w.title));
+  assert.deepEqual(FETCH_COPY.create_unconfirmed_blocked, { title: "We couldn\u2019t confirm the create.", text: "" });
+  assert.ok(!/reload|check|try again/i.test(FETCH_COPY.create_unconfirmed_blocked.title), "no unsupported recovery advice");
   assert.equal(FETCH_COPY.history_unavailable.title, "Couldn't load history — try again");
   assert.equal(FETCH_COPY.history_unavailable.text, "");
-  assert.deepEqual(TOP_LEVEL[401], { title: "Your session has ended.", text: "Nothing was saved. Sign in again, then try again." });
+  assert.deepEqual(TOP_LEVEL[401], { title: "Your session has ended.", text: "Sign in again, then try again." });
+  assert.deepEqual(TOP_LEVEL.network, { title: "Couldn't reach the server.", text: "Check your connection, then try again." });
+  assert.deepEqual(TOP_LEVEL[500], { title: "Something went wrong on our side.", text: "Try again in a few minutes." });
+  assert.deepEqual(TOP_LEVEL.other, { title: "Something went wrong.", text: "Try again." });
+  for (const k of ["401", "network", "500", "other"]) assert.ok(!/nothing was saved/i.test(TOP_LEVEL[k].title + TOP_LEVEL[k].text), k);
+  for (const c of Object.values(FETCH_COPY)) assert.ok(!/nothing was saved|saved\./i.test(c.title + c.text));
   for (const k of Object.keys(FETCH_COPY)) assert.equal(TOP_LEVEL[k], undefined, `${k}: not an API code / D-102 key`);
 });

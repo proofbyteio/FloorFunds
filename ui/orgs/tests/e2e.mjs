@@ -464,7 +464,7 @@ await step("P4k follow-ups", async () => {
   post = [{ status: 422, body: { error: "validation_failed", fields: [{ field: "name", code: "name_invalid" }, { field: "login_config/display_name", code: "display_name_invalid" },
     { field: "login_config/entra_allowed_tenant_ids", code: "tenant_count" }, { field: "login_config/reason", code: "reason_length" },
     { field: "login_config/allow_db_fallback", code: "fallback_not_applicable" }, { field: "login_config/mfa_required", code: "type" }] } },
-    { status: 500, body: { error: "internal_error" } }];
+    { status: 403, body: { error: "forbidden" } }]; // [TLD 2026-11-05 15:08] was a 500 {internal_error}: a write 5xx is now UNKNOWN (locks Create), so the retry answer is a contract rejection
   await save(); const s1 = await snap();
   await save(); const s2 = await snap(); post = null;
   for (const [id, eid] of F) {
@@ -472,13 +472,13 @@ await step("P4k follow-ups", async () => {
       s1[id].inv === "true" && (s1[id].desc ?? "").split(" ").includes(eid) && s2[id].inv === null && (s2[id].desc ?? "") === (base[id].desc ?? "")
       && !(s2[id].desc ?? "").split(" ").includes(eid), { base: base[id], s1: s1[id], s2: s2[id] });
   }
-  ok("P4k LOW-1: retry shows the 500 banner and no field error", (await shownError())[0]?.code === "internal_error" && await ev(`[...document.querySelectorAll(".field__error")].every(e => e.hidden)`), await shownError());
+  ok("P4k LOW-1: retry shows the 403 banner and no field error", (await shownError())[0]?.code === "forbidden" && await ev(`[...document.querySelectorAll(".field__error")].every(e => e.hidden)`), await shownError());
   // Limits answers that are page errors (no fallback, no form).
   const errCases = [
     ["limits 403", { status: 403, headers: JSON_CT, body: JSON.stringify({ error: "forbidden" }) }, null],
     ["limits 302 same-site (redirect: manual, not followed)", { status: 302, headers: [{ name: "Location", value: `${H.ui}/p4k-sign-in` }], body: "" }, "401"],
     ["limits 3xx not followed (300, no Location)", { status: 300, headers: JSON_CT, body: "{}" }, "401"],
-    ["limits 200 text/html", { status: 200, headers: [{ name: "Content-Type", value: "text/html" }], body: "<!doctype html><title>Sign in</title>" }, "401"],
+    ["limits 200 text/html (TLD 15:08 item 2: an invalid answer, not a verified 401)", { status: 200, headers: [{ name: "Content-Type", value: "text/html" }], body: "<!doctype html><title>Sign in</title>" }, "other"],
   ];
   for (const [name, m, code] of errCases) {
     seen.length = 0; mode = { kind: "fake", ...m }; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
@@ -606,31 +606,34 @@ await step("P6a fetch hardening", async () => {
   ok("P6a history GET 302 cross-site -> not followed (redirect: manual), page error 'Couldn't load history — try again', no form",
     g.state === "error" && !g.change && g.err.length === 1 && g.err[0].code === "history_unavailable" && g.text === "Couldn't load history — try again" && g.seen.length === 0, g);
 
-  // 3. PUT stalled -> aborted -> "We couldn't confirm the save. ..." exactly; no saved state, no "Nothing was saved", one PUT only (no retry).
+  // [TLD 2026-11-05 15:08] cases reordered: an UNKNOWN outcome now locks Save / Create, so each session (3xx) case runs first.
+  // 3. PUT 302 same-site -> not followed, the shared session copy (no save claim), Save not locked.
   await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6a never saved");
-  hits.length = 0; mode = { kind: "stall", method: "PUT", url: LOC }; t0 = Date.now(); await save(); dt = Date.now() - t0; await sleep(1700); mode = null; await release();
-  g = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), form: await vis("#form"), err: await shownError(), text: await errText(), dt, puts: hits.length, btn: await attr("#btn-save", "aria-disabled") };
-  ok("P6a PUT stalled -> aborted (bounded), 'We couldn't confirm the save. Reload to check before trying again.', no saved banner / state, form kept, one PUT (no automatic retry)",
-    g.state === "edit" && !g.saved && g.form && g.err.length === 1 && g.err[0].code === "write_unconfirmed" && g.text === "We couldn't confirm the save. Reload to check before trying again."
-      && !/nothing was saved/i.test(g.text) && g.puts === 1 && g.btn === null && dt < 8000, g);
-  // 4. PUT 302 same-site -> not followed, the 401 session copy (one copy for 401 and a write 3xx), no saved state.
   seen.length = 0; hits.length = 0; mode = { ...R3(302, `${H.ui}/p6a-sign-in`), method: "PUT", url: LOC }; await save(); mode = null;
-  g = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), err: await shownError(), text: await errText(), seen: [...seen], puts: hits.length };
-  ok("P6a PUT 302 same-site -> not followed, 'Your session has ended. Nothing was saved. Sign in again, then try again.' (the 401 copy), no saved state",
-    g.state === "edit" && !g.saved && g.err.length === 1 && g.err[0].code === "401" && g.text === "Your session has ended. Nothing was saved. Sign in again, then try again." && g.seen.length === 0 && g.puts === 1, g);
+  g = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), err: await shownError(), text: await errText(), seen: [...seen], puts: hits.length, btn: await attr("#btn-save", "aria-disabled") };
+  ok("P6a PUT 302 same-site -> not followed, 'Your session has ended. Sign in again, then try again.' (shared 401 copy, no save claim), no saved state",
+    g.state === "edit" && !g.saved && g.err.length === 1 && g.err[0].code === "401" && g.text === "Your session has ended. Sign in again, then try again." && g.seen.length === 0 && g.puts === 1 && g.btn === null, g);
+  // 4. PUT stalled -> aborted -> "We couldn't confirm the save. ..." exactly; no saved state, one PUT, Save locked (a second click sends nothing).
+  hits.length = 0; mode = { kind: "stall", method: "PUT", url: LOC }; t0 = Date.now(); await click("#btn-save"); await until(`document.querySelector("#banner-error").hidden === false`, 10000); dt = Date.now() - t0; await sleep(300); await release();
+  await click("#btn-save"); await sleep(1700); mode = null; await release();
+  g = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), form: await vis("#form"), err: await shownError(), text: await errText(), dt, puts: hits.length, btn: await attr("#btn-save", "aria-disabled") };
+  ok("P6a PUT stalled -> aborted (bounded), 'We couldn't confirm the save. Reload to check before trying again.', no saved state, form kept, one PUT; Save locked (second click sends nothing)",
+    g.state === "edit" && !g.saved && g.form && g.err.length === 1 && g.err[0].code === "write_unconfirmed" && g.text === "We couldn't confirm the save. Reload to check before trying again."
+      && !/nothing was saved/i.test(g.text) && g.puts === 1 && g.btn === "true" && dt < 8000, g);
 
-  // 5. POST (create) stalled -> unconfirmed copy, still on /new, no navigation to a saved page, one POST.
+  // 5. POST 307 to login.microsoftonline.com -> not followed, the shared session copy, still on /new, Create not locked.
   await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await type("#lname", "UI Cage P6a"); await type("#dname", "UI Casino A");
-  hits.length = 0; mode = { kind: "stall", method: "POST", url: CREATE }; await save(); await sleep(1700); mode = null; await release();
-  g = { path: await ev(`location.pathname`), hash: await ev(`location.hash`), err: await shownError(), text: await errText(), posts: hits.length, state: await ev(`document.body.dataset.state`) };
-  ok("P6a POST (create) stalled -> 'We couldn't confirm the save. Reload to check before trying again.', still on /new, not the saved page, one POST",
-    g.path.endsWith("/locations/new") && g.hash === "" && g.state === "create" && g.err.length === 1 && g.err[0].code === "write_unconfirmed"
-      && g.text === "We couldn't confirm the save. Reload to check before trying again." && g.posts === 1, g);
-  // 6. POST 307 to login.microsoftonline.com -> not followed, the 401 session copy.
   seen.length = 0; hits.length = 0; o0 = outside.length; mode = { ...R3(307, MS), method: "POST", url: CREATE }; await save(); mode = null; dropMs(o0);
-  g = { path: await ev(`location.pathname`), err: await shownError(), text: await errText(), seen: [...seen], posts: hits.length };
-  ok("P6a POST 307 cross-site -> not followed, the 401 session copy, still on /new",
-    g.path.endsWith("/locations/new") && g.err.length === 1 && g.err[0].code === "401" && g.text === "Your session has ended. Nothing was saved. Sign in again, then try again." && g.seen.length === 0 && g.posts === 1, g);
+  g = { path: await ev(`location.pathname`), err: await shownError(), text: await errText(), seen: [...seen], posts: hits.length, btn: await attr("#btn-save", "aria-disabled") };
+  ok("P6a POST 307 cross-site -> not followed, the shared session copy, still on /new, Create not locked",
+    g.path.endsWith("/locations/new") && g.err.length === 1 && g.err[0].code === "401" && g.text === "Your session has ended. Sign in again, then try again." && g.seen.length === 0 && g.posts === 1 && g.btn === null, g);
+  // 6. POST (create) stalled -> UNKNOWN: the blocked state "We couldn’t confirm the create." (no reload advice), no form, one POST.
+  hits.length = 0; mode = { kind: "stall", method: "POST", url: CREATE }; await click("#btn-save"); await until(`document.body.dataset.state === "blocked"`, 10000); await sleep(1700); mode = null; await release();
+  g = { path: await ev(`location.pathname`), hash: await ev(`location.hash`), err: await shownError(), text: await errText(), posts: hits.length, state: await ev(`document.body.dataset.state`), form: await vis("#form") };
+  ok("P6a POST (create) stalled -> blocked state 'We couldn’t confirm the create.' (no reload advice), no form, still on /new, one POST",
+    g.path.endsWith("/locations/new") && g.hash === "" && g.state === "blocked" && !g.form && g.err.length === 1 && g.err[0].code === "create_unconfirmed_blocked"
+      && g.text === "We couldn\u2019t confirm the create." && g.posts === 1, g);
+  await ev(`localStorage.clear(), true`); // test isolation only: later steps create under partner_a (the page itself never unlocks a Create)
 
   for (const identifier of hooks) await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
   await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(lsn), 1);
@@ -639,6 +642,173 @@ await step("P6a fetch hardening", async () => {
   const r = await rows();
   ok("P6a unfaked: SA view of L1 loads with history rows (manual redirect + abort change nothing for 200s)", await ev(`document.body.dataset.state`) === "view" && await vis("#card-history") && r.length >= 1, r.length);
   ok("P6a: nothing was saved by the faked writes (L1 ETag and display name unchanged)", JSON.stringify(await apiL1()) === JSON.stringify(l1before), [l1before, await apiL1()]);
+});
+// P6b [fetch hardening follow-up, after p6a mutant f10 survived]: the abort bounds the WHOLE answer, also when the headers
+// have arrived and the body never completes. CDP Fetch can't split headers from body, so a test-only fetch wrapper
+// (injected before the page's scripts) answers the matched call with real-looking headers and a body stream that sends a
+// partial chunk and then hangs; like a real fetch body, the stream errors with AbortError when the request's signal aborts.
+// History: the real API answers (request and headers are real), only its body is withheld. PUT / POST: never sent to the API.
+await step("P6b body stall", async () => {
+  const WRAP = `(() => {
+    const real = globalThis.fetch.bind(globalThis); globalThis.__p6bCalls = [];
+    globalThis.fetch = async (input, init = {}) => {
+      const m = globalThis.__p6bMode, url = String(input), method = init.method || "GET";
+      if (!m || method !== m.method || !new RegExp(m.url).test(url)) return real(input, init);
+      globalThis.__p6bCalls.push(method + " " + url);
+      let head = null;
+      if (m.real) { head = await real(input, init); try { head.body && head.body.cancel(); } catch {} }
+      const sig = init.signal;
+      const body = new ReadableStream({ start(c) {
+        c.enqueue(new TextEncoder().encode(m.partial));
+        const fail = () => c.error(new DOMException("The operation was aborted.", "AbortError"));
+        if (sig) { if (sig.aborted) fail(); else sig.addEventListener("abort", fail, { once: true }); }
+      } });
+      return new Response(body, head ? { status: head.status, headers: head.headers } : { status: m.status, headers: m.headers });
+    };
+  })();`;
+  const ids = [];
+  for (const src of [WRAP, "globalThis.__llcLimitsTimeoutMs = 1500;", "globalThis.__llcWriteTimeoutMs = 1500;"]) ids.push((await cdp("Page.addScriptToEvaluateOnNewDocument", { source: src })).identifier);
+  const errText = async () => `${await txt("#banner-error-title")} ${await txt("#banner-error-text")}`.trim();
+  const apiL1 = async () => { const r = await fetch(`${H.ui}/as/sa/api/orgs/locations/${H.l1}/login-config`); return [r.headers.get("ETag"), (await r.json()).display_name]; };
+  const l1before = await apiL1();
+  const JSONH = { "Content-Type": "application/json", "ETag": '"99"' };
+  const UNCONF = "We couldn't confirm the save. Reload to check before trying again.";
+
+  // 1. history GET: real 200 headers, body withheld -> aborted -> the softer history copy, no form.
+  const hm = (await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `globalThis.__p6bMode = ${JSON.stringify({ method: "GET", url: `/api/orgs/locations/${H.l1}/login-config/changes$`, real: true, partial: '{"items":[' })};` })).identifier;
+  let t0 = Date.now(); await open(page("sa", H.l1)); let dt = Date.now() - t0;
+  await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier: hm });
+  let g = { state: await ev(`document.body.dataset.state`), change: await vis("#btn-change"), hist: await vis("#card-history"), err: await shownError(), text: await errText(), calls: await ev(`globalThis.__p6bCalls.length`), dt };
+  ok("P6b history GET: 200 headers arrive, body never completes -> aborted (bounded), page error 'Couldn't load history — try again', no form, no history card",
+    g.state === "error" && !g.change && !g.hist && g.err.length === 1 && g.err[0].code === "history_unavailable" && g.text === "Couldn't load history — try again" && g.calls === 1 && dt < 8000, g);
+
+  // 2. PUT: 200 + ETag headers, partial JSON body, then nothing -> unconfirmed copy, not saved, one PUT, no retry; the request
+  //    is no longer in flight and Save stays locked (TLD 15:08 item 4) instead of busy.
+  await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6b never saved");
+  await ev(`globalThis.__p6bMode = ${JSON.stringify({ method: "PUT", url: `/api/orgs/locations/${H.l1}/login-config$`, status: 200, headers: JSONH, partial: '{"location_id":"' })}, true`);
+  t0 = Date.now(); await click("#btn-save"); await until(`!document.querySelector("#banner-error").hidden`, 10000); dt = Date.now() - t0; await click("#btn-save"); await sleep(1700); // second click: locked, sends nothing
+  g = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), form: await vis("#form"), err: await shownError(), text: await errText(), dt,
+    calls: await ev(`globalThis.__p6bCalls.length`), btn: await attr("#btn-save", "aria-disabled"), cur: await txt("#cur-h-text") };
+  ok("P6b PUT: 200 headers arrive, body never completes -> aborted (bounded: save() returned), the exact unconfirmed copy, Save locked, no saved banner / state, form kept, one PUT (no retry)",
+    g.state === "edit" && !g.saved && g.form && g.err.length === 1 && g.err[0].code === "write_unconfirmed" && g.text === UNCONF && g.btn === "true" && g.calls === 1 && dt < 8000, g);
+
+  // 3. POST (create): 201 headers, partial body, then nothing -> the blocked create state, still on /new, no navigation, one POST.
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await type("#lname", "UI Cage P6b"); await type("#dname", "UI Casino A");
+  await ev(`globalThis.__p6bMode = ${JSON.stringify({ method: "POST", url: "/api/orgs/locations$", status: 201, headers: { "Content-Type": "application/json" }, partial: '{"location_id":"' })}, true`);
+  t0 = Date.now(); await click("#btn-save"); await until(`document.body.dataset.state === "blocked" || !document.querySelector("#banner-error").hidden`, 10000); dt = Date.now() - t0; await sleep(1700);
+  g = { path: await ev(`location.pathname`), hash: await ev(`location.hash`), state: await ev(`document.body.dataset.state`), err: await shownError(), text: await errText(),
+    calls: await ev(`globalThis.__p6bCalls.length`), form: await vis("#form"), dt };
+  ok("P6b POST: 201 headers arrive, body never completes -> aborted (bounded), blocked state 'We couldn’t confirm the create.', no form, still on /new (no navigation), one POST",
+    g.path.endsWith("/locations/new") && g.hash === "" && g.state === "blocked" && !g.form && g.err.length === 1 && g.err[0].code === "create_unconfirmed_blocked"
+      && g.text === "We couldn\u2019t confirm the create." && g.calls === 1 && dt < 8000, g);
+  await ev(`localStorage.clear(), true`); // test isolation only
+
+  for (const identifier of ids) await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+  // Unwrapped again: the normal page and API, nothing was saved.
+  await open(page("sa", H.l1));
+  ok("P6b unwrapped: SA view of L1 loads normally with history rows; the wrapper is gone", await ev(`document.body.dataset.state`) === "view" && (await rows()).length >= 1 && await ev(`globalThis.__p6bCalls === undefined`));
+  ok("P6b: nothing was saved (L1 ETag and display name unchanged)", JSON.stringify(await apiL1()) === JSON.stringify(l1before), [l1before, await apiL1()]);
+});
+// P6c [TLD 2026-11-05 15:08 items 1-5]: UNKNOWN outcomes after dispatch, the Save / Create lock and its persistence, Edit
+// reconciliation by a fresh GET, no resubmission, and a confirmed save whose history GET fails. CDP Fetch: "lost" = the real
+// API answered (so the server committed) and the harness drops the answer at the Response stage; "netfail" = the request is
+// failed before it is sent; "bad" = a faked 200 with an unparseable JSON body. Real writes here: one lost PUT, one lost create,
+// one confirmed PUT (counted in the real-PG totals at the end).
+let p6cCreated = 0, p6cSaChanges = 0;
+await step("P6c uncertain outcomes", async () => {
+  let mode = null; const hits = [];
+  const LOC = new RegExp(`/api/orgs/locations/${H.l1}/login-config$`), HIST = new RegExp(`/api/orgs/locations/${H.l1}/login-config/changes$`), CREATE = /\/api\/orgs\/locations$/;
+  const lsn = (msg) => {
+    if (msg.sessionId !== S || msg.method !== "Fetch.requestPaused") return;
+    const p = msg.params, id = p.requestId, go = () => cdp("Fetch.continueRequest", { requestId: id }).catch(() => {});
+    const resp = p.responseStatusCode !== undefined;
+    if (!mode || p.request.method !== mode.method || !mode.url.test(p.request.url)) return resp ? cdp("Fetch.continueResponse", { requestId: id }).catch(() => go()) : go();
+    if (mode.kind === "lost") { if (!resp) return go(); hits.push(`${p.responseStatusCode} ${p.request.method}`); return cdp("Fetch.failRequest", { requestId: id, errorReason: "ConnectionReset" }).catch(() => {}); }
+    if (resp) return cdp("Fetch.continueResponse", { requestId: id }).catch(() => go());
+    hits.push(p.request.method);
+    if (mode.kind === "netfail") return cdp("Fetch.failRequest", { requestId: id, errorReason: "ConnectionReset" }).catch(() => {});
+    return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: mode.status, responseHeaders: mode.headers, body: Buffer.from(mode.body ?? "").toString("base64") }).catch(() => {});
+  };
+  listeners.push(lsn);
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: `*/api/orgs/locations/${H.l1}/login-config*`, requestStage: "Request" }, { urlPattern: `*/api/orgs/locations/${H.l1}/login-config`, requestStage: "Response" },
+    { urlPattern: "*/api/orgs/locations", requestStage: "Request" }, { urlPattern: "*/api/orgs/locations", requestStage: "Response" }] });
+  const errText = async () => `${await txt("#banner-error-title")} ${await txt("#banner-error-text")}`.trim();
+  const UNCONF = "We couldn't confirm the save. Reload to check before trying again.";
+  const apiL1 = async () => { const r = await fetch(`${H.ui}/as/sa/api/orgs/locations/${H.l1}/login-config`); const b = await r.json(); return { etag: r.headers.get("ETag"), dname: b.display_name }; };
+  const sent = (method, re) => bodies.filter(b => b.method === method && re.test(b.url)).length;
+  const createKey = `llc.unconfirmed.create.${H.partner_a}`;
+  const store = (k) => ev(`localStorage.getItem(${JSON.stringify(k)})`);
+  const unknownEdit = async (name) => {
+    const g = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), err: await shownError(), text: await errText(), btn: await attr("#btn-save", "aria-disabled") };
+    ok(`P6c ${name} -> UNKNOWN: exact unconfirmed copy, not saved, Save locked`,
+      g.state === "edit" && !g.saved && g.err.length === 1 && g.err[0].code === "write_unconfirmed" && g.text === UNCONF && g.btn === "true", g);
+  };
+
+  // 1. Server commits, then the answer is lost (PUT): UNKNOWN; a second click sends nothing; a sign-in round trip keeps the
+  //    lock; a fresh successful GET (reload) reconciles: the committed version is shown, no PUT is replayed, Save is free again.
+  const v0 = await apiL1();
+  await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6c committed, answer lost");
+  const put0 = sent("PUT", LOC);
+  hits.length = 0; mode = { kind: "lost", method: "PUT", url: LOC }; await click("#btn-save"); await until(`!document.querySelector("#banner-error").hidden`, 10000); mode = null;
+  await unknownEdit("PUT committed, answer lost");
+  await click("#btn-save"); await sleep(500);
+  const v1 = await apiL1(); p6cSaChanges++;
+  ok("P6c PUT committed, answer lost: the server did commit (version advanced, new display name); exactly one PUT was sent, the second click sent nothing",
+    v1.etag !== v0.etag && v1.dname === "UI P6c committed, answer lost" && hits.length === 1 && /^200 /.test(hits[0]) && sent("PUT", LOC) === put0 + 1, { v0, v1, hits, put: sent("PUT", LOC) - put0 });
+  await open(`/as/anon/orgs/${H.partner_a}/locations/${H.l1}/sign-in`); // the sign-in round trip: an unauthenticated page (401)
+  const gA = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), err: await shownError(), put: sent("PUT", LOC) - put0 };
+  ok("P6c re-auth: an unauthenticated load (401 page error) shows no form and replays nothing (not a reconciliation)", gA.state === "error" && !gA.form && gA.err[0]?.code === "401" && gA.put === 1, gA);
+  await open(page("sa", H.l1));
+  const gV = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), put: sent("PUT", LOC) - put0 };
+  await click("#btn-change");
+  const gR = { state: await ev(`document.body.dataset.state`), btn: await attr("#btn-save", "aria-disabled"), dname: await ev(`document.querySelector("#dname").value`), put: sent("PUT", LOC) - put0 };
+  ok("P6c reload = fresh successful GET: view mode first (inspect), then Change fills the form with the SAVED value from that GET (not a draft), Save free, no PUT replayed",
+    gV.state === "view" && !gV.form && gV.put === 1 && gR.state === "edit" && gR.btn === null && gR.dname === v1.dname && gR.put === 1, { gV, gR });
+
+  // 2. Non-timeout network failure (connection reset) on the PUT -> UNKNOWN (nothing reached the API here, but the page can't tell).
+  await type("#dname", "UI P6c network loss");
+  hits.length = 0; mode = { kind: "netfail", method: "PUT", url: LOC }; await click("#btn-save"); await until(`!document.querySelector("#banner-error").hidden`, 10000); mode = null;
+  await unknownEdit("PUT network failure (not a timeout)");
+  await open(page("sa", H.l1)); await click("#btn-change");
+  // 3. A 200 whose JSON body does not parse -> UNKNOWN (invalid answer, not a saved state, not a 401).
+  await type("#dname", "UI P6c invalid 200");
+  mode = { kind: "bad", method: "PUT", url: LOC, status: 200, headers: [{ name: "Content-Type", value: "application/json" }, { name: "ETag", value: '"77"' }], body: '{"row_version": 7, "name": ' };
+  await click("#btn-save"); await until(`!document.querySelector("#banner-error").hidden`, 10000); mode = null;
+  await unknownEdit("PUT 200 with an unparseable JSON body");
+  ok("P6c: the network-failure and invalid-200 PUTs changed nothing on the server", JSON.stringify(await apiL1()) === JSON.stringify(v1), [v1, await apiL1()]);
+
+  // 4. Create: the server commits, the 201 is lost -> blocked (no reload advice). Reload and a sign-in round trip keep it blocked;
+  //    no second POST is ever sent. S2a has no surface to tell whether THIS create happened (see BUILD-LOG, Create gap).
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await type("#lname", "UI Cage P6c lost"); await type("#dname", "UI Casino A");
+  const post0 = sent("POST", CREATE);
+  hits.length = 0; mode = { kind: "lost", method: "POST", url: CREATE }; await click("#btn-save"); await until(`document.body.dataset.state === "blocked"`, 10000); mode = null; p6cCreated++; p6cSaChanges++;
+  const gC = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), err: await shownError(), text: await errText(), hits: [...hits], key: await store(createKey) };
+  ok("P6c create committed, 201 lost -> blocked 'We couldn’t confirm the create.', no form, unresolved create stored",
+    gC.state === "blocked" && !gC.form && gC.err[0]?.code === "create_unconfirmed_blocked" && gC.text === "We couldn\u2019t confirm the create." && gC.hits.length === 1 && /^201 /.test(gC.hits[0]) && gC.key !== null, gC);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`);
+  const gC2 = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), err: (await shownError())[0]?.code };
+  await open(`/as/anon/orgs/${H.partner_a}/locations/${H.l1}/sign-in`); await open(`/as/pa/orgs/${H.partner_a}/locations/new`);
+  const gC3 = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), err: (await shownError())[0]?.code, posts: sent("POST", CREATE) - post0 };
+  ok("P6c create: reload and a sign-in round trip (other persona, same browser) stay blocked, no form, never unlocked; exactly one POST was ever sent",
+    gC2.state === "blocked" && !gC2.form && gC2.err === "create_unconfirmed_blocked" && gC3.state === "blocked" && !gC3.form && gC3.err === "create_unconfirmed_blocked" && gC3.posts === 1, { gC2, gC3 });
+  await ev(`localStorage.clear(), true`); // test isolation only (later steps create under partner_a); the page has no unlock
+
+  // 5. A confirmed save (contract-valid PUT 200) whose history GET fails stays SAVED: soft history-only error; retry = GET only.
+  await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6c saved, history failed");
+  const put1 = sent("PUT", LOC);
+  mode = { kind: "bad", method: "GET", url: HIST, status: 500, headers: [{ name: "Content-Type", value: "application/json" }], body: '{"error":"x"}' };
+  await save(); p6cSaChanges++;
+  const gS = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), hist: await vis("#card-history"), herr: await vis("#history-error"), htext: await txt("#history-error"), rows: (await rows()).length, err: await shownError() };
+  ok("P6c confirmed save + history GET 500 -> SAVED (saved banner, state saved), soft 'Couldn't load history — try again' in the history card only, no error banner",
+    gS.state === "saved" && gS.saved && gS.hist && gS.herr && gS.htext === "Couldn't load history — try again" && gS.rows === 0 && gS.err.length === 0, gS);
+  await click("#history-retry"); await sleep(500);
+  const gS2 = { herr: await vis("#history-error"), saved: await vis("#banner-saved"), put: sent("PUT", LOC) - put1 };
+  mode = null; await click("#history-retry"); await until(`document.querySelectorAll("#history-rows tr").length > 0`, 5000);
+  const gS3 = { herr: await vis("#history-error"), rows: (await rows()).length, state: await ev(`document.body.dataset.state`), put: sent("PUT", LOC) - put1, top: (await rows())[0]?.[3] ?? "" };
+  ok("P6c history retry: still failing -> soft error kept, still saved; then OK -> rows shown, error gone, still saved; retries sent no PUT (exactly the one save)",
+    gS2.herr && gS2.saved && gS2.put === 1 && !gS3.herr && gS3.rows >= 1 && gS3.state === "saved" && gS3.put === 1, { gS2, gS3 });
+
+  await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(lsn), 1);
 });
 await step("PA partner-create", async () => {
   await open(`/as/pa/orgs/${H.partner_a}/locations/new`);
@@ -756,8 +926,8 @@ if (D) {
   ok("real PG: org:V reader wrote no change row (F-A3)", !(H.users.rd in D.changes_by_actor), D.changes_by_actor);
   const lenOk = (H.xss.len ?? []).filter(p => p.status === 201).length;
   ok(`real PG: change rows = 6 seeds (L1-L4 + hostile L5, L6) + ${lenOk} accepted length probes + PA edit + SA downgrade + PA conflict PUT + SA create + PA create + PA hostile save + PA MFA back on (DEC-106)`,
-    D.changes_by_actor[H.users.sa] === 8 + lenOk && D.changes_by_actor[H.users.pa] === 5, D.changes_by_actor);
-  ok(`real PG: ${8 + lenOk} locations (refused creates and XSS probes added none; ${lenOk} accepted length probes)`, D.locations === 8 + lenOk, D.locations);
+    D.changes_by_actor[H.users.sa] === 8 + lenOk + p6cSaChanges && D.changes_by_actor[H.users.pa] === 5, { D: D.changes_by_actor, p6cSaChanges }); // + P6c: lost PUT, lost create, confirmed PUT [TLD 15:08]
+  ok(`real PG: ${8 + lenOk + p6cCreated} locations (refused creates and XSS probes added none; ${lenOk} accepted length probes; ${p6cCreated} P6c create whose 201 was lost)`, D.locations === 8 + lenOk + p6cCreated, D.locations);
   // TLD 2026-11-04 14:18 (A): stored byte-for-byte, no server-side HTML escaping; the page is the only place the text is made safe.
   const hex = (s) => Buffer.from(s, "utf8").toString("hex"), x = D.xss ?? {};
   ok("real PG (A): auth.location.name = the hostile name, byte-for-byte (UTF-8)", JSON.stringify(x.location_name_hex) === JSON.stringify([hex(H.xss.name)]), x.location_name_hex);

@@ -46,14 +46,25 @@ node ui/orgs/tests/e2e.mjs ff_sse          # or a scratch ff_kit_<name> DB; the 
 
 Chrome runs with every host except 127.0.0.1 made unresolvable. When the run ends, the host prints a DB summary read as the owner, including the org:V reader's change rows (must be none), and empties the tables.
 
-## Fetch rules (TLD 2026-11-05 07:54 fetch hardening; TLD 2026-11-04 18:35 / 21:11 for the GETs)
+## Fetch rules (TLD 2026-11-05 15:08, superseding TLD 07:54; TLD 2026-11-04 18:35 / 21:11 for the GETs)
 
-Every API call uses `redirect: "manual"`, so a 3xx is never followed, and is aborted after `LIMITS_TIMEOUT_MS` (10 s). The test hooks are `__llcLimitsTimeoutMs` for GETs and `__llcWriteTimeoutMs` for the PUT / POST.
+Every API call uses `redirect: "manual"`, so a 3xx is never followed. Every call is also aborted after `LIMITS_TIMEOUT_MS` (10 s); the abort covers the headers and the body read and parse. The test hooks are `__llcLimitsTimeoutMs` (GETs) and `__llcWriteTimeoutMs` (PUT / POST).
 
-- PUT / POST timeout: "We couldn't confirm the save. Reload to check before trying again." The page never says "Nothing was saved" here, never shows the saved state and never retries.
-- PUT / POST 3xx, redirect or non-JSON 2xx: the 401 session copy.
-- History GET `/changes` timeout, 3xx or non-JSON 200 on load: the page error "Couldn't load history — try again".
-- These two strings are TL copy in `FETCH_COPY` (`js/error-copy.mjs`), not yet UX-reviewed. Open questions: `src/S2A-BUILD-LOG.md`, section "Fetch hardening".
+How the page reads a write answer (`writeOutcome`):
+
+- **Saved:** the expected status (PUT 200, POST 201) with a parsed JSON body that has `row_version` (PUT) or a uuid `location_id` (POST).
+- **Session:** a 401 or any 3xx. The page shows "Your session has ended. Sign in again, then try again." and makes no save claim.
+- **Rejected:** a 4xx whose JSON body names a contract error code. The page shows that code's copy.
+- **UNKNOWN:** everything else after dispatch. That covers a timeout (headers or body), a network failure, a non-JSON, unparseable or incomplete 2xx, any 5xx and any other answer. The page never says "saved" or "nothing saved" and never retries. Save / Create stay locked:
+  - **Edit:** the page shows "We couldn't confirm the save. Reload to check before trying again." and Save stays locked in the page. A reload's fresh GET is shown in view mode before any Change; the draft is never replayed.
+  - **Create:** the page shows the blocked state "We couldn’t confirm the create." with no advice. The state is kept in `localStorage` (`llc.unconfirmed.create.<partner_id>`) and the create page stays blocked. S2a has no way to find out whether that create happened (see `src/S2A-BUILD-LOG.md`, "Create gap").
+
+History:
+
+- A failed history GET on load is a page error: "Couldn't load history — try again".
+- After a confirmed save, the page stays saved and the history card shows "Couldn't load history — try again" with a retry button. The retry repeats the GET only, never a write.
+
+"Nothing was saved" is no longer in the session, network, 500 and generic copy; only contract rejections keep it. A non-JSON 200 on the limits or location GET is a page error, not a 401.
 
 ## Partner Admin MFA states (DEC-106, UX D-106)
 

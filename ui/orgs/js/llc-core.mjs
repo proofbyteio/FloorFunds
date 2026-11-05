@@ -160,8 +160,9 @@ export function limitsTimeout(override) {
 }
 
 /** [TLD 2026-11-04 18:35 items 2 and 5] what the create page does with the limits answer r (api(): status, body, json, redirected).
- *  "error401": a redirect (followed, or a 3xx answer) or a 200 that is not JSON (a sign-in page) -> page error as a 401.
- *  "error": 401 / 403 -> page error from the answer (an access answer, never a fallback).
+ *  "error401": a redirect (followed, or a 3xx answer) -> page error as a 401.
+ *  "error": 401 / 403 -> page error from the answer (an access answer, never a fallback); a 200 that is not JSON -> page
+ *    error, not a 401 [TLD 2026-11-05 15:08 item 2; was "error401" per TLD 2026-11-04 18:35].
  *  "server": a JSON 200 whose limits pass limitsFrom -> { limits }.
  *  "fallback": network failure, timeout (status null), any other status, or a JSON 200 with missing / invalid limits. */
 export function limitsOutcome(r) {
@@ -169,39 +170,56 @@ export function limitsOutcome(r) {
   if (r.opaque) return { kind: "error401" }; // [TLD 2026-11-04 21:11 Q2] redirect: "manual" -> opaqueredirect (any 3xx, cross-site too)
   if (r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "error401" };
   if (r.status === 401 || r.status === 403) return { kind: "error" };
-  if (r.status === 200 && !r.json) return { kind: "error401" };
+  // [TLD 2026-11-05 15:08 item 2] a non-JSON 200 is not a verified 401: blocked as an invalid answer (page error). A JSON 200
+  // that does not parse keeps the TLD 17:28 / 18:35 fallback (a read; the server still enforces the real bounds).
+  if (r.status === 200 && !r.json) return { kind: "error" };
   const limits = r.status === 200 ? limitsFrom(r.body) : null;
   return limits ? { kind: "server", limits } : { kind: "fallback" };
 }
 
 /** [TLD 2026-11-04 21:11 Q2 / Q3, SSE2 70cf9b13 LOW-1] what the edit page does with GET /orgs/locations/{id}/login-config
  *  (api(): status, body, json, redirected, opaque; fetched with redirect: "manual" and the LIMITS_TIMEOUT_MS abort).
- *  "error401": an opaqueredirect (any 3xx, e.g. a 302 to login.microsoftonline.com), a followed redirect, a 3xx answer
- *  or a 200 that is not JSON -> the page error as a 401, no form.
+ *  "error401": an opaqueredirect (any 3xx, e.g. a 302 to login.microsoftonline.com), a followed redirect or a 3xx answer
+ *  -> the page error as a 401, no form. A 200 that is not JSON -> "error" [TLD 2026-11-05 15:08 item 2; was "error401"].
  *  "error": network failure or timeout (status null) or any other non-200 -> the page error from the answer, no form
  *  (never the fallback limits; those apply only to a 200 whose limits are missing / invalid).
  *  "ok": a JSON 200 with a body. */
 export function locationOutcome(r) {
   if (r.status === null) return { kind: "error" };
   if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "error401" };
-  if (r.status === 200 && !r.json) return { kind: "error401" };
-  return r.status === 200 && r.body ? { kind: "ok" } : { kind: "error" };
+  // [TLD 2026-11-05 15:08 item 2] a non-JSON / unparseable 200 is an invalid answer (page error), not a verified 401.
+  return r.status === 200 && r.json && r.body ? { kind: "ok" } : { kind: "error" };
 }
 
-/** [TLD 2026-11-05 07:54 fetch hardening] what the page does with a write answer r (PUT /orgs/locations/{id}/login-config
- *  okStatus 200, POST /orgs/locations okStatus 201; api(): status, body, json, redirected, opaque, timedOut).
- *  "unconfirmed": the page's abort fired (timedOut) -> the write may or may not have happened: "We couldn't confirm the save.
- *    Reload to check before trying again.", never the saved state, never "Nothing was saved", no retry.
- *  "error401": an opaqueredirect (redirect: "manual", any 3xx), a followed redirect, a 3xx answer or a 2xx that is not JSON
- *    (a sign-in page; not the API, which always answers JSON) -> the same as a 401 (one shared session copy, brief item 2).
- *  "ok": okStatus with a JSON body.
- *  "error": anything else, including a network failure that is not a timeout -> the page's error from the answer, as before. */
+/** Contract error codes (contract/location-login-config.schema.json $defs/error_code). A 4xx JSON body naming one of them
+ *  is an authoritative rejection by the API (spec §5.1: nothing written). */
+export const CONTRACT_ERROR_CODES = Object.freeze(["unauthenticated", "forbidden", "not_found", "precondition_required", "if_match_invalid",
+  "concurrency_conflict", "malformed_body", "payload_too_large", "request_timeout", "validation_failed", "not_super_admin", "reason_required"]);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** The success body each write needs before the page may call it saved: PUT 200 = a login_config_view with an integer
+ *  row_version; POST 201 = a body with a uuid location_id. */
+export function usableWriteBody(okStatus, body) {
+  if (!body || typeof body !== "object") return false;
+  return okStatus === 201 ? typeof body.location_id === "string" && UUID_RE.test(body.location_id) : Number.isInteger(body.row_version);
+}
+
+/** [TLD 2026-11-05 15:08 items 1-3; supersedes the TLD 07:54 version] what the page does with a write answer r
+ *  (PUT /orgs/locations/{id}/login-config okStatus 200, POST /orgs/locations okStatus 201; api(): status, body, json,
+ *  redirected, opaque, timedOut). Outcome certainty is kept apart from auth handling:
+ *  "ok": okStatus, JSON, and a usable body (usableWriteBody) -> saved.
+ *  "session": 401, or an opaqueredirect / followed redirect / 3xx (redirect: "manual") -> sign in again. No save claim either way
+ *    (a 3xx is not a contract answer).
+ *  "rejected": a 4xx (not 401) whose JSON body names a contract error code -> the API refused it (authoritative, nothing written).
+ *  "unknown": everything else after dispatch: the abort (headers or body, timedOut), a network failure that is not a timeout
+ *    (status null), a 2xx that is not okStatus / not JSON / unparseable / missing the required fields, any 5xx, any other
+ *    answer -> the outcome is UNKNOWN: never "saved", never "nothing saved", no retry; the page locks Save / Create. */
 export function writeOutcome(r, okStatus) {
-  if (r.timedOut) return { kind: "unconfirmed" };
-  if (r.status === null) return { kind: "error" };
-  if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "error401" };
-  if (r.status >= 200 && r.status < 300 && !r.json) return { kind: "error401" };
-  return r.status === okStatus && r.body ? { kind: "ok" } : { kind: "error" };
+  if (r.timedOut || r.status === null) return { kind: "unknown" };
+  if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400) || r.status === 401) return { kind: "session" };
+  if (r.status >= 200 && r.status < 300)
+    return r.status === okStatus && r.json && usableWriteBody(okStatus, r.body) ? { kind: "ok" } : { kind: "unknown" };
+  if (r.status >= 400 && r.status < 500 && r.json && r.body && CONTRACT_ERROR_CODES.includes(r.body.error)) return { kind: "rejected" };
+  return { kind: "unknown" };
 }
 
 /** [TLD 2026-11-05 07:54] GET /orgs/locations/{id}/login-config/changes (redirect: "manual", bounded like the location GET).
@@ -213,7 +231,7 @@ export function writeOutcome(r, okStatus) {
 export function historyOutcome(r) {
   if (r.timedOut) return { kind: "unavailable" };
   if (r.status !== null && (r.opaque || r.redirected || (r.status >= 300 && r.status < 400))) return { kind: "unavailable" };
-  if (r.status === 200 && !r.json) return { kind: "unavailable" };
+  if (r.status === 200 && (!r.json || r.body === null)) return { kind: "unavailable" }; // non-JSON or unparseable [TLD 15:08 item 2]
   if (r.status === 200 && r.body && Array.isArray(r.body.items)) return { kind: "ok", items: r.body.items };
   return { kind: "status" };
 }

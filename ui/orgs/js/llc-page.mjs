@@ -10,7 +10,18 @@ const body = document.body;
 const apiBase = (body.dataset.apiBase || "/api").replace(/\/$/, "");
 // limits = { min, max } reason bounds from the API (DEC-107): create from /orgs/login-config/limits, edit from the GET.
 // limitsFallback: true when those did not load and limits is REASON_BOUNDS (UX D-108 copy, no numbers) [TLD 2026-11-04 18:35].
-const st = { route: null, kind: "unknown", view: null, ifMatch: null, history: null, mode: "loading", limits: null, limitsFallback: false };
+const st = { route: null, kind: "unknown", view: null, ifMatch: null, history: null, mode: "loading", limits: null, limitsFallback: false,
+  locked: false, historyError: false };
+// [TLD 2026-11-05 15:08 item 4] after an UNKNOWN write outcome Save / Create stays locked until it is reconciled.
+// Edit: the lock lives in this page (st.locked); the only way to a new form is a reload, whose fresh successful GET of the
+// saved location is shown in view mode for the user to inspect before a deliberate Change (the draft is never stored or
+// replayed), so the reload itself is the reconciliation. Create: no surface can tell whether THIS create happened, so the
+// unresolved create is kept in localStorage (survives reload, sign-in round trips and new tabs of this browser) and the
+// create page stays blocked; it is never unlocked by the page. A UI lock is not a duplicate guarantee (other browsers / devices).
+const pendingKey = (op, id) => `llc.unconfirmed.${op}.${id}`;
+function pendingGet(k) { try { return globalThis.localStorage.getItem(k); } catch { return null; } }
+function pendingSet(k) { try { globalThis.localStorage.setItem(k, new Date().toISOString()); } catch { /* still locked in this page */ } }
+
 function setLimits(fromServer) { st.limitsFallback = !fromServer; st.limits = fromServer ?? limitsOrFallback(null); }
 
 function show(el, on) { el.hidden = !on; }
@@ -152,7 +163,7 @@ function setMode(mode) {
   show($("row-change"), mode === "view" && (k === "super" || k === "partner"));
   show($("card-connection"), k === "super" && mode !== "create" && !!st.view);
   show($("form"), edit);
-  show($("card-history"), (k === "super" || k === "partner") && st.history !== null
+  show($("card-history"), (k === "super" || k === "partner") && (st.history !== null || st.historyError)
     && (mode === "view" || mode === "saved" || (mode === "edit" && k === "partner")));
   const name = st.view ? st.view.name : "";
   if (mode === "create") title("Create location");
@@ -254,17 +265,19 @@ function applyErrors(r) {
 
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
+  if (st.locked) return; // [TLD 15:08 item 4] locked after an UNKNOWN outcome: no second write from this page
   hideErrors();
   const f = readForm();
   const btn = $("btn-save");
   btn.setAttribute("aria-disabled", "true");
   try {
-    // [TLD 2026-11-05 07:54] writeOutcome: a timeout is "unconfirmed" (the write may have happened: never "nothing saved",
-    // never the saved state, no retry); a 3xx / followed redirect / non-JSON 2xx is shown like a 401; the rest as before.
+    // [TLD 2026-11-05 15:08, supersedes TLD 07:54] writeOutcome: "unknown" (timeout of headers or body, transport failure,
+    // unusable answer, 5xx) -> never saved / never "nothing saved", no retry, Save / Create locked; "session" (401, 3xx) ->
+    // sign in again; "rejected" (contract 4xx) -> the error from the answer.
     if (st.mode === "create") {
       const r = await api("POST", "/orgs/locations", { json: buildCreate(st.route.partnerId, $("lname").value, f), timeoutMs: writeTimeout() });
       const w = writeOutcome(r, 201);
-      if (w.kind === "ok" && r.body.location_id) {
+      if (w.kind === "ok") {
         location.assign(location.pathname.replace(/locations\/new\/?$/, `locations/${encodeURIComponent(r.body.location_id)}/sign-in`) + "#saved");
         return;
       }
@@ -274,19 +287,40 @@ $("form").addEventListener("submit", async (e) => {
       const w = writeOutcome(r, 200);
       if (w.kind === "ok") {
         st.view = r.body; st.ifMatch = ifMatchFrom(r.etag, r.body.row_version);
-        await loadHistory();
+        // [TLD 15:08 item 5] the save is confirmed; a failed history GET does not change that (soft history-only error).
+        const { ho } = await loadHistory();
+        st.historyError = ho.kind !== "ok";
         afterSaved();
         return;
       }
       writeFailed(w, r);
     }
-  } finally { btn.removeAttribute("aria-disabled"); }
+  } finally { if (!st.locked) btn.removeAttribute("aria-disabled"); }
 });
-function writeFailed(w, r) {
-  if (w.kind === "unconfirmed") { showError("write_unconfirmed", null, "write_unconfirmed"); return; }
-  applyErrors(w.kind === "error401" ? { ...r, status: 401 } : r);
+function lockUnknown() {
+  st.locked = true;
+  $("btn-save").setAttribute("aria-disabled", "true");
+  if (st.mode === "create") pendingSet(pendingKey("create", st.route.partnerId));
 }
+function writeFailed(w, r) {
+  if (w.kind === "unknown") {
+    lockUnknown();
+    if (st.mode === "create") showCreateBlocked(); else showError("write_unconfirmed", r.requestId, "write_unconfirmed");
+    return;
+  }
+  applyErrors(w.kind === "session" ? { ...r, status: 401 } : r);
+}
+// [TLD 15:08 items 4 / 6] Create outcome UNKNOWN: blocked, no reload advice (no recovery path exists), no form, never unlocked here.
+function showCreateBlocked() {
+  st.locked = true;
+  show($("banner-loading"), false);
+  show($("form"), false);
+  showError("create_unconfirmed_blocked", null, "create_unconfirmed_blocked");
+  body.dataset.state = "blocked";
+}
+function renderHistoryError() { show($("history-error"), st.historyError); }
 function afterSaved() {
+  renderHistoryError();
   renderCurrent(st.view, true);
   if (st.kind === "super") renderConnection(st.view);
   setMode("saved");
@@ -302,6 +336,13 @@ $("btn-cancel").addEventListener("click", () => {
   setMode("view");
 });
 $("conflict-reload").addEventListener("click", (e) => { e.preventDefault(); location.reload(); });
+// [TLD 15:08 item 5] retry the history GET only; never a write.
+$("history-retry").addEventListener("click", async () => {
+  const { ho } = await loadHistory();
+  st.historyError = ho.kind !== "ok";
+  renderHistoryError();
+  setMode(st.mode);
+});
 
 // ---------- load ----------
 // [TLD 2026-11-05 07:54] the history GET is bounded and never follows a redirect, like the location GET (api()).
@@ -310,7 +351,7 @@ async function loadHistory() {
   const h = await api("GET", `/orgs/locations/${encodeURIComponent(st.route.locationId)}/login-config/changes`, { timeoutMs: getTimeout() });
   const ho = historyOutcome(h);
   st.history = ho.kind === "ok" ? ho.items : null;
-  if (st.history) renderHistory(st.history);
+  if (st.history) renderHistory(st.history); else $("history-rows").replaceChildren();
   return { h, ho };
 }
 async function start() {
@@ -321,6 +362,7 @@ async function start() {
     st.kind = createKind(body.dataset.adminType);
     setChip(st.kind, st.route.partnerId);
     text($("bc-page"), "New location");
+    if (pendingGet(pendingKey("create", st.route.partnerId)) !== null) { showCreateBlocked(); return; } // [TLD 15:08 item 4]
     // DEC-107 [TLD 2026-11-04 16:32 Q2]: no location yet, so the reason bounds come from the limits endpoint.
     // [TLD 2026-11-04 17:28] a failed fetch or missing / invalid values -> the server's hard bounds 10 / 500 (REASON_BOUNDS);
     // a 401 / 403 is an access answer, not a limits value, so it is still shown as the page error.
@@ -348,8 +390,12 @@ async function start() {
   const { h, ho } = await loadHistory();
   // [TLD 2026-11-05 07:54] history unavailable (timeout / redirect / non-JSON 200): the viewer kind can't be told (C2), so the
   // page error, with the softer history copy "Couldn't load history — try again" (brief item 2), not the session copy.
-  if (ho.kind === "unavailable") { show($("banner-loading"), false); showError("history_unavailable", h.requestId, "history_unavailable"); body.dataset.state = "error"; return; }
-  st.kind = viewerKind(st.view, h.status);
+  const savedLanding = location.hash === "#saved";
+  if (ho.kind === "unavailable" && !savedLanding) { show($("banner-loading"), false); showError("history_unavailable", h.requestId, "history_unavailable"); body.dataset.state = "error"; return; }
+  // [TLD 15:08 item 5] after a confirmed create (201 -> #saved) a failed history GET keeps the saved state: the viewer is the
+  // admin who just created it (super view = `secret` key, else Partner Admin; the API still decides every later write).
+  st.kind = ho.kind === "unavailable" ? (viewerKind(st.view, null) === "super" ? "super" : "partner") : viewerKind(st.view, h.status);
+  st.historyError = savedLanding && ho.kind !== "ok";
   if (st.kind === "unknown" || (st.kind === "super" && h.status !== 200)) { show($("banner-loading"), false); applyErrors(h); body.dataset.state = "error"; return; }
   if (st.route.partnerId !== st.view.partner_id) { show($("banner-loading"), false); showError("not_found", r.requestId, "partner_mismatch"); body.dataset.state = "error"; return; }
   setChip(st.kind, st.view.partner_id);
@@ -357,6 +403,6 @@ async function start() {
   renderCurrent(st.view, false);
   if (st.kind === "super") renderConnection(st.view);
   if (location.hash === "#saved") { history.replaceState(null, "", location.pathname + location.search); afterSaved(); return; }
-  setMode("view");
+  setMode("view"); // [TLD 15:08 item 4] Edit reconciliation: this fresh GET is on screen before any deliberate Change
 }
 start();
