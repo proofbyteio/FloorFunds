@@ -39,5 +39,21 @@ for line in (out / "responses.jsonl").read_text().splitlines():
     errs = sorted(e.message[:160] for e in V(sch, format_checker=FC).iter_errors(rec["body"]))
     if errs: fails += 1; print(f"RESPONSE {rec['def']} invalid: {errs}")
 print(f"responses: {r} checked against location-login-config.schema.json")
+# TLD 13:27 item 1: current_row_version 0 is allowed ONLY for the reason-bounds PUT (prb_error_response); location 409s stay >= 1.
+def _ok(d, body): return V({"$ref": "#/$defs/" + d, "$defs": llc["$defs"]}, format_checker=FC).is_valid(body)
+recs = [json.loads(l) for l in (out / "responses.jsonl").read_text().splitlines()]
+loc409 = [x["body"] for x in recs if x["def"] == "error_response" and isinstance(x["body"], dict) and "current_row_version" in x["body"]]
+prb0 = [x["body"] for x in recs if x["def"] == "prb_error_response" and isinstance(x["body"], dict) and x["body"].get("current_row_version") == 0]
+sep = [
+    ("error_response rejects a 409 with current_row_version 0", not _ok("error_response", {"error": "concurrency_conflict", "current_row_version": 0})),
+    ("prb_error_response accepts a 409 with current_row_version 0", _ok("prb_error_response", {"error": "concurrency_conflict", "current_row_version": 0})),
+    ("prb_error_response rejects current_row_version -1", not _ok("prb_error_response", {"error": "concurrency_conflict", "current_row_version": -1})),
+    (f"observed location 409s ({len(loc409)}) all carry current_row_version >= 1", len(loc409) > 0 and all(b["current_row_version"] >= 1 for b in loc409)),
+    (f"observed reason-bounds 409s with current_row_version 0 ({len(prb0)}) are labelled prb_error_response only", len(prb0) > 0),
+    ("no error_response-labelled body carries current_row_version 0", not any(isinstance(x["body"], dict) and x["body"].get("current_row_version") == 0 for x in recs if x["def"] == "error_response")),
+]
+for lbl, good in sep:
+    print(("SEP PASS " if good else "SEP FAIL ") + lbl)
+    if not good: fails += 1
 print("ALL PASS" if fails == 0 and n > 0 and r > 0 else "FAILED")
 sys.exit(0 if fails == 0 and n > 0 and r > 0 else 1)

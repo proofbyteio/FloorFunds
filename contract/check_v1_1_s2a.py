@@ -508,8 +508,16 @@ exp("Slice A partner view without row_version rejected", errs(LLC, _PRV, m(_pp, 
 exp("Slice A partner view without updated_by accepted (PA reading another partner, TLD 11:23 identity scope)", errs(LLC, _PRV, m(_pp, updated_by=DEL)), False)
 exp("Slice A partner view without updated_at rejected", errs(LLC, _PRV, m(_pp, updated_at=DEL)), True)
 exp("Slice A default view with updated_by rejected", errs(LLC, _PRV, m(_pd, updated_by=_pp["updated_by"])), True)
-exp("Slice A 409 current_row_version 0 accepted (unset partner, TLD 11:23 A)", errs(LLC, ER, {"error": "concurrency_conflict", "current_row_version": 0}), False)
-exp("Slice A 409 current_row_version -1 rejected", errs(LLC, ER, {"error": "concurrency_conflict", "current_row_version": -1}), True)
+PER = "#/$defs/prb_error_response"
+exp("Slice A prb 409 current_row_version 0 accepted (unset partner, TLD 11:23 A; scoped, TLD 13:27 item 1)", errs(LLC, PER, {"error": "concurrency_conflict", "current_row_version": 0}), False)
+exp("Slice A prb 409 current_row_version 1 accepted", errs(LLC, PER, {"error": "concurrency_conflict", "current_row_version": 1}), False)
+exp("Slice A prb 409 current_row_version -1 rejected", errs(LLC, PER, {"error": "concurrency_conflict", "current_row_version": -1}), True)
+exp("Slice A prb 0 only with concurrency_conflict (not_found + current_row_version 0 rejected)", errs(LLC, PER, {"error": "not_found", "current_row_version": 0}), True)
+exp("Slice A prb 409 without current_row_version rejected", errs(LLC, PER, {"error": "concurrency_conflict"}), True)
+exp("Slice A prb 422 validation_failed accepted (error_response branch)", errs(LLC, PER, {"error": "validation_failed", "fields": [{"field": "reason_max_length", "code": "reason_bound_range"}]}), False)
+exp("TLD 13:27 (1) separation: location error_response 409 with current_row_version 0 REJECTED (minimum stays 1)", errs(LLC, ER, {"error": "concurrency_conflict", "current_row_version": 0}), True)
+exp("TLD 13:27 (1) separation: location error_response 409 current_row_version 1 accepted", errs(LLC, ER, {"error": "concurrency_conflict", "current_row_version": 1}), False)
+exp("TLD 13:27 (1) separation: error_response.current_row_version minimum is exactly 1", [] if S[LLC]["$defs"]["error_response"]["properties"]["current_row_version"].get("minimum") == 1 else ["minimum " + str(S[LLC]["$defs"]["error_response"]["properties"]["current_row_version"].get("minimum"))], False)
 exp("Slice A view unknown source rejected", errs(LLC, _PRV, m(_pp, source="config")), True)
 exp("Slice A view extra key rejected", errs(LLC, _PRV, m(_pp, reason="x" * 20)), True)
 exp("Slice A view max 501 rejected", errs(LLC, _PRV, m(_pp, reason_max_length=501)), True)
@@ -534,7 +542,7 @@ exp("Slice A event outcome denied rejected", errs(AE, None, m(_pe, outcome="deni
 for _pin in ["### 3.6 `GET` / `PUT /api/orgs/partners/{partner_id}/login-config/reason-bounds` (v1.1 Slice A)",
              "`org:partner_reason_bounds:write`", "### 7.5 `auth.partner_reason_bounds.changed` (v1.1 Slice A)", "- **`auth.partner_reason_bounds`** (v1.1 Slice A,",
              "**unset partner: `\"0\"` = expect unset**", "a late second `\"0\"` is a 409 and never updates the row", "**Identity in the view** [TLD 2026-11-05 11:23 identity scope, SSE2 relay; **interim** pending LS-OQ-61 / PQ-240, **not a DEC**",
-             "gets the view **without `updated_by`**", "is bounds-only (§3.5), so it has no identity field and does not change", "[TLD 11:23 B: explicitly approved]",
+             "gets the view **without `updated_by`**", "The rule is an **allowlist** [TLD 13:27 item 2]", "any other or future admin type (e.g. a Client Admin) gets no `updated_by` by default", "every other endpoint keeps `current_row_version` ≥ 1 [TLD 13:27 item 1]", "**derived** from TLD 11:23 A", "is bounds-only (§3.5), so it has no identity field and does not change", "[TLD 11:23 B: explicitly approved]",
              "even when its values equal the inherited defaults (e.g. 10/500) [TLD 11:23 C]", "exactly one 200, the other 409 with `current_row_version` v+1, one event", "**No 412** (errors.md frozen)", "(SQLSTATE 23505) and gets 409 `concurrency_conflict` with the winner's `current_row_version`",
              "Create and update both answer **200**", "**TO CONFIRM LS-OQ-61**", "**Still OPEN: LS-OQ-61**", "**No reason field** [Confirmed DEC-113]",
              "the config is held to the same range at startup or the API refuses to start [TLD 08:00b(2)]",

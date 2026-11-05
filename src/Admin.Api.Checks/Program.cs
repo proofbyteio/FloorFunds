@@ -361,7 +361,9 @@ async Task<R> Send(HttpMethod m, string path, string? token, string? body = null
     }
     using var res = res0;
     allBodies.Add(text);
-    if ((int)res.StatusCode is >= 400 and < 500 and not 401 && text.Length > 0) responsesForSchema.Add(("error_response", text));
+    // TLD 13:27 item 1: reason-bounds error bodies are checked against prb_error_response (the only place current_row_version may be 0);
+    // every other endpoint stays on error_response (current_row_version >= 1).
+    if ((int)res.StatusCode is >= 400 and < 500 and not 401 && text.Length > 0) responsesForSchema.Add((path.Contains("/login-config/reason-bounds") ? "prb_error_response" : "error_response", text));
     string? H(string k) => res.Headers.TryGetValues(k, out var v) ? string.Join(",", v) : res.Content.Headers.TryGetValues(k, out var cv) ? string.Join(",", cv) : null;
     var r = new R((int)res.StatusCode, text, H("ETag"), H("Location"), H("WWW-Authenticate"), H("Cache-Control"), H("Server"), H(LoginConfigApi.RequestIdHeader));
     allCorr.Add(r.Corr);
@@ -2124,6 +2126,19 @@ try
              P_G = Guid.Parse("5f0c3e1a-0009-4000-8000-000000000009"), P_H = Guid.Parse("5f0c3e1a-000a-4000-8000-00000000000a");
         // TLD 11:23 identity scope (SSE2 relay; interim pending LS-OQ-61 / PQ-240): updated_by is omitted ONLY for a PA reading ANOTHER partner.
         bool HasBy(R r, Guid? by) => r.Status == 200 && (by is { } u ? (string?)Obj(r.Body)["updated_by"] == u.ToString("D") : !Obj(r.Body).ContainsKey("updated_by"));
+        // SSE2 review 03398b18 INFO-2: count only lock waits of the API's own role in this database (distinct backends), not every
+        // ungranted lock on the shared cluster, so the barrier releases only when the API requests themselves are the contenders.
+        var apiRole = new NpgsqlConnectionStringBuilder(adminCs).Username!;
+        async Task<long> ApiWaiters() => await OScalar<long>("SELECT count(DISTINCT l.pid) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND a.datname = current_database() AND a.usename = $1", apiRole);
+        // ---- TLD 13:27 item 2: updated_by by ALLOWLIST (super, or partner admin of THIS partner); unknown / future admin types fail closed ----
+        Ok("Slice A identity allowlist (TLD 13:27 item 2): super (no partner / any partner_id claim) and partner-own -> shown; partner-other, partner without partner_id, client, unknown, empty, case variants -> hidden",
+            LoginConfigApi.ShowsBoundsEditor(new AdminIdentity(U_SA, "super", null), P_C) && LoginConfigApi.ShowsBoundsEditor(new AdminIdentity(U_SA, "super", P_A), P_C)
+            && LoginConfigApi.ShowsBoundsEditor(new AdminIdentity(U_PA, "partner", P_C), P_C)
+            && !LoginConfigApi.ShowsBoundsEditor(new AdminIdentity(U_PA, "partner", P_A), P_C) && !LoginConfigApi.ShowsBoundsEditor(new AdminIdentity(U_PA, "partner", null), P_C)
+            && !LoginConfigApi.ShowsBoundsEditor(new AdminIdentity(U_PA, "client", P_C), P_C) && !LoginConfigApi.ShowsBoundsEditor(new AdminIdentity(U_PA, "client", null), P_C)
+            && !LoginConfigApi.ShowsBoundsEditor(new AdminIdentity(U_PA, "client_admin", P_C), P_C) && !LoginConfigApi.ShowsBoundsEditor(new AdminIdentity(U_PA, "future_admin", P_C), P_C)
+            && !LoginConfigApi.ShowsBoundsEditor(new AdminIdentity(U_PA, "", P_C), P_C) && !LoginConfigApi.ShowsBoundsEditor(new AdminIdentity(U_PA, "Super", null), P_C)
+            && !LoginConfigApi.ShowsBoundsEditor(new AdminIdentity(U_PA, "Partner", P_C), P_C));
         string Prb(Guid p) => $"/api/orgs/partners/{p:D}/login-config/reason-bounds";
         Task<R> PrbPut(Guid p, string? tok, object body, string? im, HttpClient? via = null) => Send(HttpMethod.Put, Prb(p), tok, J(body), im, via: via);
         object B(object mn, object mx) => new Dictionary<string, object?> { ["reason_min_length"] = mn, ["reason_max_length"] = mx };
@@ -2226,7 +2241,7 @@ try
             Ok("Slice A PUT late second create (PB, If-Match \"0\" after the row exists) -> 409 concurrency_conflict, current_row_version 1; row 20/300/v1 unchanged, row count unchanged, no event (TLD 11:23 A)",
                 Err(late, 409, "concurrency_conflict") && (long?)Obj(late.Body)["current_row_version"] == 1 && await PrbSnap(P_C) == "20/300/v1" && await PrbRows() == rows0
                 && (await NewEvents()).Count == 0, Tg(late));
-            if (late.Status == 409) ForSchema("error_response", late);
+            if (late.Status == 409) ForSchema("prb_error_response", late);
             late = await PrbPut(P_C, SA, B(20, 300), "\"0\"");
             Ok("Slice A PUT late second create with the SAME values (SA, \"0\") -> 409 current_row_version 1 too (precondition before the no-op), no event", Err(late, 409, "concurrency_conflict")
                 && (long?)Obj(late.Body)["current_row_version"] == 1 && await PrbSnap(P_C) == "20/300/v1" && (await NewEvents()).Count == 0, Tg(late));
@@ -2272,6 +2287,14 @@ try
         Ok("Slice A GET own partner (PA reads P_A): updated_by U_PA kept (TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"3\"" && HasBy(g, U_PA), Tg(g));
         g = await Get(Prb(P_A), SA);
         Ok("Slice A GET (SA reads P_A, last written by PA): updated_by U_PA kept (TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"3\"" && HasBy(g, U_PA), Tg(g));
+        {
+            // TLD 13:27 item 2: a future admin type (Client Admin, DEC-130) gets no access and no identity; endpoint authorization unchanged
+            var CT = Token("client", U_PA, P_A);
+            var gc = await Get(Prb(P_A), CT); var pc = await PrbPut(P_A, CT, B(41, 121), "\"3\"");
+            Ok("Slice A client-admin token (admin_type client, partner P_A): GET and PUT refused (401/403, not widened), no updated_by / user id in either body, row 40/120/v3 unchanged, no event",
+                gc.Status is 401 or 403 && pc.Status is 401 or 403 && !gc.Body.Contains("updated_by") && !pc.Body.Contains("updated_by") && !gc.Body.Contains(U_PA.ToString("D"))
+                && await PrbSnap(P_A) == "40/120/v3" && (await NewEvents()).Count == 0, $"{Tg(gc)} || {Tg(pc)}");
+        }
         g = await Get(Prb(P_A), PB);
         Ok("Slice A GET (PB reads P_A): bounds 40/120, ETag \"3\", row_version 3, updated_at kept, NO updated_by (TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"3\"" && HasBy(g, null)
             && (long?)Obj(g.Body)["row_version"] == 3 && (int?)Obj(g.Body)["reason_min_length"] == 40 && (int?)Obj(g.Body)["reason_max_length"] == 120 && Obj(g.Body).ContainsKey("updated_at"), Tg(g));
@@ -2328,16 +2351,15 @@ try
             for (int i = 0; i < 100 && !blocked; i++)
             {
                 await Task.Delay(100);
-                blocked = await OScalar<long>("SELECT count(*) FROM pg_locks l JOIN pg_database d ON d.oid = l.database WHERE NOT l.granted AND d.datname = current_database()") > 0
-                       || await OScalar<long>("SELECT count(*) FROM pg_locks WHERE NOT granted AND locktype = 'transactionid'") > 0;
+                blocked = await ApiWaiters() >= 1;
                 if (racer.IsCompleted) break;
             }
-            Ok("Slice A race: the API's first PUT is blocked on the uncommitted winner's primary key (pg_locks NOT granted)", blocked && !racer.IsCompleted);
+            Ok("Slice A race: the API's first PUT is blocked on the uncommitted winner's primary key (an API-role backend in this database has a NOT granted lock)", blocked && !racer.IsCompleted);
             await otx.CommitAsync();
             var rr = await racer;
             Ok("Slice A race (TLD 08:00b(1)): the losing first PUT -> 409 concurrency_conflict, current_row_version 1 (the winner's); row is the winner's 33/333 v1; no event",
                 Err(rr, 409, "concurrency_conflict") && (long?)Obj(rr.Body)["current_row_version"] == 1 && await PrbSnap(P_D) == "33/333/v1" && (await NewEvents()).Count == 0, Tg(rr));
-            if (rr.Status == 409) ForSchema("error_response", rr);
+            if (rr.Status == 409) ForSchema("prb_error_response", rr);
             var r2 = await PrbPut(P_D, PB, B(44, 444), "\"1\"");
             Ok("Slice A race: the loser retries with the reported version \"1\" -> 200 update v2, one event (change_kind updated)", r2.Status == 200 && r2.ETag == "\"2\"" && await PrbSnap(P_D) == "44/444/v2"
                 && (await NewEvents()) is { Count: 1 } e2 && (string)e2[0]["details"]!["change_kind"]! == "updated", Tg(r2));
@@ -2369,7 +2391,6 @@ try
             var c0 = await PrbPut(P_H, SA, B(20, 200), "\"0\"");
             await NewEvents();
             Ok("Slice A parallel update setup: P_H created at v1", c0.Status == 200 && await PrbSnap(P_H) == "20/200/v1", Tg(c0));
-            var waits0 = await OScalar<long>("SELECT count(*) FROM pg_locks WHERE NOT granted");
             await using var oc = await ownerDs.OpenConnectionAsync();
             await using var otx = await oc.BeginTransactionAsync();
             await using (var lk = new NpgsqlCommand("SELECT 1 FROM auth.partner_reason_bounds WHERE partner_id = $1 FOR UPDATE", oc, otx))
@@ -2379,10 +2400,10 @@ try
             for (int i = 0; i < 100 && !both; i++)
             {
                 await Task.Delay(100);
-                both = await OScalar<long>("SELECT count(*) FROM pg_locks WHERE NOT granted") >= waits0 + 2;
+                both = await ApiWaiters() >= 2;
                 if (ua.IsCompleted || ub.IsCompleted) break;
             }
-            Ok("Slice A parallel update: both API PUTs are waiting on the row at the same time (pg_locks: 2 more NOT granted), neither answered yet", both && !ua.IsCompleted && !ub.IsCompleted);
+            Ok("Slice A parallel update: both API PUTs are waiting on the row at the same time (2 distinct API-role backends in this database with a NOT granted lock), neither answered yet", both && !ua.IsCompleted && !ub.IsCompleted);
             await otx.RollbackAsync();
             var res = await Task.WhenAll(ua, ub);
             var evs = await NewEvents();

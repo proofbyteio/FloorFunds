@@ -677,6 +677,18 @@
         "reason_bound_order"
       ]
     },
+    "prb_error_response": {
+      "description": "v1.1 Slice A: every non-2xx body of PUT /api/orgs/partners/{partner_id}/login-config/reason-bounds. Either an error_response (current_row_version >= 1, as every other endpoint), or the one extra case: 409 concurrency_conflict with current_row_version 0 = the partner has no row yet, send If-Match \"0\" [TLD 11:23 A, derived; TLD 13:27 item 1: scoped here, error_response keeps minimum 1].",
+      "anyOf": [
+        { "$ref": "#/$defs/error_response" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["error", "current_row_version"],
+          "properties": { "error": { "const": "concurrency_conflict" }, "current_row_version": { "const": 0 } }
+        }
+      ]
+    },
     "error_response": {
       "description": "Every non-2xx body except 401 (no body, WWW-Authenticate only, as LD row 148 pattern). Never echoes submitted values (no secret_ref value, no tenant ids). An out-of-scope location and a missing one return the identical body {\"error\":\"not_found\"}.",
       "type": "object",
@@ -711,9 +723,9 @@
           }
         },
         "current_row_version": {
-          "description": "409 only: lets the UI show the 'Someone else changed this setting' banner [SRC: mockup 09] and reload. 0 only on the reason-bounds PUT (v1.1 Slice A): the partner has no row yet, send If-Match \"0\" [TLD 2026-11-05 11:23 A].",
+          "description": "409 only: lets the UI show the 'Someone else changed this setting' banner [SRC: mockup 09] and reload. Always >= 1 here; the reason-bounds PUT's unset-partner 0 is only in $defs/prb_error_response [TLD 2026-11-05 13:27 item 1].",
           "type": "integer",
-          "minimum": 0
+          "minimum": 1
         }
       },
       "allOf": [

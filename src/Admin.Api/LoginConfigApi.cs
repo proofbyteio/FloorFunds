@@ -342,7 +342,10 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
     /// reading ANOTHER partner's bounds gets no `updated_by`; a Partner Admin on their own partner and every Super Admin keep it. Bounds,
     /// row_version / ETag and updated_at stay. Applies to every reason-bounds view (GET and the PUT 200 bodies); audit events keep full identity.
     /// </summary>
-    static bool ShowsBoundsEditor(Caller who, Guid partner) => !(who.Id.AdminType == "partner" && who.Id.PartnerId != partner);
+    /// ALLOWLIST [TLD 2026-11-05 13:27 item 2]: only a Super Admin, or a Partner Admin of THIS partner, sees updated_by. Any other or future
+    /// admin type (e.g. a Client Admin) fails closed (no updated_by). Who may call the endpoint is decided elsewhere and is not widened here.
+    public static bool ShowsBoundsEditor(AdminIdentity id, Guid partner) =>
+        id.AdminType == "super" || (id.AdminType == "partner" && id.PartnerId is { } p && p == partner);
 
     JsonObject BoundsView(Caller who, Guid partner, PrbRow? r)
     {
@@ -351,7 +354,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         if (r is not null)
         {
             v["row_version"] = r.RowVersion;
-            if (ShowsBoundsEditor(who, partner)) v["updated_by"] = r.UpdatedBy.ToString("D");
+            if (ShowsBoundsEditor(who.Id, partner)) v["updated_by"] = r.UpdatedBy.ToString("D");
             v["updated_at"] = T(r.UpdatedAt);
         }
         return v;
