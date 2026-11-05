@@ -273,7 +273,7 @@ await step("SA create", async () => {
   await click("#btn-change");
   ok("V11-CREATE-SECRETCARD: card shown in the edit view after create", await ev(`document.body.dataset.state`) === "edit" && await vis("#card-connection"));
 });
-// P4h [TLD 2026-11-04 16:55 Q2]: each create 422 under login_config/* (and the top-level name) lands on its form field.
+// P4h [TLD 2026-11-04 16:56 Q2]: each create 422 under login_config/* (and the top-level name) lands on its form field.
 // Fields the page cannot make invalid by typing (mfa_required, allow_db_fallback, provider_kind) are set in the outgoing
 // POST body with CDP Fetch; the 422 itself is the real API's. Focus: the existing pattern focuses the error banner.
 await step("P4h create field errors", async () => {
@@ -323,6 +323,69 @@ await step("P4h create field errors", async () => {
     api && Array.isArray(api.fields) && api.fields.some(f => f.field === "login_config/provider_kind" && f.code === "provider_kind_invalid") && quiet
     && (await shownError())[0]?.code === "validation_failed" && await ev(`document.activeElement && document.activeElement.id`) === "banner-error", { api, quiet });
   await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(lsn), 1);
+});
+// P4i [TLD 2026-11-04 17:28 item 3]: missing or invalid reason limits -> the client falls back to the server's hard bounds
+// 10 / 500 (REASON_BOUNDS). The limits / location GET responses are replaced in the browser with CDP Fetch; nothing is written.
+await step("P4i limits fallback", async () => {
+  let mode = null;
+  const lsn = (msg) => {
+    if (msg.sessionId !== S || msg.method !== "Fetch.requestPaused") return;
+    const p = msg.params, id = p.requestId, go = () => cdp("Fetch.continueRequest", { requestId: id }).catch(() => {});
+    if (!mode || p.request.method !== "GET") return go();
+    if (mode.kind === "fail") return cdp("Fetch.failRequest", { requestId: id, errorReason: "Failed" }).catch(() => {});
+    if (mode.kind === "fake") return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: mode.status, responseHeaders: [{ name: "Content-Type", value: "application/json" }, { name: "X-Request-ID", value: "01a1a94d-0000-7000-8000-000000000417" }],
+      body: Buffer.from(mode.body).toString("base64") }).catch(() => {});
+    if (mode.kind === "edit") {
+      if (p.responseStatusCode === undefined) return go();
+      return cdp("Fetch.getResponseBody", { requestId: id }).then((r) => {
+        const b = JSON.parse(r.base64Encoded ? Buffer.from(r.body, "base64").toString() : r.body); mode.edit(b);
+        return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: p.responseStatusCode, responseHeaders: p.responseHeaders, body: Buffer.from(JSON.stringify(b)).toString("base64") });
+      }).catch(() => go());
+    }
+    return go();
+  };
+  listeners.push(lsn);
+  const HINT_C = "10 to 500 characters. Saved in the audit log. Required only if you turn off the second step or turn on backup sign-in.";
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/login-config/limits", requestStage: "Request" }] });
+  const createCases = [
+    ["limits fetch fails (network)", { kind: "fail" }],
+    ["limits 500", { kind: "fake", status: 500, body: JSON.stringify({ error: "internal_error" }) }],
+    ["limits non-integer min", { kind: "fake", status: 200, body: JSON.stringify({ reason_min_length: "10", reason_max_length: 500 }) }],
+    ["limits min below 10", { kind: "fake", status: 200, body: JSON.stringify({ reason_min_length: 5, reason_max_length: 500 }) }],
+    ["limits max above 500", { kind: "fake", status: 200, body: JSON.stringify({ reason_min_length: 10, reason_max_length: 600 }) }],
+    ["limits min > max", { kind: "fake", status: 200, body: JSON.stringify({ reason_min_length: 300, reason_max_length: 200 }) }],
+    ["limits missing", { kind: "fake", status: 200, body: "{}" }],
+  ];
+  for (const [name, m] of createCases) {
+    mode = m; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
+    const got = { state: await ev(`document.body.dataset.state`), hint: await txt("#reason-hint"), lname: await vis("#lname") };
+    ok(`P4i create: ${name} -> form shown, reason hint falls back to 10 / 500`, got.state === "create" && got.lname && got.hint === HINT_C, got);
+  }
+  // The fallback bounds are also the 422 copy (the c50 API's own bound is 50, so its 422 names 10 / 500 only through the fallback).
+  mode = createCases[0][1]; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
+  await type("#lname", "UI Cage P4i"); await type("#dname", "UI Casino A"); await mouseClick("#mfa"); await type("#reason", "too short"); await save();
+  const e = await shownError();
+  ok("P4i create (fallback): a 9-character reason -> 422 copy 'Enter a reason of 10 to 500 characters.', still on /new", e.length === 1 && e[0].code === "validation_failed"
+    && await txt("#reason-err") === "Enter a reason of 10 to 500 characters." && await ev(`location.pathname.endsWith("/new")`), [e, await txt("#reason-err")]);
+  mode = { kind: "fake", status: 401, body: "" }; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
+  ok("P4i create: limits 401 is an access answer, not a fallback (page error, no form)", await ev(`document.body.dataset.state`) === "error" && !(await vis("#lname")), await ev(`document.body.dataset.state`));
+  await cdp("Fetch.disable");
+  // Edit: the location GET's reason_min_length / reason_max_length (c50 API: 50 / 200) replaced -> 10 / 500.
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: `*/api/orgs/locations/${H.l1}/login-config`, requestStage: "Response" }] });
+  const editCases = [
+    ["GET limits missing", (b) => { delete b.reason_min_length; delete b.reason_max_length; }],
+    ["GET min below 10", (b) => { b.reason_min_length = 1; }],
+    ["GET non-integer max", (b) => { b.reason_max_length = 200.5; }],
+  ];
+  for (const [name, edit] of editCases) {
+    mode = { kind: "edit", edit }; await open(`/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`); mode = null;
+    await click("#btn-change"); await mouseClick("#mfa");
+    const got = { state: await ev(`document.body.dataset.state`), hint: await txt("#reason-hint") };
+    ok(`P4i edit: ${name} -> reason hint falls back to 10 / 500`, got.hint === "10 to 500 characters. Saved in the audit log.", got);
+  }
+  await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(lsn), 1);
+  await open(page("sa", H.l1));
+  ok("P4i: nothing was saved (L1 still MFA on)", await txt("#cur-mfa") === "Yes", await txt("#cur-mfa"));
 });
 await step("PA partner-create", async () => {
   await open(`/as/pa/orgs/${H.partner_a}/locations/new`);

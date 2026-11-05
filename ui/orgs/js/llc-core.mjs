@@ -97,7 +97,7 @@ export function changeDetails(c) {
 /** 422 field path -> the page's input id (spec §5 example: "entra_allowed_tenant_ids/0").
  *  PUT paths are the login_config_write names; a create (POST /orgs/locations) names them under "login_config/"
  *  (LoginConfigInput.ValidateCreate) and its own top-level keys unprefixed ("name"; "partner_id" has no form field).
- *  [DEC-107: login_config/reason] [TLD 2026-11-04 16:55 Q2: every login_config/* write field, P4h]
+ *  [DEC-107: login_config/reason] [TLD 2026-11-04 16:56 Q2: every login_config/* write field, P4h]
  *  Not mapped (no form field; the page shows the validation_failed banner only): partner_id, login_config itself,
  *  oidc_authority / oidc_client_id / secret_ref (field_not_writable) and unknown_field keys. provider_kind maps to
  *  "method", which has no error slot (same as Edit), so it is banner-only too. */
@@ -118,10 +118,20 @@ export function ifMatchFrom(etag, rowVersion) {
   return Number.isInteger(rowVersion) ? `"${rowVersion}"` : null;
 }
 
+/** Client mirror of the server's hard reason bounds: the DB CHECK llcc_reason (char_length(reason) BETWEEN 10 AND 500,
+ *  db/ frozen) and the Admin.Api startup check (AdminApiOptions: 10 <= LoginConfig:ReasonMinLength <= ReasonMaxLength <= 500).
+ *  Used to reject out-of-range limits and as the fallback when the API's limits are missing or invalid [TLD 2026-11-04 17:28]. */
+export const REASON_BOUNDS = Object.freeze({ min: 10, max: 500 });
+
 /** DEC-107 [TLD 2026-11-04 16:32 Q2]: the reason bounds from GET /orgs/login-config/limits or the location GET
- *  (reason_min_length / reason_max_length) -> { min, max }, or null when missing or not 1 <= min <= max integers.
- *  The page never falls back to numbers of its own. */
+ *  (reason_min_length / reason_max_length) -> { min, max }, or null when missing or not integers with
+ *  REASON_BOUNDS.min <= min <= max <= REASON_BOUNDS.max. */
 export function limitsFrom(o) {
   const min = o && o.reason_min_length, max = o && o.reason_max_length;
-  return Number.isInteger(min) && Number.isInteger(max) && min >= 1 && min <= max ? { min, max } : null;
+  return Number.isInteger(min) && Number.isInteger(max) && min >= REASON_BOUNDS.min && min <= max && max <= REASON_BOUNDS.max ? { min, max } : null;
+}
+
+/** [TLD 2026-11-04 17:28] limitsFrom, or the server's hard bounds (REASON_BOUNDS) when the values are missing or invalid. */
+export function limitsOrFallback(o) {
+  return limitsFrom(o) ?? { min: REASON_BOUNDS.min, max: REASON_BOUNDS.max };
 }

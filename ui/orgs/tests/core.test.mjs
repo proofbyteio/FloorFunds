@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, formatPT, changeDetails, fieldTarget,
-  ifMatchFrom, fallbackText, limitsFrom } from "../js/llc-core.mjs";
+  ifMatchFrom, fallbackText, limitsFrom, limitsOrFallback, REASON_BOUNDS } from "../js/llc-core.mjs";
 import { TOP_LEVEL, FIELD, requestIdText, reasonLengthCopy } from "../js/error-copy.mjs";
 
 const P = "5f0c3e1a-0001-4000-8000-000000000001", L = "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8";
@@ -70,7 +70,7 @@ test("422 field mapping, If-Match", () => {
   assert.equal(fieldTarget("reason"), "reason");
   assert.equal(fieldTarget("login_config/reason"), "reason"); // DEC-107: the create path
   assert.equal(fieldTarget("oidc_authority"), null);
-  // P4h [TLD 2026-11-04 16:55 Q2]: every create login_config/* write field lands where the PUT name does.
+  // P4h [TLD 2026-11-04 16:56 Q2]: every create login_config/* write field lands where the PUT name does.
   for (const [k, id] of [["provider_kind", "method"], ["display_name", "dname"], ["entra_allowed_tenant_ids", "tenant"],
     ["entra_allowed_tenant_ids/0", "tenant"], ["mfa_required", "mfa"], ["allow_db_fallback", "fallback"], ["reason", "reason"]]) {
     assert.equal(fieldTarget(k), id, k);
@@ -104,6 +104,16 @@ test("DEC-107: reason length copy and limits from the API, no fixed numbers", ()
   assert.deepEqual(limitsFrom({ reason_min_length: 50, reason_max_length: 200 }), { min: 50, max: 200 });
   assert.deepEqual(limitsFrom({ reason_min_length: 10, reason_max_length: 500, other: 1 }), { min: 10, max: 500 });
   for (const bad of [null, undefined, {}, { reason_min_length: 10 }, { reason_min_length: "10", reason_max_length: 500 }, { reason_min_length: 10.5, reason_max_length: 500 },
-    { reason_min_length: 300, reason_max_length: 200 }, { reason_min_length: 0, reason_max_length: 200 }])
+    { reason_min_length: 300, reason_max_length: 200 }, { reason_min_length: 0, reason_max_length: 200 },
+    { reason_min_length: 9, reason_max_length: 200 }, { reason_min_length: 10, reason_max_length: 501 }, { reason_min_length: 1, reason_max_length: 500 }])
     assert.equal(limitsFrom(bad), null, JSON.stringify(bad));
+});
+test("TLD 17:28: limits fallback = the server's hard bounds 10 / 500 (llcc_reason, startup check)", () => {
+  assert.deepEqual(REASON_BOUNDS, { min: 10, max: 500 });
+  assert.ok(Object.isFrozen(REASON_BOUNDS));
+  for (const bad of [null, undefined, {}, { reason_min_length: "10", reason_max_length: 500 }, { reason_min_length: 10.5, reason_max_length: 500 },
+    { reason_min_length: 5, reason_max_length: 500 }, { reason_min_length: 10, reason_max_length: 600 }, { reason_min_length: 300, reason_max_length: 200 }])
+    assert.deepEqual(limitsOrFallback(bad), { min: 10, max: 500 }, JSON.stringify(bad));
+  assert.deepEqual(limitsOrFallback({ reason_min_length: 50, reason_max_length: 200 }), { min: 50, max: 200 });
+  assert.deepEqual(limitsOrFallback({ reason_min_length: 10, reason_max_length: 500 }), { min: 10, max: 500 });
 });

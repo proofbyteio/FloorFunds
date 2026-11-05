@@ -1,7 +1,7 @@
 // S2a P4 screen 9: DOM + fetch for location-sign-in.html. Pure rules live in llc-core.mjs; error copy (approved D-102)
 // is in error-copy.mjs. The page never sends oidc_* or secret_ref and shows only secret.set (spec §3.0, D-51).
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, METHOD_LABEL, fallbackText, formatPT,
-  changeDetails, fieldTarget, ifMatchFrom, limitsFrom } from "./llc-core.mjs";
+  changeDetails, fieldTarget, ifMatchFrom, limitsOrFallback } from "./llc-core.mjs";
 import { TOP_LEVEL, FIELD, requestIdText, reasonLengthCopy } from "./error-copy.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -279,9 +279,11 @@ async function start() {
     setChip(st.kind, st.route.partnerId);
     text($("bc-page"), "New location");
     // DEC-107 [TLD 2026-11-04 16:32 Q2]: no location yet, so the reason bounds come from the limits endpoint.
+    // [TLD 2026-11-04 17:28] a failed fetch or missing / invalid values -> the server's hard bounds 10 / 500 (REASON_BOUNDS);
+    // a 401 / 403 is an access answer, not a limits value, so it is still shown as the page error.
     const lr = await api("GET", "/orgs/login-config/limits");
-    st.limits = lr.status === 200 ? limitsFrom(lr.body) : null;
-    if (!st.limits) { show($("banner-loading"), false); applyErrors(lr.status === 200 ? { ...lr, status: 500 } : lr); body.dataset.state = "error"; return; }
+    if (lr.status === 401 || lr.status === 403) { show($("banner-loading"), false); applyErrors(lr); body.dataset.state = "error"; return; }
+    st.limits = limitsOrFallback(lr.status === 200 ? lr.body : null);
     fillForm({ provider_kind: "database", display_name: "", entra_allowed_tenant_ids: [], mfa_required: true, allow_db_fallback: false, name: "" });
     setMode("create");
     return;
@@ -290,8 +292,7 @@ async function start() {
   if (r.status !== 200 || !r.body) { show($("banner-loading"), false); applyErrors(r); body.dataset.state = "error"; return; }
   st.view = r.body; st.ifMatch = ifMatchFrom(r.etag, r.body.row_version);
   // DEC-107: the GET carries the reason bounds in effect; a PUT 200 body does not, so st.limits outlives st.view.
-  st.limits = limitsFrom(r.body);
-  if (!st.limits) { show($("banner-loading"), false); showError("500", r.requestId, "limits"); body.dataset.state = "error"; return; }
+  st.limits = limitsOrFallback(r.body); // [TLD 2026-11-04 17:28] missing / invalid -> REASON_BOUNDS
   // Only a Super Admin or own-partner Partner Admin may read history (C2). The super view is recognised by its `secret` key;
   // a restricted view asks /changes: 200 = Partner Admin, 403 = org:V reader (history hidden, no form).
   const h = await loadHistory();
