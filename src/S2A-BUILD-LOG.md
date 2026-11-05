@@ -572,6 +572,39 @@ Brief: `/tmp/sse-llc1/briefs/slice-a.md` md5 d68d236c96f3c86ff49e9959143358d5 (i
 - **DISCLOSURE (also in the 402a964 commit body; note md5 1c4dd533):** on 2026-11-04 between 21:23:54 and 21:36:15 PT I ran a manual psql DELETE on the shared `ff_sse` (owner role via `psql-as.py`, no sudo, one transaction) after the killed p4o attempt 2 left rows: `location_login_config_change` 14, `location_login_config` 4, `location` 4, `audit_outbox` 51 (occurred_at 21:21–21:22 PT). Test data only (fake partners 5f0c3e1a-0001/0002). This broke the "no manual psql writes" rule. No manual psql writes were made for Slice A.
 - Evidence: `/tmp/sse-llc1/p5a-evidence.txt` (detached worktree `/tmp/sse-llc1/wt-p5a` at the final Slice A sha).
 
+## Fetch hardening follow-up — TLD 15:08 (outcome certainty, UNKNOWN lock, f10) [direct TL rulings Nov 5 2026 3:08 PM PT; TLD, NOT a product DEC] (new commit on top of 4c7c94a; unpushed)
+
+- **Source.** Direct TL rulings 15:08, received in a parent steering message at 3:09 PM PT. Recorded verbatim in `/tmp/sse-llc1/snap/p6b/TLD-1508.as-received.md` (md5 bc5dc47a315e89eb90d2b9f263984136). They supersede the TLD 07:54 assumptions where they differ. The brief a451c6cf is unchanged (not appended). Live LD e1206d4c and project-plan 036c7897 are untouched. The TL also has the p6a decisions and OQ-FH-1..5; the 15:08 rulings settle them as below.
+- **1, f10.** The 10 s abort covers the headers AND the body read and parse; `api()` already returned `timedOut` on an abort during the body read. The new e2e step P6b sends real-looking headers and then a body that never completes, using a test-only fetch wrapper whose stream errors on the request's abort signal, as a real fetch body does. It covers history (real request and headers, body withheld), PUT and POST. A client abort never proves rollback, so a write timeout is UNKNOWN.
+- **2, auth vs outcome.** 401 and an unexpected 3xx share the sign-in-again copy. "Nothing was saved" is removed from the 401, network, 500 and generic copy. Only a contract rejection keeps a no-save claim (a 4xx with a contract error code in a JSON body: `rejected`). A non-JSON or unparseable 2xx is not a 401: on a write it is UNKNOWN; on the limits / location GET it is a page error (was "401"). A JSON 200 that doesn't parse on the limits GET keeps the TLD 17:28 fallback (a read).
+- **3, UNKNOWN.** Every write answer after dispatch that is not saved / session / rejected is UNKNOWN: a timeout (headers or body), a network failure, a 2xx that isn't the expected status, isn't JSON, doesn't parse or lacks `row_version` / a uuid `location_id`, and any 5xx or other answer. There is no automatic retry. The Edit copy is unchanged and exact.
+- **4, lock + reconciliation.**
+  - Save / Create are locked after UNKNOWN: `aria-disabled`, and submit returns without sending.
+  - Edit: the lock stays until a reload. The reload's fresh successful GET is shown in view mode before any deliberate Change, and the form is filled from it; the draft is never stored or replayed. A 401 / 3xx load shows no form.
+  - Create: kept in `localStorage` per partner; the create page shows the blocked state, survives reload and sign-in round trips (any persona, this browser) and never unlocks.
+- **Create gap (concrete blocker; release path BLOCKED).** No existing authorized surface can establish whether a given lost POST /orgs/locations happened:
+  - `location_id` and `slug` are server-generated (Guid.NewGuid / NewSlug).
+  - There is no list or search API for locations: the routes are the location GET / PUT / history (each needs the id), POST, limits and reason-bounds.
+  - The name is not unique, so a matching name does not prove identity.
+  - `X-Request-ID` is server-generated and travels only in the lost response.
+  - There is no audit read API.
+  So the TL's create copy ("… Check whether the location was created before trying again.") is not used. The blocked state shows only "We couldn’t confirm the create." and the page offers no unlock. In this patch I added no lookup API and no idempotency key. A UI lock in one browser is no duplicate guarantee. Recovery needs a TL / product decision, for example a location list or lookup for the partner, or a client idempotency key on create.
+- **5, saved + history failure.** A contract-valid PUT 200 stays SAVED when the history GET fails. The history card then shows "Couldn't load history — try again" with a retry button that repeats the GET only. After a confirmed create (`#saved`), a failed history GET also keeps the saved state: a super view is recognised by its `secret` key; otherwise the viewer is taken to be the Partner Admin who created it, and the API still decides every later write.
+- **6, copy.** Provisional TLD copy, no UX step: Edit "We couldn't confirm the save. Reload to check before trying again." (exact); the Create blocked title "We couldn’t confirm the create." (the TL sentence's first part only, because no recovery path exists); the history soft copy. No test-pass-consume code.
+- **SSE choices (for TL).**
+  - (a) Any 5xx on a write is UNKNOWN, including a 500. The contract says a 500 commits nothing, but a failure after the commit, or a proxy, can't be ruled out.
+  - (b) A non-contract 4xx (e.g. a proxy 404 / 429 or an unknown code) is UNKNOWN.
+  - (c) A write 3xx is session handling, not locked. TL item 2 groups it with 401; it is not listed as UNKNOWN.
+  - (d) An unresolved Edit is not persisted. A reload is the only way to a form and is itself the reconciliation.
+  - (e) Test isolation clears `localStorage` after the create cases; the page itself never does.
+- **Test changes.**
+  - P4k: the LOW-1 retry answer is now a contract 403, because a non-contract 500 now locks Create.
+  - P4k: "limits 200 text/html" now expects the "other" page error instead of 401.
+  - P6a: cases reordered so the session cases run before the locking cases, plus the new copy.
+  - New P6b (body stall) and P6c (commit then response lost for PUT and create, network reset, unparseable 200, no resubmission after a reload or a sign-in round trip, saved + history failed + GET-only retry).
+  - The real-PG totals add the P6c commits.
+- Evidence: `/tmp/sse-llc1/p6b-evidence.txt`. The p6a evidence restoration trail is in `/tmp/sse-llc1/p6a-evidence-trail.txt`.
+
 ## Fetch hardening — TLD 07:54 (screen 9: history GET, PUT, POST) [TL decision Nov 5 2026 7:54 AM PT; queued after Slice A] (new commit on top of e7d102e; unpushed)
 
 - **Source.** Brief `/tmp/sse-llc1/briefs/fetch-hardening.md` (md5 a451c6cfe05d0d6fab6e888184a05c84, snapshot `/tmp/sse-llc1/snap/p6a/fetch-hardening.brief.md`), answering SSE2 review c6249722 (`P4-STACK-bd1d534-2ee1c06-REVIEW.md`) DQ-1 (extend redirect "manual" + abort to `/changes`, PUT, POST: yes) and DQ-2 (Edit 307 / 401 / non-JSON 200: unit-only). Live LD e1206d4c and project-plan 036c7897 untouched.
