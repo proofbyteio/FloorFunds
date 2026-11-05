@@ -572,6 +572,35 @@ Brief: `/tmp/sse-llc1/briefs/slice-a.md` md5 d68d236c96f3c86ff49e9959143358d5 (i
 - **DISCLOSURE (also in the 402a964 commit body; note md5 1c4dd533):** on 2026-11-04 between 21:23:54 and 21:36:15 PT I ran a manual psql DELETE on the shared `ff_sse` (owner role via `psql-as.py`, no sudo, one transaction) after the killed p4o attempt 2 left rows: `location_login_config_change` 14, `location_login_config` 4, `location` 4, `audit_outbox` 51 (occurred_at 21:21–21:22 PT). Test data only (fake partners 5f0c3e1a-0001/0002). This broke the "no manual psql writes" rule. No manual psql writes were made for Slice A.
 - Evidence: `/tmp/sse-llc1/p5a-evidence.txt` (detached worktree `/tmp/sse-llc1/wt-p5a` at the final Slice A sha).
 
+## Fetch hardening — TLD 07:54 (screen 9: history GET, PUT, POST) [TL decision Nov 5 2026 7:54 AM PT; queued after Slice A] (new commit on top of e7d102e; unpushed)
+
+- **Source.** Brief `/tmp/sse-llc1/briefs/fetch-hardening.md` (md5 a451c6cfe05d0d6fab6e888184a05c84, snapshot `/tmp/sse-llc1/snap/p6a/fetch-hardening.brief.md`), answering SSE2 review c6249722 (`P4-STACK-bd1d534-2ee1c06-REVIEW.md`) DQ-1 (extend redirect "manual" + abort to `/changes`, PUT, POST: yes) and DQ-2 (Edit 307 / 401 / non-JSON 200: unit-only). Live LD e1206d4c and project-plan 036c7897 untouched.
+- **What.** `api()` in `ui/orgs/js/llc-page.mjs` now always fetches with `redirect: "manual"` and an abort; the old per-call `manualRedirect` option is gone (every call already used it or now must). GETs keep `limitsTimeout(__llcLimitsTimeoutMs)`; the PUT and POST use `limitsTimeout(__llcWriteTimeoutMs)`; both default to `LIMITS_TIMEOUT_MS` (10 s). An abort returns `timedOut: true`, also when it lands during the body read.
+- **Writes (`writeOutcome`, llc-core.mjs).** Timeout → `unconfirmed`: banner "We couldn't confirm the save. Reload to check before trying again." (exact TL copy, `FETCH_COPY.write_unconfirmed`, title + text). It never says "Nothing was saved", never shows the saved state or navigates, and nothing retries. opaqueredirect / 3xx / followed redirect / non-JSON 2xx → shown as a 401 (the one session copy "Your session has ended. Nothing was saved. Sign in again, then try again."). A network failure that is not a timeout and every API status keep their existing D-102 handling.
+- **History (`historyOutcome`).** Timeout / 3xx / redirect / non-JSON 200 → `unavailable`: on page load the page error "Couldn't load history — try again" (`FETCH_COPY.history_unavailable`, verbatim), not the session copy. The viewer kind (C2: history 200 = Partner Admin, 403 = org:V) can't be told then, so no form is shown. 200 / 403 / 401 / 404 / 5xx / network: unchanged. After a confirmed save (PUT 200) an unavailable history keeps the saved state and hides the history card, as before.
+- **Copy placement.** The two TL strings live in `FETCH_COPY`, apart from the UX-approved D-102 `TOP_LEVEL`, so no API error code maps to them and the D-102 test still holds. They have no UX review yet.
+- **Tests.** core.test.mjs: writeOutcome / historyOutcome tables, including 300–308, 401 and non-JSON (unit-only per DQ-2), plus the exact copy. e2e step P6a (CDP Fetch at the Request stage; no faked write reaches the API; stalled requests are failed by the harness, never continued):
+  - history stall and cross-site 302;
+  - PUT stall (one PUT, no retry) and same-site 302;
+  - POST stall and cross-site 307;
+  - an unfaked load with history rows;
+  - L1 ETag and name unchanged.
+  The existing save / history steps pass unchanged.
+- **Decisions made here (SSE; for TL to confirm).**
+  - (a) The write timeout = the existing 10 s GET timeout. The brief says only "a timeout".
+  - (b) A non-JSON 2xx on a write is treated like a 401, mirroring the TLD 18:35 GET rule; the API always answers JSON.
+  - (c) The optional secondary line is not used.
+  - (d) The title / text split of the write copy is at the sentence boundary.
+- **Open questions.**
+  - OQ-FH-1: a network failure on a write after the request was sent is also uncertain, but it keeps "Couldn't reach the server. Nothing was saved." Only a timeout is in scope.
+  - OQ-FH-2: on create, "Reload to check" lands on an empty create form; there is no location list (OQ-S2a-13), so a second Create could add a second location.
+  - OQ-FH-3: should Save be locked after an unconfirmed write?
+  - OQ-FH-4: after a confirmed save, should a failed history reload show the soft copy?
+  - OQ-FH-5: UX review of the two TL strings.
+  - Test-pass consume: no such write exists on this page, so there is nothing to apply.
+- **psql DELETE disclosure (brief, TL 07:54).** Restated from the 402a964 commit body and the Slice A section above: on 2026-11-04 between 21:23:54 and 21:36:15 PT, one manual psql DELETE transaction ran on the shared `ff_sse`. It removed `location_login_config_change` 14, `location_login_config` 4, `location` 4 and `audit_outbox` 51 rows, left by the killed p4o attempt 2. This was ff_sse test data only (fake partners 5f0c3e1a-0001/0002), and the tables were 0/0/0/0 afterwards. No manual psql writes since.
+- Evidence: `/tmp/sse-llc1/p6a-evidence.txt`.
+
 ## v1.1 Slice A follow-ups — TLD 13:27 (schema 409 scope, identity allowlist, BUILD-LOG wording) [direct TL message, Nov 5 2026 1:27 PM PT] (new commit on top of 0ba9805; 0ba9805 is published, not amended; unpushed)
 
 - **Source.** Direct TL message 1:27 PM PT: non-blocking follow-ups to SSE2's GO review of ebb7318..0ba9805 (`/tmp/sse2-fverify/P5C-SLICEA-ebb7318-0ba9805-REVIEW.md`, md5 03398b188ef932530ce54f2d2d222d14; snapshot `/tmp/sse-llc1/snap/P5C-SLICEA-REVIEW.03398b18.md`), LOW-1..3 plus optional INFOs. Live LD e1206d4c and project-plan 036c7897 unchanged; brief not edited further (6bf8cc22; pre-append copy d68d236c kept).
