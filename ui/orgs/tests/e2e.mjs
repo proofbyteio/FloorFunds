@@ -207,6 +207,25 @@ await step("DEC-107 limits and config 50/200", async () => {
   await open(page("sa", H.l2));
   ok("c50: nothing was saved (L2 still MFA on, no new history row)", await txt("#cur-mfa") === "Yes" && (await rows()).length === 1, [await txt("#cur-mfa"), (await rows()).length]);
 });
+// v1.1 Slice A [TLD 08:00 Q3]: the create page asks limits?partner_id=<URL partner>; a partner with its own
+// partner_reason_bounds row gets its numbers, another partner the config. Fresh test-only partner ids; the row is
+// written through the API (SA PUT, If-Match "1") and removed by the ui-host cleanup. Nothing else is saved here.
+await step("Slice A per-partner limits on Create", async () => {
+  const PX = "5f0c3e1a-0007-4000-8000-000000000007", PY = "5f0c3e1a-0008-4000-8000-000000000008";
+  const HINT = (a, b) => `${a} to ${b} characters. Saved in the audit log. Required only if you turn off the second step or turn on backup sign-in.`;
+  const put = await fetch(`${H.ui}/as/sa/api/orgs/partners/${PX}/login-config/reason-bounds`, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": '"1"' },
+    body: JSON.stringify({ reason_min_length: 20, reason_max_length: 300 }) });
+  ok("Slice A setup: SA PUT reason-bounds 20/300 on a fresh partner -> 200, ETag \"1\"", put.status === 200 && put.headers.get("ETag") === '"1"', put.status);
+  const seen = [];
+  const spy = (msg) => { if (msg.sessionId === S && msg.method === "Network.requestWillBeSent" && /\/api\/orgs\/login-config\/limits/.test(msg.params.request.url)) seen.push(msg.params.request.url); };
+  listeners.push(spy);
+  await open(`/as/sa/orgs/${PX}/locations/new`);
+  ok("Slice A create: hint uses the URL partner's own bounds 20 / 300", await txt("#reason-hint") === HINT(20, 300), await txt("#reason-hint"));
+  await open(`/as/sa/orgs/${PY}/locations/new`);
+  ok("Slice A create: a partner with no row -> the config 10 / 500", await txt("#reason-hint") === HINT(10, 500), await txt("#reason-hint"));
+  listeners.splice(listeners.indexOf(spy), 1);
+  ok("Slice A create: the page sent limits?partner_id=<URL partner> each time", seen.length === 2 && seen[0].endsWith(`/limits?partner_id=${PX}`) && seen[1].endsWith(`/limits?partner_id=${PY}`), seen);
+});
 await step("SA downgrade", async () => {
   await open(page("sa", H.l2));
   await click("#btn-change");
@@ -376,7 +395,7 @@ await step("P4i limits fallback", async () => {
   listeners.push(lsn);
   // UX D-108 (md5 9318c2f8) [TLD 2026-11-04 18:35 / 18:37]: with fallback limits the hint and the 422 copy show no numbers.
   const HINT_C = "Saved in the audit log. In Create: required only if you turn off the second step or turn on backup sign-in.";
-  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/login-config/limits", requestStage: "Request" }] });
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/login-config/limits*", requestStage: "Request" }] });
   const createCases = [
     ["limits fetch fails (network)", { kind: "fail" }],
     ["limits 500", { kind: "fake", status: 500, body: JSON.stringify({ error: "internal_error" }) }],
@@ -428,12 +447,12 @@ await step("P4k follow-ups", async () => {
     const p = msg.params, id = p.requestId, go = () => cdp("Fetch.continueRequest", { requestId: id }).catch(() => {});
     if (p.request.url.endsWith("/p4k-sign-in")) { seen.push(p.request.url); return go(); } // only reached if the 302 is followed
     if (p.request.method === "POST" && post) { const f = post.shift(); return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: f.status, responseHeaders: [{ name: "Content-Type", value: "application/json" }, { name: "X-Request-ID", value: "01a1a94d-0000-7000-8000-000000000418" }], body: Buffer.from(JSON.stringify(f.body)).toString("base64") }).catch(() => {}); }
-    if (!mode || p.request.method !== "GET" || !/\/api\/orgs\/login-config\/limits$/.test(p.request.url)) return go();
+    if (!mode || p.request.method !== "GET" || !/\/api\/orgs\/login-config\/limits(\?|$)/.test(p.request.url)) return go();
     if (mode.kind === "stall") return; // never answered: only the page's abort ends it
     return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: mode.status, responseHeaders: mode.headers, body: Buffer.from(mode.body).toString("base64") }).catch(() => {});
   };
   listeners.push(lsn);
-  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/login-config/limits", requestStage: "Request" }, { urlPattern: "*/api/orgs/locations", requestStage: "Request" }, { urlPattern: "*/p4k-sign-in", requestStage: "Request" }] });
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/login-config/limits*", requestStage: "Request" }, { urlPattern: "*/api/orgs/locations", requestStage: "Request" }, { urlPattern: "*/p4k-sign-in", requestStage: "Request" }] });
   const JSON_CT = [{ name: "Content-Type", value: "application/json" }];
   const HINT_F = "Saved in the audit log. In Create: required only if you turn off the second step or turn on backup sign-in.";
   // LOW-1: a 422 on every mapped field, then a retry that answers 500: each field is back to its own describedby, not invalid.
@@ -496,7 +515,7 @@ await step("P4k follow-ups", async () => {
 // location GET is aborted like the limits GET and a timeout is the page error with no form. Faked with CDP Fetch.
 await step("P4l redirect / timeout", async () => {
   let mode = null; const seen = [];
-  const LOC = new RegExp(`/api/orgs/locations/${H.l1}/login-config$`), LIM = /\/api\/orgs\/login-config\/limits$/;
+  const LOC = new RegExp(`/api/orgs/locations/${H.l1}/login-config$`), LIM = /\/api\/orgs\/login-config\/limits(\?|$)/;
   const lsn = (msg) => {
     if (msg.sessionId !== S) return;
     if (msg.method !== "Fetch.requestPaused") return;
@@ -512,7 +531,7 @@ await step("P4l redirect / timeout", async () => {
     return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: mode.status, responseHeaders: mode.headers, body: Buffer.from(mode.body ?? "").toString("base64") }).catch(() => {});
   };
   listeners.push(lsn);
-  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/login-config/limits", requestStage: "Request" }, { urlPattern: `*/api/orgs/locations/${H.l1}/login-config`, requestStage: "Request" },
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/login-config/limits*", requestStage: "Request" }, { urlPattern: `*/api/orgs/locations/${H.l1}/login-config`, requestStage: "Request" },
     { urlPattern: "https://login.microsoftonline.com/*", requestStage: "Request" }, { urlPattern: "*/p4l-sign-in", requestStage: "Request" }] });
   const MS = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=p4l&response_type=code";
   const R302 = (loc) => ({ kind: "fake", status: 302, headers: [{ name: "Location", value: loc }], body: "" });
@@ -726,7 +745,7 @@ async function finish(code) {
   chrome.kill("SIGTERM");
   const hostCode = await new Promise(r => { if (host.exitCode !== null) r(host.exitCode); else { host.once("exit", r); setTimeout(() => { host.kill(); r(-1); }, 30000); } });
   const tail = hostOut.trim().split("\n").slice(-2).join(" | ");
-  ok("ui-host exited 0 after cleanup (tables empty again)", hostCode === 0 && /PASS cleanup: auth.audit_outbox, change, llc, location empty again/.test(hostOut), [hostCode, tail]);
+  ok("ui-host exited 0 after cleanup (tables empty again)", hostCode === 0 && /PASS cleanup: auth.audit_outbox, change, llc, location, partner_reason_bounds empty again/.test(hostOut), [hostCode, tail]);
   await sleep(300);
   rmSync(profile, { recursive: true, force: true });
   console.log(`${pass} passed, ${fail} failed`);

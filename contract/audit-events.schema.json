@@ -22,7 +22,8 @@
     { "$ref": "#/$defs/auth.mfa.reenrolled" },
     { "$ref": "#/$defs/auth.mfa.recovery_codes_issued" },
     { "$ref": "#/$defs/auth.config.session_cap_changed" },
-    { "$ref": "#/$defs/auth.config.change_denied" }
+    { "$ref": "#/$defs/auth.config.change_denied" },
+    { "$ref": "#/$defs/auth.partner_reason_bounds.changed" }
   ],
   "$defs": {
     "id": { "type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" },
@@ -466,6 +467,35 @@
         }
       }
     },
+    "auth.partner_reason_bounds.changed": {
+      "description": "v1.1 Slice A (contract/v1.1-S2a-location-login-config.md §3.6/§7.4). A partner's reason-length bounds created or changed by PUT /api/orgs/partners/{partner_id}/login-config/reason-bounds, by a Super Admin or ANY Partner Admin for ANY partner (org:partner_reason_bounds:write, the only cross-partner Partner Admin permission) [Confirmed DEC-111; LD 12b1d9cd names]. SAME transaction as the auth.partner_reason_bounds row, fail closed. No reason field [Confirmed DEC-113]. old_* = the bounds in force before (the deployment config LoginConfig:* on a create), new_* = the stored row; all inside 10..500 [Confirmed DEC-114]. cross_partner derived: true for a Super Admin (no partner) or a Partner Admin whose own partner is not the target [TLD 06:59]. A no-op PUT emits nothing.",
+      "required": ["admin_type", "actor", "target", "scope"],
+      "properties": {
+        "event_type": { "const": "auth.partner_reason_bounds.changed" },
+        "outcome": { "const": "success" },
+        "admin_type": { "enum": ["super", "partner"]},
+        "actor": { "required": ["user_id"], "properties": { "user_id": { "$ref": "#/$defs/id" }}},
+        "target": { "required": ["type", "id"], "properties": { "type": { "const": "partner" }, "id": { "$ref": "#/$defs/id" }}},
+        "action": { "enum": ["create", "update"] },
+        "scope": { "required": ["partner_id", "location_ids"], "properties": { "location_ids": { "maxItems": 0 }}},
+        "details": {
+          "required": ["change_kind", "row_version", "old_reason_min_length", "old_reason_max_length", "new_reason_min_length", "new_reason_max_length", "actor_partner_id", "target_partner_id", "cross_partner"],
+          "additionalProperties": false,
+          "properties": {
+            "change_kind": { "enum": ["created", "updated"] },
+            "row_version": { "description": "auth.partner_reason_bounds.row_version AFTER the change (1 on create).", "type": "integer", "minimum": 1 },
+            "old_reason_min_length": { "$ref": "#/$defs/reason_bound" },
+            "old_reason_max_length": { "$ref": "#/$defs/reason_bound" },
+            "new_reason_min_length": { "$ref": "#/$defs/reason_bound" },
+            "new_reason_max_length": { "$ref": "#/$defs/reason_bound" },
+            "actor_partner_id": { "description": "The Partner Admin's own partner; null for a Super Admin.", "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+            "target_partner_id": { "description": "= target.id = scope.partner_id.", "$ref": "#/$defs/id" },
+            "cross_partner": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "reason_bound": { "description": "A reason-length bound, 10..500 (DB CHECK prb_bounds) [Confirmed DEC-114].", "type": "integer", "minimum": 10, "not": { "minimum": 501 } },
     "auth.config.change_denied": {
       "description": "v1.1: a refused admin change. Exactly one branch by target.type: config (v1 body, unchanged) or location_login_config / partner (S2a, contract/v1.1-S2a-location-login-config.md §7.2).",
       "oneOf": [

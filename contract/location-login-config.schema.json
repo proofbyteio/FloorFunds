@@ -62,7 +62,7 @@
       "pattern": "^\\S(?:.*\\S)?$"
     },
     "reason": {
-      "description": "Written reason [Confirmed DEC-096, DEC-098]. The server trims it; whitespace-only counts as absent. Non-null after trim: LoginConfig:ReasonMinLength..LoginConfig:ReasonMaxLength code points [DEC-107; TLD 2026-11-04 16:32 Q1=A], deployment config snapshotted at startup (code defaults 10 and 500, Confirmed DEC-108, PM Nov 5 2026 6:47 AM PT, Mohanraj verbatim \"10 to 500\"), always inside the DB's 10..500 (CHECK llcc_reason), so this schema pins 10..500 and the server applies the configured bounds (else 422 reason_length). The bounds in effect: GET reason_min_length / reason_max_length, and GET /api/orgs/login-config/limits. Required for a downgrade (absent/null/blank -> 400 reason_required). Stored trimmed in the change row and the event. Raw input capped at 2000 characters.",
+      "description": "Written reason [Confirmed DEC-096, DEC-098]. The server trims it; whitespace-only counts as absent. Non-null after trim: LoginConfig:ReasonMinLength..LoginConfig:ReasonMaxLength code points [DEC-107; TLD 2026-11-04 16:32 Q1=A], deployment config snapshotted at startup (code defaults 10 and 500, Confirmed DEC-108, PM Nov 5 2026 6:47 AM PT, Mohanraj verbatim \"10 to 500\"), always inside the DB's 10..500 (CHECK llcc_reason), so this schema pins 10..500 and the server applies the configured bounds (else 422 reason_length). The bounds in effect: GET reason_min_length / reason_max_length, and GET /api/orgs/login-config/limits. Required for a downgrade (absent/null/blank -> 400 reason_required). Stored trimmed in the change row and the event. Raw input capped at 2000 characters. v1.1 Slice A note [TLD 08:00 Q3]: the configured bounds are now the location's partner's bounds (create: the body's partner_id): the partner's auth.partner_reason_bounds row if present, else LoginConfig:ReasonMinLength / ReasonMaxLength; still always inside 10..500 (DB CHECK prb_bounds and llcc_reason).",
       "oneOf": [
         {
           "type": "null"
@@ -197,7 +197,7 @@
       }
     },
     "reason_length_limit": {
-      "description": "DEC-107 [TLD 2026-11-04 16:32]: a reason bound in effect (code points after trim), from LoginConfig:ReasonMinLength / LoginConfig:ReasonMaxLength, snapshotted at startup. The API refuses to start unless 10 <= min <= max <= 500 (DB CHECK llcc_reason, db/migrations.sql L94), so every value is in 10..500. Read-only: a client sending reason_min_length / reason_max_length in a write gets 422 unknown_field.",
+      "description": "DEC-107 [TLD 2026-11-04 16:32]: a reason bound in effect (code points after trim), from LoginConfig:ReasonMinLength / LoginConfig:ReasonMaxLength, snapshotted at startup. The API refuses to start unless 10 <= min <= max <= 500 (DB CHECK llcc_reason, db/migrations.sql L94), so every value is in 10..500. Read-only: a client sending reason_min_length / reason_max_length in a write gets 422 unknown_field. v1.1 Slice A note [TLD 08:00 Q3]: a partner's own row (PUT .../partners/{partner_id}/login-config/reason-bounds) overrides the config; DB CHECK prb_bounds keeps it in 10..500 [DEC-114].",
       "type": "integer",
       "minimum": 10,
       "maximum": 500,
@@ -391,7 +391,7 @@
       ]
     },
     "login_config_get_super": {
-      "description": "GET /api/orgs/locations/{location_id}/login-config 200 body (super): login_config_view_super plus reason_min_length and reason_max_length, the reason bounds in effect (screen 9 Edit) [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)].",
+      "description": "GET /api/orgs/locations/{location_id}/login-config 200 body (super): login_config_view_super plus reason_min_length and reason_max_length, the reason bounds in effect (screen 9 Edit) [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)]. v1.1 Slice A note [TLD 08:00 Q3; DEC-115]: the bounds in effect come from the resolver: the location's partner's auth.partner_reason_bounds row if present, else LoginConfig:ReasonMinLength / ReasonMaxLength (ships 10/500).",
       "allOf": [
         {
           "$ref": "#/$defs/login_config_view_super"
@@ -405,7 +405,7 @@
       ]
     },
     "login_config_get_restricted": {
-      "description": "GET /api/orgs/locations/{location_id}/login-config 200 body (restricted): login_config_view_restricted plus reason_min_length and reason_max_length, the reason bounds in effect (screen 9 Edit) [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)].",
+      "description": "GET /api/orgs/locations/{location_id}/login-config 200 body (restricted): login_config_view_restricted plus reason_min_length and reason_max_length, the reason bounds in effect (screen 9 Edit) [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)]. v1.1 Slice A note [TLD 08:00 Q3; DEC-115]: the bounds in effect come from the resolver: the location's partner's auth.partner_reason_bounds row if present, else LoginConfig:ReasonMinLength / ReasonMaxLength (ships 10/500).",
       "allOf": [
         {
           "$ref": "#/$defs/login_config_view_restricted"
@@ -467,7 +467,7 @@
       ]
     },
     "login_config_limits": {
-      "description": "GET /api/orgs/login-config/limits 200 body [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)]: exactly the reason bounds in effect, read-only from the startup snapshot, for screen 9 Create (no location yet). The server guarantees reason_min_length <= reason_max_length (startup rule; not expressible here). Read rule = the location GET's step 2 (org:V): 401 unauthenticated, 403 forbidden without org:V.",
+      "description": "GET /api/orgs/login-config/limits 200 body [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)]: exactly the reason bounds in effect, read-only from the startup snapshot, for screen 9 Create (no location yet). The server guarantees reason_min_length <= reason_max_length (startup rule; not expressible here). Read rule = the location GET's step 2 (org:V): 401 unauthenticated, 403 forbidden without org:V. v1.1 Slice A note [TLD 08:00 Q3]: optional ?partner_id=X (screen 9 Create's partner) answers X's bounds through the resolver (partner row, else LoginConfig:*), behind the cross-partner read check point (Super Admin or any Partner Admin, TO CONFIRM LS-OQ-61; else 404 not_found); malformed partner_id = 422 [{partner_id, partner_id_format}]. Without it: a Partner Admin's own partner, else (Super Admin, org:V reader) the config.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -482,6 +482,34 @@
           "$ref": "#/$defs/reason_length_limit"
         }
       }
+    },
+    "partner_reason_bounds_write": {
+      "description": "v1.1 Slice A. PUT /api/orgs/partners/{partner_id}/login-config/reason-bounds request body: exactly these two integers [DEC-114: 10 <= min <= max <= 500; min > max is 422 reason_bound_order, not expressible here]. No reason field [Confirmed DEC-113]. If-Match is required: the GET's ETag, or \"1\" (the create constant) when the GET had no ETag [TLD 08:00 Q2, 08:00b(1)].",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason_min_length", "reason_max_length"],
+      "properties": {
+        "reason_min_length": { "$ref": "#/$defs/reason_length_limit" },
+        "reason_max_length": { "$ref": "#/$defs/reason_length_limit" }
+      }
+    },
+    "partner_reason_bounds_view": {
+      "description": "v1.1 Slice A. GET and PUT 200 body of /api/orgs/partners/{partner_id}/login-config/reason-bounds. source partner = the partner's stored row (with row_version, updated_by, updated_at; ETag = row_version); source default = no row: the deployment config LoginConfig:* (10/500 as shipped, DEC-115), and no ETag, no row_version [TLD 08:00 Q2/Q3].",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["partner_id", "reason_min_length", "reason_max_length", "source"],
+      "properties": {
+        "partner_id": { "$ref": "#/$defs/id" },
+        "reason_min_length": { "$ref": "#/$defs/reason_length_limit" },
+        "reason_max_length": { "$ref": "#/$defs/reason_length_limit" },
+        "source": { "enum": ["partner", "default"] },
+        "row_version": { "type": "integer", "minimum": 1 },
+        "updated_by": { "$ref": "#/$defs/id" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "if": { "properties": { "source": { "const": "partner" } } },
+      "then": { "required": ["row_version", "updated_by", "updated_at"] },
+      "else": { "not": { "anyOf": [{ "required": ["row_version"] }, { "required": ["updated_by"] }, { "required": ["updated_at"] }] } }
     },
     "audited_state": {
       "description": "The before/after shape shared by the change row and auth.provider.changed. Exactly these four keys; never secret_ref [SRC: LD \u00a74.1 L184 'before/after provider kind and tenant ids, no secrets'] [Confirmed DEC-096/098 for the two flags].",
@@ -629,7 +657,7 @@
       ]
     },
     "field_error_code": {
-      "description": "Per-field codes inside a 422 (spec \u00a75.2). field_not_writable = a server-filled key (oidc_authority, oidc_client_id [TLD 2026-11-04 7:41]; secret_ref [TLD 2026-11-04 9:49, D-51]) in the body, any value; reason_length = a non-blank reason not LoginConfig:ReasonMinLength..LoginConfig:ReasonMaxLength code points after trim (defaults 10..500; always inside 10..500) [TLD 2026-11-04 7:39; DEC-107, TLD 2026-11-04 16:32]. secret_ref_required and secret_ref_format were removed at TLD 9:49 (no client-supplied secret_ref left to require or check).",
+      "description": "Per-field codes inside a 422 (spec \u00a75.2). field_not_writable = a server-filled key (oidc_authority, oidc_client_id [TLD 2026-11-04 7:41]; secret_ref [TLD 2026-11-04 9:49, D-51]) in the body, any value; reason_length = a non-blank reason not LoginConfig:ReasonMinLength..LoginConfig:ReasonMaxLength code points after trim (defaults 10..500; always inside 10..500) [TLD 2026-11-04 7:39; DEC-107, TLD 2026-11-04 16:32]. secret_ref_required and secret_ref_format were removed at TLD 9:49 (no client-supplied secret_ref left to require or check). v1.1 Slice A (PUT .../reason-bounds): reason_bound_range = reason_min_length or reason_max_length outside 10..500; reason_bound_order = both in range but min > max (on reason_min_length) [DEC-114].",
       "enum": [
         "required",
         "unknown_field",
@@ -644,7 +672,9 @@
         "fallback_not_applicable",
         "partner_id_format",
         "name_invalid",
-        "reason_length"
+        "reason_length",
+        "reason_bound_range",
+        "reason_bound_order"
       ]
     },
     "error_response": {

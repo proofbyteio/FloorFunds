@@ -10,9 +10,11 @@ public enum BuiltInRole { None, SuperAdmin, PartnerAdmin }
 
 /// <summary>
 /// What the caller holds (spec §4 step 2). Permissions count only through a built-in Super Admin or Partner Admin role
-/// [SRC: LD L172]; OrgViewLocations is org:V on specific locations (a reader with no admin role).
+/// [SRC: LD L172]; OrgViewLocations is org:V on specific locations (a reader with no admin role). PartnerReasonBoundsWrite is
+/// org:partner_reason_bounds:write (Slice A, LD 12b1d9cd): Super Admin and ANY Partner Admin, for ANY partner; the only cross-partner
+/// Partner Admin permission [Confirmed DEC-111]. No other Partner Admin check is widened by it.
 /// </summary>
-public sealed record AdminGrant(BuiltInRole Role, bool LoginMethodWrite, bool OrgCreateEdit, IReadOnlySet<Guid> OrgViewLocations)
+public sealed record AdminGrant(BuiltInRole Role, bool LoginMethodWrite, bool OrgCreateEdit, IReadOnlySet<Guid> OrgViewLocations, bool PartnerReasonBoundsWrite = false)
 {
     public static readonly AdminGrant Nothing = new(BuiltInRole.None, false, false, new HashSet<Guid>());
 }
@@ -32,8 +34,8 @@ public sealed class TokenAdminDirectory : IAdminDirectory
 {
     public Task<AdminGrant> ResolveAsync(AdminIdentity id, CancellationToken ct) => Task.FromResult(id.AdminType switch
     {
-        "super" => new AdminGrant(BuiltInRole.SuperAdmin, true, true, new HashSet<Guid>()),
-        "partner" => new AdminGrant(BuiltInRole.PartnerAdmin, true, true, new HashSet<Guid>()),
+        "super" => new AdminGrant(BuiltInRole.SuperAdmin, true, true, new HashSet<Guid>(), PartnerReasonBoundsWrite: true),
+        "partner" => new AdminGrant(BuiltInRole.PartnerAdmin, true, true, new HashSet<Guid>(), PartnerReasonBoundsWrite: true),
         _ => AdminGrant.Nothing,
     });
 }

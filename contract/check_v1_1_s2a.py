@@ -485,10 +485,55 @@ _s3 = spec.split("### 3.2")[0]
 for _pin in ["### 3.5 `GET /api/orgs/login-config/limits` [DEC-107] [TLD 2026-11-04 16:32 Q2=(ii)]", "**Reason bounds [DEC-107] [TLD 2026-11-04 16:32 Q2=(ii)]:**",
              "**`LoginConfig:ReasonMinLength` to `LoginConfig:ReasonMaxLength` code points after trimming**", "the API refuses to start unless 10 ≤ min ≤ max ≤ 500",
              "code defaults min 10 and max 500 (**Confirmed DEC-108**, PM Nov 5 2026 6:47 AM PT; Mohanraj verbatim \"10 to 500\")", "| DEC-107 | PM t149u/t150u", "| TLD 16:32 |", "| D-106 |", "`2b17464c29521b9b479155d6cc96f144`",
-             "**DB-WIDEN** (follow-up, not S2a)", "PQ-238 (who may change it) is open"]:
+             "**DB-WIDEN** (follow-up, not S2a)", "PQ-238 (who may change it) was open at DEC-107", "**closed by DEC-111** (v1.1 Slice A: per-partner bounds, §3.6)"]:
     exp("DEC-107 spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
 exp("DEC-107 spec: no fixed '10–500 characters after trimming' / old interim copy left as live text", [k for k in ["**10–500 characters after trimming**", "(TO CONFIRM: once Mohanraj confirms 10 to 500", "\"Saved in the audit log.\", 10 to 500 characters;", "non-blank reason not 10..500 chars after trim", "`reason` (null or trimmed 10..500)."] if k in spec], False)
 exp("DEC-107 spec: default min 100 appears nowhere as a default", [k for k in ["default min 100", "min 100"] if k in spec], False)
+
+exp("Slice A spec: PQ-238 is no longer described as open", [k for k in ["PQ-238 (who may change it) is open", "(PQ-238 open)", "is PQ-238 (open)"] if k in spec], False)
+
+# ---- v1.1 Slice A [Confirmed DEC-109..117] [TLD 06:59, 08:00, 08:00b] [LD 12b1d9cd]: per-partner reason bounds ----
+_PRV = "#/$defs/partner_reason_bounds_view"; _PRW = "#/$defs/partner_reason_bounds_write"
+_pd = EX["prb_get_200_default"]; _pp = EX["prb_get_200_partner"]; _pw = EX["prb_put_req"]; _pe = EX["ev_prb_changed_cross_partner"]
+exp("Slice A write body is exactly {reason_min_length, reason_max_length}", [] if sorted(_pw) == ["reason_max_length", "reason_min_length"] else [sorted(_pw)], False)
+exp("Slice A write with reason rejected (DEC-113)", errs(LLC, _PRW, m(_pw, reason="x" * 20)), True)
+exp("Slice A write with row_version rejected", errs(LLC, _PRW, m(_pw, row_version=1)), True)
+exp("Slice A write min 9 rejected", errs(LLC, _PRW, m(_pw, reason_min_length=9)), True)
+exp("Slice A write max 501 rejected", errs(LLC, _PRW, m(_pw, reason_max_length=501)), True)
+exp("Slice A write string rejected", errs(LLC, _PRW, m(_pw, reason_min_length="20")), True)
+exp("Slice A write 10/500 accepted", errs(LLC, _PRW, m(_pw, reason_min_length=10, reason_max_length=500)), False)
+exp("Slice A default view without row_version/ETag fields", [] if _pd["source"] == "default" and not ({"row_version", "updated_by", "updated_at"} & set(_pd)) else [_pd], False)
+exp("Slice A default view with row_version rejected", errs(LLC, _PRV, m(_pd, row_version=1)), True)
+exp("Slice A partner view without row_version rejected", errs(LLC, _PRV, m(_pp, row_version=DEL)), True)
+exp("Slice A partner view without updated_by rejected", errs(LLC, _PRV, m(_pp, updated_by=DEL)), True)
+exp("Slice A view unknown source rejected", errs(LLC, _PRV, m(_pp, source="config")), True)
+exp("Slice A view extra key rejected", errs(LLC, _PRV, m(_pp, reason="x" * 20)), True)
+exp("Slice A view max 501 rejected", errs(LLC, _PRV, m(_pp, reason_max_length=501)), True)
+_fc = S["location-login-config.schema.json"]["$defs"]["field_error_code"]["enum"]
+exp("Slice A field codes reason_bound_range / reason_bound_order listed", [k for k in ["reason_bound_range", "reason_bound_order"] if k not in _fc], False)
+_ec = S["location-login-config.schema.json"]["$defs"]["error_code"]["enum"]
+exp("Slice A: no 412 / precondition_failed code (errors.md frozen)", [k for k in ["precondition_failed"] if k in _ec], False)
+exp("Slice A event: cross_partner true for a Partner Admin on another partner, no reason",
+    [] if _pe["event_type"] == "auth.partner_reason_bounds.changed" and _pe["admin_type"] == "partner" and _pe["details"]["cross_partner"] is True
+    and _pe["details"]["actor_partner_id"] != _pe["details"]["target_partner_id"] and _pe["target"] == {"type": "partner", "id": _pe["details"]["target_partner_id"]}
+    and _pe["scope"]["partner_id"] == _pe["details"]["target_partner_id"] and "reason" not in _pe["details"] else [_pe["details"]], False)
+exp("Slice A event with details.reason rejected (DEC-113)", errs(AE, None, m(_pe, details__reason="x" * 20)), True)
+exp("Slice A event without cross_partner rejected", errs(AE, None, m(_pe, details__cross_partner=DEL)), True)
+exp("Slice A event without actor_partner_id rejected", errs(AE, None, m(_pe, details__actor_partner_id=DEL)), True)
+exp("Slice A event Super Admin (actor_partner_id null) accepted", errs(AE, None, m(_pe, admin_type="super", details__actor_partner_id=None)), False)
+exp("Slice A event without admin_type rejected", errs(AE, None, m(_pe, admin_type=DEL)), True)
+exp("Slice A event target location rejected", errs(AE, None, m(_pe, target={"type": "location", "id": _pe["target"]["id"]})), True)
+exp("Slice A event new max 501 rejected", errs(AE, None, m(_pe, details__new_reason_max_length=501)), True)
+exp("Slice A event old min 9 rejected", errs(AE, None, m(_pe, details__old_reason_min_length=9)), True)
+exp("Slice A event location_ids non-empty rejected", errs(AE, None, m(_pe, scope__location_ids=[_pe["target"]["id"]])), True)
+exp("Slice A event outcome denied rejected", errs(AE, None, m(_pe, outcome="denied")), True)
+for _pin in ["### 3.6 `GET` / `PUT /api/orgs/partners/{partner_id}/login-config/reason-bounds` (v1.1 Slice A)",
+             "`org:partner_reason_bounds:write`", "### 7.5 `auth.partner_reason_bounds.changed` (v1.1 Slice A)", "- **`auth.partner_reason_bounds`** (v1.1 Slice A,",
+             "**unset partner: `\"1\"`, the create constant**", "**No 412** (errors.md frozen)", "(SQLSTATE 23505) and gets 409 `concurrency_conflict` with the winner's `current_row_version`",
+             "Create and update both answer **200**", "**TO CONFIRM LS-OQ-61**", "**Still OPEN: LS-OQ-61**", "**No reason field** [Confirmed DEC-113]",
+             "the config is held to the same range at startup or the API refuses to start [TLD 08:00b(2)]",
+             "Screen 9 only shows the resolved limits, no knobs (DEC-116); the partner settings page is Slice B (DEC-117)"]:
+    exp("Slice A spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
 
 # ---- DEC-106 [Mohanraj, PM t145u] [UX D-106 2b17464c]: Partner Admin and Super Admin can both turn MFA back on, no reason ----
 _pm = EX["put_req_pa_mfa_on"]; _em = EX["ev_changed_pa_mfa_on"]

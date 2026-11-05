@@ -307,7 +307,8 @@ async function start() {
     // a 401 / 403 is an access answer, not a limits value, so it is still shown as the page error.
     // [TLD 2026-11-04 18:35] a redirect, a 3xx or a non-JSON 200 is shown like a 401; the GET is aborted after
     // LIMITS_TIMEOUT_MS (10 s) and then falls back like a failed fetch (limitsOutcome, limitsTimeout in llc-core.mjs).
-    const lr = await api("GET", "/orgs/login-config/limits", { timeoutMs: limitsTimeout(globalThis.__llcLimitsTimeoutMs), manualRedirect: true });
+    // v1.1 Slice A [TLD 08:00 Q3]: the URL partner's bounds (its partner_reason_bounds row, else the deployment config).
+    const lr = await api("GET", `/orgs/login-config/limits?partner_id=${encodeURIComponent(st.route.partnerId)}`, { timeoutMs: limitsTimeout(globalThis.__llcLimitsTimeoutMs), manualRedirect: true });
     const lo = limitsOutcome(lr);
     if (lo.kind === "error" || lo.kind === "error401") { show($("banner-loading"), false); applyErrors(lo.kind === "error401" ? { ...lr, status: 401 } : lr); body.dataset.state = "error"; return; }
     setLimits(lo.kind === "server" ? lo.limits : null);

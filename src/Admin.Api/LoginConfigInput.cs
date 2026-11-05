@@ -16,6 +16,16 @@ public sealed record LoginConfigInput(
 public sealed record CreateInput(Guid PartnerId, string Name, LoginConfigInput Config);
 
 /// <summary>
+/// The reason-length bounds in force for one partner (Slice A, TLD 08:00 Q3): the partner's auth.partner_reason_bounds row when
+/// present, else the deployment config LoginConfig:ReasonMinLength / ReasonMaxLength (startup snapshot; ships 10/500, DEC-115).
+/// Always inside 10..500 (DB CHECK prb_bounds / llcc_reason; config checked at startup, TLD 08:00b(2)).
+/// </summary>
+public readonly record struct ReasonBounds(int Min, int Max)
+{
+    public static ReasonBounds FromConfig(AdminApiOptions opt) => new(opt.ReasonMinLength, opt.ReasonMaxLength);
+}
+
+/// <summary>
 /// §5.2 field validation, ALL errors collected, deterministic order. Never copies a submitted VALUE into an error
 /// (field names only; unknown keys are named only when they look like plain identifiers).
 /// </summary>
@@ -51,7 +61,7 @@ public static class LoginConfigValidator
 
     static string KeyName(string prefix, string key) => prefix + (SafeKeyRe.IsMatch(key) ? key : "*");
 
-    public static LoginConfigInput? ValidateWrite(JsonElement o, string prefix, CurrentConfig? current, AdminApiOptions opt, List<FieldError> errs, out Guid[] boundCandidates)
+    public static LoginConfigInput? ValidateWrite(JsonElement o, string prefix, CurrentConfig? current, ReasonBounds bounds, List<FieldError> errs, out Guid[] boundCandidates)
     {
         int before = errs.Count;
         boundCandidates = [];
@@ -127,8 +137,8 @@ public static class LoginConfigValidator
             {
                 var raw = rs.GetString()!;
                 var t = raw.Trim();
-                // DEC-107: bounds from LoginConfig:ReasonMinLength / ReasonMaxLength (startup snapshot, inside the DB's 10..500).
-                if (Runes(raw) > 2000 || (t.Length > 0 && (Runes(t) < opt.ReasonMinLength || Runes(t) > opt.ReasonMaxLength))) errs.Add(new(prefix + "reason", "reason_length"));
+                // DEC-107 + Slice A (TLD 08:00 Q3): the location's partner's bounds (partner row, else LoginConfig:*), inside the DB's 10..500.
+                if (Runes(raw) > 2000 || (t.Length > 0 && (Runes(t) < bounds.Min || Runes(t) > bounds.Max))) errs.Add(new(prefix + "reason", "reason_length"));
                 else if (t.Length > 0) reason = t;
             }
         }
@@ -140,7 +150,7 @@ public static class LoginConfigValidator
         return new LoginConfigInput(kind!, display!, tenants.ToArray(), fallback!.Value, mfa!.Value, reason, present);
     }
 
-    public static CreateInput? ValidateCreate(JsonElement o, AdminApiOptions opt, List<FieldError> errs, out Guid[] boundCandidates)
+    public static CreateInput? ValidateCreate(JsonElement o, ReasonBounds bounds, List<FieldError> errs, out Guid[] boundCandidates)
     {
         boundCandidates = [];
         int before = errs.Count;
@@ -160,8 +170,31 @@ public static class LoginConfigValidator
         }
         if (!o.TryGetProperty("login_config", out var lc)) errs.Add(new("login_config", "required"));
         else if (lc.ValueKind != JsonValueKind.Object) errs.Add(new("login_config", "type"));
-        else cfg = ValidateWrite(lc, "login_config/", null, opt, errs, out boundCandidates);
+        else cfg = ValidateWrite(lc, "login_config/", null, bounds, errs, out boundCandidates);
         return errs.Count > before || cfg is null ? null : new CreateInput(partner, name!, cfg);
+    }
+
+    /// <summary>
+    /// PUT /api/orgs/partners/{partner_id}/login-config/reason-bounds body (Slice A): exactly {reason_min_length, reason_max_length},
+    /// both JSON integers. Each outside 10..500 = reason_bound_range; both in range but min &gt; max = reason_bound_order on
+    /// reason_min_length [DEC-114: hard 10 &lt;= min &lt;= max &lt;= 500, = DB CHECK prb_bounds]. All errors collected; values never echoed.
+    /// </summary>
+    public static ReasonBounds? ValidateBounds(JsonElement o, List<FieldError> errs)
+    {
+        int before = errs.Count;
+        foreach (var p in o.EnumerateObject())
+            if (p.Name is not ("reason_min_length" or "reason_max_length")) errs.Add(new(KeyName("", p.Name), "unknown_field"));
+        int? Num(string k)
+        {
+            if (!o.TryGetProperty(k, out var v)) { errs.Add(new(k, "required")); return null; }
+            if (v.ValueKind != JsonValueKind.Number || !v.TryGetInt32(out var n)) { errs.Add(new(k, "type")); return null; }
+            if (n < AdminApiOptions.ReasonFloor || n > AdminApiOptions.ReasonCeiling) { errs.Add(new(k, "reason_bound_range")); return null; }
+            return n;
+        }
+        var min = Num("reason_min_length");
+        var max = Num("reason_max_length");
+        if (min is { } a && max is { } b && a > b) errs.Add(new("reason_min_length", "reason_bound_order"));
+        return errs.Count > before ? null : new ReasonBounds(min!.Value, max!.Value);
     }
 
     /// <summary>Partner id from a create body when it is well formed (scope check, §4 step 3-4 on create).</summary>

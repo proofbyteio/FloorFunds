@@ -53,6 +53,24 @@ public sealed class AuditOutbox(JsonSchemaLite schema)
             });
 
     /// <summary>
+    /// auth.partner_reason_bounds.changed (Slice A; LD 12b1d9cd name; DEC-113: no reason field). old_* = the bounds in force before
+    /// the change (the deployment config LoginConfig:* on a create), new_* = the stored row. cross_partner is derived: true for a Super
+    /// Admin (no partner) or a Partner Admin whose own partner is not the target [TLD 06:59]. Same transaction as the row (fail closed).
+    /// </summary>
+    public static JsonObject PartnerReasonBoundsChanged(Guid eventId, DateTimeOffset at, AdminIdentity actor, string requestId, Guid target, bool created,
+        long rowVersion, int oldMin, int oldMax, int newMin, int newMax)
+    {
+        var actorPartner = actor.AdminType == "partner" ? actor.PartnerId : null;
+        return Envelope(eventId, "auth.partner_reason_bounds.changed", "success", at, actor, requestId, true, "partner", target, created ? "create" : "update", target, [],
+            new JsonObject
+            {
+                ["change_kind"] = created ? "created" : "updated", ["row_version"] = rowVersion,
+                ["old_reason_min_length"] = oldMin, ["old_reason_max_length"] = oldMax, ["new_reason_min_length"] = newMin, ["new_reason_max_length"] = newMax,
+                ["actor_partner_id"] = actorPartner?.ToString("D"), ["target_partner_id"] = target.ToString("D"), ["cross_partner"] = actorPartner != target,
+            });
+    }
+
+    /// <summary>
     /// auth.config.change_denied, location_login_config branch (§7.2). not_admin carries no admin_type and no actor_partner_id.
     /// Update: target location_login_config/location, scope [location], details.location_id = location.
     /// Create: target partner/partner, scope [], details.location_id null [TLD 2026-11-04 9:04, OQ-P3-2]. targetPartner is null only for

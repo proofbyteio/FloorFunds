@@ -71,7 +71,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             var g = await directory.ResolveAsync(id, ctx.RequestAborted);
             // A built-in role must agree with the sign-in kind; otherwise only org:V (if any) remains.
             if ((g.Role == BuiltInRole.SuperAdmin && id.AdminType != "super") || (g.Role == BuiltInRole.PartnerAdmin && (id.AdminType != "partner" || id.PartnerId is null)))
-                g = g with { Role = BuiltInRole.None, LoginMethodWrite = false, OrgCreateEdit = false };
+                g = g with { Role = BuiltInRole.None, LoginMethodWrite = false, OrgCreateEdit = false, PartnerReasonBoundsWrite = false };
             return await f(new Caller(id, g, requestId));
         }
         catch (Fail x) { return x.Body is null ? Results.StatusCode(x.Status) : Json(x.Status, x.Body); }
@@ -217,7 +217,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     static string T(DateTime d) => AuditOutbox.Ts(new DateTimeOffset(DateTime.SpecifyKind(d, DateTimeKind.Utc)));
 
-    JsonObject View(LlcRow r, bool super, bool limits = false)
+    JsonObject View(LlcRow r, bool super, ReasonBounds? limits = null)
     {
         var v = new JsonObject
         {
@@ -239,13 +239,13 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         v["allow_db_fallback"] = r.AllowDbFallback; v["mfa_required"] = r.MfaRequired; v["row_version"] = r.RowVersion;
         v["created_by"] = r.CreatedBy.ToString("D"); v["created_at"] = T(r.CreatedAt);
         v["updated_by"] = r.UpdatedBy.ToString("D"); v["updated_at"] = T(r.UpdatedAt);
-        // DEC-107 [TLD 2026-11-04 16:32 Q2=(ii)]: the GET only (screen 9 Edit) carries the reason bounds from the startup snapshot;
-        // the PUT 200 / POST 201 bodies stay unchanged.
-        if (limits) { v["reason_min_length"] = opt.ReasonMinLength; v["reason_max_length"] = opt.ReasonMaxLength; }
+        // DEC-107 [TLD 2026-11-04 16:32 Q2=(ii)]: the GET only (screen 9 Edit) carries the reason bounds; Slice A (TLD 08:00 Q3): the
+        // location's partner's bounds from the resolver. The PUT 200 / POST 201 bodies stay unchanged.
+        if (limits is { } b) { v["reason_min_length"] = b.Min; v["reason_max_length"] = b.Max; }
         return v;
     }
 
-    IResult ViewResult(HttpContext ctx, int status, LlcRow r, Caller who, bool limits = false)
+    IResult ViewResult(HttpContext ctx, int status, LlcRow r, Caller who, ReasonBounds? limits = null)
     {
         ctx.Response.Headers.ETag = $"\"{r.RowVersion}\"";
         return Json(status, View(r, who.IsSuper, limits));
@@ -293,6 +293,151 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         await cmd.ExecuteNonQueryAsync();
     }
 
+    // ---------- Slice A: per-partner reason-length bounds ----------
+
+    sealed record PrbRow(Guid PartnerId, int Min, int Max, Guid UpdatedBy, DateTime UpdatedAt, long RowVersion);
+
+    /// <summary>If-Match for the first PUT on a partner with no row (its GET has no ETag) [TLD 08:00 Q2, 08:00b(1)]; the INSERT is at v1.</summary>
+    public const long ReasonBoundsCreateVersion = 1;
+
+    /// <summary>Needs app.* scope super, or partner with app.partner_id set (RLS prb_admin): every caller of the resolver has it.</summary>
+    static async Task<PrbRow?> LoadBoundsAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid partner, bool forUpdate)
+    {
+        await using var cmd = new NpgsqlCommand(
+            "SELECT reason_min_length, reason_max_length, updated_by, updated_at, row_version FROM auth.partner_reason_bounds WHERE partner_id = $1"
+            + (forUpdate ? " FOR UPDATE" : ""), c, tx);
+        cmd.Parameters.Add(new() { Value = partner });
+        await using var r = await cmd.ExecuteReaderAsync();
+        if (!await r.ReadAsync()) return null;
+        return new PrbRow(partner, r.GetInt32(0), r.GetInt32(1), r.GetGuid(2), r.GetFieldValue<DateTime>(3), r.GetInt64(4));
+    }
+
+    /// <summary>
+    /// THE reason-bounds resolver [TLD 08:00 Q3]: the partner's auth.partner_reason_bounds row if present, else the deployment config
+    /// LoginConfig:ReasonMinLength / ReasonMaxLength (startup snapshot; ships 10/500 = DEC-115's inherit). Used by the limits GET, the
+    /// location GET, and the location PUT / POST reason check, so screen 9's hint and the server agree.
+    /// </summary>
+    async Task<ReasonBounds> ResolveBoundsAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid partner) =>
+        await LoadBoundsAsync(c, tx, partner, false) is { } r ? new ReasonBounds(r.Min, r.Max) : ReasonBounds.FromConfig(opt);
+
+    /// <summary>
+    /// The ONE read check point for another partner's reason bounds: GET .../reason-bounds and GET /api/orgs/login-config/limits?partner_id=.
+    /// TL interim: Super Admin or ANY Partner Admin, for any partner. **TO CONFIRM LS-OQ-61** (open with Mohanraj): narrowing it (e.g. a
+    /// Partner Admin to their own partner) is a change here only.
+    /// </summary>
+    static bool MayReadPartnerBounds(Caller who, Guid partner) => who.IsAdmin;
+
+    /// <summary>org:partner_reason_bounds:write [LD 12b1d9cd]: built-in Super Admin or ANY Partner Admin, any partner [Confirmed DEC-111].</summary>
+    static bool MayWritePartnerBounds(Caller who) => who.IsAdmin && who.Grant.PartnerReasonBoundsWrite;
+
+    static JsonObject LimitsJson(ReasonBounds b) => new() { ["reason_min_length"] = b.Min, ["reason_max_length"] = b.Max };
+
+    JsonObject BoundsView(Guid partner, PrbRow? r)
+    {
+        var b = r is null ? ReasonBounds.FromConfig(opt) : new ReasonBounds(r.Min, r.Max);
+        var v = new JsonObject { ["partner_id"] = partner.ToString("D"), ["reason_min_length"] = b.Min, ["reason_max_length"] = b.Max, ["source"] = r is null ? "default" : "partner" };
+        if (r is not null)
+        {
+            v["row_version"] = r.RowVersion; v["updated_by"] = r.UpdatedBy.ToString("D"); v["updated_at"] = T(r.UpdatedAt);
+        }
+        return v;
+    }
+
+    /// <summary>ETag only when the partner has a row [TLD 08:00 Q2]: an unset partner's GET has none (the first PUT sends If-Match "1").</summary>
+    IResult BoundsResult(HttpContext ctx, Guid partner, PrbRow? r)
+    {
+        if (r is not null) ctx.Response.Headers.ETag = $"\"{r.RowVersion}\"";
+        return Json(200, BoundsView(partner, r));
+    }
+
+    /// <summary>Malformed or nil partner id = 404 not_found (as a malformed location id). S2a has no partner registry: any other id is a partner.</summary>
+    static Guid PartnerFromPath(string s) => ParseId(s) is { } g && g != Guid.Empty ? g : throw Err(404, "not_found");
+
+    // ---------- GET /api/orgs/partners/{partner_id}/login-config/reason-bounds (Slice A) ----------
+
+    public Task<IResult> GetReasonBoundsAsync(HttpContext ctx, string partnerId) => Run(ctx, async who =>
+    {
+        if (!who.IsAdmin) throw Err(403, "forbidden");
+        var partner = PartnerFromPath(partnerId);
+        if (!MayReadPartnerBounds(who, partner)) throw Err(404, "not_found");
+        await using var c = await db.OpenConnectionAsync();
+        await using var tx = await c.BeginTransactionAsync();
+        await SetScopeAsync(c, tx, who.Id.AdminType, who.Id.PartnerId);
+        var row = await LoadBoundsAsync(c, tx, partner, false);
+        await tx.CommitAsync();
+        return BoundsResult(ctx, partner, row);
+    });
+
+    // ---------- PUT /api/orgs/partners/{partner_id}/login-config/reason-bounds (Slice A) ----------
+
+    /// <summary>
+    /// Step order as the location PUT [TLD 08:00 Q1]: 401 / 403 (before the body is read), 404, 428 precondition_required (no If-Match)
+    /// / 400 if_match_invalid, 409 concurrency_conflict + current_row_version, then 413 / 400 malformed_body / 422. No 412.
+    /// Unset partner: If-Match "1" creates the row at v1; any other version = 409 with current_row_version 1 (the create constant).
+    /// Racing first PUTs: one INSERT wins; the other hits the primary key (23505) and gets 409 + the winner's row_version [TLD 08:00b(1)].
+    /// 200 on create and update; ETag = the new row_version. Same values = 200, nothing written, no event. Event in the same transaction.
+    /// </summary>
+    public Task<IResult> PutReasonBoundsAsync(HttpContext ctx, string partnerId) => Run(ctx, async who =>
+    {
+        if (!MayWritePartnerBounds(who)) throw Err(403, "forbidden");
+        var read = await ReadBodyAsync(ctx);
+        if (read.TimedOut) throw BodyTimeout(ctx, who);
+        var partner = PartnerFromPath(partnerId);
+        var im = ctx.Request.Headers.IfMatch;
+        if (im.Count == 0) throw Err(428, "precondition_required");
+        if (im.Count != 1 || IfMatchRe.Match(im[0] ?? "") is not { Success: true } m) throw Err(400, "if_match_invalid");
+        var expected = long.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+
+        await using var c = await db.OpenConnectionAsync();
+        await using var tx = await c.BeginTransactionAsync();
+        await SetScopeAsync(c, tx, who.Id.AdminType, who.Id.PartnerId);
+        var row = await LoadBoundsAsync(c, tx, partner, true);
+        var current = row?.RowVersion ?? ReasonBoundsCreateVersion;
+        if (current != expected) throw Err(409, "concurrency_conflict", b => b["current_row_version"] = current);
+        if (read.TooLarge) throw Err(413, "payload_too_large");
+        if (ParseObject(read.Bytes) is not { } o) throw Err(400, "malformed_body");
+        var errs = new List<FieldError>();
+        if (LoginConfigValidator.ValidateBounds(o, errs) is not { } n) { await tx.RollbackAsync(); throw Validation(errs); }
+        var old = row is null ? ReasonBounds.FromConfig(opt) : new ReasonBounds(row.Min, row.Max);
+        if (row is not null && old == n)
+        {
+            await tx.RollbackAsync(); // no-op PUT: nothing written, no event (as the location PUT, OQ-P3-6).
+            return BoundsResult(ctx, partner, row);
+        }
+        var now = Now();
+        var created = row is null;
+        var next = created ? ReasonBoundsCreateVersion : expected + 1;
+        try
+        {
+            await using var w = new NpgsqlCommand(created
+                ? "INSERT INTO auth.partner_reason_bounds (partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version) VALUES ($1, $3, $4, $5, $6, 1)"
+                : "UPDATE auth.partner_reason_bounds SET reason_min_length = $3, reason_max_length = $4, updated_by = $5, updated_at = $6, row_version = row_version + 1 WHERE partner_id = $1 AND row_version = $2",
+                c, tx);
+            w.Parameters.Add(new() { Value = partner });
+            w.Parameters.Add(new() { Value = expected });
+            w.Parameters.Add(new() { Value = n.Min });
+            w.Parameters.Add(new() { Value = n.Max });
+            w.Parameters.Add(new() { Value = who.Id.UserId });
+            w.Parameters.Add(new() { Value = now.UtcDateTime, NpgsqlDbType = NpgsqlDbType.TimestampTz });
+            if (await w.ExecuteNonQueryAsync() != 1) throw Err(409, "concurrency_conflict", b => b["current_row_version"] = current);
+        }
+        catch (PostgresException x) when (created && x.SqlState == PostgresErrorCodes.UniqueViolation)
+        {
+            // TLD 08:00b(1): a racing first PUT committed the row first. Report the winner's version.
+            await tx.RollbackAsync();
+            await using var tx2 = await c.BeginTransactionAsync();
+            await SetScopeAsync(c, tx2, who.Id.AdminType, who.Id.PartnerId);
+            var won = await LoadBoundsAsync(c, tx2, partner, false) ?? throw new InvalidOperationException("unique violation without a row");
+            await tx2.CommitAsync();
+            throw Err(409, "concurrency_conflict", b => b["current_row_version"] = won.RowVersion);
+        }
+        await outbox.InsertAsync(c, tx, AuditOutbox.PartnerReasonBoundsChanged(Guid.CreateVersion7(), now, who.Id, who.RequestId, partner, created, next,
+            old.Min, old.Max, n.Min, n.Max), CancellationToken.None);
+        var saved = await LoadBoundsAsync(c, tx, partner, false) ?? throw new InvalidOperationException("row vanished");
+        await tx.CommitAsync();
+        return BoundsResult(ctx, partner, saved);
+    });
+
     static List<string> DowngradeFields(bool mfaBefore, bool fallbackBefore, LoginConfigInput n)
     {
         var f = new List<string>();
@@ -316,20 +461,37 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         // org:V reader: RLS scoped to the location's partner, decided server-side above (OQ-S2a-1).
         await SetScopeAsync(c, tx, who.IsSuper ? "super" : "partner", who.IsSuper ? null : who.IsPartnerAdmin ? who.Id.PartnerId : real);
         var row = await LoadAsync(c, tx, loc, who.IsPartnerAdmin ? who.Id.PartnerId!.Value : real, false) ?? throw Err(404, "not_found");
+        var bounds = await ResolveBoundsAsync(c, tx, row.PartnerId); // Slice A: the location's partner
         await tx.CommitAsync();
-        return ViewResult(ctx, 200, row, who, limits: true);
+        return ViewResult(ctx, 200, row, who, bounds);
     });
 
     // ---------- GET /api/orgs/login-config/limits (DEC-107, TLD 2026-11-04 16:32 Q2=(ii)) ----------
 
     /// <summary>
-    /// The reason bounds for screen 9 Create (no location yet, so no GET to carry them): exactly reason_min_length / reason_max_length,
-    /// read-only from the startup snapshot. Same read rule as the GET's step 2 (org:V); 401 / 403 as everywhere. No DB access.
+    /// The reason bounds for screen 9 Create (no location yet, so no GET to carry them): exactly reason_min_length / reason_max_length.
+    /// Same read rule as the GET's step 2 (org:V); 401 / 403 as everywhere. Slice A (TLD 08:00 Q3), through the resolver:
+    /// ?partner_id=X (the create page's partner) = X's bounds, behind the LS-OQ-61 read check point (else 404 not_found; malformed = 422
+    /// partner_id_format); no partner_id = a Partner Admin's own partner, else (Super Admin, org:V reader) the deployment config.
     /// </summary>
-    public Task<IResult> LimitsAsync(HttpContext ctx) => Run(ctx, who =>
+    public Task<IResult> LimitsAsync(HttpContext ctx) => Run(ctx, async who =>
     {
         if (!who.IsAdmin && who.Grant.OrgViewLocations.Count == 0) throw Err(403, "forbidden");
-        return Task.FromResult(Json(200, new JsonObject { ["reason_min_length"] = opt.ReasonMinLength, ["reason_max_length"] = opt.ReasonMaxLength }));
+        Guid? partner = null;
+        if (ctx.Request.Query.TryGetValue("partner_id", out var q))
+        {
+            if (q.Count != 1 || ParseId(q[0] ?? "") is not { } g || g == Guid.Empty) throw Validation([new("partner_id", "partner_id_format")]);
+            if (!MayReadPartnerBounds(who, g)) throw Err(404, "not_found");
+            partner = g;
+        }
+        else if (who.IsPartnerAdmin) partner = who.Id.PartnerId;
+        if (partner is not { } p) return Json(200, LimitsJson(ReasonBounds.FromConfig(opt)));
+        await using var c = await db.OpenConnectionAsync();
+        await using var tx = await c.BeginTransactionAsync();
+        await SetScopeAsync(c, tx, who.Id.AdminType, who.Id.PartnerId);
+        var b = await ResolveBoundsAsync(c, tx, p);
+        await tx.CommitAsync();
+        return Json(200, LimitsJson(b));
     });
 
     // ---------- GET /api/orgs/locations/{id}/login-config/changes ----------
@@ -408,7 +570,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         if (body is not { } o) throw Err(400, "malformed_body");
         // Step 8.
         var errs = new List<FieldError>();
-        var n = LoginConfigValidator.ValidateWrite(o, "", row.Current, opt, errs, out var bound);
+        var bounds = await ResolveBoundsAsync(c, tx, row.PartnerId); // Slice A: the location's partner
+        var n = LoginConfigValidator.ValidateWrite(o, "", row.Current, bounds, errs, out var bound);
         var tenantBound = bound.Length > 0 && await TenantBoundAsync(c, tx, bound, row.PartnerId);
         if (tenantBound) errs.Add(new("entra_allowed_tenant_ids/0", "tenant_bound_elsewhere"));
         if (errs.Count > 0)
@@ -530,7 +693,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         await using var tx = await c.BeginTransactionAsync();
         await SetScopeAsync(c, tx, who.Id.AdminType, who.Id.PartnerId);
         var errs = new List<FieldError>();
-        var n = LoginConfigValidator.ValidateCreate(o, opt, errs, out var bound);
+        // Slice A: the body's partner's bounds; with no valid partner_id (422 anyway) the deployment config.
+        var bounds = bodyPartner is { } rp ? await ResolveBoundsAsync(c, tx, rp) : ReasonBounds.FromConfig(opt);
+        var n = LoginConfigValidator.ValidateCreate(o, bounds, errs, out var bound);
         var tenantBound = bound.Length > 0 && bodyPartner is { } tp && await TenantBoundAsync(c, tx, bound, tp);
         if (tenantBound) errs.Add(new("login_config/entra_allowed_tenant_ids/0", "tenant_bound_elsewhere"));
         if (errs.Count > 0)
