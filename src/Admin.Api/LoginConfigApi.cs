@@ -169,10 +169,31 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         try
         {
             using var d = JsonDocument.Parse(body, DocOpts);
-            if (d.RootElement.ValueKind != JsonValueKind.Object || LoginConfigValidator.HasDuplicateKeys(d.RootElement)) return null;
+            if (d.RootElement.ValueKind != JsonValueKind.Object || !StringsDecodable(d.RootElement) || LoginConfigValidator.HasDuplicateKeys(d.RootElement)) return null;
             return d.RootElement.Clone();
         }
         catch (JsonException) { return null; }
+    }
+
+    /// <summary>F-SURR [SSE2 9b3b546d, TLD 2026-11-04 15:58]: JsonDocument.Parse accepts an unpaired or reversed surrogate escape
+    /// ("\ud83d", "\ude00\ud83d"), but GetString() / JsonProperty.Name then throw InvalidOperationException (was an empty-body 500).
+    /// Every string value and property name is decoded once here, right after the body is parsed; one that cannot be decoded makes the
+    /// body malformed: 400 malformed_body (spec v1.1-S2a §4 step 7 L259, error table L283; schema enum L510). Later GetString calls only
+    /// see bodies that passed this. The catch is only around these decode calls.</summary>
+    static bool StringsDecodable(JsonElement root)
+    {
+        try { Decode(root); return true; }
+        catch (InvalidOperationException) { return false; }
+
+        static void Decode(JsonElement e)
+        {
+            switch (e.ValueKind)
+            {
+                case JsonValueKind.Object: foreach (var p in e.EnumerateObject()) { _ = p.Name; Decode(p.Value); } break;
+                case JsonValueKind.Array: foreach (var x in e.EnumerateArray()) Decode(x); break;
+                case JsonValueKind.String: _ = e.GetString(); break;
+            }
+        }
     }
 
     static async Task<LlcRow?> LoadAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid location, Guid filterPartner, bool forUpdate)

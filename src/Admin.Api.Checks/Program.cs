@@ -1537,6 +1537,7 @@ try
             ("249 astral + 3 ASCII (252 code points, 501 UTF-16 units)", Rep(Devil, 249) + "abc", true), ("251 astral", Rep(Devil, 251), true),
             ("300 astral", Rep(Devil, 300), true), ("500 astral", Rep(Devil, 500), true), ("499 BMP + 1 astral", Rep("d", 499) + Devil, true),
             ("501 astral", Rep(Devil, 501), false), ("500 code points mixed, padded", "  " + Rep(Devil + "d", 250) + " ", true),
+            ("9 astral", Rep(Devil, 9), false), ("10 astral", Rep(Devil, 10), true), // SSE2 9b3b546d Info 2
         };
         foreach (var (dl, reason, okWant) in downCases)
         {
@@ -1669,6 +1670,106 @@ try
         var errs7g = mainLog.Entries.Skip(logMark).ToList();
         Ok("F-ASTRAL/B1: no request in 7g failed (no Error log line, no InvalidOperationException out of the outbox, no 500)",
             errs7g.Count == 0 && !shown.Any(x => x.EndsWith(": 500")), string.Join(" | ", errs7g.Select(e => $"{e.ExType}: {e.Text}")));
+    }
+
+    // ================= 7h. F-SURR [SSE2 9b3b546d, TLD 2026-11-04 15:58] =================
+    // An unpaired or reversed surrogate JSON escape anywhere in the body (string value or key name) is a malformed body:
+    // 400 malformed_body (spec v1.1-S2a §4 step 7 L259 "valid JSON object ... else 400 malformed_body"; error table L283;
+    // location-login-config.schema.json enum L510). Before the fix: GetString() threw InvalidOperationException -> empty-body 500.
+    {
+        var logMark = mainLog.Entries.Count;
+        var shownS = new List<string>();
+        var forms = new (string label, string raw)[]
+        {
+            ("lone high", "Surrogate probe \\ud83d here"), ("lone low", "Surrogate probe \\ude00 here"),
+            ("reversed pair", "Surrogate probe \\ude00\\ud83d here"), ("trailing high", "Surrogate probe here \\ud83d"),
+        };
+        const string Ph = "@@F-SURR@@";
+        string Splice(object body, string raw) => J(body).Replace("\"" + Ph + "\"", "\"" + raw + "\"");
+        async Task<(long loc, long llc, long ch)> Rows() => (await Count("location"), await Count("location_login_config"), await Count("location_login_config_change"));
+        var rS = await Post(SA, Create(P_B, "F-SURR probe", DbCfg()));
+        var LS = rS.Status == 201 ? LocOf(rS) : Guid.Empty;
+        await NewEvents();
+        const string GoodReason = "F-SURR downgrade reason, ticket OPS-1";
+        // Every string the S2a write endpoints read: create = partner_id, name, login_config/{provider_kind, display_name,
+        // entra_allowed_tenant_ids/0, reason}; PUT = provider_kind, display_name, entra_allowed_tenant_ids/0, reason. Plus a key
+        // name and a server-filled string (secret_ref) whose value is never read: the whole body is decoded once.
+        Dictionary<string, object?> Cfg0(bool down) => down ? With(DbCfg(mfa: false), "reason", GoodReason) : DbCfg();
+        var createCases = new List<(string field, Func<bool, object> body, bool keyProbe)>
+        {
+            ("partner_id", d => new Dictionary<string, object?> { ["partner_id"] = Ph, ["name"] = "F-SURR c", ["login_config"] = Cfg0(d) }, false),
+            ("name", d => new Dictionary<string, object?> { ["partner_id"] = P_B.ToString("D"), ["name"] = Ph, ["login_config"] = Cfg0(d) }, false),
+            ("login_config/provider_kind", d => Create(P_B, "F-SURR c", With(Cfg0(d), "provider_kind", Ph)), false),
+            ("login_config/display_name", d => Create(P_B, "F-SURR c", With(Cfg0(d), "display_name", Ph)), false),
+            ("login_config/entra_allowed_tenant_ids/0", d => Create(P_B, "F-SURR c", With(Cfg0(d), "entra_allowed_tenant_ids", new[] { Ph })), false),
+            ("login_config/reason", d => Create(P_B, "F-SURR c", With(Cfg0(d), "reason", Ph)), false),
+            ("login_config/secret_ref (never read)", d => Create(P_B, "F-SURR c", With(Cfg0(d), "secret_ref", Ph)), false),
+            ("a key name", d => Create(P_B, "F-SURR c", With(Cfg0(d), Ph, "x")), true),
+        };
+        var putCases = new List<(string field, Func<bool, object> body, bool keyProbe)>
+        {
+            ("provider_kind", d => With(Cfg0(d), "provider_kind", Ph), false),
+            ("display_name", d => With(Cfg0(d), "display_name", Ph), false),
+            ("entra_allowed_tenant_ids/0", d => With(Cfg0(d), "entra_allowed_tenant_ids", new[] { Ph }), false),
+            ("reason", d => With(Cfg0(d), "reason", Ph), false),
+            ("secret_ref (never read)", d => With(Cfg0(d), "secret_ref", Ph), false),
+            ("a key name", d => With(Cfg0(d), Ph, "x"), true),
+        };
+        bool Malformed(R r) => Err(r, 400, "malformed_body") && (Obj(r.Body)["fields"] is not JsonArray fa || fa.Count == 0);
+        int nCase = 0;
+        foreach (var down in new[] { false, true })
+            foreach (var (field, body, _) in createCases)
+                foreach (var (fl, raw) in forms)
+                {
+                    var before = await Rows();
+                    var r = await Send(HttpMethod.Post, "/api/orgs/locations", SA, Splice(body(down), raw));
+                    var ev = await NewEvents(); nCase++;
+                    shownS.Add($"create {field} {fl}: {r.Status}");
+                    Ok($"F-SURR: {(down ? "downgrade create (MFA off, A-5)" : "create")}, {fl} surrogate in {field} -> 400 malformed_body; 0 rows, no event",
+                        Malformed(r) && ev.Count == 0 && await Rows() == before, $"{r.Status} {r.Body}");
+                }
+        foreach (var down in new[] { false, true })
+            foreach (var (field, body, _) in putCases)
+                foreach (var (fl, raw) in forms)
+                {
+                    var rv = Rv(LS); var before = await Rows();
+                    var r = await Send(HttpMethod.Put, Cfg(LS), SA, Splice(body(down), raw), $"\"{rv}\"");
+                    var ev = await NewEvents(); nCase++;
+                    shownS.Add($"put {field} {fl}: {r.Status}");
+                    Ok($"F-SURR: {(down ? "downgrade PUT (MFA off)" : "PUT")}, {fl} surrogate in {field} -> 400 malformed_body; 0 rows, row_version unchanged, no event",
+                        Malformed(r) && ev.Count == 0 && await Rows() == before && Rv(LS) == rv, $"{r.Status} {r.Body}");
+                }
+        // Refused callers (step 2, body read only to name the attempted fields): still 403 + one not_admin event, never a 500.
+        foreach (var (fl, raw) in forms)
+        {
+            var r = await Send(HttpMethod.Post, "/api/orgs/locations", RD, Splice(Create(P_B, "F-SURR c", With(DbCfg(), Ph, "x")), raw));
+            var ev = await NewEvents();
+            shownS.Add($"not_admin create key {fl}: {r.Status}");
+            Ok($"F-SURR: not_admin create, {fl} surrogate in a key name -> 403 forbidden, one valid not_admin event (body unreadable: no attempted fields)",
+                Err(r, 403, "forbidden") && Denied(ev, "not_admin", null, null, "create"), $"{r.Status} ev={ev.Count}");
+            var rv = Rv(LS);
+            r = await Send(HttpMethod.Put, Cfg(LS), RD, Splice(With(DbCfg(), Ph, "x"), raw), $"\"{rv}\"");
+            ev = await NewEvents();
+            shownS.Add($"not_admin put key {fl}: {r.Status}");
+            Ok($"F-SURR: not_admin PUT, {fl} surrogate in a key name -> 403 forbidden, one valid not_admin event; row unchanged",
+                Err(r, 403, "forbidden") && Denied(ev, "not_admin", LS, null, "update") && Rv(LS) == rv, $"{r.Status} ev={ev.Count}");
+        }
+        // Controls: a VALID escaped pair is still text (stored byte-for-byte), so the check refuses only undecodable strings.
+        {
+            var r = await Send(HttpMethod.Post, "/api/orgs/locations", SA, Splice(Create(P_B, "F-SURR c", With(DbCfg(), "display_name", Ph)), "\\ud83d\\ude08 Pair ok"));
+            var ev = await NewEvents();
+            Ok("F-SURR control: create with a valid escaped pair in display_name -> 201, stored U+1F608 + text", r.Status == 201 && ev.Count == 1 && Valid(ev[0])
+                && await OScalar<string>("SELECT display_name FROM auth.location_login_config WHERE location_id=$1", LocOf(r)) == "\U0001F608 Pair ok", $"{r.Status}");
+            var rv = Rv(LS);
+            r = await Send(HttpMethod.Put, Cfg(LS), SA, Splice(With(DbCfg(mfa: false), "reason", Ph), "\\ud83d\\ude08 valid pair, ticket OPS-2"), $"\"{rv}\"");
+            ev = await NewEvents();
+            Ok("F-SURR control: downgrade PUT with a valid escaped pair in reason -> 200, change row reason byte-for-byte", r.Status == 200 && ev.Count == 1 && Valid(ev[0])
+                && await OScalar<string>("SELECT coalesce(reason, '<SQL NULL>') FROM auth.location_login_config_change WHERE location_id=$1 ORDER BY at DESC, change_id LIMIT 1", LS) == "\U0001F608 valid pair, ticket OPS-2", $"{r.Status}");
+        }
+        Console.WriteLine($"INFO F-SURR {nCase} write probes: " + string.Join("; ", shownS.GroupBy(x => x[(x.LastIndexOf(':') + 2)..]).Select(g => $"{g.Key} x{g.Count()}")));
+        var errs7h = mainLog.Entries.Skip(logMark).ToList();
+        Ok("F-SURR: no request in 7h failed (no Error log line, no InvalidOperationException, no 500)",
+            errs7h.Count == 0 && !shownS.Any(x => x.EndsWith(": 500")), string.Join(" | ", errs7h.Select(e => $"{e.ExType}: {e.Text}")));
     }
 
     // ================= 8. secrets never leave =================
