@@ -563,6 +563,83 @@ await step("P4l redirect / timeout", async () => {
   await open(page("sa", H.l1));
   ok("P4l: nothing was saved (L1 still MFA on)", await txt("#cur-mfa") === "Yes", await txt("#cur-mfa"));
 });
+// P6a [TLD 2026-11-05 07:54 fetch hardening, brief /tmp/sse-llc1/briefs/fetch-hardening.md a451c6cf; SSE2 c6249722 DQ-1 / INFO-1]:
+// the history GET /changes, the PUT and the POST are bounded (abort) and use redirect: "manual". Faked with CDP Fetch at the
+// Request stage, so no faked write reaches the API; stalled requests are failed by the harness afterwards (never continued).
+// Edit / write 307, 401 and non-JSON stay unit-only (core.test.mjs; TL DQ-2).
+await step("P6a fetch hardening", async () => {
+  let mode = null; const seen = [], stalled = [], hits = [];
+  const LOC = new RegExp(`/api/orgs/locations/${H.l1}/login-config$`), HIST = new RegExp(`/api/orgs/locations/${H.l1}/login-config/changes$`), CREATE = /\/api\/orgs\/locations$/;
+  const lsn = (msg) => {
+    if (msg.sessionId !== S || msg.method !== "Fetch.requestPaused") return;
+    const p = msg.params, id = p.requestId, go = () => cdp("Fetch.continueRequest", { requestId: id }).catch(() => {});
+    if (/^https:\/\/login\.microsoftonline\.com\//.test(p.request.url) || p.request.url.endsWith("/p6a-sign-in")) { // only if a 3xx is followed
+      seen.push(p.request.url);
+      return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: 200, responseHeaders: [{ name: "Content-Type", value: "text/html" }], body: Buffer.from("<!doctype html><title>Sign in</title>").toString("base64") }).catch(() => {});
+    }
+    if (!mode || p.request.method !== mode.method || !mode.url.test(p.request.url)) return go();
+    hits.push(p.request.method + " " + p.request.url);
+    if (mode.kind === "stall") { stalled.push(id); return; } // never answered: only the page's abort ends it
+    return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: mode.status, responseHeaders: mode.headers, body: Buffer.from(mode.body ?? "").toString("base64") }).catch(() => {});
+  };
+  listeners.push(lsn);
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: `*/api/orgs/locations/${H.l1}/login-config*`, requestStage: "Request" }, { urlPattern: "*/api/orgs/locations", requestStage: "Request" },
+    { urlPattern: "https://login.microsoftonline.com/*", requestStage: "Request" }, { urlPattern: "*/p6a-sign-in", requestStage: "Request" }] });
+  const release = async () => { for (const id of stalled.splice(0)) await cdp("Fetch.failRequest", { requestId: id, errorReason: "Aborted" }).catch(() => {}); };
+  const MS = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=p6a&response_type=code";
+  const R3 = (status, loc) => ({ kind: "fake", status, headers: [{ name: "Location", value: loc }], body: "" });
+  const dropMs = (o0) => { if (seen.length === 0) outside.splice(o0, outside.length - o0, ...outside.slice(o0).filter(u => u !== MS)); }; // as P4l
+  const errText = async () => `${await txt("#banner-error-title")} ${await txt("#banner-error-text")}`.trim();
+  const apiL1 = async () => { const r = await fetch(`${H.ui}/as/sa/api/orgs/locations/${H.l1}/login-config`); return [r.headers.get("ETag"), (await r.json()).display_name]; };
+  const l1before = await apiL1();
+  const hooks = [];
+  for (const src of ["globalThis.__llcLimitsTimeoutMs = 1500;", "globalThis.__llcWriteTimeoutMs = 1500;"]) hooks.push((await cdp("Page.addScriptToEvaluateOnNewDocument", { source: src })).identifier);
+
+  // 1. history GET stalled on load -> aborted -> the softer history copy, no form, no history card, no session copy.
+  seen.length = 0; hits.length = 0; mode = { kind: "stall", method: "GET", url: HIST }; let t0 = Date.now(); await open(page("sa", H.l1)); let dt = Date.now() - t0; mode = null; await release();
+  let g = { state: await ev(`document.body.dataset.state`), change: await vis("#btn-change"), hist: await vis("#card-history"), err: await shownError(), text: await errText(), dt, hits: hits.length };
+  ok("P6a history GET stalled -> aborted (bounded), page error 'Couldn't load history — try again', no form, no history card, not the session copy",
+    g.state === "error" && !g.change && !g.hist && g.err.length === 1 && g.err[0].code === "history_unavailable" && g.text === "Couldn't load history — try again" && g.hits === 1 && dt < 8000, g);
+  // 2. history GET 302 to login.microsoftonline.com -> not followed, the same softer history copy.
+  seen.length = 0; let o0 = outside.length; mode = { ...R3(302, MS), method: "GET", url: HIST }; await open(page("sa", H.l1)); mode = null; dropMs(o0);
+  g = { state: await ev(`document.body.dataset.state`), change: await vis("#btn-change"), err: await shownError(), text: await errText(), seen: [...seen] };
+  ok("P6a history GET 302 cross-site -> not followed (redirect: manual), page error 'Couldn't load history — try again', no form",
+    g.state === "error" && !g.change && g.err.length === 1 && g.err[0].code === "history_unavailable" && g.text === "Couldn't load history — try again" && g.seen.length === 0, g);
+
+  // 3. PUT stalled -> aborted -> "We couldn't confirm the save. ..." exactly; no saved state, no "Nothing was saved", one PUT only (no retry).
+  await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6a never saved");
+  hits.length = 0; mode = { kind: "stall", method: "PUT", url: LOC }; t0 = Date.now(); await save(); dt = Date.now() - t0; await sleep(1700); mode = null; await release();
+  g = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), form: await vis("#form"), err: await shownError(), text: await errText(), dt, puts: hits.length, btn: await attr("#btn-save", "aria-disabled") };
+  ok("P6a PUT stalled -> aborted (bounded), 'We couldn't confirm the save. Reload to check before trying again.', no saved banner / state, form kept, one PUT (no automatic retry)",
+    g.state === "edit" && !g.saved && g.form && g.err.length === 1 && g.err[0].code === "write_unconfirmed" && g.text === "We couldn't confirm the save. Reload to check before trying again."
+      && !/nothing was saved/i.test(g.text) && g.puts === 1 && g.btn === null && dt < 8000, g);
+  // 4. PUT 302 same-site -> not followed, the 401 session copy (one copy for 401 and a write 3xx), no saved state.
+  seen.length = 0; hits.length = 0; mode = { ...R3(302, `${H.ui}/p6a-sign-in`), method: "PUT", url: LOC }; await save(); mode = null;
+  g = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), err: await shownError(), text: await errText(), seen: [...seen], puts: hits.length };
+  ok("P6a PUT 302 same-site -> not followed, 'Your session has ended. Nothing was saved. Sign in again, then try again.' (the 401 copy), no saved state",
+    g.state === "edit" && !g.saved && g.err.length === 1 && g.err[0].code === "401" && g.text === "Your session has ended. Nothing was saved. Sign in again, then try again." && g.seen.length === 0 && g.puts === 1, g);
+
+  // 5. POST (create) stalled -> unconfirmed copy, still on /new, no navigation to a saved page, one POST.
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await type("#lname", "UI Cage P6a"); await type("#dname", "UI Casino A");
+  hits.length = 0; mode = { kind: "stall", method: "POST", url: CREATE }; await save(); await sleep(1700); mode = null; await release();
+  g = { path: await ev(`location.pathname`), hash: await ev(`location.hash`), err: await shownError(), text: await errText(), posts: hits.length, state: await ev(`document.body.dataset.state`) };
+  ok("P6a POST (create) stalled -> 'We couldn't confirm the save. Reload to check before trying again.', still on /new, not the saved page, one POST",
+    g.path.endsWith("/locations/new") && g.hash === "" && g.state === "create" && g.err.length === 1 && g.err[0].code === "write_unconfirmed"
+      && g.text === "We couldn't confirm the save. Reload to check before trying again." && g.posts === 1, g);
+  // 6. POST 307 to login.microsoftonline.com -> not followed, the 401 session copy.
+  seen.length = 0; hits.length = 0; o0 = outside.length; mode = { ...R3(307, MS), method: "POST", url: CREATE }; await save(); mode = null; dropMs(o0);
+  g = { path: await ev(`location.pathname`), err: await shownError(), text: await errText(), seen: [...seen], posts: hits.length };
+  ok("P6a POST 307 cross-site -> not followed, the 401 session copy, still on /new",
+    g.path.endsWith("/locations/new") && g.err.length === 1 && g.err[0].code === "401" && g.text === "Your session has ended. Nothing was saved. Sign in again, then try again." && g.seen.length === 0 && g.posts === 1, g);
+
+  for (const identifier of hooks) await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+  await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(lsn), 1);
+  // Unfaked: the real API answers; the hardened fetches change nothing for a normal load (history rows shown).
+  await open(page("sa", H.l1));
+  const r = await rows();
+  ok("P6a unfaked: SA view of L1 loads with history rows (manual redirect + abort change nothing for 200s)", await ev(`document.body.dataset.state`) === "view" && await vis("#card-history") && r.length >= 1, r.length);
+  ok("P6a: nothing was saved by the faked writes (L1 ETag and display name unchanged)", JSON.stringify(await apiL1()) === JSON.stringify(l1before), [l1before, await apiL1()]);
+});
 await step("PA partner-create", async () => {
   await open(`/as/pa/orgs/${H.partner_a}/locations/new`);
   ok("partner-create: chip 'Partner Admin: <URL partner id>', MFA locked, no reason field, no downgrade banner", await txt("#role-chip-text") === `Partner Admin: ${H.partner_a}` && await attr("#mfa", "aria-disabled") === "true" && !(await vis("#f-reason")) && !(await vis("#banner-downgrade"))

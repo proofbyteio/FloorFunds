@@ -187,3 +187,33 @@ export function locationOutcome(r) {
   if (r.status === 200 && !r.json) return { kind: "error401" };
   return r.status === 200 && r.body ? { kind: "ok" } : { kind: "error" };
 }
+
+/** [TLD 2026-11-05 07:54 fetch hardening] what the page does with a write answer r (PUT /orgs/locations/{id}/login-config
+ *  okStatus 200, POST /orgs/locations okStatus 201; api(): status, body, json, redirected, opaque, timedOut).
+ *  "unconfirmed": the page's abort fired (timedOut) -> the write may or may not have happened: "We couldn't confirm the save.
+ *    Reload to check before trying again.", never the saved state, never "Nothing was saved", no retry.
+ *  "error401": an opaqueredirect (redirect: "manual", any 3xx), a followed redirect, a 3xx answer or a 2xx that is not JSON
+ *    (a sign-in page; not the API, which always answers JSON) -> the same as a 401 (one shared session copy, brief item 2).
+ *  "ok": okStatus with a JSON body.
+ *  "error": anything else, including a network failure that is not a timeout -> the page's error from the answer, as before. */
+export function writeOutcome(r, okStatus) {
+  if (r.timedOut) return { kind: "unconfirmed" };
+  if (r.status === null) return { kind: "error" };
+  if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "error401" };
+  if (r.status >= 200 && r.status < 300 && !r.json) return { kind: "error401" };
+  return r.status === okStatus && r.body ? { kind: "ok" } : { kind: "error" };
+}
+
+/** [TLD 2026-11-05 07:54] GET /orgs/locations/{id}/login-config/changes (redirect: "manual", bounded like the location GET).
+ *  "unavailable": timeout, opaqueredirect / followed redirect / 3xx, or a 200 that is not JSON -> the softer history copy
+ *    "Couldn't load history — try again" (brief item 2; not the session copy).
+ *  "ok": a JSON 200 with an items array -> { items }.
+ *  "status": anything else (403 = org:V reader per C2, 401, 404, 5xx, a network failure, a JSON 200 without items):
+ *    handled from the status as before. */
+export function historyOutcome(r) {
+  if (r.timedOut) return { kind: "unavailable" };
+  if (r.status !== null && (r.opaque || r.redirected || (r.status >= 300 && r.status < 400))) return { kind: "unavailable" };
+  if (r.status === 200 && !r.json) return { kind: "unavailable" };
+  if (r.status === 200 && r.body && Array.isArray(r.body.items)) return { kind: "ok", items: r.body.items };
+  return { kind: "status" };
+}

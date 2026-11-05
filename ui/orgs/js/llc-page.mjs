@@ -2,8 +2,8 @@
 // is in error-copy.mjs. The page never sends oidc_* or secret_ref and shows only secret.set (spec §3.0, D-51).
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, METHOD_LABEL, fallbackText, formatPT,
   changeDetails, fieldTarget, ifMatchFrom, limitsFrom, limitsOrFallback, partnerMfaState, PARTNER_MFA_OFF_HINT, errIdFor, limitsTimeout,
-  limitsOutcome, locationOutcome } from "./llc-core.mjs";
-import { TOP_LEVEL, FIELD, requestIdText, reasonLengthCopy, reasonHintFallback, REASON_LENGTH_FALLBACK } from "./error-copy.mjs";
+  limitsOutcome, locationOutcome, writeOutcome, historyOutcome } from "./llc-core.mjs";
+import { TOP_LEVEL, FETCH_COPY, FIELD, requestIdText, reasonLengthCopy, reasonHintFallback, REASON_LENGTH_FALLBACK } from "./error-copy.mjs";
 
 const $ = (id) => document.getElementById(id);
 const body = document.body;
@@ -16,32 +16,40 @@ function setLimits(fromServer) { st.limitsFallback = !fromServer; st.limits = fr
 function show(el, on) { el.hidden = !on; }
 function text(el, s) { el.textContent = s ?? ""; }
 
-// timeoutMs (limits GET, TLD 2026-11-04 18:35 item 4; location GET, TLD 21:11 Q3): abort after that long; an abort answers
-// like a failed fetch (status null). manualRedirect (both GETs, TLD 21:11 Q2): redirect: "manual", so a 3xx (same-site or
-// cross-site, e.g. to login.microsoftonline.com) is never followed and answers as opaque (res.type "opaqueredirect").
-async function api(method, path, { json, ifMatch, timeoutMs, manualRedirect } = {}) {
+// Every call is bounded and never follows a redirect:
+// - redirect: "manual" (limits + location GET: TLD 2026-11-04 21:11 Q2; history GET /changes, PUT and POST: TLD 2026-11-05
+//   07:54 fetch hardening). A 3xx (same-site or cross-site, e.g. to login.microsoftonline.com) answers as opaque
+//   (res.type "opaqueredirect") and is never followed.
+// - an abort after timeoutMs (limits GET: TLD 18:35 item 4; location GET: TLD 21:11 Q3; history GET and the writes: TLD 07:54).
+//   An abort answers like a failed fetch (status null) plus timedOut: true, also when it lands while the body is read, so a
+//   write that timed out is never read as an answer. Callers tell a timeout apart from a network failure by timedOut.
+async function api(method, path, { json, ifMatch, timeoutMs } = {}) {
   const headers = { Accept: "application/json" };
   if (json !== undefined) headers["Content-Type"] = "application/json";
   if (ifMatch) headers["If-Match"] = ifMatch;
-  const ac = timeoutMs ? new AbortController() : null;
-  const timer = ac ? setTimeout(() => ac.abort(), timeoutMs) : null;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  const failed = () => ({ status: null, body: null, requestId: null, etag: null, json: false, redirected: false, opaque: false, timedOut: ac.signal.aborted });
   try {
     let res;
     try {
       res = await fetch(apiBase + path, { method, headers, body: json === undefined ? undefined : JSON.stringify(json),
-        credentials: "same-origin", cache: "no-store", signal: ac ? ac.signal : undefined, redirect: manualRedirect ? "manual" : "follow" });
+        credentials: "same-origin", cache: "no-store", signal: ac.signal, redirect: "manual" });
     } catch {
-      return { status: null, body: null, requestId: null, etag: null, json: false, redirected: false, opaque: false };
+      return failed();
     }
     let data = null;
     const ct = res.headers.get("Content-Type") || "";
     const isJson = ct.includes("json");
-    if (isJson) { try { data = await res.json(); } catch { data = null; } }
-    return { status: res.status, body: data, requestId: res.headers.get("X-Request-ID"), etag: res.headers.get("ETag"), json: isJson, redirected: res.redirected, opaque: res.type === "opaqueredirect" };
+    if (isJson) { try { data = await res.json(); } catch { if (ac.signal.aborted) return failed(); data = null; } }
+    return { status: res.status, body: data, requestId: res.headers.get("X-Request-ID"), etag: res.headers.get("ETag"), json: isJson, redirected: res.redirected, opaque: res.type === "opaqueredirect", timedOut: false };
   } finally {
-    if (timer !== null) clearTimeout(timer);
+    clearTimeout(timer);
   }
 }
+// GETs: the test hook __llcLimitsTimeoutMs (as before); writes: __llcWriteTimeoutMs. Both default to LIMITS_TIMEOUT_MS (10 s).
+const getTimeout = () => limitsTimeout(globalThis.__llcLimitsTimeoutMs);
+const writeTimeout = () => limitsTimeout(globalThis.__llcWriteTimeoutMs);
 
 // ---------- banners and field errors ----------
 const BANNERS = ["banner-loading", "banner-viewonly", "banner-saved", "banner-conflict", "banner-tenant", "banner-error", "banner-downgrade"];
@@ -78,7 +86,7 @@ function showBanner(id, requestId) {
   b.focus();
 }
 function showError(copyKey, requestId, code) {
-  const c = TOP_LEVEL[copyKey] ?? TOP_LEVEL.other;
+  const c = TOP_LEVEL[copyKey] ?? FETCH_COPY[copyKey] ?? TOP_LEVEL.other; // FETCH_COPY: page-side outcomes (TLD 2026-11-05 07:54)
   text($("banner-error-title"), c.title);
   text($("banner-error-text"), c.text);
   $("banner-error").dataset.error = code ?? String(copyKey);
@@ -251,25 +259,33 @@ $("form").addEventListener("submit", async (e) => {
   const btn = $("btn-save");
   btn.setAttribute("aria-disabled", "true");
   try {
+    // [TLD 2026-11-05 07:54] writeOutcome: a timeout is "unconfirmed" (the write may have happened: never "nothing saved",
+    // never the saved state, no retry); a 3xx / followed redirect / non-JSON 2xx is shown like a 401; the rest as before.
     if (st.mode === "create") {
-      const r = await api("POST", "/orgs/locations", { json: buildCreate(st.route.partnerId, $("lname").value, f) });
-      if (r.status === 201 && r.body && r.body.location_id) {
+      const r = await api("POST", "/orgs/locations", { json: buildCreate(st.route.partnerId, $("lname").value, f), timeoutMs: writeTimeout() });
+      const w = writeOutcome(r, 201);
+      if (w.kind === "ok" && r.body.location_id) {
         location.assign(location.pathname.replace(/locations\/new\/?$/, `locations/${encodeURIComponent(r.body.location_id)}/sign-in`) + "#saved");
         return;
       }
-      applyErrors(r);
+      writeFailed(w, r);
     } else {
-      const r = await api("PUT", `/orgs/locations/${encodeURIComponent(st.route.locationId)}/login-config`, { json: buildWrite(f), ifMatch: st.ifMatch });
-      if (r.status === 200 && r.body) {
+      const r = await api("PUT", `/orgs/locations/${encodeURIComponent(st.route.locationId)}/login-config`, { json: buildWrite(f), ifMatch: st.ifMatch, timeoutMs: writeTimeout() });
+      const w = writeOutcome(r, 200);
+      if (w.kind === "ok") {
         st.view = r.body; st.ifMatch = ifMatchFrom(r.etag, r.body.row_version);
         await loadHistory();
         afterSaved();
         return;
       }
-      applyErrors(r);
+      writeFailed(w, r);
     }
   } finally { btn.removeAttribute("aria-disabled"); }
 });
+function writeFailed(w, r) {
+  if (w.kind === "unconfirmed") { showError("write_unconfirmed", null, "write_unconfirmed"); return; }
+  applyErrors(w.kind === "error401" ? { ...r, status: 401 } : r);
+}
 function afterSaved() {
   renderCurrent(st.view, true);
   if (st.kind === "super") renderConnection(st.view);
@@ -288,11 +304,14 @@ $("btn-cancel").addEventListener("click", () => {
 $("conflict-reload").addEventListener("click", (e) => { e.preventDefault(); location.reload(); });
 
 // ---------- load ----------
+// [TLD 2026-11-05 07:54] the history GET is bounded and never follows a redirect, like the location GET (api()).
+// historyOutcome: a timeout, 3xx / followed redirect or non-JSON 200 is "unavailable" (the softer history copy on load).
 async function loadHistory() {
-  const h = await api("GET", `/orgs/locations/${encodeURIComponent(st.route.locationId)}/login-config/changes`);
-  st.history = h.status === 200 && h.body && Array.isArray(h.body.items) ? h.body.items : null;
+  const h = await api("GET", `/orgs/locations/${encodeURIComponent(st.route.locationId)}/login-config/changes`, { timeoutMs: getTimeout() });
+  const ho = historyOutcome(h);
+  st.history = ho.kind === "ok" ? ho.items : null;
   if (st.history) renderHistory(st.history);
-  return h;
+  return { h, ho };
 }
 async function start() {
   st.route = parseRoute(location.pathname);
@@ -308,7 +327,7 @@ async function start() {
     // [TLD 2026-11-04 18:35] a redirect, a 3xx or a non-JSON 200 is shown like a 401; the GET is aborted after
     // LIMITS_TIMEOUT_MS (10 s) and then falls back like a failed fetch (limitsOutcome, limitsTimeout in llc-core.mjs).
     // v1.1 Slice A [TLD 08:00 Q3]: the URL partner's bounds (its partner_reason_bounds row, else the deployment config).
-    const lr = await api("GET", `/orgs/login-config/limits?partner_id=${encodeURIComponent(st.route.partnerId)}`, { timeoutMs: limitsTimeout(globalThis.__llcLimitsTimeoutMs), manualRedirect: true });
+    const lr = await api("GET", `/orgs/login-config/limits?partner_id=${encodeURIComponent(st.route.partnerId)}`, { timeoutMs: getTimeout() });
     const lo = limitsOutcome(lr);
     if (lo.kind === "error" || lo.kind === "error401") { show($("banner-loading"), false); applyErrors(lo.kind === "error401" ? { ...lr, status: 401 } : lr); body.dataset.state = "error"; return; }
     setLimits(lo.kind === "server" ? lo.limits : null);
@@ -318,7 +337,7 @@ async function start() {
   }
   // [TLD 2026-11-04 21:11 Q2 / Q3] redirect: "manual" + the same abort as the limits GET; a redirect / non-JSON 200 is shown
   // as a 401 and a timeout as the page error (locationOutcome), never a form with fallback limits.
-  const r = await api("GET", `/orgs/locations/${encodeURIComponent(st.route.locationId)}/login-config`, { timeoutMs: limitsTimeout(globalThis.__llcLimitsTimeoutMs), manualRedirect: true });
+  const r = await api("GET", `/orgs/locations/${encodeURIComponent(st.route.locationId)}/login-config`, { timeoutMs: getTimeout() });
   const ro = locationOutcome(r);
   if (ro.kind !== "ok") { show($("banner-loading"), false); applyErrors(ro.kind === "error401" ? { ...r, status: 401 } : r); body.dataset.state = "error"; return; }
   st.view = r.body; st.ifMatch = ifMatchFrom(r.etag, r.body.row_version);
@@ -326,7 +345,10 @@ async function start() {
   setLimits(limitsFrom(r.body)); // [TLD 2026-11-04 17:28] missing / invalid -> REASON_BOUNDS (D-108 copy, TLD 18:35)
   // Only a Super Admin or own-partner Partner Admin may read history (C2). The super view is recognised by its `secret` key;
   // a restricted view asks /changes: 200 = Partner Admin, 403 = org:V reader (history hidden, no form).
-  const h = await loadHistory();
+  const { h, ho } = await loadHistory();
+  // [TLD 2026-11-05 07:54] history unavailable (timeout / redirect / non-JSON 200): the viewer kind can't be told (C2), so the
+  // page error, with the softer history copy "Couldn't load history — try again" (brief item 2), not the session copy.
+  if (ho.kind === "unavailable") { show($("banner-loading"), false); showError("history_unavailable", h.requestId, "history_unavailable"); body.dataset.state = "error"; return; }
   st.kind = viewerKind(st.view, h.status);
   if (st.kind === "unknown" || (st.kind === "super" && h.status !== 200)) { show($("banner-loading"), false); applyErrors(h); body.dataset.state = "error"; return; }
   if (st.route.partnerId !== st.view.partner_id) { show($("banner-loading"), false); showError("not_found", r.requestId, "partner_mismatch"); body.dataset.state = "error"; return; }

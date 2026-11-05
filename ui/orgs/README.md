@@ -46,6 +46,15 @@ node ui/orgs/tests/e2e.mjs ff_sse          # or a scratch ff_kit_<name> DB; the 
 
 Chrome runs with every host except 127.0.0.1 made unresolvable. When the run ends, the host prints a DB summary read as the owner, including the org:V reader's change rows (must be none), and empties the tables.
 
+## Fetch rules (TLD 2026-11-05 07:54 fetch hardening; TLD 2026-11-04 18:35 / 21:11 for the GETs)
+
+Every API call uses `redirect: "manual"`, so a 3xx is never followed, and is aborted after `LIMITS_TIMEOUT_MS` (10 s). The test hooks are `__llcLimitsTimeoutMs` for GETs and `__llcWriteTimeoutMs` for the PUT / POST.
+
+- PUT / POST timeout: "We couldn't confirm the save. Reload to check before trying again." The page never says "Nothing was saved" here, never shows the saved state and never retries.
+- PUT / POST 3xx, redirect or non-JSON 2xx: the 401 session copy.
+- History GET `/changes` timeout, 3xx or non-JSON 200 on load: the page error "Couldn't load history — try again".
+- These two strings are TL copy in `FETCH_COPY` (`js/error-copy.mjs`), not yet UX-reviewed. Open questions: `src/S2A-BUILD-LOG.md`, section "Fetch hardening".
+
 ## Partner Admin MFA states (DEC-106, UX D-106)
 
 `body[data-partner-state]` (from `partnerMfaState` in `js/llc-core.mjs`, read from the SAVED config):

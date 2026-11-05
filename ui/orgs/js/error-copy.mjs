@@ -25,6 +25,17 @@ export const TOP_LEVEL = Object.freeze({
   other: { title: "Something went wrong.", text: "Nothing was saved. Try again." },
 });
 
+/** [TLD 2026-11-05 07:54 fetch hardening; brief /tmp/sse-llc1/briefs/fetch-hardening.md md5 a451c6cf] TL copy, kept apart from the
+ *  UX-approved D-102 set above (no UX review of these yet). Page-side outcomes only: no API error code maps here.
+ *  write_unconfirmed: a PUT / POST timeout; the write may have happened, so never "Nothing was saved". The exact TL sentences
+ *    (title + text = "We couldn't confirm the save. Reload to check before trying again."); the optional secondary line
+ *    ("don't re-submit until you've reloaded") is not used.
+ *  history_unavailable: the history GET timed out, was redirected or was not JSON (the softer history copy, verbatim, one line). */
+export const FETCH_COPY = Object.freeze({
+  write_unconfirmed: { title: "We couldn't confirm the save.", text: "Reload to check before trying again." },
+  history_unavailable: { title: "Couldn't load history — try again", text: "" },
+});
+
 /** 422 field code -> message shown under the field (tenant_bound_elsewhere is MK9 copy, kept in the page). */
 export const FIELD = Object.freeze({
   required: "Fill in this field.",
