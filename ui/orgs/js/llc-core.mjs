@@ -160,15 +160,16 @@ export function limitsTimeout(override) {
 }
 
 /** [TLD 2026-11-04 18:35 items 2 and 5] what the create page does with the limits answer r (api(): status, body, json, redirected).
- *  "error401": a redirect (followed, or a 3xx answer) -> page error as a 401.
  *  "error": 401 / 403 -> page error from the answer (an access answer, never a fallback); a 200 that is not JSON -> page
- *    error, not a 401 [TLD 2026-11-05 15:08 item 2; was "error401" per TLD 2026-11-04 18:35].
+ *    error, not a 401 [TLD 2026-11-05 15:08 item 2]. An opaqueredirect, a followed redirect, or a 3xx is the same kind
+ *    and is not a verified 401: the page shows the generic load error and does not open the form or the fallback.
  *  "server": a JSON 200 whose limits pass limitsFrom -> { limits }.
- *  "fallback": network failure, timeout (status null), any other status, or a JSON 200 with missing / invalid limits. */
+ *  "fallback": network failure, timeout (status null), any other status, or a JSON 200 with missing / invalid limits.
+ *    A redirect is not a fallback. */
 export function limitsOutcome(r) {
   if (r.status === null) return { kind: "fallback" };
-  if (r.opaque) return { kind: "error401" }; // [TLD 2026-11-04 21:11 Q2] redirect: "manual" -> opaqueredirect (any 3xx, cross-site too)
-  if (r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "error401" };
+  // redirect: "manual" -> opaqueredirect. Not followed, and not proof the session ended.
+  if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "error" };
   if (r.status === 401 || r.status === 403) return { kind: "error" };
   // [TLD 2026-11-05 15:08 item 2] a non-JSON 200 is not a verified 401: blocked as an invalid answer (page error). A JSON 200
   // that does not parse keeps the TLD 17:28 / 18:35 fallback (a read; the server still enforces the real bounds).
@@ -179,14 +180,13 @@ export function limitsOutcome(r) {
 
 /** [TLD 2026-11-04 21:11 Q2 / Q3, SSE2 70cf9b13 LOW-1] what the edit page does with GET /orgs/locations/{id}/login-config
  *  (api(): status, body, json, redirected, opaque; fetched with redirect: "manual" and the LIMITS_TIMEOUT_MS abort).
- *  "error401": an opaqueredirect (any 3xx, e.g. a 302 to login.microsoftonline.com), a followed redirect or a 3xx answer
- *  -> the page error as a 401, no form. A 200 that is not JSON -> "error" [TLD 2026-11-05 15:08 item 2; was "error401"].
- *  "error": network failure or timeout (status null) or any other non-200 -> the page error from the answer, no form
- *  (never the fallback limits; those apply only to a 200 whose limits are missing / invalid).
- *  "ok": a JSON 200 with a body. */
+ *  "error": network failure or timeout (status null), a non-200, or an opaqueredirect / followed redirect / 3xx.
+ *    A redirect is not a verified 401 and does not open a form. A 200 that is not JSON is an invalid answer
+ *    [TLD 2026-11-05 15:08 item 2], also "error".
+ *  "ok": a JSON 200 with a body that was not a redirect. */
 export function locationOutcome(r) {
   if (r.status === null) return { kind: "error" };
-  if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "error401" };
+  if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "error" };
   // [TLD 2026-11-05 15:08 item 2] a non-JSON / unparseable 200 is an invalid answer (page error), not a verified 401.
   return r.status === 200 && r.json && r.body ? { kind: "ok" } : { kind: "error" };
 }

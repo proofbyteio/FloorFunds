@@ -69,7 +69,7 @@ History:
 - A failed history GET on load is a page error: "Couldn't load history — try again".
 - After a confirmed save, the page stays saved and the history card shows "Couldn't load history — try again" with a retry button. The retry repeats the GET only, never a write.
 
-"Nothing was saved" is no longer in the session, network, 500 and generic copy; only contract rejections keep it. A non-JSON 200 on the limits or location GET is a page error, not a 401.
+"Nothing was saved" is no longer in the session, network, 500 and generic copy; only contract rejections keep it. A non-JSON 200 on the limits or location GET is a page error, not a 401. An unexpected redirect on those reads, including an opaque redirect, is the generic page error "Something went wrong. Try again." It is not "Your session has ended." A real 401 on those reads still uses that session sentence. The reason-bounds read used for Create recovery treats a redirect as unknown, not as permission: the guard stays, the recovery controls stay hidden, and no POST is sent.
 
 ## Partner Admin MFA states (DEC-106, UX D-106)
 

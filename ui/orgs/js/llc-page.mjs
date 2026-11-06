@@ -247,6 +247,13 @@ for (const id of ["mfa", "fallback"]) {
 }
 for (const el of [$("m-db"), $("m-entra"), $("mfa"), $("fallback")]) el.addEventListener("change", syncForm);
 
+function showReadError(r, kind) {
+  // The old error401 kind forced this read to look like a verified 401. It is not returned. Restoring it shows that banner.
+  if (kind === "error401") { applyErrors({ ...r, status: 401 }); return; }
+  // An unexpected redirect is a load failure. TOP_LEVEL.other is the existing generic page error (D-102, TLD 15:08 item 2).
+  if (r && (r.opaque || r.redirected || (r.status >= 300 && r.status < 400))) { showError("other", r.requestId, "other"); return; }
+  applyErrors(r);
+}
 function applyErrors(r) {
   const key = errorKey(r);
   if (r.status === 409) { showBanner("banner-conflict", r.requestId); return; }
@@ -377,7 +384,7 @@ async function openCreateForm() {
   st.locked = false;
   const lr = await api("GET", `/orgs/login-config/limits?partner_id=${encodeURIComponent(st.route.partnerId)}`, { timeoutMs: getTimeout() });
   const lo = limitsOutcome(lr);
-  if (lo.kind === "error" || lo.kind === "error401") { show($("banner-loading"), false); applyErrors(lo.kind === "error401" ? { ...lr, status: 401 } : lr); body.dataset.state = "error"; return; }
+  if (lo.kind === "error" || lo.kind === "error401") { show($("banner-loading"), false); showReadError(lr, lo.kind); body.dataset.state = "error"; return; }
   setLimits(lo.kind === "server" ? lo.limits : null);
   fillForm({ provider_kind: "database", display_name: "", entra_allowed_tenant_ids: [], mfa_required: true, allow_db_fallback: false, name: "" });
   setMode("create");
@@ -388,7 +395,7 @@ $("btn-enable-create").addEventListener("click", async () => {
   if (!ackClearsAttempt(pendingGet(key), shownAttemptId)) { showStaleAttempt(); return; }
   const lr = await api("GET", `/orgs/login-config/limits?partner_id=${encodeURIComponent(st.route.partnerId)}`, { timeoutMs: getTimeout() });
   const lo = limitsOutcome(lr);
-  if (lo.kind === "error" || lo.kind === "error401") { show($("banner-loading"), false); applyErrors(lo.kind === "error401" ? { ...lr, status: 401 } : lr); body.dataset.state = "error"; return; }
+  if (lo.kind === "error" || lo.kind === "error401") { show($("banner-loading"), false); showReadError(lr, lo.kind); body.dataset.state = "error"; return; }
   if (!clearMatchingAttempt(key)) return; // DEC144-ENABLE-CLEAR
   show($("create-recovery"), false);
   setLimits(lo.kind === "server" ? lo.limits : null);
@@ -463,17 +470,18 @@ async function start() {
     // DEC-107 [TLD 2026-11-04 16:32 Q2]: no location yet, so the reason bounds come from the limits endpoint.
     // [TLD 2026-11-04 17:28] a failed fetch or missing / invalid values -> the server's hard bounds 10 / 500 (REASON_BOUNDS);
     // a 401 / 403 is an access answer, not a limits value, so it is still shown as the page error.
-    // [TLD 2026-11-04 18:35] a redirect, a 3xx or a non-JSON 200 is shown like a 401; the GET is aborted after
+    // [TLD 2026-11-04 18:35] a redirect or a 3xx is a page error and not a fallback; a non-JSON 200 is a page error.
+    // Neither is a verified 401. The GET is aborted after
     // LIMITS_TIMEOUT_MS (10 s) and then falls back like a failed fetch (limitsOutcome, limitsTimeout in llc-core.mjs).
     // v1.1 Slice A [TLD 08:00 Q3]: the URL partner's bounds (its partner_reason_bounds row, else the deployment config).
     await openCreateForm();
     return;
   }
-  // [TLD 2026-11-04 21:11 Q2 / Q3] redirect: "manual" + the same abort as the limits GET; a redirect / non-JSON 200 is shown
-  // as a 401 and a timeout as the page error (locationOutcome), never a form with fallback limits.
+  // [TLD 2026-11-04 21:11 Q2 / Q3] redirect: "manual" + the same abort as the limits GET. A redirect is the generic
+  // page error, not a verified 401. A timeout is the network page error. Neither opens a form.
   const r = await api("GET", `/orgs/locations/${encodeURIComponent(st.route.locationId)}/login-config`, { timeoutMs: getTimeout() });
   const ro = locationOutcome(r);
-  if (ro.kind !== "ok") { show($("banner-loading"), false); applyErrors(ro.kind === "error401" ? { ...r, status: 401 } : r); body.dataset.state = "error"; return; }
+  if (ro.kind !== "ok") { show($("banner-loading"), false); showReadError(r, ro.kind); body.dataset.state = "error"; return; }
   st.view = r.body; st.ifMatch = ifMatchFrom(r.etag, r.body.row_version);
   // DEC-107: the GET carries the reason bounds in effect; a PUT 200 body does not, so st.limits outlives st.view.
   setLimits(limitsFrom(r.body)); // [TLD 2026-11-04 17:28] missing / invalid -> REASON_BOUNDS (D-108 copy, TLD 18:35)

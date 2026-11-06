@@ -420,7 +420,10 @@ await step("P4i limits fallback", async () => {
   ok("P4i create (fallback): a 9-character reason -> 422 copy 'This reason is too short or too long. Edit it and try again.' (D-108), still on /new", e.length === 1 && e[0].code === "validation_failed"
     && await txt("#reason-err") === "This reason is too short or too long. Edit it and try again." && await ev(`location.pathname.endsWith("/new")`), [e, await txt("#reason-err")]);
   mode = { kind: "fake", status: 401, body: "" }; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
-  ok("P4i create: limits 401 is an access answer, not a fallback (page error, no form)", await ev(`document.body.dataset.state`) === "error" && !(await vis("#lname")), await ev(`document.body.dataset.state`));
+  ok("P4i create: limits 401 is the verified session copy, not a fallback and not the generic load error",
+    await ev(`document.body.dataset.state`) === "error" && !(await vis("#lname"))
+      && `${await txt("#banner-error-title")} ${await txt("#banner-error-text")}`.trim() === "Your session has ended. Sign in again, then try again.",
+    await txt("#banner-error-title"));
   await cdp("Fetch.disable");
   // Edit: the location GET's reason_min_length / reason_max_length (c50 API: 50 / 200) replaced -> 10 / 500.
   await cdp("Fetch.enable", { patterns: [{ urlPattern: `*/api/orgs/locations/${H.l1}/login-config`, requestStage: "Response" }] });
@@ -477,17 +480,23 @@ await step("P4k follow-ups", async () => {
   }
   ok("P4k LOW-1: retry shows the 403 banner and no field error", (await shownError())[0]?.code === "forbidden" && await ev(`[...document.querySelectorAll(".field__error")].every(e => e.hidden)`), await shownError());
   // Limits answers that are page errors (no fallback, no form).
+  const LOAD_ERROR = "Something went wrong. Try again.";
   const errCases = [
     ["limits 403", { status: 403, headers: JSON_CT, body: JSON.stringify({ error: "forbidden" }) }, null],
-    ["limits 302 same-site (redirect: manual, not followed)", { status: 302, headers: [{ name: "Location", value: `${H.ui}/p4k-sign-in` }], body: "" }, "401"],
-    ["limits 3xx not followed (300, no Location)", { status: 300, headers: JSON_CT, body: "{}" }, "401"],
+    ["limits 302 same-site (redirect: manual, not followed)", { status: 302, headers: [{ name: "Location", value: `${H.ui}/p4k-sign-in` }], body: "" }, "other"],
+    ["limits 307 same-site (redirect: manual, not followed)", { status: 307, headers: [{ name: "Location", value: `${H.ui}/p4k-sign-in` }], body: "" }, "other"],
+    ["limits 3xx not followed (300, no Location)", { status: 300, headers: JSON_CT, body: "{}" }, "other"],
     ["limits 200 text/html (TLD 15:08 item 2: an invalid answer, not a verified 401)", { status: 200, headers: [{ name: "Content-Type", value: "text/html" }], body: "<!doctype html><title>Sign in</title>" }, "other"],
+    ["limits 401", { status: 401, headers: [], body: "" }, "401"],
   ];
   for (const [name, m, code] of errCases) {
     seen.length = 0; mode = { kind: "fake", ...m }; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
-    const got = { state: await ev(`document.body.dataset.state`), lname: await vis("#lname"), err: await shownError(), seen: [...seen] };
-    ok(`P4k create: ${name} -> page error${code ? " shown as a 401" : ""}, no form, no fallback`, got.state === "error" && !got.lname && got.err.length === 1
-      && (code === null || got.err[0].code === code) && !got.seen.some(u => u.endsWith("/p4k-sign-in")), got); // TLD 21:11 Q2: redirect: "manual", the 302 is never followed
+    const got = { state: await ev(`document.body.dataset.state`), lname: await vis("#lname"), err: await shownError(), text: `${await txt("#banner-error-title")} ${await txt("#banner-error-text")}`.trim(), seen: [...seen] };
+    ok(`P4k create: ${name} -> page error, no form, no fallback, Location not requested`, got.state === "error" && !got.lname && got.err.length === 1
+      && (code === null || got.err[0].code === code)
+      && (code !== "other" || (got.text === LOAD_ERROR && !/session has ended|sign in again/i.test(got.text)))
+      && (code !== "401" || got.text === "Your session has ended. Sign in again, then try again.")
+      && !got.seen.some(u => u.endsWith("/p4k-sign-in")), got);
   }
   // A JSON 200 with an invalid body still falls back.
   mode = { kind: "fake", status: 200, headers: JSON_CT, body: "not json" }; await open(`/c50/sa/orgs/${H.partner_a}/locations/new`); mode = null;
@@ -514,8 +523,8 @@ await step("P4k follow-ups", async () => {
   ok("P4k: nothing was saved (L1 still MFA on)", await txt("#cur-mfa") === "Yes", await txt("#cur-mfa"));
 });
 // P4l [TLD 2026-11-04 21:11 Q2 / Q3, UX D-109 1cab5e82, SSE2 70cf9b13 LOW-1]: redirect: "manual" on the limits GET and the
-// location GET (a cross-site 302 to login.microsoftonline.com is a 401 page error, never followed, never a fallback); the
-// location GET is aborted like the limits GET and a timeout is the page error with no form. Faked with CDP Fetch.
+// location GET. A 302 or 307 with a Location is not followed and is the generic load error, not a verified 401.
+// Fetch pauses a Location request only if the browser actually sends it. The location GET timeout stays the network error.
 await step("P4l redirect / timeout", async () => {
   let mode = null; const seen = [];
   const LOC = new RegExp(`/api/orgs/locations/${H.l1}/login-config$`), LIM = /\/api\/orgs\/login-config\/limits(\?|$)/;
@@ -537,21 +546,41 @@ await step("P4l redirect / timeout", async () => {
   await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/login-config/limits*", requestStage: "Request" }, { urlPattern: `*/api/orgs/locations/${H.l1}/login-config`, requestStage: "Request" },
     { urlPattern: "https://login.microsoftonline.com/*", requestStage: "Request" }, { urlPattern: "*/p4l-sign-in", requestStage: "Request" }] });
   const MS = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=p4l&response_type=code";
-  const R302 = (loc) => ({ kind: "fake", status: 302, headers: [{ name: "Location", value: loc }], body: "" });
+  const R3 = (status, loc) => ({ kind: "fake", status, headers: [{ name: "Location", value: loc }], body: "" });
+  const LOAD_ERROR = "Something went wrong. Try again.";
   const cases = [
-    ["create: limits 302 to login.microsoftonline.com", `/c50/sa/orgs/${H.partner_a}/locations/new`, LIM, R302(MS)],
-    ["edit: location GET 302 to login.microsoftonline.com", `/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`, LOC, R302(MS)],
-    ["edit: location GET 302 same-site", `/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`, LOC, R302(`${H.ui}/p4l-sign-in`)],
+    ["create: limits 302 to login.microsoftonline.com", `/c50/sa/orgs/${H.partner_a}/locations/new`, LIM, R3(302, MS), "other", LOAD_ERROR],
+    ["create: limits 307 to login.microsoftonline.com", `/c50/sa/orgs/${H.partner_a}/locations/new`, LIM, R3(307, MS), "other", LOAD_ERROR],
+    ["edit: location GET 302 to login.microsoftonline.com", `/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`, LOC, R3(302, MS), "other", LOAD_ERROR],
+    ["edit: location GET 307 to login.microsoftonline.com", `/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`, LOC, R3(307, MS), "other", LOAD_ERROR],
+    ["edit: location GET 302 same-site", `/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`, LOC, R3(302, `${H.ui}/p4l-sign-in`), "other", LOAD_ERROR],
+    ["edit: location GET 401", `/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`, LOC, { kind: "fake", status: 401, headers: [], body: "" }, "401", "Your session has ended. Sign in again, then try again."],
+    ["create: limits 401", `/c50/sa/orgs/${H.partner_a}/locations/new`, LIM, { kind: "fake", status: 401, headers: [], body: "" }, "401", "Your session has ended. Sign in again, then try again."],
   ];
-  for (const [name, url, re, m] of cases) {
+  for (const [name, url, re, m, code, text] of cases) {
     seen.length = 0; const o0 = outside.length; mode = { ...m, url: re }; await open(url); mode = null;
-    // DevTools announces the 302's Location (requestWillBeSent + redirectResponse) before the page's redirect: "manual"
-    // drops it; such an entry is taken off the no-egress list only when the browser never made the request (seen empty).
+    // DevTools announces the Location (requestWillBeSent) before redirect: "manual" drops it. Fetch.requestPaused
+    // is the request the browser actually sends. Drop the announcement only when that request count is zero.
     if (seen.length === 0) outside.splice(o0, outside.length - o0, ...outside.slice(o0).filter(u => u !== MS));
-    const got = { state: await ev(`document.body.dataset.state`), lname: await vis("#lname"), change: await vis("#btn-change"), err: await shownError(), seen: [...seen] };
-    ok(`P4l ${name} -> not followed, page error shown as a 401, no form, no fallback`, got.state === "error" && !got.lname && !got.change
-      && got.err.length === 1 && got.err[0].code === "401" && got.seen.length === 0, got);
+    const got = { state: await ev(`document.body.dataset.state`), lname: await vis("#lname"), change: await vis("#btn-change"), form: await vis("#form"), err: await shownError(), text: `${await txt("#banner-error-title")} ${await txt("#banner-error-text")}`.trim(), seen: [...seen], path: await ev(`location.pathname`) };
+    ok(`P4l ${name} -> not followed, exact page error, no form, no fallback`, got.state === "error" && !got.lname && !got.change && !got.form
+      && got.err.length === 1 && got.err[0].code === code && got.text === text && got.seen.length === 0
+      && got.path === new URL(H.ui + url).pathname, got);
   }
+  // A redirected limits GET after the admin is allowed to acknowledge does not open Create and does not clear the guard.
+  const ackKey = `llc.unconfirmed.create.${H.partner_a}`;
+  const ackAttempt = JSON.stringify({ attemptId: "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8", startedAt: "2026-11-06T07:17:00.000Z" });
+  await ev(`localStorage.setItem(${JSON.stringify(ackKey)}, ${JSON.stringify(ackAttempt)}), true`);
+  mode = null; await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await until(`document.body.dataset.createAck === "allow"`, 10000);
+  seen.length = 0; mode = { ...R3(302, `${H.ui}/p4l-sign-in`), url: LIM };
+  await ev(`document.querySelector("#ack-missing").checked = true, true`);
+  await click("#btn-enable-create");
+  await until(`document.body.dataset.state === "error"`, 10000);
+  await sleep(300); mode = null;
+  const gotAck = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), recov: await vis("#create-recovery"), text: `${await txt("#banner-error-title")} ${await txt("#banner-error-text")}`.trim(), kept: await ev(`localStorage.getItem(${JSON.stringify(ackKey)})`), seen: [...seen] };
+  ok("P4l Enable after an allowed recovery: limits 302 is the generic load error, guard kept, no form, Location not requested",
+    gotAck.state === "error" && !gotAck.form && gotAck.text === LOAD_ERROR && gotAck.kept === ackAttempt && gotAck.seen.length === 0, gotAck);
+  await ev(`localStorage.removeItem(${JSON.stringify(ackKey)}), true`);
   // Q3: a stalled location GET is aborted (injected 400 ms instead of LIMITS_TIMEOUT_MS) -> page error, no form, no fallback hint.
   const { identifier } = await cdp("Page.addScriptToEvaluateOnNewDocument", { source: "globalThis.__llcLimitsTimeoutMs = 400;" });
   mode = { kind: "stall", url: LOC }; const t0 = Date.now(); await open(`/c50/sa/orgs/${H.partner_a}/locations/${H.l1}/sign-in`); const dt = Date.now() - t0; mode = null;
@@ -1145,17 +1174,18 @@ await step("DEC-144 manual create recovery", async () => {
   await open(`/as/rd/orgs/${H.partner_a}/locations/new`); await ack("deny");
   ok("GAP1 org:V reader no-row: denied, guard kept", await ev(`document.body.dataset.state`) === "blocked" && !(await vis("#create-recovery")) && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === rec(A1));
 
-  let gapMode = null;
+  let gapMode = null; const gapSeen = [];
   const gapLsn = (msg) => {
     if (msg.sessionId !== S || msg.method !== "Fetch.requestPaused") return;
     const p = msg.params, id = p.requestId, go = () => cdp("Fetch.continueRequest", { requestId: id }).catch(() => {});
+    if (p.request.url.endsWith("/gap-redirect-target")) { gapSeen.push(p.request.url); return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: 200, responseHeaders: [{ name: "Content-Type", value: "text/html" }], body: Buffer.from("<!doctype html><title>Sign in</title>").toString("base64") }).catch(() => {}); }
     if (!gapMode || !/\/login-config\/reason-bounds/.test(p.request.url)) return go();
     if (gapMode.kind === "fail") return cdp("Fetch.failRequest", { requestId: id, errorReason: "Failed" }).catch(() => {});
     return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: gapMode.status, responseHeaders: gapMode.headers,
       body: Buffer.from(gapMode.body).toString("base64") }).catch(() => {});
   };
   listeners.push(gapLsn);
-  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/login-config/reason-bounds*", requestStage: "Request" }] });
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/login-config/reason-bounds*", requestStage: "Request" }, { urlPattern: "*/gap-redirect-target", requestStage: "Request" }] });
   const gapJson = [{ name: "Content-Type", value: "application/json" }];
   const gapPlain = [{ name: "Content-Type", value: "text/plain" }];
   const gapCases = [
@@ -1168,17 +1198,21 @@ await step("DEC-144 manual create recovery", async () => {
     ["non-json 200", { kind: "fake", status: 200, headers: gapPlain, body: "ok" }, "unknown"],
     ["500", { kind: "fake", status: 500, headers: gapJson, body: JSON.stringify({ error: "internal_error" }) }, "unknown"],
     ["network failure", { kind: "fail" }, "unknown"],
+    ["reason-bounds 302 with Location", { kind: "fake", status: 302, headers: [{ name: "Location", value: `${H.ui}/gap-redirect-target` }], body: "" }, "unknown"],
+    ["reason-bounds 307 with Location", { kind: "fake", status: 307, headers: [{ name: "Location", value: `${H.ui}/gap-redirect-target` }], body: "" }, "unknown"],
+    ["reason-bounds 401", { kind: "fake", status: 401, headers: [], body: "" }, "session"],
   ];
   for (const [name, mode, kind] of gapCases) {
     await ev(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(rec(A1))}), true`);
     const before = posts();
-    gapMode = mode;
+    gapSeen.length = 0; gapMode = mode;
     await open(`/as/sa/orgs/${H.partner_a}/locations/new`);
     await ack(kind);
     gapMode = null;
-    const got = { state: await ev(`document.body.dataset.state`), recov: await vis("#create-recovery"), form: await vis("#form"), ack: await ev(`document.body.dataset.createAck`), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), posts: posts() - before };
+    const got = { state: await ev(`document.body.dataset.state`), recov: await vis("#create-recovery"), form: await vis("#form"), ack: await ev(`document.body.dataset.createAck`), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), posts: posts() - before, text: `${await txt("#banner-error-title")} ${await txt("#banner-error-text")}`.trim(), followed: gapSeen.length };
     ok(`GAP1 untrusted role evidence (${name}) does not unlock and sends no POST`,
-      got.state === "blocked" && !got.recov && !got.form && got.ack === kind && got.kept === rec(A1) && got.posts === 0, got);
+      got.state === "blocked" && !got.recov && !got.form && got.ack === kind && got.kept === rec(A1) && got.posts === 0 && got.followed === 0
+      && got.text === (kind === "session" ? CREATE_UNKNOWN_SESSION_TEXT : CREATE_UNKNOWN_TEXT), got);
   }
   // GAP2: a pre-DEC-144 guard is the raw Date#toISOString string. Partner A still has no bounds row.
   // The timestamp is not authority. Reading it does not clear it and does not POST.

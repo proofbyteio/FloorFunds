@@ -137,8 +137,8 @@ test("TLD 18:35 items 2 / 4 / 5: limits answer -> page error, server limits or f
   const j = (status, body, extra = {}) => ({ status, body, json: true, redirected: false, ...extra });
   assert.deepEqual(limitsOutcome(j(401, null)), { kind: "error" });
   assert.deepEqual(limitsOutcome(j(403, { error: "forbidden" })), { kind: "error" });
-  assert.deepEqual(limitsOutcome(j(200, { reason_min_length: 10, reason_max_length: 500 }, { redirected: true })), { kind: "error401" });
-  for (const s of [300, 302, 303, 304, 307, 308]) assert.deepEqual(limitsOutcome(j(s, null)), { kind: "error401" }, String(s));
+  assert.deepEqual(limitsOutcome(j(200, { reason_min_length: 10, reason_max_length: 500 }, { redirected: true })), { kind: "error" });
+  for (const s of [300, 302, 303, 304, 307, 308]) assert.deepEqual(limitsOutcome(j(s, null)), { kind: "error" }, String(s));
   // [TLD 2026-11-05 15:08 item 2] a non-JSON 200 is an invalid answer (page error), not a verified 401 (was error401).
   assert.deepEqual(limitsOutcome({ status: 200, body: null, json: false, redirected: false }), { kind: "error" });
   assert.deepEqual(limitsOutcome({ status: null, body: null, json: false, redirected: false }), { kind: "fallback" }); // network / timeout
@@ -165,19 +165,38 @@ test("UX D-109 (TLD 20:18 / 21:11): fallback hint is short on Edit, full D-108 h
   assert.equal(reasonHintFallback(true), "Saved in the audit log. In Create: required only if you turn off the second step or turn on backup sign-in.");
   assert.equal(REASON_LENGTH_FALLBACK, "This reason is too short or too long. Edit it and try again.");
 });
-test("TLD 21:11 Q2 / Q3: opaqueredirect -> 401 page error (limits and location GET); location GET timeout -> page error", () => {
+test("TLD 21:11 Q2 / Q3: opaqueredirect is a load error, not a verified 401; location GET timeout -> page error", () => {
   const j = (status, body, extra = {}) => ({ status, body, json: true, redirected: false, opaque: false, ...extra });
   const opq = { status: 0, body: null, json: false, redirected: false, opaque: true }; // fetch redirect: "manual", any 3xx
-  assert.deepEqual(limitsOutcome(opq), { kind: "error401" });
-  assert.deepEqual(locationOutcome(opq), { kind: "error401" });
+  assert.deepEqual(limitsOutcome(opq), { kind: "error" });
+  assert.deepEqual(locationOutcome(opq), { kind: "error" });
   assert.deepEqual(locationOutcome({ status: null, body: null, json: false, redirected: false, opaque: false }), { kind: "error" }); // network / timeout
-  assert.deepEqual(locationOutcome(j(200, { name: "L1" }, { redirected: true })), { kind: "error401" });
-  for (const s of [300, 302, 303, 307, 308]) assert.deepEqual(locationOutcome(j(s, null)), { kind: "error401" }, String(s));
+  assert.deepEqual(locationOutcome(j(200, { name: "L1" }, { redirected: true })), { kind: "error" });
+  for (const s of [300, 302, 303, 307, 308]) assert.deepEqual(locationOutcome(j(s, null)), { kind: "error" }, String(s));
   assert.deepEqual(locationOutcome({ status: 200, body: null, json: false, redirected: false, opaque: false }), { kind: "error" }); // [TLD 15:08 item 2] was error401
   assert.deepEqual(locationOutcome({ status: 200, body: { name: "L1" }, json: false, redirected: false, opaque: false }), { kind: "error" });
   for (const s of [401, 403, 404, 500]) assert.deepEqual(locationOutcome(j(s, { error: "x" })), { kind: "error" }, String(s));
   assert.deepEqual(locationOutcome(j(200, null)), { kind: "error" });
   assert.deepEqual(locationOutcome(j(200, { name: "L1" })), { kind: "ok" });
+});
+test("DEC-144 review r2: a limits or location redirect is the generic load error, and a real 401 stays the session sentence", () => {
+  const j = (status, body, extra = {}) => ({ status, body, json: true, redirected: false, opaque: false, ...extra });
+  const opq = { status: 0, body: null, json: false, redirected: false, opaque: true };
+  const load = `${TOP_LEVEL.other.title} ${TOP_LEVEL.other.text}`;
+  const session = `${TOP_LEVEL[401].title} ${TOP_LEVEL[401].text}`;
+  assert.equal(load, "Something went wrong. Try again.");
+  assert.equal(session, "Your session has ended. Sign in again, then try again.");
+  assert.ok(!/session has ended|sign in again|nothing was saved|couldn't confirm the save/i.test(load));
+  for (const fn of [limitsOutcome, locationOutcome]) {
+    for (const r of [opq, j(302, null, { json: false }), j(307, null, { json: false }), j(200, { name: "L1" }, { redirected: true })]) {
+      const o = fn(r);
+      assert.equal(o.kind, "error");
+      assert.notEqual(o.kind, "error401");
+    }
+    assert.equal(fn(j(401, null, { json: false })).kind, "error");
+  }
+  assert.equal(createAckAuthority(j(302, null, { json: false }), "5f0c3e1a-0001-4000-8000-000000000001").kind, "unknown");
+  assert.equal(createAckAuthority(j(401, null, { json: false }), "5f0c3e1a-0001-4000-8000-000000000001").kind, "session");
 });
 
 // [TLD 2026-11-05 07:54 fetch hardening, brief a451c6cf] Edit / write 307, 401 and non-JSON cases are unit-only here (TL DQ-2).
@@ -315,6 +334,9 @@ test("DEC-144 gap1: bounds_editor for this partner is the allow proof; a row or 
   assert.deepEqual(createAckAuthority(ans(404, { error: "not_found" }), pid), { kind: "deny" });
   assert.deepEqual(createAckAuthority({ status: null, body: null, json: false, redirected: false, opaque: false, timedOut: true }, pid), { kind: "unknown" });
   assert.deepEqual(createAckAuthority(ans(302, null, { json: false }), pid), { kind: "unknown" }, "a redirect is not session expiry");
+  assert.deepEqual(createAckAuthority(ans(307, null, { json: false }), pid), { kind: "unknown" });
+  assert.deepEqual(createAckAuthority(OPAQUE, pid), { kind: "unknown" });
+  assert.deepEqual(createAckAuthority(ans(200, unset, { redirected: true }), pid), { kind: "unknown" });
   assert.deepEqual(createAckAuthority(ans(200, row, { json: false }), pid), { kind: "unknown" });
   assert.equal(createAckAuthority.length, 2, "the second argument is the route partner id, not a role");
 });
