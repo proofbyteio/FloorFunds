@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, formatPT, changeDetails, fieldTarget,
   ifMatchFrom, fallbackText, limitsFrom, limitsOrFallback, REASON_BOUNDS, partnerMfaState, PARTNER_MFA_OFF_HINT,
   errIdFor, LIMITS_TIMEOUT_MS, limitsTimeout, limitsOutcome, locationOutcome, writeOutcome, historyOutcome, CONTRACT_ERROR_CODES, WRITE_REJECTIONS,
-  parseCreateAttempt, ackClearsAttempt, createAckAuthority } from "../js/llc-core.mjs";
+  parseCreateAttempt, ackClearsAttempt, createAckAuthority, classifyCreateGuard, CREATE_GUARD_UNREAD } from "../js/llc-core.mjs";
 import { TOP_LEVEL, FETCH_COPY, FIELD, requestIdText, reasonLengthCopy, REASON_HINT_FALLBACK, REASON_LENGTH_FALLBACK,
   REASON_HINT_FALLBACK_EDIT, reasonHintFallback } from "../js/error-copy.mjs";
 
@@ -270,7 +270,7 @@ test("DEC-144 gap1: bounds_editor for this partner is the allow proof; a row or 
   assert.deepEqual(parseCreateAttempt(raw), { attemptId: id, startedAt: "2026-11-05T22:01:00.000Z" });
   assert.equal(ackClearsAttempt(raw, id), true);
   assert.equal(ackClearsAttempt(raw, other), false, "an older acknowledgement must not clear a different attempt");
-  assert.equal(ackClearsAttempt(new Date().toISOString(), id), false, "a legacy timestamp has no attempt id");
+  assert.equal(ackClearsAttempt(new Date().toISOString(), id), false, "a legacy timestamp is not an attempt id");
   assert.equal(ackClearsAttempt(null, id), false);
   assert.equal(ackClearsAttempt(raw, ""), false);
   const ans = (status, body, extra = {}) => ({ status, body, json: true, redirected: false, opaque: false, timedOut: false, ...extra });
@@ -296,4 +296,30 @@ test("DEC-144 gap1: bounds_editor for this partner is the allow proof; a row or 
   assert.deepEqual(createAckAuthority(ans(302, null, { json: false }), pid), { kind: "unknown" }, "a redirect is not session expiry");
   assert.deepEqual(createAckAuthority(ans(200, row, { json: false }), pid), { kind: "unknown" });
   assert.equal(createAckAuthority.length, 2, "the second argument is the route partner id, not a role");
+});
+test("DEC-144 gap2: a valid legacy timestamp matches only itself; it is not authority and a bad value stays closed", () => {
+  const id = "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8";
+  const other = "11111111-2222-4333-8444-555555555555";
+  const iso = "2026-11-06T07:17:00.000Z";
+  const otherIso = "2026-11-06T07:28:00.000Z";
+  const raw = JSON.stringify({ attemptId: id, startedAt: iso });
+  const newer = JSON.stringify({ attemptId: other, startedAt: iso });
+  assert.equal(new Date(iso).toISOString(), iso, "the fixture is a real Date#toISOString value");
+  assert.deepEqual(parseCreateAttempt(iso), { legacy: true, at: iso });
+  assert.equal(parseCreateAttempt(iso).at, iso, "reading a legacy guard does not rewrite it");
+  assert.equal(ackClearsAttempt(iso, iso), true, "the same legacy timestamp is the observed guard");
+  assert.equal(ackClearsAttempt(iso, otherIso), false, "a different legacy timestamp is a different guard");
+  assert.equal(ackClearsAttempt(iso, id), false, "a timestamp does not match an attempt id");
+  assert.equal(ackClearsAttempt(raw, iso), false, "a legacy acknowledgement does not clear an id-scoped guard");
+  assert.equal(ackClearsAttempt(newer, id), false, "an older attempt id does not clear a newer one");
+  assert.equal(ackClearsAttempt(raw, id), true, "an id-scoped guard still matches its own attempt id");
+  assert.deepEqual(classifyCreateGuard(iso), { present: true, acknowledgeable: true, token: iso });
+  assert.deepEqual(classifyCreateGuard(raw), { present: true, acknowledgeable: true, token: id });
+  assert.deepEqual(classifyCreateGuard(null), { present: false, acknowledgeable: false, token: null }, "an absent key is not a guard");
+  assert.deepEqual(classifyCreateGuard(CREATE_GUARD_UNREAD), { present: true, acknowledgeable: false, token: null }, "a storage read error is a guard and cannot be acknowledged");
+  const bad = ["nope", "2026-11-06T07:17:00Z", "2026-11-06T07:17:00.000+00:00", "2026-02-31T00:00:00.000Z", ` ${iso}`, `${iso} `, JSON.stringify(iso), "", "{", "null", "0"];
+  for (const value of bad) {
+    assert.equal(ackClearsAttempt(value, value), false, value);
+    assert.deepEqual(classifyCreateGuard(value), { present: true, acknowledgeable: false, token: null }, value);
+  }
 });

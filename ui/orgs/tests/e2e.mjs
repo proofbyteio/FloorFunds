@@ -745,7 +745,7 @@ await step("P6b body stall", async () => {
 // API answered (so the server committed) and the harness drops the answer at the Response stage; "netfail" = the request is
 // failed before it is sent; "bad" = a faked 200 with an unparseable JSON body. Real writes here: one lost PUT, one lost create,
 // one confirmed PUT (counted in the real-PG totals at the end).
-let p6cCreated = 0, p6cSaChanges = 0, gap1PaChanges = 0;
+let p6cCreated = 0, p6cSaChanges = 0, gap1PaChanges = 0, gap2PaChanges = 0;
 await step("P6c uncertain outcomes", async () => {
   let mode = null; const hits = [];
   const LOC = new RegExp(`/api/orgs/locations/${H.l1}/login-config$`), HIST = new RegExp(`/api/orgs/locations/${H.l1}/login-config/changes$`), CREATE = /\/api\/orgs\/locations$/;
@@ -1159,7 +1159,172 @@ await step("DEC-144 manual create recovery", async () => {
     ok(`GAP1 untrusted role evidence (${name}) does not unlock and sends no POST`,
       got.state === "blocked" && !got.recov && !got.form && got.ack === kind && got.kept === rec(A1) && got.posts === 0, got);
   }
+  // GAP2: a pre-DEC-144 guard is the raw Date#toISOString string. Partner A still has no bounds row.
+  // The timestamp is not authority. Reading it does not clear it and does not POST.
+  const L1 = "2026-11-06T07:17:00.000Z";
+  const L2 = "2026-11-06T07:28:00.000Z";
+  const setKey = async (v) => ev(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(v)}), true`);
+  await setKey(L1);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  ok("GAP2 SA no-row: a legacy timestamp stays locked on load, with recovery controls and the stored string unchanged",
+    await ev(`document.body.dataset.state`) === "blocked" && await vis("#create-recovery") && !(await vis("#form"))
+      && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === L1);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  ok("GAP2 SA no-row: reload keeps the same legacy guard locked",
+    await ev(`document.body.dataset.state`) === "blocked" && await vis("#create-recovery") && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === L1 && !(await vis("#form")));
+  await open(`/as/anon/orgs/${H.partner_a}/locations/new`); await ack("session");
+  ok("GAP2 SA no-row: re-auth as anon does not clear the legacy guard",
+    await ev(`document.body.dataset.state`) === "blocked" && !(await vis("#create-recovery")) && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === L1);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const g2n0 = posts();
+  await click("#ack-missing"); await sleep(200);
+  ok("GAP2 SA no-row: the checkbox alone sends no POST and does not clear the legacy guard",
+    posts() === g2n0 && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === L1 && !(await vis("#form")));
+  await ev(`document.querySelector("#ack-missing").checked = false, true`);
+  await click("#btn-enable-create"); await sleep(300);
+  ok("GAP2 SA no-row: Enable Create again without the checkbox sends no POST",
+    posts() === g2n0 && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === L1 && !(await vis("#form")));
+  await setKey(L2);
+  await click("#ack-missing");
+  await click("#btn-enable-create"); await sleep(400);
+  const g2leg = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), note: await txt("#create-recovery-note"), posts: posts() - g2n0 };
+  ok("GAP2 SA no-row: acknowledging one legacy timestamp does not clear a different legacy timestamp and sends no POST",
+    g2leg.state === "blocked" && !g2leg.form && g2leg.kept === L2 && /not cleared/.test(g2leg.note) && g2leg.posts === 0, g2leg);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  await setKey(rec(A2));
+  const g2nObj = posts();
+  await click("#ack-missing");
+  await click("#btn-enable-create"); await sleep(400);
+  const g2obj = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), note: await txt("#create-recovery-note"), posts: posts() - g2nObj };
+  ok("GAP2 SA no-row: a legacy acknowledgement does not clear a newer id-scoped guard and sends no POST",
+    g2obj.state === "blocked" && !g2obj.form && g2obj.kept === rec(A2) && /not cleared/.test(g2obj.note) && g2obj.posts === 0, g2obj);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  await setKey(rec(A1));
+  const g2nId = posts();
+  await click("#ack-missing");
+  await click("#btn-enable-create"); await sleep(400);
+  const g2id = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), note: await txt("#create-recovery-note"), posts: posts() - g2nId };
+  ok("GAP2 SA no-row: an acknowledgement of an older attempt id does not clear a newer attempt id and sends no POST",
+    g2id.state === "blocked" && !g2id.form && g2id.kept === rec(A1) && /not cleared/.test(g2id.note) && g2id.posts === 0, g2id);
+  await setKey(L1);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const g2n1 = posts();
+  await click("#ack-missing");
+  await click("#btn-enable-create");
+  await until(`document.body.dataset.state === "create" && !document.querySelector("#form").hidden`, 10000);
+  ok("GAP2 SA no-row: Enable Create again clears only the matching legacy timestamp, shows an empty form, and sends zero POSTs",
+    await ev(`document.body.dataset.state`) === "create" && await vis("#form") && await ev(`document.querySelector("#lname").value`) === ""
+      && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === null && posts() === g2n1);
+  await type("#lname", "UI Cage GAP2 SA"); await type("#dname", "UI Casino A");
+  const g2n2 = posts();
+  await click("#btn-save");
+  await until(`/\\/locations\\/[0-9a-f-]{36}\\/sign-in$/.test(location.pathname) && document.body.dataset.state === "saved"`, 10000);
+  const g2Sa = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), posts: posts() - g2n2, name: await txt("#saved-loc") };
+  if (g2Sa.saved) { p6cCreated++; p6cSaChanges++; }
+  ok("GAP2 SA no-row: the next deliberate Create after a legacy acknowledgement sends one POST and saves",
+    g2Sa.state === "saved" && g2Sa.saved && g2Sa.posts === 1 && g2Sa.name === "UI Cage GAP2 SA", g2Sa);
+  await setKey(L1);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const g2n3 = posts();
+  await click("#btn-found");
+  await until(`document.body.dataset.state === "reported"`, 5000);
+  const g2Found = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), recov: await vis("#create-recovery"),
+    title: await txt("#create-reported-h"), text: await txt("#create-reported-text"), links: await ev(`document.querySelectorAll("#create-reported a").length`),
+    path: await ev(`location.pathname`), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), posts: posts() - g2n3 };
+  ok("GAP2 SA no-row: I found the location clears only the matching legacy timestamp, sends no POST, and invents no destination",
+    g2Found.state === "reported" && !g2Found.form && !g2Found.recov && g2Found.title === "You reported that you found the location."
+      && g2Found.text === "This is your report, not a confirmation from the server." && g2Found.links === 0 && g2Found.path.endsWith("/locations/new")
+      && g2Found.kept === null && g2Found.posts === 0, g2Found);
+
+  await setKey(L1);
+  await open(`/as/pa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  ok("GAP2 own-partner Partner Admin no-row: legacy guard stays locked with recovery controls",
+    await ev(`document.body.dataset.state`) === "blocked" && await vis("#create-recovery") && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === L1 && !(await vis("#form")));
+  await open(`/as/pa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  ok("GAP2 own-partner Partner Admin no-row: reload keeps the legacy guard locked",
+    await vis("#create-recovery") && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === L1);
+  await open(`/as/anon/orgs/${H.partner_a}/locations/new`); await ack("session");
+  ok("GAP2 own-partner Partner Admin no-row: re-auth as anon does not clear the legacy guard",
+    !(await vis("#create-recovery")) && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === L1);
+  await open(`/as/pa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const g2pn0 = posts();
+  await click("#ack-missing"); await sleep(200);
+  ok("GAP2 own-partner Partner Admin no-row: the checkbox alone sends no POST",
+    posts() === g2pn0 && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === L1 && !(await vis("#form")));
+  await click("#btn-enable-create");
+  await until(`document.body.dataset.state === "create" && !document.querySelector("#form").hidden`, 10000);
+  ok("GAP2 own-partner Partner Admin no-row: Enable Create again sends zero POSTs and clears only the matching legacy timestamp",
+    await ev(`document.body.dataset.state`) === "create" && await ev(`document.querySelector("#lname").value`) === "" && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === null && posts() === g2pn0);
+  await type("#lname", "UI Cage GAP2 PA"); await type("#dname", "UI Casino A");
+  const g2pn1 = posts();
+  await click("#btn-save");
+  await until(`/\\/locations\\/[0-9a-f-]{36}\\/sign-in$/.test(location.pathname) && document.body.dataset.state === "saved"`, 10000);
+  const g2Pa = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), posts: posts() - g2pn1, name: await txt("#saved-loc") };
+  if (g2Pa.saved) { p6cCreated++; gap2PaChanges++; }
+  ok("GAP2 own-partner Partner Admin no-row: the next deliberate Create sends one POST and saves",
+    g2Pa.state === "saved" && g2Pa.saved && g2Pa.posts === 1 && g2Pa.name === "UI Cage GAP2 PA", g2Pa);
+  await setKey(L1);
+  await open(`/as/pa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const g2pn2 = posts();
+  await click("#btn-found");
+  await until(`document.body.dataset.state === "reported"`, 5000);
+  const g2PaFound = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), links: await ev(`document.querySelectorAll("#create-reported a").length`),
+    path: await ev(`location.pathname`), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), posts: posts() - g2pn2, title: await txt("#create-reported-h") };
+  ok("GAP2 own-partner Partner Admin no-row: I found the location sends no POST and opens no new form",
+    g2PaFound.state === "reported" && !g2PaFound.form && g2PaFound.links === 0 && g2PaFound.path.endsWith("/locations/new")
+      && g2PaFound.kept === null && g2PaFound.posts === 0 && g2PaFound.title === "You reported that you found the location.", g2PaFound);
+
+  await setKey(L1);
+  await open(`/as/pb/orgs/${H.partner_a}/locations/new`); await ack("unproven");
+  ok("GAP2 foreign Partner Admin no-row: a legacy timestamp does not unlock, and the guard is kept",
+    await ev(`document.body.dataset.state`) === "blocked" && !(await vis("#create-recovery")) && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === L1);
+  await open(`/as/rd/orgs/${H.partner_a}/locations/new`); await ack("deny");
+  ok("GAP2 org:V reader no-row: a legacy timestamp stays denied, and the guard is kept",
+    await ev(`document.body.dataset.state`) === "blocked" && !(await vis("#create-recovery")) && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === L1);
+  const gap2Bad = [
+    ["malformed text", "nope"],
+    ["ISO without milliseconds", "2026-11-06T07:17:00Z"],
+    ["ISO with a numeric offset", "2026-11-06T07:17:00.000+00:00"],
+    ["impossible calendar date", "2026-02-31T00:00:00.000Z"],
+    ["JSON-encoded timestamp", JSON.stringify(L1)],
+    ["empty string", ""],
+  ];
+  for (const [name, value] of gap2Bad) {
+    await setKey(value);
+    const before = posts();
+    await open(`/as/sa/orgs/${H.partner_a}/locations/new`);
+    await ack("allow");
+    const got = { state: await ev(`document.body.dataset.state`), recov: await vis("#create-recovery"), form: await vis("#form"), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), posts: posts() - before };
+    ok(`GAP2 malformed legacy value (${name}) stays blocked, hides recovery, and sends no POST`,
+      got.state === "blocked" && !got.recov && !got.form && got.kept === value && got.posts === 0, got);
+  }
+  for (const [name, mode, kind] of [
+    ["legacy with bounds_editor false", { kind: "fake", status: 200, headers: gapJson, body: JSON.stringify({ partner_id: H.partner_a, source: "default", bounds_editor: false, reason_min_length: 10, reason_max_length: 500 }) }, "unproven"],
+    ["legacy with a failed role read", { kind: "fail" }, "unknown"],
+  ]) {
+    await setKey(L1);
+    const before = posts();
+    gapMode = mode;
+    await open(`/as/sa/orgs/${H.partner_a}/locations/new`);
+    await ack(kind);
+    gapMode = null;
+    const got = { state: await ev(`document.body.dataset.state`), recov: await vis("#create-recovery"), form: await vis("#form"), ack: await ev(`document.body.dataset.createAck`), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), posts: posts() - before };
+    ok(`GAP2 untrusted role evidence (${name}) does not unlock a legacy guard and sends no POST`,
+      got.state === "blocked" && !got.recov && !got.form && got.ack === kind && got.kept === L1 && got.posts === 0, got);
+  }
   await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(gapLsn), 1);
+
+  await setKey(L1);
+  const unreadSrc = `(() => { const real = Storage.prototype.getItem; Storage.prototype.getItem = function (k) { if (typeof k === "string" && k.indexOf("llc.unconfirmed.create.") === 0) throw new DOMException("SecurityError"); return real.call(this, k); }; })();`;
+  const unreadId = (await cdp("Page.addScriptToEvaluateOnNewDocument", { source: unreadSrc })).identifier;
+  const g2nU = posts();
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  ok("GAP2 storage read error stays blocked, hides recovery, and sends no POST",
+    await ev(`document.body.dataset.state`) === "blocked" && !(await vis("#create-recovery")) && !(await vis("#form")) && posts() === g2nU);
+  await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier: unreadId });
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  ok("GAP2 storage read error did not delete the legacy guard",
+    await vis("#create-recovery") && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === L1 && await ev(`document.body.dataset.state`) === "blocked");
   await ev(`localStorage.clear(), true`);
 
   const put = await fetch(`${H.ui}/as/sa/api/orgs/partners/${H.partner_a}/login-config/reason-bounds`, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": '"0"' },
@@ -1368,8 +1533,8 @@ if (D) {
   ok("real PG: org:V reader wrote no change row (F-A3)", !(H.users.rd in D.changes_by_actor), D.changes_by_actor);
   const lenOk = (H.xss.len ?? []).filter(p => p.status === 201).length;
   ok(`real PG: change rows = 6 seeds (L1-L4 + hostile L5, L6) + ${lenOk} accepted length probes + PA edit + SA downgrade + PA conflict PUT + SA create + PA create + PA hostile save + PA MFA back on (DEC-106)`,
-    D.changes_by_actor[H.users.sa] === 8 + lenOk + p6cSaChanges && D.changes_by_actor[H.users.pa] === 5 + gap1PaChanges, { D: D.changes_by_actor, p6cSaChanges, gap1PaChanges }); // + P6c: lost PUT, lost create, confirmed PUT [TLD 15:08]
-  ok(`real PG: ${8 + lenOk + p6cCreated} locations (refused creates and XSS probes added none; ${lenOk} accepted length probes; ${p6cCreated} later creates: the lost P6c create, the P6d saved landing, the DEC-144 deliberate create, and the GAP1 no-row creates)`, D.locations === 8 + lenOk + p6cCreated, D.locations);
+    D.changes_by_actor[H.users.sa] === 8 + lenOk + p6cSaChanges && D.changes_by_actor[H.users.pa] === 5 + gap1PaChanges + gap2PaChanges, { D: D.changes_by_actor, p6cSaChanges, gap1PaChanges, gap2PaChanges }); // + P6c: lost PUT, lost create, confirmed PUT [TLD 15:08]
+  ok(`real PG: ${8 + lenOk + p6cCreated} locations (refused creates and XSS probes added none; ${lenOk} accepted length probes; ${p6cCreated} later creates: the lost P6c create, the P6d saved landing, the DEC-144 deliberate create, the GAP1 no-row creates, and the GAP2 legacy acknowledgements)`, D.locations === 8 + lenOk + p6cCreated, D.locations);
   // TLD 2026-11-04 14:18 (A): stored byte-for-byte, no server-side HTML escaping; the page is the only place the text is made safe.
   const hex = (s) => Buffer.from(s, "utf8").toString("hex"), x = D.xss ?? {};
   ok("real PG (A): auth.location.name = the hostile name, byte-for-byte (UTF-8)", JSON.stringify(x.location_name_hex) === JSON.stringify([hex(H.xss.name)]), x.location_name_hex);

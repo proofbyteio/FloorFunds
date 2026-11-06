@@ -2,7 +2,7 @@
 // is in error-copy.mjs. The page never sends oidc_* or secret_ref and shows only secret.set (spec §3.0, D-51).
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, METHOD_LABEL, fallbackText, formatPT,
   changeDetails, fieldTarget, ifMatchFrom, limitsFrom, limitsOrFallback, partnerMfaState, PARTNER_MFA_OFF_HINT, errIdFor, limitsTimeout,
-  limitsOutcome, locationOutcome, writeOutcome, historyOutcome, parseCreateAttempt, ackClearsAttempt, createAckAuthority } from "./llc-core.mjs";
+  limitsOutcome, locationOutcome, writeOutcome, historyOutcome, ackClearsAttempt, createAckAuthority, classifyCreateGuard, CREATE_GUARD_UNREAD } from "./llc-core.mjs";
 import { TOP_LEVEL, FETCH_COPY, FIELD, requestIdText, reasonLengthCopy, reasonHintFallback, REASON_LENGTH_FALLBACK } from "./error-copy.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -19,13 +19,14 @@ const st = { route: null, kind: "unknown", view: null, ifMatch: null, history: n
 // reload and sign-in). It is cleared only by an explicit acknowledgement of THAT attempt. A UI lock is not a duplicate
 // guarantee (other browsers / devices) and is not distributed deduplication.
 const pendingKey = (op, id) => `llc.unconfirmed.${op}.${id}`;
-function pendingGet(k) { try { return globalThis.localStorage.getItem(k); } catch { return null; } }
+function pendingGet(k) { try { return globalThis.localStorage.getItem(k); } catch { return CREATE_GUARD_UNREAD; } }
 function pendingSet(k) {
   const rec = { attemptId: globalThis.crypto.randomUUID(), startedAt: new Date().toISOString() };
   try { globalThis.localStorage.setItem(k, JSON.stringify(rec)); } catch { /* still locked in this page */ }
   return rec;
 }
-// The attempt id this blocked page is offering to acknowledge. A newer stored attempt must not match it.
+// The token this blocked page is offering to acknowledge: an attempt id, or the exact legacy timestamp it read.
+// A newer stored value must not match it. localStorage cannot make the later remove atomic with this read.
 let shownAttemptId = null;
 
 function setLimits(fromServer) { st.limitsFallback = !fromServer; st.limits = fromServer ?? limitsOrFallback(null); }
@@ -277,7 +278,7 @@ $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   if (st.locked) return; // [TLD 15:08 item 4] locked after an UNKNOWN outcome: no second write from this page
   // [TLD 16:00 / DEC-144] the Create guard is re-read at submit: another tab / a restored page may have recorded an unresolved create.
-  if (st.mode === "create" && pendingGet(pendingKey("create", st.route.partnerId)) !== null) { await enterCreateBlocked(); return; }
+  if (st.mode === "create" && classifyCreateGuard(pendingGet(pendingKey("create", st.route.partnerId))).present) { await enterCreateBlocked(); return; }
   hideErrors();
   const f = readForm();
   const btn = $("btn-save");
@@ -330,14 +331,17 @@ function showStaleAttempt() {
   show($("create-recovery-note"), true);
 }
 function clearMatchingAttempt(key) {
+  // Re-read immediately before the remove. This is not an atomic compare-and-delete.
+  if (!ackClearsAttempt(pendingGet(key), shownAttemptId)) { showStaleAttempt(); return false; }
   try { globalThis.localStorage.removeItem(key); } catch { /* the click still must not POST */ }
   shownAttemptId = null;
   st.locked = false;
+  return true;
 }
 // [DEC-144] Create outcome UNKNOWN: the form stays hidden. Recovery controls appear only when the reason-bounds
 // read proves Super Admin or own-partner Partner Admin (bounds_editor for this partner) AND the stored value is
-// an attempt id. A missing bounds row is not a refusal and is not proof. Checking the box alone does nothing.
-// Neither button sends a POST.
+// an attempt id or the exact legacy timestamp this page just read. A missing bounds row is not a refusal and is
+// not proof. A timestamp is not proof. Checking the box alone does nothing. Neither button sends a POST.
 function showCreateBlocked(authority) {
   st.locked = true;
   show($("banner-loading"), false);
@@ -348,8 +352,8 @@ function showCreateBlocked(authority) {
   showError(k, null, k);
   body.dataset.state = "blocked";
   body.dataset.createAck = authority;
-  const parsed = parseCreateAttempt(pendingGet(pendingKey("create", st.route.partnerId)));
-  shownAttemptId = parsed && !parsed.legacy ? parsed.attemptId : null;
+  const classified = classifyCreateGuard(pendingGet(pendingKey("create", st.route.partnerId)));
+  shownAttemptId = classified.acknowledgeable ? classified.token : null;
   const allow = authority === "allow" && shownAttemptId !== null;
   show($("create-recovery"), allow);
   if ($("ack-missing")) $("ack-missing").checked = false;
@@ -385,8 +389,7 @@ $("btn-enable-create").addEventListener("click", async () => {
   const lr = await api("GET", `/orgs/login-config/limits?partner_id=${encodeURIComponent(st.route.partnerId)}`, { timeoutMs: getTimeout() });
   const lo = limitsOutcome(lr);
   if (lo.kind === "error" || lo.kind === "error401") { show($("banner-loading"), false); applyErrors(lo.kind === "error401" ? { ...lr, status: 401 } : lr); body.dataset.state = "error"; return; }
-  if (!ackClearsAttempt(pendingGet(key), shownAttemptId)) { showStaleAttempt(); return; }
-  clearMatchingAttempt(key); // DEC144-ENABLE-CLEAR
+  if (!clearMatchingAttempt(key)) return; // DEC144-ENABLE-CLEAR
   show($("create-recovery"), false);
   setLimits(lo.kind === "server" ? lo.limits : null);
   fillForm({ provider_kind: "database", display_name: "", entra_allowed_tenant_ids: [], mfa_required: true, allow_db_fallback: false, name: "" });
@@ -394,8 +397,7 @@ $("btn-enable-create").addEventListener("click", async () => {
 });
 $("btn-found").addEventListener("click", () => {
   const key = pendingKey("create", st.route.partnerId);
-  if (!ackClearsAttempt(pendingGet(key), shownAttemptId)) { showStaleAttempt(); return; }
-  clearMatchingAttempt(key);
+  if (!clearMatchingAttempt(key)) return;
   st.locked = true;
   show($("create-recovery"), false);
   show($("form"), false);
@@ -457,7 +459,7 @@ async function start() {
     // [DEC-144] a pending attempt stays blocked across reload and re-authentication. The host's data-admin-type is not
     // the acknowledgement authority; enterCreateBlocked reads reason-bounds and keeps the guard unless bounds_editor
     // is true for this partner.
-    if (pendingGet(pendingKey("create", st.route.partnerId)) !== null) { await enterCreateBlocked(); return; }
+    if (classifyCreateGuard(pendingGet(pendingKey("create", st.route.partnerId))).present) { await enterCreateBlocked(); return; }
     // DEC-107 [TLD 2026-11-04 16:32 Q2]: no location yet, so the reason bounds come from the limits endpoint.
     // [TLD 2026-11-04 17:28] a failed fetch or missing / invalid values -> the server's hard bounds 10 / 500 (REASON_BOUNDS);
     // a 401 / 403 is an access answer, not a limits value, so it is still shown as the page error.

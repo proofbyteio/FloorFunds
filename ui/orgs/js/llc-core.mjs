@@ -250,10 +250,28 @@ export function historyOutcome(r) {
   return { kind: "status" };
 }
 
-/** [DEC-144] The create guard value is only { attemptId, startedAt }. A timestamp-only or other value is a legacy
- *  guard: it still blocks, and it cannot be acknowledged (there is no attempt id to match). */
+/** [DEC-144 gap 2] The pre-DEC-144 page stored exactly `new Date().toISOString()`: four-digit year, millisecond
+ *  precision, trailing Z. That is the only legacy value that can be acknowledged. It is not proof of authority.
+ *  A year outside 0000–9999 is not this form (`Date#toISOString` expands it) and stays unacknowledgeable. */
+const LEGACY_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+function isLegacyCreateTimestamp(raw) {
+  if (typeof raw !== "string" || !LEGACY_ISO.test(raw)) return false;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return false;
+  try { return d.toISOString() === raw; } catch { return false; }
+}
+
+/** Sentinel for a localStorage read that threw. It is a guard the page cannot see, not an absent key.
+ *  localStorage has no atomic compare-and-delete; a later read can still lose a race with another tab. */
+export const CREATE_GUARD_UNREAD = Object.freeze({ unread: true });
+
+/** [DEC-144] Current value: { attemptId, startedAt }. [DEC-144 gap 2] A valid legacy timestamp is
+ *  { legacy: true, at } where `at` is that exact stored string. Any other non-empty value is { legacy: true }
+ *  with no `at`: it still blocks and cannot be acknowledged. null / "" are not a current attempt
+ *  ("" is still a stored value; the caller treats it as present). */
 export function parseCreateAttempt(raw) {
   if (typeof raw !== "string" || raw.length === 0) return null;
+  if (isLegacyCreateTimestamp(raw)) return { legacy: true, at: raw };
   let o;
   try { o = JSON.parse(raw); } catch { return { legacy: true }; }
   if (!o || typeof o !== "object" || Array.isArray(o)) return { legacy: true };
@@ -261,11 +279,28 @@ export function parseCreateAttempt(raw) {
   return { attemptId: o.attemptId, startedAt: o.startedAt };
 }
 
-/** [DEC-144] Clear only when the stored attempt is the one this page showed. An older acknowledgement must not
- *  clear a newer or different attempt. */
-export function ackClearsAttempt(storedRaw, shownAttemptId) {
+/** [DEC-144] Clear only when the stored attempt is the one this page showed. [DEC-144 gap 2] A legacy
+ *  acknowledgement matches only that same timestamp string. An id-scoped acknowledgement matches only that
+ *  attempt id. A different legacy value, a newer object, or an unreadable value does not match. */
+export function ackClearsAttempt(storedRaw, shown) {
+  if (typeof storedRaw !== "string" || typeof shown !== "string" || shown.length === 0) return false;
   const p = parseCreateAttempt(storedRaw);
-  return !!(p && !p.legacy && typeof shownAttemptId === "string" && shownAttemptId.length > 0 && p.attemptId === shownAttemptId);
+  if (!p) return false;
+  if (p.attemptId) return p.attemptId === shown;
+  if (p.at) return p.at === shown;
+  return false;
+}
+
+/** What the create page does with one storage read. `null` is an absent key. CREATE_GUARD_UNREAD, a non-string,
+ *  "", a malformed value, and an unrecognized timestamp are present and not acknowledgeable. A valid legacy
+ *  timestamp and an id-scoped attempt are acknowledgeable; `token` is the exact value the click must still match. */
+export function classifyCreateGuard(raw) {
+  if (raw === null) return { present: false, acknowledgeable: false, token: null };
+  if (typeof raw !== "string") return { present: true, acknowledgeable: false, token: null };
+  const p = parseCreateAttempt(raw);
+  if (p && p.attemptId) return { present: true, acknowledgeable: true, token: p.attemptId };
+  if (p && p.at) return { present: true, acknowledgeable: true, token: p.at };
+  return { present: true, acknowledgeable: false, token: null };
 }
 
 /** [DEC-144 gap 1] Who may acknowledge, from GET /orgs/partners/{id}/login-config/reason-bounds only.
