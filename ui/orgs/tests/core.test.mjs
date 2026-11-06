@@ -3,7 +3,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, formatPT, changeDetails, fieldTarget,
   ifMatchFrom, fallbackText, limitsFrom, limitsOrFallback, REASON_BOUNDS, partnerMfaState, PARTNER_MFA_OFF_HINT,
-  errIdFor, LIMITS_TIMEOUT_MS, limitsTimeout, limitsOutcome, locationOutcome, writeOutcome, historyOutcome, CONTRACT_ERROR_CODES, WRITE_REJECTIONS } from "../js/llc-core.mjs";
+  errIdFor, LIMITS_TIMEOUT_MS, limitsTimeout, limitsOutcome, locationOutcome, writeOutcome, historyOutcome, CONTRACT_ERROR_CODES, WRITE_REJECTIONS,
+  parseCreateAttempt, ackClearsAttempt, createAckAuthority } from "../js/llc-core.mjs";
 import { TOP_LEVEL, FETCH_COPY, FIELD, requestIdText, reasonLengthCopy, REASON_HINT_FALLBACK, REASON_LENGTH_FALLBACK,
   REASON_HINT_FALLBACK_EDIT, reasonHintFallback } from "../js/error-copy.mjs";
 
@@ -237,8 +238,8 @@ test("TLD 07:54: history answers: timeout / 3xx / redirect / non-JSON 200 -> una
 test("TLD 15:08 copy: exact Edit uncertain copy; Create blocked (no reload advice); no 'Nothing was saved' in shared session / transport / generic copy", () => {
   const w = FETCH_COPY.write_unconfirmed;
   assert.equal(`${w.title} ${w.text}`, "We couldn't confirm the save. Reload to check before trying again.");
-  assert.deepEqual(FETCH_COPY.create_unconfirmed_blocked, { title: "We couldn\u2019t confirm the create.", text: "" });
-  assert.ok(!/reload|check|try again/i.test(FETCH_COPY.create_unconfirmed_blocked.title), "no unsupported recovery advice");
+  assert.equal(`${FETCH_COPY.create_unconfirmed_blocked.title} ${FETCH_COPY.create_unconfirmed_blocked.text}`,
+    "We couldn\u2019t confirm whether the location was created. Check whether it exists before trying again. The original request may still finish, so trying again could create a duplicate.");
   assert.equal(FETCH_COPY.history_unavailable.title, "Couldn't load history — try again");
   assert.equal(FETCH_COPY.history_unavailable.text, "");
   assert.deepEqual(TOP_LEVEL[401], { title: "Your session has ended.", text: "Sign in again, then try again." });
@@ -252,8 +253,35 @@ test("TLD 15:08 copy: exact Edit uncertain copy; Create blocked (no reload advic
 test("TLD 16:47 (supersedes 16:00 strings): exact provisional sign-in-again + UNKNOWN copy, no unverified cause", () => {
   const j = (c) => `${c.title} ${c.text}`;
   assert.equal(j(FETCH_COPY.write_unconfirmed_session), "We couldn\u2019t confirm the save. Sign in again, then reload to check before trying again.");
-  assert.equal(j(FETCH_COPY.create_unconfirmed_blocked_session), "We couldn\u2019t confirm whether the location was created. Sign in again. Creating another location remains blocked until the result is confirmed.");
-  for (const k of ["write_unconfirmed_session", "create_unconfirmed_blocked_session"]) assert.ok(!/session has ended|nothing was saved|try again\.$/i.test(j(FETCH_COPY[k])), k);
+  assert.equal(j(FETCH_COPY.create_unconfirmed_blocked_session), "We couldn\u2019t confirm whether the location was created. Check whether it exists before trying again. The original request may still finish, so trying again could create a duplicate. Sign in again, then check whether the location exists.");
+  assert.ok(!/session has ended|nothing was saved|try again\.$/i.test(j(FETCH_COPY.write_unconfirmed_session)));
+  assert.ok(!/session has ended|nothing was saved|remains blocked/i.test(j(FETCH_COPY.create_unconfirmed_blocked_session)));
+  assert.equal(j(FETCH_COPY.create_reported_found), "You reported that you found the location. This is your report, not a confirmation from the server.");
+  assert.ok(!/location_id|\/locations\/[0-9a-f]/i.test(j(FETCH_COPY.create_reported_found)), "no invented location");
   assert.equal(j(TOP_LEVEL["401"]), "Your session has ended. Sign in again, then try again.", "a real 401 keeps its verified-auth copy");
   assert.equal(j(FETCH_COPY.write_unconfirmed), "We couldn't confirm the save. Reload to check before trying again.", "timeout copy unchanged (exact)");
+});
+test("DEC-144: acknowledgement matches only the shown attempt; reason-bounds updated_by is the only allow proof", () => {
+  const id = "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8";
+  const other = "11111111-2222-4333-8444-555555555555";
+  const raw = JSON.stringify({ attemptId: id, startedAt: "2026-11-05T22:01:00.000Z" });
+  assert.deepEqual(parseCreateAttempt(raw), { attemptId: id, startedAt: "2026-11-05T22:01:00.000Z" });
+  assert.equal(ackClearsAttempt(raw, id), true);
+  assert.equal(ackClearsAttempt(raw, other), false, "an older acknowledgement must not clear a different attempt");
+  assert.equal(ackClearsAttempt(new Date().toISOString(), id), false, "a legacy timestamp has no attempt id");
+  assert.equal(ackClearsAttempt(null, id), false);
+  assert.equal(ackClearsAttempt(raw, ""), false);
+  const ans = (status, body, extra = {}) => ({ status, body, json: true, redirected: false, opaque: false, timedOut: false, ...extra });
+  const row = { source: "partner", updated_by: id, reason_min_length: 10, reason_max_length: 500 };
+  assert.deepEqual(createAckAuthority(ans(200, row)), { kind: "allow" });
+  assert.deepEqual(createAckAuthority(ans(200, { source: "default", reason_min_length: 10, reason_max_length: 500 })), { kind: "unproven" });
+  assert.deepEqual(createAckAuthority(ans(200, { source: "partner", reason_min_length: 10, reason_max_length: 500 })), { kind: "unproven" }, "no updated_by: not own-partner proof");
+  assert.deepEqual(createAckAuthority(ans(200, { source: "partner", updated_by: "not-a-uuid" })), { kind: "unproven" });
+  assert.deepEqual(createAckAuthority(ans(401, null, { json: false })), { kind: "session" });
+  assert.deepEqual(createAckAuthority(ans(403, { error: "forbidden" })), { kind: "deny" });
+  assert.deepEqual(createAckAuthority(ans(404, { error: "not_found" })), { kind: "deny" });
+  assert.deepEqual(createAckAuthority({ status: null, body: null, json: false, redirected: false, opaque: false, timedOut: true }), { kind: "unknown" });
+  assert.deepEqual(createAckAuthority(ans(302, null, { json: false })), { kind: "unknown" }, "a redirect is not session expiry");
+  assert.deepEqual(createAckAuthority(ans(200, row, { json: false })), { kind: "unknown" });
+  assert.equal(createAckAuthority.length, 1, "the host attribute is not an argument");
 });

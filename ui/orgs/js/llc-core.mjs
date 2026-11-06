@@ -249,3 +249,42 @@ export function historyOutcome(r) {
   if (r.status === 200 && r.body && Array.isArray(r.body.items)) return { kind: "ok", items: r.body.items };
   return { kind: "status" };
 }
+
+/** [DEC-144] The create guard value is only { attemptId, startedAt }. A timestamp-only or other value is a legacy
+ *  guard: it still blocks, and it cannot be acknowledged (there is no attempt id to match). */
+export function parseCreateAttempt(raw) {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  let o;
+  try { o = JSON.parse(raw); } catch { return { legacy: true }; }
+  if (!o || typeof o !== "object" || Array.isArray(o)) return { legacy: true };
+  if (typeof o.attemptId !== "string" || !UUID.test(o.attemptId) || typeof o.startedAt !== "string" || o.startedAt.length === 0) return { legacy: true };
+  return { attemptId: o.attemptId, startedAt: o.startedAt };
+}
+
+/** [DEC-144] Clear only when the stored attempt is the one this page showed. An older acknowledgement must not
+ *  clear a newer or different attempt. */
+export function ackClearsAttempt(storedRaw, shownAttemptId) {
+  const p = parseCreateAttempt(storedRaw);
+  return !!(p && !p.legacy && typeof shownAttemptId === "string" && shownAttemptId.length > 0 && p.attemptId === shownAttemptId);
+}
+
+/** [DEC-144] Who may acknowledge, from GET /orgs/partners/{id}/login-config/reason-bounds only.
+ *  "allow": JSON 200 with source "partner" and a uuid updated_by. That field is added only by ShowsBoundsEditor
+ *    (Super Admin, or Partner Admin of THIS partner) and only when a row exists.
+ *  "unproven": a JSON 200 that does not carry that proof. A partner with no row, and a Partner Admin of another
+ *    partner, both look like this. The page does not treat that as permission. data-admin-type is not an input.
+ *  "session": 401. Authoritative session expiry for this read.
+ *  "deny": 403 / 404 (not an admin, or not allowed to read this partner).
+ *  "unknown": timeout, transport failure, 3xx / opaque redirect, or a non-JSON 200. Not session expiry. */
+export function createAckAuthority(r) {
+  if (!r || r.timedOut || r.status === null) return { kind: "unknown" };
+  if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "unknown" };
+  if (r.status === 401) return { kind: "session" };
+  if (r.status === 403 || r.status === 404) return { kind: "deny" };
+  if (r.status === 200 && r.json && r.body && typeof r.body === "object") {
+    const ub = r.body.updated_by;
+    if (r.body.source === "partner" && typeof ub === "string" && UUID.test(ub)) return { kind: "allow" };
+    return { kind: "unproven" };
+  }
+  return { kind: "unknown" };
+}

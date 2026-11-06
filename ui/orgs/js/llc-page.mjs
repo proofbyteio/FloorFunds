@@ -2,7 +2,7 @@
 // is in error-copy.mjs. The page never sends oidc_* or secret_ref and shows only secret.set (spec §3.0, D-51).
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, METHOD_LABEL, fallbackText, formatPT,
   changeDetails, fieldTarget, ifMatchFrom, limitsFrom, limitsOrFallback, partnerMfaState, PARTNER_MFA_OFF_HINT, errIdFor, limitsTimeout,
-  limitsOutcome, locationOutcome, writeOutcome, historyOutcome } from "./llc-core.mjs";
+  limitsOutcome, locationOutcome, writeOutcome, historyOutcome, parseCreateAttempt, ackClearsAttempt, createAckAuthority } from "./llc-core.mjs";
 import { TOP_LEVEL, FETCH_COPY, FIELD, requestIdText, reasonLengthCopy, reasonHintFallback, REASON_LENGTH_FALLBACK } from "./error-copy.mjs";
 
 const $ = (id) => document.getElementById(id);
@@ -12,15 +12,21 @@ const apiBase = (body.dataset.apiBase || "/api").replace(/\/$/, "");
 // limitsFallback: true when those did not load and limits is REASON_BOUNDS (UX D-108 copy, no numbers) [TLD 2026-11-04 18:35].
 const st = { route: null, kind: "unknown", view: null, ifMatch: null, history: null, mode: "loading", limits: null, limitsFallback: false,
   locked: false, historyError: false };
-// [TLD 2026-11-05 15:08 item 4] after an UNKNOWN write outcome Save / Create stays locked until it is reconciled.
+// [TLD 2026-11-05 15:08 item 4; DEC-144] after an UNKNOWN write outcome Save / Create stays locked until it is reconciled.
 // Edit: the lock lives in this page (st.locked); the only way to a new form is a reload, whose fresh successful GET of the
 // saved location is shown in view mode for the user to inspect before a deliberate Change (the draft is never stored or
-// replayed), so the reload itself is the reconciliation. Create: no surface can tell whether THIS create happened, so the
-// unresolved create is kept in localStorage (survives reload, sign-in round trips and new tabs of this browser) and the
-// create page stays blocked; it is never unlocked by the page. A UI lock is not a duplicate guarantee (other browsers / devices).
+// replayed), so the reload itself is the reconciliation. Create: the unresolved attempt is kept in localStorage (survives
+// reload and sign-in). It is cleared only by an explicit acknowledgement of THAT attempt. A UI lock is not a duplicate
+// guarantee (other browsers / devices) and is not distributed deduplication.
 const pendingKey = (op, id) => `llc.unconfirmed.${op}.${id}`;
 function pendingGet(k) { try { return globalThis.localStorage.getItem(k); } catch { return null; } }
-function pendingSet(k) { try { globalThis.localStorage.setItem(k, new Date().toISOString()); } catch { /* still locked in this page */ } }
+function pendingSet(k) {
+  const rec = { attemptId: globalThis.crypto.randomUUID(), startedAt: new Date().toISOString() };
+  try { globalThis.localStorage.setItem(k, JSON.stringify(rec)); } catch { /* still locked in this page */ }
+  return rec;
+}
+// The attempt id this blocked page is offering to acknowledge. A newer stored attempt must not match it.
+let shownAttemptId = null;
 
 function setLimits(fromServer) { st.limitsFallback = !fromServer; st.limits = fromServer ?? limitsOrFallback(null); }
 
@@ -270,8 +276,8 @@ function applyErrors(r) {
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   if (st.locked) return; // [TLD 15:08 item 4] locked after an UNKNOWN outcome: no second write from this page
-  // [TLD 16:00] the Create guard is re-read at submit: another tab / a restored page may have recorded an unresolved create.
-  if (st.mode === "create" && pendingGet(pendingKey("create", st.route.partnerId)) !== null) { showCreateBlocked(); return; }
+  // [TLD 16:00 / DEC-144] the Create guard is re-read at submit: another tab / a restored page may have recorded an unresolved create.
+  if (st.mode === "create" && pendingGet(pendingKey("create", st.route.partnerId)) !== null) { await enterCreateBlocked(); return; }
   hideErrors();
   const f = readForm();
   const btn = $("btn-save");
@@ -287,7 +293,7 @@ $("form").addEventListener("submit", async (e) => {
         location.assign(location.pathname.replace(/locations\/new\/?$/, `locations/${encodeURIComponent(r.body.location_id)}/sign-in`) + "#saved");
         return;
       }
-      writeFailed(w, r);
+      await writeFailed(w, r);
     } else {
       const r = await api("PUT", `/orgs/locations/${encodeURIComponent(st.route.locationId)}/login-config`, { json: buildWrite(f), ifMatch: st.ifMatch, timeoutMs: writeTimeout() });
       const w = writeOutcome(r, 200);
@@ -299,7 +305,7 @@ $("form").addEventListener("submit", async (e) => {
         afterSaved();
         return;
       }
-      writeFailed(w, r);
+      await writeFailed(w, r);
     }
   } finally { if (!st.locked) btn.removeAttribute("aria-disabled"); }
 });
@@ -308,24 +314,96 @@ function lockUnknown() {
   $("btn-save").setAttribute("aria-disabled", "true");
   if (st.mode === "create") pendingSet(pendingKey("create", st.route.partnerId));
 }
-function writeFailed(w, r) {
+async function writeFailed(w, r) {
   if (w.kind === "unknown") {
     lockUnknown();
-    if (st.mode === "create") showCreateBlocked(w.session);
-    else showError(w.session ? "write_unconfirmed_session" : "write_unconfirmed", r.requestId, w.session ? "write_unconfirmed_session" : "write_unconfirmed");
+    // [DEC-144] a write 3xx is UNKNOWN and does not by itself assert session expiry. The sign-in sentence is added
+    // only when the permission read below returns 401.
+    if (st.mode === "create") { await enterCreateBlocked(); return; }
+    showError(w.session ? "write_unconfirmed_session" : "write_unconfirmed", r.requestId, w.session ? "write_unconfirmed_session" : "write_unconfirmed");
     return;
   }
   applyErrors(w.kind === "session" ? { ...r, status: 401 } : r);
 }
-// [TLD 15:08 items 4 / 6] Create outcome UNKNOWN: blocked, no reload advice (no recovery path exists), no form, never unlocked here.
-function showCreateBlocked(session = false) {
+function showStaleAttempt() {
+  text($("create-recovery-note"), "This page was showing an older attempt. It was not cleared.");
+  show($("create-recovery-note"), true);
+}
+function clearMatchingAttempt(key) {
+  try { globalThis.localStorage.removeItem(key); } catch { /* the click still must not POST */ }
+  shownAttemptId = null;
+  st.locked = false;
+}
+// [DEC-144] Create outcome UNKNOWN: the form stays hidden. Recovery controls appear only when the reason-bounds
+// read proves Super Admin or own-partner Partner Admin AND the stored value is an attempt id. Checking the box
+// alone does nothing. Neither button sends a POST.
+function showCreateBlocked(authority) {
   st.locked = true;
   show($("banner-loading"), false);
   show($("form"), false);
+  show($("create-reported"), false);
+  const session = authority === "session";
   const k = session ? "create_unconfirmed_blocked_session" : "create_unconfirmed_blocked";
   showError(k, null, k);
   body.dataset.state = "blocked";
+  body.dataset.createAck = authority;
+  const parsed = parseCreateAttempt(pendingGet(pendingKey("create", st.route.partnerId)));
+  shownAttemptId = parsed && !parsed.legacy ? parsed.attemptId : null;
+  const allow = authority === "allow" && shownAttemptId !== null;
+  show($("create-recovery"), allow);
+  if ($("ack-missing")) $("ack-missing").checked = false;
+  show($("create-recovery-note"), false);
 }
+async function readCreateAuthority() {
+  const r = await api("GET", `/orgs/partners/${encodeURIComponent(st.route.partnerId)}/login-config/reason-bounds`, { timeoutMs: getTimeout() });
+  return createAckAuthority(r).kind;
+}
+async function enterCreateBlocked() {
+  showCreateBlocked("pending");
+  let authority = "unknown";
+  try { authority = await readCreateAuthority(); } catch { authority = "unknown"; }
+  showCreateBlocked(authority);
+}
+async function openCreateForm() {
+  show($("create-recovery"), false);
+  show($("create-reported"), false);
+  show($("create-recovery-note"), false);
+  st.locked = false;
+  const lr = await api("GET", `/orgs/login-config/limits?partner_id=${encodeURIComponent(st.route.partnerId)}`, { timeoutMs: getTimeout() });
+  const lo = limitsOutcome(lr);
+  if (lo.kind === "error" || lo.kind === "error401") { show($("banner-loading"), false); applyErrors(lo.kind === "error401" ? { ...lr, status: 401 } : lr); body.dataset.state = "error"; return; }
+  setLimits(lo.kind === "server" ? lo.limits : null);
+  fillForm({ provider_kind: "database", display_name: "", entra_allowed_tenant_ids: [], mfa_required: true, allow_db_fallback: false, name: "" });
+  setMode("create");
+}
+$("btn-enable-create").addEventListener("click", async () => {
+  if (!$("ack-missing").checked) return; // the checkbox alone, and this button without it, change nothing
+  const key = pendingKey("create", st.route.partnerId);
+  if (!ackClearsAttempt(pendingGet(key), shownAttemptId)) { showStaleAttempt(); return; }
+  const lr = await api("GET", `/orgs/login-config/limits?partner_id=${encodeURIComponent(st.route.partnerId)}`, { timeoutMs: getTimeout() });
+  const lo = limitsOutcome(lr);
+  if (lo.kind === "error" || lo.kind === "error401") { show($("banner-loading"), false); applyErrors(lo.kind === "error401" ? { ...lr, status: 401 } : lr); body.dataset.state = "error"; return; }
+  if (!ackClearsAttempt(pendingGet(key), shownAttemptId)) { showStaleAttempt(); return; }
+  clearMatchingAttempt(key); // DEC144-ENABLE-CLEAR
+  show($("create-recovery"), false);
+  setLimits(lo.kind === "server" ? lo.limits : null);
+  fillForm({ provider_kind: "database", display_name: "", entra_allowed_tenant_ids: [], mfa_required: true, allow_db_fallback: false, name: "" });
+  setMode("create");
+});
+$("btn-found").addEventListener("click", () => {
+  const key = pendingKey("create", st.route.partnerId);
+  if (!ackClearsAttempt(pendingGet(key), shownAttemptId)) { showStaleAttempt(); return; }
+  clearMatchingAttempt(key);
+  st.locked = true;
+  show($("create-recovery"), false);
+  show($("form"), false);
+  show($("banner-error"), false);
+  const c = FETCH_COPY.create_reported_found;
+  text($("create-reported-h"), c.title);
+  text($("create-reported-text"), c.text);
+  show($("create-reported"), true);
+  body.dataset.state = "reported";
+});
 function renderHistoryError() { show($("history-error"), st.historyError); }
 function afterSaved() {
   renderHistoryError();
@@ -374,19 +452,16 @@ async function start() {
     st.kind = createKind(body.dataset.adminType);
     setChip(st.kind, st.route.partnerId);
     text($("bc-page"), "New location");
-    if (pendingGet(pendingKey("create", st.route.partnerId)) !== null) { showCreateBlocked(); return; } // [TLD 15:08 item 4]
+    // [DEC-144] a pending attempt stays blocked across reload and re-authentication. The host's data-admin-type is not
+    // the acknowledgement authority; enterCreateBlocked reads reason-bounds.
+    if (pendingGet(pendingKey("create", st.route.partnerId)) !== null) { await enterCreateBlocked(); return; }
     // DEC-107 [TLD 2026-11-04 16:32 Q2]: no location yet, so the reason bounds come from the limits endpoint.
     // [TLD 2026-11-04 17:28] a failed fetch or missing / invalid values -> the server's hard bounds 10 / 500 (REASON_BOUNDS);
     // a 401 / 403 is an access answer, not a limits value, so it is still shown as the page error.
     // [TLD 2026-11-04 18:35] a redirect, a 3xx or a non-JSON 200 is shown like a 401; the GET is aborted after
     // LIMITS_TIMEOUT_MS (10 s) and then falls back like a failed fetch (limitsOutcome, limitsTimeout in llc-core.mjs).
     // v1.1 Slice A [TLD 08:00 Q3]: the URL partner's bounds (its partner_reason_bounds row, else the deployment config).
-    const lr = await api("GET", `/orgs/login-config/limits?partner_id=${encodeURIComponent(st.route.partnerId)}`, { timeoutMs: getTimeout() });
-    const lo = limitsOutcome(lr);
-    if (lo.kind === "error" || lo.kind === "error401") { show($("banner-loading"), false); applyErrors(lo.kind === "error401" ? { ...lr, status: 401 } : lr); body.dataset.state = "error"; return; }
-    setLimits(lo.kind === "server" ? lo.limits : null);
-    fillForm({ provider_kind: "database", display_name: "", entra_allowed_tenant_ids: [], mfa_required: true, allow_db_fallback: false, name: "" });
-    setMode("create");
+    await openCreateForm();
     return;
   }
   // [TLD 2026-11-04 21:11 Q2 / Q3] redirect: "manual" + the same abort as the limits GET; a redirect / non-JSON 200 is shown

@@ -85,6 +85,21 @@
 </p>
 </form>
 
+<section class="card" aria-labelledby="create-recovery-h" id="create-recovery" data-testid="create-recovery" hidden>
+<h2 id="create-recovery-h">Before you create again</h2>
+<div class="choice"><input type="checkbox" id="ack-missing" data-testid="ack-missing"><label for="ack-missing" class="choice__text">I checked and couldn’t find the location.</label></div>
+<p class="action-row">
+<button class="button button--primary" type="button" id="btn-enable-create" data-testid="btn-enable-create">Enable Create again</button>
+<button class="button button--secondary" type="button" id="btn-found" data-testid="btn-found">I found the location</button>
+</p>
+<p id="create-recovery-note" data-testid="create-recovery-note" hidden></p>
+</section>
+
+<section class="card" aria-labelledby="create-reported-h" id="create-reported" data-testid="create-reported" hidden>
+<h2 id="create-reported-h">Location reported found</h2>
+<p id="create-reported-text" data-testid="create-reported-text"></p>
+</section>
+
 <section class="card" aria-labelledby="aud-h" id="card-history" data-testid="card-history" hidden>
 <h2 id="aud-h">Change history</h2>
 <table class="data-table">

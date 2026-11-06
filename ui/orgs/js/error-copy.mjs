@@ -30,17 +30,21 @@ export const TOP_LEVEL = Object.freeze({
  *  write_unconfirmed: an Edit save whose outcome is UNKNOWN (timeout, transport failure, unusable answer). Exact, unchanged
  *    (title + text = "We couldn't confirm the save. Reload to check before trying again."). Save stays locked until a fresh
  *    successful GET of the location (reload).
- *  create_unconfirmed_blocked: a Create whose outcome is UNKNOWN. The TL's full create copy ("... Check whether the location was
- *    created before trying again.") is allowed only with a real recovery path; S2a has none (no lookup surface can tell whether
- *    THIS create happened), so only its first sentence is shown, as the blocked state, with no advice and no way to unlock.
+ *  create_unconfirmed_blocked: a Create whose outcome is UNKNOWN. [DEC-144, provisional, not UX-approved] The admin may check
+ *    outside this page and then deliberately create again. The original request may still finish.
+ *  create_unconfirmed_blocked_session: the same unknown-create copy plus the sign-in line, only when an authorized read
+ *    on this page returned 401. An unexpected redirect is not this case.
+ *  create_reported_found: the admin said they found the location. Not a server-verified success and not a location id.
  *  history_unavailable: the history GET failed (soft copy, verbatim). */
 export const FETCH_COPY = Object.freeze({
   write_unconfirmed: { title: "We couldn't confirm the save.", text: "Reload to check before trying again." },
-  // [TLD 2026-11-05 16:47, provisional, not UX-approved] an unexpected redirect after a write: sign in again AND the same lock,
+  // [TLD 2026-11-05 16:47, provisional, not UX-approved] an unexpected redirect after an Edit: sign in again AND the same lock,
   // without claiming the cause ("Your session has ended" only for a real 401) or a safe retry.
   write_unconfirmed_session: { title: "We couldn\u2019t confirm the save.", text: "Sign in again, then reload to check before trying again." },
-  create_unconfirmed_blocked: { title: "We couldn’t confirm the create.", text: "" },
-  create_unconfirmed_blocked_session: { title: "We couldn\u2019t confirm whether the location was created.", text: "Sign in again. Creating another location remains blocked until the result is confirmed." }, // [TLD 16:47]
+  // [DEC-144] supersedes the indefinite "remains blocked" create copy. Provisional, not UX-approved.
+  create_unconfirmed_blocked: { title: "We couldn\u2019t confirm whether the location was created.", text: "Check whether it exists before trying again. The original request may still finish, so trying again could create a duplicate." },
+  create_unconfirmed_blocked_session: { title: "We couldn\u2019t confirm whether the location was created.", text: "Check whether it exists before trying again. The original request may still finish, so trying again could create a duplicate. Sign in again, then check whether the location exists." },
+  create_reported_found: { title: "You reported that you found the location.", text: "This is your report, not a confirmation from the server." },
   history_unavailable: { title: "Couldn't load history — try again", text: "" },
 });
 /** 422 field code -> message shown under the field (tenant_bound_elsewhere is MK9 copy, kept in the page). */

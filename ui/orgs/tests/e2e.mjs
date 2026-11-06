@@ -84,6 +84,9 @@ const page = (persona, loc) => `/as/${persona}/orgs/${H.partner_a}/locations/${l
 const rows = () => ev(`[...document.querySelectorAll("#history-rows tr")].map(tr => [...tr.cells].map(td => td.textContent))`);
 const shownError = () => ev(`[...document.querySelectorAll('[data-testid="error-area"]')].filter(e => !e.hidden).map(e => ({ code: e.dataset.error ?? e.id, rid: e.querySelector("[data-request-id]")?.textContent ?? "" }))`);
 const RID = /^Request ID: [0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+// [DEC-144] provisional create copy. The sign-in sentence is only for an authoritative 401 on the permission read.
+const CREATE_UNKNOWN_TEXT = "We couldn\u2019t confirm whether the location was created. Check whether it exists before trying again. The original request may still finish, so trying again could create a duplicate.";
+const CREATE_UNKNOWN_SESSION_TEXT = CREATE_UNKNOWN_TEXT + " Sign in again, then check whether the location exists.";
 // D-102 Request ID line: own last line of the banner, muted #6b6b7b, selectable, never truncated, hidden without an id.
 const ridInfo = (sel) => ev(`(() => { const b = document.querySelector(${JSON.stringify(sel)}); const r = b.querySelector("[data-request-id]"); if (!r) return null;
   const cs = getComputedStyle(r); const t = b.querySelector(".banner__title"); const sel = getSelection(); sel.removeAllRanges(); sel.selectAllChildren(r);
@@ -630,17 +633,17 @@ await step("P6a fetch hardening", async () => {
   g = { path: await ev(`location.pathname`), state: await ev(`document.body.dataset.state`), form: await vis("#form"), err: await shownError(), text: await errText(), seen: [...seen], posts: hits.length,
     key: await ev(`localStorage.getItem(${JSON.stringify(`llc.unconfirmed.create.${H.partner_a}`)})`) };
   await open(`/as/sa/orgs/${H.partner_a}/locations/new`); g.after = { state: await ev(`document.body.dataset.state`), form: await vis("#form") };
-  ok("P6a POST 307 cross-site -> not followed, UNKNOWN + sign in again: blocked (TLD 16:47 exact) 'We couldn’t confirm whether the location was created. Sign in again. Creating another location remains blocked until the result is confirmed.', no form, one POST, guard stored and still blocked after a reload",
-    g.path.endsWith("/locations/new") && g.state === "blocked" && !g.form && g.err.length === 1 && g.err[0].code === "create_unconfirmed_blocked_session"
-      && g.text === "We couldn\u2019t confirm whether the location was created. Sign in again. Creating another location remains blocked until the result is confirmed." && g.seen.length === 0 && g.posts === 1 && g.key !== null && g.after.state === "blocked" && !g.after.form, g);
+  ok("P6a POST 307 cross-site -> not followed, UNKNOWN without a claimed session expiry (DEC-144 copy), no form, one POST, guard stored and still blocked after a reload",
+    g.path.endsWith("/locations/new") && g.state === "blocked" && !g.form && g.err.length === 1 && g.err[0].code === "create_unconfirmed_blocked"
+      && g.text === CREATE_UNKNOWN_TEXT && !/sign in again/i.test(g.text) && g.seen.length === 0 && g.posts === 1 && g.key !== null && g.after.state === "blocked" && !g.after.form, g);
   await ev(`localStorage.clear(), true`); // test isolation only
   // 6. POST (create) stalled -> UNKNOWN: the blocked state "We couldn’t confirm the create." (no reload advice), no form, one POST.
   await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await type("#lname", "UI Cage P6a"); await type("#dname", "UI Casino A"); // case 5 left its page blocked
   hits.length = 0; mode = { kind: "stall", method: "POST", url: CREATE }; await click("#btn-save"); await until(`document.body.dataset.state === "blocked"`, 10000); await sleep(1700); mode = null; await release();
   g = { path: await ev(`location.pathname`), hash: await ev(`location.hash`), err: await shownError(), text: await errText(), posts: hits.length, state: await ev(`document.body.dataset.state`), form: await vis("#form") };
-  ok("P6a POST (create) stalled -> blocked state 'We couldn’t confirm the create.' (no reload advice), no form, still on /new, one POST",
+  ok("P6a POST (create) stalled -> blocked with the DEC-144 check-before-trying-again copy, no form, still on /new, one POST",
     g.path.endsWith("/locations/new") && g.hash === "" && g.state === "blocked" && !g.form && g.err.length === 1 && g.err[0].code === "create_unconfirmed_blocked"
-      && g.text === "We couldn\u2019t confirm the create." && g.posts === 1, g);
+      && g.text === CREATE_UNKNOWN_TEXT && g.posts === 1, g);
   await ev(`localStorage.clear(), true`); // test isolation only: later steps create under partner_a (the page itself never unlocks a Create)
 
   for (const identifier of hooks) await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
@@ -726,9 +729,9 @@ await step("P6b body stall", async () => {
   t0 = Date.now(); await click("#btn-save"); await until(`document.body.dataset.state === "blocked" || !document.querySelector("#banner-error").hidden`, 10000); dt = Date.now() - t0; await sleep(1700);
   g = { path: await ev(`location.pathname`), hash: await ev(`location.hash`), state: await ev(`document.body.dataset.state`), err: await shownError(), text: await errText(),
     calls: await ev(`globalThis.__p6bCalls.length`), form: await vis("#form"), dt };
-  ok("P6b POST: 201 headers arrive, body never completes -> aborted (bounded), blocked state 'We couldn’t confirm the create.', no form, still on /new (no navigation), one POST",
+  ok("P6b POST: 201 headers arrive, body never completes -> aborted (bounded), DEC-144 blocked copy, no form, still on /new (no navigation), one POST",
     g.path.endsWith("/locations/new") && g.hash === "" && g.state === "blocked" && !g.form && g.err.length === 1 && g.err[0].code === "create_unconfirmed_blocked"
-      && g.text === "We couldn\u2019t confirm the create." && g.calls === 1 && dt < 8000, g);
+      && g.text === CREATE_UNKNOWN_TEXT && g.calls === 1 && dt < 8000, g);
   await ev(`localStorage.clear(), true`); // test isolation only
 
   for (const identifier of ids) await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
@@ -836,8 +839,8 @@ await step("P6c uncertain outcomes", async () => {
   const post0 = sent("POST", CREATE);
   hits.length = 0; mode = { kind: "lost", method: "POST", url: CREATE }; await click("#btn-save"); await until(`document.body.dataset.state === "blocked"`, 10000); mode = null; p6cCreated++; p6cSaChanges++;
   const gC = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), err: await shownError(), text: await errText(), hits: [...hits], key: await store(createKey) };
-  ok("P6c create committed, 201 lost -> blocked 'We couldn’t confirm the create.', no form, unresolved create stored",
-    gC.state === "blocked" && !gC.form && gC.err[0]?.code === "create_unconfirmed_blocked" && gC.text === "We couldn\u2019t confirm the create." && gC.hits.length === 1 && /^201 /.test(gC.hits[0]) && gC.key !== null, gC);
+  ok("P6c create committed, 201 lost -> blocked with the DEC-144 copy, no form, unresolved create stored",
+    gC.state === "blocked" && !gC.form && gC.err[0]?.code === "create_unconfirmed_blocked" && gC.text === CREATE_UNKNOWN_TEXT && gC.hits.length === 1 && /^201 /.test(gC.hits[0]) && gC.key !== null, gC);
   await open(`/as/sa/orgs/${H.partner_a}/locations/new`);
   const gC2 = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), err: (await shownError())[0]?.code };
   await open(`/as/anon/orgs/${H.partner_a}/locations/${H.l1}/sign-in`); await open(`/as/pa/orgs/${H.partner_a}/locations/new`);
@@ -951,9 +954,9 @@ await step("P6d re-entry / saved landing / cross-page guard", async () => {
   await click("#btn-save"); await until(`document.body.dataset.state === "blocked"`, 5000).catch(() => {}); await sleep(300);
   const gG = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), err: await shownError(), text: await errText(),
     posts: sent("POST", CREATE) - post1, hits: hits.filter(h => h.startsWith("POST")).length };
-  ok("P6d g1: page A (clean load, filled form) after page B's unknown-create marker -> Create sends NO POST; blocked 'We couldn’t confirm the create.', no form",
+  ok("P6d g1: page A (clean load, filled form) after page B's unknown-create marker -> Create sends NO POST; DEC-144 blocked copy, no form",
     gG0.state === "create" && gG0.form && gG0.btn === null && gG.state === "blocked" && !gG.form && gG.err[0]?.code === "create_unconfirmed_blocked"
-      && gG.text === "We couldn\u2019t confirm the create." && gG.posts === 0 && gG.hits === 0, { gG0, gG });
+      && gG.text === CREATE_UNKNOWN_TEXT && gG.posts === 0 && gG.hits === 0, { gG0, gG });
   await open(`/as/sa/orgs/${H.partner_a}/locations/new`); const gG2 = { state: await ev(`document.body.dataset.state`), form: await vis("#form") };
   await open(`/as/anon/orgs/${H.partner_a}/locations/${H.l1}/sign-in`); await open(`/as/pa/orgs/${H.partner_a}/locations/new`);
   const gG3 = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), key: await ev(`localStorage.getItem(${JSON.stringify(ckey)}) !== null`), posts: sent("POST", CREATE) - post1 };
@@ -980,6 +983,118 @@ await step("PA partner-create", async () => {
   ok("org:V reader create -> 403 forbidden + request id (F-A3)", e2.length === 1 && e2[0].code === "forbidden" && RID.test(e2[0].rid), e2);
 });
 
+await step("DEC-144 manual create recovery", async () => {
+  const CREATE = /\/api\/orgs\/locations$/;
+  const posts = () => bodies.filter(b => b.method === "POST" && CREATE.test(new URL(b.url).pathname)).length;
+  const key = `llc.unconfirmed.create.${H.partner_a}`;
+  const errText = async () => `${await txt("#banner-error-title")} ${await txt("#banner-error-text")}`.trim();
+  const A1 = "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8";
+  const A2 = "11111111-2222-4333-8444-555555555555";
+  const rec = (id) => JSON.stringify({ attemptId: id, startedAt: "2026-11-06T00:00:00.000Z" });
+  const ack = async (kind) => until(`document.body.dataset.createAck === ${JSON.stringify(kind)}`, 10000);
+  await ev(`localStorage.clear(), true`);
+  const put = await fetch(`${H.ui}/as/sa/api/orgs/partners/${H.partner_a}/login-config/reason-bounds`, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": '"0"' },
+    body: JSON.stringify({ reason_min_length: 10, reason_max_length: 500 }) });
+  const putBody = put.status === 200 ? await put.json() : null;
+  ok("DEC-144 setup: SA stores partner A reason-bounds so updated_by can prove the role (If-Match 0 -> 200)", put.status === 200 && typeof putBody?.updated_by === "string", put.status);
+
+  const late = `(() => {
+    const real = globalThis.fetch.bind(globalThis);
+    globalThis.__dec144Posts = 0;
+    globalThis.fetch = async (input, init = {}) => {
+      const url = String(input), method = (init && init.method) || "GET";
+      if (method !== "POST" || !/\\/api\\/orgs\\/locations$/.test(url)) return real(input, init);
+      globalThis.__dec144Posts++;
+      const body = new ReadableStream({ start(c) {
+        c.enqueue(new TextEncoder().encode('{"location_id":"'));
+        setTimeout(() => { try { c.enqueue(new TextEncoder().encode('3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8"}')); c.close(); } catch { /* the abort already ended the stream */ } }, 4000);
+      }});
+      return new Response(body, { status: 201, headers: { "Content-Type": "application/json" } });
+    };
+  })();`;
+  const ids = [];
+  for (const src of [late, "globalThis.__llcWriteTimeoutMs = 1200;"]) ids.push((await cdp("Page.addScriptToEvaluateOnNewDocument", { source: src })).identifier);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`);
+  await type("#lname", "UI Cage DEC144 late"); await type("#dname", "UI Casino A");
+  const p0 = posts();
+  await click("#btn-save");
+  await until(`document.body.dataset.state === "blocked"`, 10000);
+  await sleep(4500);
+  await ack("allow");
+  const gLate = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), path: await ev(`location.pathname`),
+    posts: await ev(`globalThis.__dec144Posts`), net: posts() - p0, key: await ev(`localStorage.getItem(${JSON.stringify(key)})`), text: await errText() };
+  ok("DEC-144 late 201 after the bound never retries, never navigates, and leaves the guard",
+    gLate.state === "blocked" && !gLate.form && gLate.path.endsWith("/locations/new") && gLate.posts === 1 && gLate.net === 0 && gLate.key !== null && gLate.text === CREATE_UNKNOWN_TEXT, gLate);
+  for (const identifier of ids) await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+  await ev(`localStorage.clear(), true`);
+
+  await ev(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(rec(A1))}), true`);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const gSa = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), recov: await vis("#create-recovery"),
+    box: await txt("label[for=ack-missing]"), enable: await txt("#btn-enable-create"), found: await txt("#btn-found"), text: await errText() };
+  ok("DEC-144 SA with a bounds row: blocked, recovery controls, exact checkbox and buttons",
+    gSa.state === "blocked" && !gSa.form && gSa.recov && gSa.box === "I checked and couldn\u2019t find the location." && gSa.enable === "Enable Create again" && gSa.found === "I found the location" && gSa.text === CREATE_UNKNOWN_TEXT, gSa);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  ok("DEC-144 reload keeps the same guard and the controls", await ev(`document.body.dataset.state`) === "blocked" && await vis("#create-recovery") && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === rec(A1));
+  await open(`/as/anon/orgs/${H.partner_a}/locations/new`); await ack("session");
+  const gAnon = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), recov: await vis("#create-recovery"), text: await errText(), key: await ev(`localStorage.getItem(${JSON.stringify(key)})`) };
+  ok("DEC-144 re-auth as anon: 401 adds the sign-in sentence, does not clear the guard, no controls",
+    gAnon.state === "blocked" && !gAnon.form && !gAnon.recov && gAnon.text === CREATE_UNKNOWN_SESSION_TEXT && gAnon.key === rec(A1), gAnon);
+  await open(`/as/pa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  ok("DEC-144 own-partner Partner Admin may see the controls; re-auth did not clear the guard",
+    await ev(`document.body.dataset.state`) === "blocked" && await vis("#create-recovery") && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === rec(A1));
+  await open(`/as/pb/orgs/${H.partner_a}/locations/new`); await ack("unproven");
+  const gPb = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), recov: await vis("#create-recovery"), key: await ev(`localStorage.getItem(${JSON.stringify(key)})`) };
+  ok("DEC-144 other-partner Partner Admin cannot acknowledge (no updated_by)", gPb.state === "blocked" && !gPb.form && !gPb.recov && gPb.key === rec(A1), gPb);
+  await open(`/as/rd/orgs/${H.partner_a}/locations/new`); await ack("deny");
+  const gRd = { state: await ev(`document.body.dataset.state`), recov: await vis("#create-recovery"), key: await ev(`localStorage.getItem(${JSON.stringify(key)})`) };
+  ok("DEC-144 org:V reader cannot acknowledge", gRd.state === "blocked" && !gRd.recov && gRd.key === rec(A1), gRd);
+
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const n0 = posts();
+  await click("#ack-missing"); await sleep(200);
+  ok("DEC-144 checkbox alone sends no POST and does not clear the guard", posts() === n0 && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === rec(A1) && await ev(`document.body.dataset.state`) === "blocked");
+  await ev(`document.querySelector("#ack-missing").checked = false, true`);
+  await click("#btn-enable-create"); await sleep(300);
+  ok("DEC-144 Enable Create again without the checkbox sends no POST and does not clear the guard", posts() === n0 && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === rec(A1) && !(await vis("#form")));
+
+  await ev(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(rec(A2))}), true`);
+  await click("#ack-missing");
+  await click("#btn-enable-create"); await sleep(400);
+  const gOld = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), note: await txt("#create-recovery-note"), posts: posts() - n0 };
+  ok("DEC-144 an acknowledgement of the older attempt does not clear the newer one and sends no POST",
+    gOld.state === "blocked" && !gOld.form && gOld.kept === rec(A2) && /not cleared/.test(gOld.note) && gOld.posts === 0, gOld);
+
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const n1 = posts();
+  await click("#ack-missing");
+  await click("#btn-enable-create");
+  await until(`document.body.dataset.state === "create" && !document.querySelector("#form").hidden`, 10000);
+  const gEn = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), posts: posts() - n1, btn: await txt("#btn-save") };
+  ok("DEC-144 Enable Create again clears only the matching attempt, shows the form, and sends zero POSTs",
+    gEn.state === "create" && gEn.form && gEn.kept === null && gEn.posts === 0 && gEn.btn === "Create location", gEn);
+  await type("#lname", "UI Cage DEC144"); await type("#dname", "UI Casino A");
+  const n2 = posts();
+  await click("#btn-save");
+  await until(`/\\/locations\\/[0-9a-f-]{36}\\/sign-in$/.test(location.pathname) && document.body.dataset.state === "saved"`, 10000);
+  const gCr = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), posts: posts() - n2, name: await txt("#saved-loc") };
+  if (gCr.saved) { p6cCreated++; p6cSaChanges++; }
+  ok("DEC-144 the next deliberate Create sends one POST and saves", gCr.state === "saved" && gCr.saved && gCr.posts === 1 && gCr.name === "UI Cage DEC144", gCr);
+
+  await ev(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(rec(A1))}), true`);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const n3 = posts();
+  await click("#btn-found");
+  await until(`document.body.dataset.state === "reported"`, 5000);
+  const gFound = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), recov: await vis("#create-recovery"),
+    title: await txt("#create-reported-h"), text: await txt("#create-reported-text"), links: await ev(`document.querySelectorAll("#create-reported a").length`),
+    path: await ev(`location.pathname`), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), posts: posts() - n3 };
+  ok("DEC-144 I found the location closes only this attempt, sends no POST, and invents no location link",
+    gFound.state === "reported" && !gFound.form && !gFound.recov && gFound.title === "You reported that you found the location."
+      && gFound.text === "This is your report, not a confirmation from the server." && gFound.links === 0 && gFound.path.endsWith("/locations/new")
+      && gFound.kept === null && gFound.posts === 0, gFound);
+  await ev(`localStorage.clear(), true`);
+});
 await step("XSS hostile API text", async () => {
   // SSE2 1ec73d38 (live probe of the code-read XSS PASS) + TLD 2026-11-04 14:18 (A). UiHost seeded L5 through the API with the payloads in
   // the location name, display_name and the create reason; the probes put them in fields the API must refuse.
@@ -1080,7 +1195,7 @@ if (D) {
   const lenOk = (H.xss.len ?? []).filter(p => p.status === 201).length;
   ok(`real PG: change rows = 6 seeds (L1-L4 + hostile L5, L6) + ${lenOk} accepted length probes + PA edit + SA downgrade + PA conflict PUT + SA create + PA create + PA hostile save + PA MFA back on (DEC-106)`,
     D.changes_by_actor[H.users.sa] === 8 + lenOk + p6cSaChanges && D.changes_by_actor[H.users.pa] === 5, { D: D.changes_by_actor, p6cSaChanges }); // + P6c: lost PUT, lost create, confirmed PUT [TLD 15:08]
-  ok(`real PG: ${8 + lenOk + p6cCreated} locations (refused creates and XSS probes added none; ${lenOk} accepted length probes; ${p6cCreated} P6c create whose 201 was lost)`, D.locations === 8 + lenOk + p6cCreated, D.locations);
+  ok(`real PG: ${8 + lenOk + p6cCreated} locations (refused creates and XSS probes added none; ${lenOk} accepted length probes; ${p6cCreated} later creates: the lost P6c create, the P6d saved landing, and the DEC-144 deliberate create)`, D.locations === 8 + lenOk + p6cCreated, D.locations);
   // TLD 2026-11-04 14:18 (A): stored byte-for-byte, no server-side HTML escaping; the page is the only place the text is made safe.
   const hex = (s) => Buffer.from(s, "utf8").toString("hex"), x = D.xss ?? {};
   ok("real PG (A): auth.location.name = the hostile name, byte-for-byte (UTF-8)", JSON.stringify(x.location_name_hex) === JSON.stringify([hex(H.xss.name)]), x.location_name_hex);
