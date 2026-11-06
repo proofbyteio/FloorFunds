@@ -863,6 +863,106 @@ await step("P6c uncertain outcomes", async () => {
 
   await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(lsn), 1);
 });
+// P6d [closes p6c survivors b1 / h3 / g1; TLD 2026-11-05 16:00 / 16:47]. Real writes here: 2 SA PUTs (b1) and 1 SA create
+// (h3), counted in the real-PG totals at the end.
+await step("P6d re-entry / saved landing / cross-page guard", async () => {
+  let fake = null; const hits = [], gets = [], extra = new Map();
+  const LOC = new RegExp(`/api/orgs/locations/${H.l1}/login-config$`), CREATE = /\/api\/orgs\/locations$/, ANYHIST = /\/api\/orgs\/locations\/[0-9a-f-]+\/login-config\/changes$/;
+  const lsn = (msg) => {
+    if (msg.sessionId !== S) return;
+    if (msg.method === "Network.requestWillBeSent" && msg.params.request.method === "GET" && LOC.test(msg.params.request.url)) gets.push(msg.params.requestId);
+    if (msg.method === "Network.requestWillBeSentExtraInfo") extra.set(msg.params.requestId, msg.params.headers); // the headers as sent on the wire
+    if (msg.method !== "Fetch.requestPaused") return;
+    const p = msg.params, id = p.requestId;
+    hits.push(`${p.request.method} ${new URL(p.request.url).pathname}`);
+    if (fake && p.request.method === "GET" && ANYHIST.test(p.request.url))
+      return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: 200, responseHeaders: [{ name: "Content-Type", value: "text/html" }], body: Buffer.from("<html>sign in</html>").toString("base64") }).catch(() => {});
+    return cdp("Fetch.continueRequest", { requestId: id }).catch(() => {});
+  };
+  listeners.push(lsn);
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/api/orgs/locations*", requestStage: "Request" }] });
+  const sent = (method, re) => bodies.filter(b => b.method === method && re.test(b.url)).length;
+  const errText = async () => `${await txt("#banner-error-title")} ${await txt("#banner-error-text")}`.trim();
+  const lapi = `${H.ui}/as/sa/api/orgs/locations/${H.l1}/login-config`;
+  const land = async (name) => { const g0 = await fetch(lapi); const c0 = await g0.json();
+    const r0 = await fetch(lapi, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": g0.headers.get("ETag") }, body: JSON.stringify({ provider_kind: c0.provider_kind,
+      display_name: name, entra_allowed_tenant_ids: c0.entra_allowed_tenant_ids, allow_db_fallback: c0.allow_db_fallback, mfa_required: c0.mfa_required, reason: null }) });
+    if (r0.status === 200) p6cSaChanges++; return r0.status; };
+
+  // b1. pageshow with persisted = true. SYNTHETIC: headless Chrome under CDP did not restore pages from the bfcache (p6c b1), so
+  //     the harness dispatches the event the browser fires on a bfcache restore. This tests the page's handler, NOT real bfcache.
+  //     A stale page (old snapshot + typed draft + old ETag) must be replaced by a fresh no-store GET before any enabled form.
+  await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6d stale draft");
+  await ev(`globalThis.__p6dOldDoc = true`);
+  const lb = await land("UI P6d changed while hidden");
+  const cur = await (await fetch(lapi)).headers.get("ETag");
+  gets.length = 0; hits.length = 0; const put0 = sent("PUT", LOC);
+  await ev(`dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })), true`);
+  await sleep(300);
+  await until(`globalThis.__p6dOldDoc === undefined && document.readyState === "complete" && document.body.dataset.state === "view"`, 8000).catch(() => {});
+  const gB = { land: lb, oldDoc: await ev(`globalThis.__p6dOldDoc === true`), state: await ev(`document.body.dataset.state`), form: await vis("#form"),
+    gets: gets.length, wire: gets.map(id => { const h = extra.get(id) ?? {}; return { cc: h["cache-control"] ?? h["Cache-Control"] ?? null, pragma: h["pragma"] ?? h["Pragma"] ?? null }; }),
+    net: hits.filter(h => h === `GET /as/sa/api/orgs/locations/${H.l1}/login-config`).length, put: sent("PUT", LOC) - put0 };
+  // no-store: the fetch spec makes a cache: "no-store" request send Cache-Control / Pragma: no-cache on the wire; the request also
+  // reached the network (Fetch interception), so no cached answer was used.
+  gB.noStore = gB.wire.length > 0 && gB.wire.every(w => /no-cache/i.test(w.cc ?? "") && /no-cache/i.test(w.pragma ?? ""));
+  ok("P6d b1 (SYNTHETIC pageshow persisted=true, not a real bfcache restore): the stale document is replaced; a fresh no-store GET (Cache-Control / Pragma no-cache) loads view mode first; no form, no PUT",
+    gB.land === 200 && !gB.oldDoc && gB.state === "view" && !gB.form && gB.gets >= 1 && gB.noStore && gB.net >= 1 && gB.put === 0, gB);
+  await click("#btn-change");
+  const gB2 = { dname: await ev(`document.querySelector("#dname").value`), btn: await attr("#btn-save", "aria-disabled") };
+  await type("#dname", "UI P6d deliberate after restore"); await save();
+  const last = bodies.filter(b => b.method === "PUT" && LOC.test(b.url)).at(-1);
+  const gB3 = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), ifMatch: last?.ifMatch, cur, put: sent("PUT", LOC) - put0, srv: (await (await fetch(lapi)).json()).display_name };
+  if (gB3.saved) p6cSaChanges++;
+  ok("P6d b1: Change shows the CURRENT server value (not the stale draft); the deliberate save carries the fresh GET's ETag as If-Match and is saved (one PUT)",
+    gB2.dname === "UI P6d changed while hidden" && gB2.btn === null && gB3.state === "saved" && gB3.saved && gB3.ifMatch === cur && gB3.put === 1 && gB3.srv === "UI P6d deliberate after restore", { gB2, gB3 });
+
+  // h3. A confirmed create lands on /locations/{new id}/sign-in#saved; its history GET answers unusably (non-JSON 200 =
+  //     "unavailable"). The page stays SAVED with the soft history-only error; retry sends GETs only, never another POST.
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await type("#lname", "UI Cage P6d saved landing"); await type("#dname", "UI Casino A");
+  const post0 = sent("POST", CREATE); fake = true; hits.length = 0;
+  await click("#btn-save");
+  await until(`/\/locations\/[0-9a-f-]{36}\/sign-in$/.test(location.pathname) && document.readyState === "complete" && ["saved", "error", "view"].includes(document.body.dataset.state)`, 10000);
+  p6cCreated++; p6cSaChanges++;
+  const newId = await ev(`location.pathname.split("/").at(-2)`);
+  const gH = { id: newId, state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), loc: await txt("#saved-loc"), hist: await vis("#card-history"), herr: await vis("#history-error"),
+    htext: await txt("#history-error"), err: await shownError(), fakedHist: hits.filter(h => h === `GET /as/sa/api/orgs/locations/${newId}/login-config/changes`).length, posts: sent("POST", CREATE) - post0 };
+  ok("P6d h3: confirmed create -> #saved landing on the new location id with an unusable history GET -> SAVED (banner, name), soft 'Couldn't load history — try again' only, no error banner, one POST",
+    /^[0-9a-f-]{36}$/.test(gH.id) && gH.state === "saved" && gH.saved && gH.loc === "UI Cage P6d saved landing" && gH.hist && gH.herr && gH.htext === "Couldn't load history — try again"
+      && gH.err.length === 0 && gH.fakedHist >= 1 && gH.posts === 1, gH);
+  hits.length = 0; await click("#history-retry"); await sleep(500);
+  const gH2 = { herr: await vis("#history-error"), state: await ev(`document.body.dataset.state`), hits: [...hits] };
+  fake = null; hits.length = 0; await click("#history-retry"); await until(`document.querySelectorAll("#history-rows tr").length > 0`, 5000).catch(() => {});
+  const gH3 = { herr: await vis("#history-error"), rows: (await rows()).length, state: await ev(`document.body.dataset.state`), hits: [...hits], posts: sent("POST", CREATE) - post0 };
+  ok("P6d h3 retry: still unusable -> soft error kept, still saved; then OK -> the create row shown, error gone, still saved; each retry sent one history GET and no POST / PUT",
+    gH2.herr && gH2.state === "saved" && gH2.hits.length === 1 && /^GET .*\/login-config\/changes$/.test(gH2.hits[0])
+      && !gH3.herr && gH3.rows >= 1 && gH3.state === "saved" && gH3.hits.length === 1 && /^GET .*\/login-config\/changes$/.test(gH3.hits[0]) && gH3.posts === 1, { gH2, gH3 });
+
+  // g1. Cross-page Create guard (same browser storage). Page A loads clean and its form is filled; then the unknown-create guard
+  //     appears in storage, as page B's lockUnknown() writes it (the harness writes the same minimal marker: key + ISO timestamp,
+  //     no draft). A's stale enabled form must not POST; the block holds over a reload and a sign-in round trip. Cross-tab is
+  //     best effort only (this browser's storage), never a duplicate guarantee.
+  const ckey = `llc.unconfirmed.create.${H.partner_a}`;
+  await ev(`localStorage.clear(), true`);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await type("#lname", "UI Cage P6d never created"); await type("#dname", "UI Casino A");
+  const gG0 = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), btn: await attr("#btn-save", "aria-disabled") };
+  await ev(`localStorage.setItem(${JSON.stringify(ckey)}, new Date().toISOString()), true`); // page B's marker
+  const post1 = sent("POST", CREATE); hits.length = 0;
+  await click("#btn-save"); await until(`document.body.dataset.state === "blocked"`, 5000).catch(() => {}); await sleep(300);
+  const gG = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), err: await shownError(), text: await errText(),
+    posts: sent("POST", CREATE) - post1, hits: hits.filter(h => h.startsWith("POST")).length };
+  ok("P6d g1: page A (clean load, filled form) after page B's unknown-create marker -> Create sends NO POST; blocked 'We couldn’t confirm the create.', no form",
+    gG0.state === "create" && gG0.form && gG0.btn === null && gG.state === "blocked" && !gG.form && gG.err[0]?.code === "create_unconfirmed_blocked"
+      && gG.text === "We couldn\u2019t confirm the create." && gG.posts === 0 && gG.hits === 0, { gG0, gG });
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); const gG2 = { state: await ev(`document.body.dataset.state`), form: await vis("#form") };
+  await open(`/as/anon/orgs/${H.partner_a}/locations/${H.l1}/sign-in`); await open(`/as/pa/orgs/${H.partner_a}/locations/new`);
+  const gG3 = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), key: await ev(`localStorage.getItem(${JSON.stringify(ckey)}) !== null`), posts: sent("POST", CREATE) - post1 };
+  ok("P6d g1: the block holds over a reload and a sign-in round trip (other persona); the guard is still stored; still no POST",
+    gG2.state === "blocked" && !gG2.form && gG3.state === "blocked" && !gG3.form && gG3.key && gG3.posts === 0, { gG2, gG3 });
+  await ev(`localStorage.clear(), true`); // test isolation only
+
+  await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(lsn), 1);
+});
 await step("PA partner-create", async () => {
   await open(`/as/pa/orgs/${H.partner_a}/locations/new`);
   ok("partner-create: chip 'Partner Admin: <URL partner id>', MFA locked, no reason field, no downgrade banner", await txt("#role-chip-text") === `Partner Admin: ${H.partner_a}` && await attr("#mfa", "aria-disabled") === "true" && !(await vis("#f-reason")) && !(await vis("#banner-downgrade"))
