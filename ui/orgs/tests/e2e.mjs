@@ -569,7 +569,7 @@ await step("P4l redirect / timeout", async () => {
 // P6a [TLD 2026-11-05 07:54 fetch hardening, brief /tmp/sse-llc1/briefs/fetch-hardening.md a451c6cf; SSE2 c6249722 DQ-1 / INFO-1]:
 // the history GET /changes, the PUT and the POST are bounded (abort) and use redirect: "manual". Faked with CDP Fetch at the
 // Request stage, so no faked write reaches the API; stalled requests are failed by the harness afterwards (never continued).
-// Edit / write 307, 401 and non-JSON stay unit-only (core.test.mjs; TL DQ-2).
+// Non-JSON write answers stay unit-only (core.test.mjs; TL DQ-2). Edit 3xx / opaqueredirect and a real PUT 401 are asserted below.
 await step("P6a fetch hardening", async () => {
   let mode = null; const seen = [], stalled = [], hits = [];
   const LOC = new RegExp(`/api/orgs/locations/${H.l1}/login-config$`), HIST = new RegExp(`/api/orgs/locations/${H.l1}/login-config/changes$`), CREATE = /\/api\/orgs\/locations$/;
@@ -609,15 +609,36 @@ await step("P6a fetch hardening", async () => {
   ok("P6a history GET 302 cross-site -> not followed (redirect: manual), page error 'Couldn't load history — try again', no form",
     g.state === "error" && !g.change && g.err.length === 1 && g.err[0].code === "history_unavailable" && g.text === "Couldn't load history — try again" && g.seen.length === 0, g);
 
-  // [TLD 2026-11-05 15:08] cases reordered: an UNKNOWN outcome now locks Save / Create, so each session (3xx) case runs first.
-  // 3. PUT 302 same-site -> not followed; [TLD 2026-11-05 16:00] UNKNOWN with the sign-in-again treatment AND the lock (a second click sends nothing).
+  // [TLD 2026-11-05 15:08] cases reordered: an UNKNOWN outcome now locks Save / Create, so each 3xx case runs first.
+  // 3. PUT 302 same-site is an opaqueredirect under redirect: "manual". UNKNOWN, the TLD 15:08 item 3 sentence, locked, not followed.
+  const EDIT_UNKNOWN = "We couldn't confirm the save. Reload to check before trying again.";
+  const onEdit = `/locations/${H.l1}/sign-in`;
   await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6a never saved");
   seen.length = 0; hits.length = 0; mode = { ...R3(302, `${H.ui}/p6a-sign-in`), method: "PUT", url: LOC }; await click("#btn-save"); await until(`!document.querySelector("#banner-error").hidden`, 10000);
   await click("#btn-save"); await sleep(500); mode = null;
-  g = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), err: await shownError(), text: await errText(), seen: [...seen], puts: hits.length, btn: await attr("#btn-save", "aria-disabled") };
-  ok("P6a PUT 302 same-site -> not followed, UNKNOWN + sign in again (TLD 16:47 exact): 'We couldn’t confirm the save. Sign in again, then reload to check before trying again.', no saved state, Save locked (second click sent nothing)",
-    g.state === "edit" && !g.saved && g.err.length === 1 && g.err[0].code === "write_unconfirmed_session"
-      && g.text === "We couldn\u2019t confirm the save. Sign in again, then reload to check before trying again." && g.seen.length === 0 && g.puts === 1 && g.btn === "true", g);
+  g = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), saved: await vis("#banner-saved"), err: await shownError(), text: await errText(), seen: [...seen], puts: hits.length, btn: await attr("#btn-save", "aria-disabled"), path: await ev(`location.pathname`) };
+  ok("P6a PUT 302 same-site (opaqueredirect, redirect: manual) -> not followed, exact 'We couldn't confirm the save. Reload to check before trying again.', edit kept, no saved state, Save locked (second click sent nothing)",
+    g.state === "edit" && g.form && !g.saved && g.err.length === 1 && g.err[0].code === "write_unconfirmed"
+      && g.text === EDIT_UNKNOWN && !/sign in again|session has ended|nothing was saved/i.test(g.text)
+      && g.path.endsWith(onEdit) && g.seen.length === 0 && g.puts === 1 && g.btn === "true", g);
+  // 3b. PUT 307 with no Location. A 307 that names a URL is announced by DevTools as another PUT before redirect: "manual" drops it; this case stays on the one request.
+  await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6a never saved");
+  seen.length = 0; hits.length = 0; mode = { kind: "fake", status: 307, headers: [], body: "", method: "PUT", url: LOC }; await click("#btn-save"); await until(`!document.querySelector("#banner-error").hidden`, 10000);
+  await click("#btn-save"); await sleep(500); mode = null;
+  g = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), saved: await vis("#banner-saved"), err: await shownError(), text: await errText(), seen: [...seen], puts: hits.length, btn: await attr("#btn-save", "aria-disabled"), path: await ev(`location.pathname`) };
+  ok("P6a PUT 307 (no Location) -> same preserved Edit uncertainty copy, edit kept, no navigation, one PUT, Save locked (second click sent nothing)",
+    g.state === "edit" && g.form && !g.saved && g.err.length === 1 && g.err[0].code === "write_unconfirmed"
+      && g.text === EDIT_UNKNOWN && !/sign in again|session has ended|nothing was saved/i.test(g.text)
+      && g.path.endsWith(onEdit) && g.seen.length === 0 && g.puts === 1 && g.btn === "true", g);
+  // 3c. A real PUT 401 keeps the verified session copy. It does not lock Save and the page does not send another PUT on its own.
+  await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6a 401 never saved");
+  hits.length = 0; mode = { kind: "fake", status: 401, headers: [], body: "", method: "PUT", url: LOC }; await click("#btn-save"); await until(`!document.querySelector("#banner-error").hidden`, 10000);
+  await sleep(400); mode = null;
+  g = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), saved: await vis("#banner-saved"), err: await shownError(), text: await errText(), puts: hits.length, btn: await attr("#btn-save", "aria-disabled"), path: await ev(`location.pathname`) };
+  ok("P6a PUT 401 keeps 'Your session has ended. Sign in again, then try again.', does not lock Save, and does not use the uncertainty copy",
+    g.state === "edit" && g.form && !g.saved && g.err.length === 1 && g.err[0].code === "401"
+      && g.text === "Your session has ended. Sign in again, then try again." && !/couldn.t confirm the save/i.test(g.text)
+      && g.path.endsWith(onEdit) && g.puts === 1 && g.btn === null, g);
   // 4. PUT stalled -> aborted -> "We couldn't confirm the save. ..." exactly; no saved state, one PUT, Save locked (a second click sends nothing).
   await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6a never saved"); // case 3 left its page locked
   hits.length = 0; mode = { kind: "stall", method: "PUT", url: LOC }; t0 = Date.now(); await click("#btn-save"); await until(`document.querySelector("#banner-error").hidden === false`, 10000); dt = Date.now() - t0; await sleep(300); await release();

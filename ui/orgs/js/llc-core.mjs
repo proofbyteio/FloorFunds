@@ -216,17 +216,17 @@ export function usableWriteBody(okStatus, body) {
  *  (PUT /orgs/locations/{id}/login-config okStatus 200, POST /orgs/locations okStatus 201; api(): status, body, json,
  *  redirected, opaque, timedOut). Outcome certainty is kept apart from auth handling:
  *  "ok": okStatus, JSON, and a usable body (usableWriteBody) -> saved.
- *  "session": 401, or an opaqueredirect / followed redirect / 3xx (redirect: "manual") -> sign in again. No save claim either way
- *    (a 3xx is not a contract answer).
+ *  "session": a 401 only. The API answers 401 before any handler runs. That is the verified-auth copy, not an UNKNOWN lock.
  *  "rejected": a 4xx (not 401) whose JSON body names a contract error code -> the API refused it (authoritative, nothing written).
- *  "unknown": everything else after dispatch: the abort (headers or body, timedOut), a network failure that is not a timeout
- *    (status null), a 2xx that is not okStatus / not JSON / unparseable / missing the required fields, any 5xx, any other
- *    answer -> the outcome is UNKNOWN: never "saved", never "nothing saved", no retry; the page locks Save / Create. */
+ *  "unknown": everything else after dispatch, including an opaqueredirect / followed redirect / 3xx (redirect: "manual"):
+ *    the abort (headers or body, timedOut), a network failure that is not a timeout (status null), a 2xx that is not
+ *    okStatus / not JSON / unparseable / missing the required fields, any 5xx, any other answer. Never "saved", never
+ *    "nothing saved", no retry; the page locks Save / Create. A 3xx is not followed, not replayed, and not session expiry.
+ *    [DEC-144 gap 3] Edit uses the TLD 15:08 item 3 uncertainty sentence for that UNKNOWN, not the sign-in sentence. */
 export function writeOutcome(r, okStatus) {
   if (r.timedOut || r.status === null) return { kind: "unknown" };
-  // [TLD 2026-11-05 16:00] an unexpected 3xx / opaqueredirect after dispatch is UNKNOWN (locked like any UNKNOWN) AND gets the
-  // sign-in-again treatment (session: true); never followed or replayed. A 401 is answered by the API before any handler runs.
-  if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "unknown", session: true };
+  // A 3xx / opaqueredirect is UNKNOWN with no session flag. Never followed or replayed.
+  if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "unknown" };
   if (r.status === 401) return { kind: "session" };
   if (r.status >= 200 && r.status < 300)
     return r.status === okStatus && r.json && usableWriteBody(okStatus, r.body) ? { kind: "ok" } : { kind: "unknown" };

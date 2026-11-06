@@ -10,7 +10,7 @@
 /** Top-level error -> { title, text }. `null` status = network failure (no response). */
 export const TOP_LEVEL = Object.freeze({
   network: { title: "Couldn't reach the server.", text: "Check your connection, then try again." }, // [TLD 2026-11-05 15:08 item 2] no "Nothing was saved": not an API answer
-  401: { title: "Your session has ended.", text: "Sign in again, then try again." }, // [TLD 15:08 item 2 / 16:47] a real 401 only (verified auth); an unexpected 3xx uses the *_session copies below
+  401: { title: "Your session has ended.", text: "Sign in again, then try again." }, // [TLD 15:08 item 2] a real 401 only. An unexpected write 3xx is UNKNOWN, not this copy.
   forbidden: { title: "You don't have permission to do this.", text: "Nothing was saved. Ask a Super Admin or your Partner Admin." },
   not_super_admin: { title: "Only a Super Admin can make this change.", text: "Nothing was saved. Turning off the second step or allowing backup sign-in needs a Super Admin." }, // D-102 change 2
   not_found: { title: "This location wasn't found.", text: "It may have been removed, or you may not have access to it." }, // D-102 change 1
@@ -27,9 +27,10 @@ export const TOP_LEVEL = Object.freeze({
 
 /** Page-side outcome copy, kept apart from the UX-approved D-102 set above; no API error code maps here.
  *  [TLD 2026-11-05 15:08 item 6: provisional TLD copy, no separate UX approval needed; TLD 07:54 brief a451c6cf for the first two]
- *  write_unconfirmed: an Edit save whose outcome is UNKNOWN (timeout, transport failure, unusable answer). Exact, unchanged
- *    (title + text = "We couldn't confirm the save. Reload to check before trying again."). Save stays locked until a fresh
- *    successful GET of the location (reload).
+ *  write_unconfirmed: an Edit save whose outcome is UNKNOWN (timeout, transport failure, unusable answer, unexpected
+ *    3xx / opaqueredirect). Exact TLD 15:08 item 3 (title + text = "We couldn't confirm the save. Reload to check before
+ *    trying again."). Save stays locked until a fresh successful GET of the location (reload). A 3xx is not this copy's
+ *    sign-in variant and is not proof the session ended.
  *  create_unconfirmed_blocked: a Create whose outcome is UNKNOWN. [DEC-144, provisional, not UX-approved] The admin may check
  *    outside this page and then deliberately create again. The original request may still finish.
  *  create_unconfirmed_blocked_session: the same unknown-create copy plus the sign-in line, only when an authorized read
@@ -38,8 +39,7 @@ export const TOP_LEVEL = Object.freeze({
  *  history_unavailable: the history GET failed (soft copy, verbatim). */
 export const FETCH_COPY = Object.freeze({
   write_unconfirmed: { title: "We couldn't confirm the save.", text: "Reload to check before trying again." },
-  // [TLD 2026-11-05 16:47, provisional, not UX-approved] an unexpected redirect after an Edit: sign in again AND the same lock,
-  // without claiming the cause ("Your session has ended" only for a real 401) or a safe retry.
+  // Retained string. Not selected for an unexpected Edit redirect (gap 3): that case uses write_unconfirmed.
   write_unconfirmed_session: { title: "We couldn\u2019t confirm the save.", text: "Sign in again, then reload to check before trying again." },
   // [DEC-144] supersedes the indefinite "remains blocked" create copy. Provisional, not UX-approved.
   create_unconfirmed_blocked: { title: "We couldn\u2019t confirm whether the location was created.", text: "Check whether it exists before trying again. The original request may still finish, so trying again could create a duplicate." },

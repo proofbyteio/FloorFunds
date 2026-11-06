@@ -285,8 +285,8 @@ $("form").addEventListener("submit", async (e) => {
   btn.setAttribute("aria-disabled", "true");
   try {
     // [TLD 2026-11-05 15:08, supersedes TLD 07:54] writeOutcome: "unknown" (timeout of headers or body, transport failure,
-    // unusable answer, 5xx) -> never saved / never "nothing saved", no retry, Save / Create locked; "session" (401, 3xx) ->
-    // sign in again; "rejected" (contract 4xx) -> the error from the answer.
+    // unusable answer, unexpected 3xx / opaqueredirect, 5xx) -> never saved / never "nothing saved", no retry, Save / Create
+    // locked; "session" (401 only) -> the verified sign-in copy, not the unknown lock; "rejected" (contract 4xx) -> the error.
     if (st.mode === "create") {
       const r = await api("POST", "/orgs/locations", { json: buildCreate(st.route.partnerId, $("lname").value, f), timeoutMs: writeTimeout() });
       const w = writeOutcome(r, 201);
@@ -318,8 +318,8 @@ function lockUnknown() {
 async function writeFailed(w, r) {
   if (w.kind === "unknown") {
     lockUnknown();
-    // [DEC-144] a write 3xx is UNKNOWN and does not by itself assert session expiry. The sign-in sentence is added
-    // only when the permission read below returns 401.
+    // [DEC-144] a write 3xx is UNKNOWN and does not by itself assert session expiry. The Create sign-in sentence is added
+    // only when the permission read below returns 401. [DEC-144 gap 3] Edit uses the same uncertainty sentence as a timeout.
     if (st.mode === "create") { await enterCreateBlocked(); return; }
     showError(w.session ? "write_unconfirmed_session" : "write_unconfirmed", r.requestId, w.session ? "write_unconfirmed_session" : "write_unconfirmed");
     return;

@@ -185,7 +185,7 @@ const ans = (status, body, extra = {}) => ({ status, body, json: true, redirecte
 const TIMEOUT = { status: null, body: null, json: false, redirected: false, opaque: false, timedOut: true };
 const NETWORK = { ...TIMEOUT, timedOut: false };
 const OPAQUE = { status: 0, body: null, json: false, redirected: false, opaque: true, timedOut: false }; // redirect: "manual", any 3xx
-test("TLD 16:00 (supersedes 15:08 / 07:54): write answers: ok only with a usable body; 401 -> session; 3xx -> UNKNOWN + session; only this endpoint's pre-commit status+code -> rejected; all else UNKNOWN", () => {
+test("TLD 16:00 (supersedes 15:08 / 07:54): write answers: ok only with a usable body; 401 -> session; 3xx -> UNKNOWN with no session flag; only this endpoint's pre-commit status+code -> rejected; all else UNKNOWN", () => {
   const PUT_OK = { row_version: 2, name: "L1" }, POST_OK = { location_id: "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8" };
   for (const [ok, good] of [[200, PUT_OK], [201, POST_OK]]) {
     assert.deepEqual(writeOutcome(ans(ok, good), ok), { kind: "ok" });
@@ -196,7 +196,7 @@ test("TLD 16:00 (supersedes 15:08 / 07:54): write answers: ok only with a usable
     assert.deepEqual(writeOutcome(ans(ok, null), ok), { kind: "unknown" }, "JSON 2xx that did not parse");
     assert.deepEqual(writeOutcome(ans(ok, {}), ok), { kind: "unknown" }, "2xx without the required fields");
     assert.deepEqual(writeOutcome(ans(204, null, { json: false }), ok), { kind: "unknown" });
-    const U3 = { kind: "unknown", session: true }; // [TLD 16:00] locked like any UNKNOWN, plus sign in again
+    const U3 = { kind: "unknown" }; // [DEC-144 gap 3] a 3xx is UNKNOWN and is not session expiry
     assert.deepEqual(writeOutcome(OPAQUE, ok), U3);
     for (const s of [300, 301, 302, 303, 307, 308]) assert.deepEqual(writeOutcome(ans(s, null, { json: false }), ok), U3, String(s));
     assert.deepEqual(writeOutcome(ans(ok, good, { redirected: true }), ok), U3);
@@ -260,6 +260,27 @@ test("TLD 16:47 (supersedes 16:00 strings): exact provisional sign-in-again + UN
   assert.ok(!/location_id|\/locations\/[0-9a-f]/i.test(j(FETCH_COPY.create_reported_found)), "no invented location");
   assert.equal(j(TOP_LEVEL["401"]), "Your session has ended. Sign in again, then try again.", "a real 401 keeps its verified-auth copy");
   assert.equal(j(FETCH_COPY.write_unconfirmed), "We couldn't confirm the save. Reload to check before trying again.", "timeout copy unchanged (exact)");
+});
+test("DEC-144 gap3: Edit unexpected 3xx / opaqueredirect is the preserved uncertainty copy, not the sign-in sentence; 401 and Create stay", () => {
+  const j = (c) => `${c.title} ${c.text}`;
+  const EDIT = "We couldn't confirm the save. Reload to check before trying again.";
+  const SIGNIN = "We couldn\u2019t confirm the save. Sign in again, then reload to check before trying again.";
+  assert.equal(j(FETCH_COPY.write_unconfirmed), EDIT);
+  assert.equal(j(FETCH_COPY.write_unconfirmed_session), SIGNIN);
+  assert.ok(!/sign in again|session has ended|nothing was saved/i.test(EDIT));
+  for (const r of [OPAQUE, ans(302, null, { json: false }), ans(307, null, { json: false }), ans(200, { row_version: 2 }, { redirected: true })]) {
+    const w = writeOutcome(r, 200);
+    assert.deepEqual(w, { kind: "unknown" });
+    assert.equal(w.session, undefined);
+    assert.equal(j(FETCH_COPY[w.session ? "write_unconfirmed_session" : "write_unconfirmed"]), EDIT);
+  }
+  assert.deepEqual(writeOutcome(ans(401, null, { json: false }), 200), { kind: "session" });
+  assert.equal(j(TOP_LEVEL["401"]), "Your session has ended. Sign in again, then try again.");
+  assert.equal(j(FETCH_COPY.create_unconfirmed_blocked),
+    "We couldn\u2019t confirm whether the location was created. Check whether it exists before trying again. The original request may still finish, so trying again could create a duplicate.");
+  assert.equal(j(FETCH_COPY.create_unconfirmed_blocked_session),
+    "We couldn\u2019t confirm whether the location was created. Check whether it exists before trying again. The original request may still finish, so trying again could create a duplicate. Sign in again, then check whether the location exists.");
+  assert.equal(j(FETCH_COPY.create_reported_found), "You reported that you found the location. This is your report, not a confirmation from the server.");
 });
 test("DEC-144 gap1: bounds_editor for this partner is the allow proof; a row or updated_by is not", () => {
   const id = "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8";
