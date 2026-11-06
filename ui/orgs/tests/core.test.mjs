@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, formatPT, changeDetails, fieldTarget,
   ifMatchFrom, fallbackText, limitsFrom, limitsOrFallback, REASON_BOUNDS, partnerMfaState, PARTNER_MFA_OFF_HINT,
-  errIdFor, LIMITS_TIMEOUT_MS, limitsTimeout, limitsOutcome, locationOutcome, writeOutcome, historyOutcome, CONTRACT_ERROR_CODES } from "../js/llc-core.mjs";
+  errIdFor, LIMITS_TIMEOUT_MS, limitsTimeout, limitsOutcome, locationOutcome, writeOutcome, historyOutcome, CONTRACT_ERROR_CODES, WRITE_REJECTIONS } from "../js/llc-core.mjs";
 import { TOP_LEVEL, FETCH_COPY, FIELD, requestIdText, reasonLengthCopy, REASON_HINT_FALLBACK, REASON_LENGTH_FALLBACK,
   REASON_HINT_FALLBACK_EDIT, reasonHintFallback } from "../js/error-copy.mjs";
 
@@ -184,7 +184,7 @@ const ans = (status, body, extra = {}) => ({ status, body, json: true, redirecte
 const TIMEOUT = { status: null, body: null, json: false, redirected: false, opaque: false, timedOut: true };
 const NETWORK = { ...TIMEOUT, timedOut: false };
 const OPAQUE = { status: 0, body: null, json: false, redirected: false, opaque: true, timedOut: false }; // redirect: "manual", any 3xx
-test("TLD 15:08 (supersedes 07:54): write answers: ok only with a usable body; 401 / 3xx -> session; contract 4xx -> rejected; all else UNKNOWN", () => {
+test("TLD 16:00 (supersedes 15:08 / 07:54): write answers: ok only with a usable body; 401 -> session; 3xx -> UNKNOWN + session; only this endpoint's pre-commit status+code -> rejected; all else UNKNOWN", () => {
   const PUT_OK = { row_version: 2, name: "L1" }, POST_OK = { location_id: "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8" };
   for (const [ok, good] of [[200, PUT_OK], [201, POST_OK]]) {
     assert.deepEqual(writeOutcome(ans(ok, good), ok), { kind: "ok" });
@@ -195,13 +195,20 @@ test("TLD 15:08 (supersedes 07:54): write answers: ok only with a usable body; 4
     assert.deepEqual(writeOutcome(ans(ok, null), ok), { kind: "unknown" }, "JSON 2xx that did not parse");
     assert.deepEqual(writeOutcome(ans(ok, {}), ok), { kind: "unknown" }, "2xx without the required fields");
     assert.deepEqual(writeOutcome(ans(204, null, { json: false }), ok), { kind: "unknown" });
-    assert.deepEqual(writeOutcome(OPAQUE, ok), { kind: "session" });
-    for (const s of [300, 301, 302, 303, 307, 308]) assert.deepEqual(writeOutcome(ans(s, null, { json: false }), ok), { kind: "session" }, String(s));
-    assert.deepEqual(writeOutcome(ans(ok, good, { redirected: true }), ok), { kind: "session" });
+    const U3 = { kind: "unknown", session: true }; // [TLD 16:00] locked like any UNKNOWN, plus sign in again
+    assert.deepEqual(writeOutcome(OPAQUE, ok), U3);
+    for (const s of [300, 301, 302, 303, 307, 308]) assert.deepEqual(writeOutcome(ans(s, null, { json: false }), ok), U3, String(s));
+    assert.deepEqual(writeOutcome(ans(ok, good, { redirected: true }), ok), U3);
     assert.deepEqual(writeOutcome(ans(401, null, { json: false }), ok), { kind: "session" }, "401 (spec: no body)");
-    for (const [st, code] of [[400, "malformed_body"], [400, "if_match_invalid"], [400, "reason_required"], [403, "forbidden"], [403, "not_super_admin"], [404, "not_found"],
-      [408, "request_timeout"], [409, "concurrency_conflict"], [413, "payload_too_large"], [422, "validation_failed"], [428, "precondition_required"]])
+    const both = [[400, "malformed_body"], [400, "reason_required"], [403, "forbidden"], [403, "not_super_admin"], [404, "not_found"],
+      [408, "request_timeout"], [413, "payload_too_large"], [422, "validation_failed"]];
+    const putOnly = [[400, "if_match_invalid"], [409, "concurrency_conflict"], [428, "precondition_required"]];
+    for (const [st, code] of ok === 200 ? [...both, ...putOnly] : both)
       assert.deepEqual(writeOutcome(ans(st, { error: code }), ok), { kind: "rejected" }, `${st} ${code}`);
+    if (ok === 201) for (const [st, code] of putOnly) assert.deepEqual(writeOutcome(ans(st, { error: code }), ok), { kind: "unknown" }, `POST never returns ${st} ${code}`);
+    for (const [st, code] of [[400, "forbidden"], [403, "validation_failed"], [409, "not_found"], [422, "malformed_body"], [500, "validation_failed"], [403, "unauthenticated"]])
+      assert.deepEqual(writeOutcome(ans(st, { error: code }), ok), { kind: "unknown" }, `${st} ${code}: code under the wrong status is not authoritative`);
+    assert.deepEqual(writeOutcome(ans(403, { error: "forbidden" }, { json: false }), ok), { kind: "unknown" }, "non-JSON 4xx");
     for (const r of [ans(404, null, { json: false }), ans(429, { error: "rate_limited" }), ans(403, { error: "x" }), ans(500, null, { json: false }), ans(500, { error: "x" }),
       ans(502, null, { json: false }), ans(503, null, { json: false }), ans(504, null, { json: false })])
       assert.deepEqual(writeOutcome(r, ok), { kind: "unknown" }, `${r.status} not a contract rejection`);
@@ -210,6 +217,7 @@ test("TLD 15:08 (supersedes 07:54): write answers: ok only with a usable body; 4
   assert.deepEqual(writeOutcome(ans(201, PUT_OK), 200), { kind: "unknown" }, "PUT needs 200");
   assert.deepEqual(writeOutcome(ans(201, { location_id: "not-a-uuid" }), 201), { kind: "unknown" });
   assert.deepEqual(writeOutcome(ans(200, { row_version: "2" }), 200), { kind: "unknown" });
+  for (const op of ["PUT", "POST"]) for (const codes of Object.values(WRITE_REJECTIONS[op])) for (const c of codes) assert.ok(CONTRACT_ERROR_CODES.includes(c), c);
   assert.deepEqual([...CONTRACT_ERROR_CODES].sort(), ["concurrency_conflict", "forbidden", "if_match_invalid", "malformed_body", "not_found", "not_super_admin",
     "payload_too_large", "precondition_required", "reason_required", "request_timeout", "unauthenticated", "validation_failed"]);
 });

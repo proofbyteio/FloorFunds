@@ -46,18 +46,21 @@ node ui/orgs/tests/e2e.mjs ff_sse          # or a scratch ff_kit_<name> DB; the 
 
 Chrome runs with every host except 127.0.0.1 made unresolvable. When the run ends, the host prints a DB summary read as the owner, including the org:V reader's change rows (must be none), and empties the tables.
 
-## Fetch rules (TLD 2026-11-05 15:08, superseding TLD 07:54; TLD 2026-11-04 18:35 / 21:11 for the GETs)
+## Fetch rules (TLD 2026-11-05 16:00 and 15:08, superseding TLD 07:54; TLD 2026-11-04 18:35 / 21:11 for the GETs)
 
-Every API call uses `redirect: "manual"`, so a 3xx is never followed. Every call is also aborted after `LIMITS_TIMEOUT_MS` (10 s); the abort covers the headers and the body read and parse. The test hooks are `__llcLimitsTimeoutMs` (GETs) and `__llcWriteTimeoutMs` (PUT / POST).
+Every API call uses `redirect: "manual"`, so a 3xx is never followed. Every call is also aborted after `LIMITS_TIMEOUT_MS` (10 s); the abort covers the headers and the body read and parse. The body read races the abort, so a body that arrives after the bound is ignored. The test hooks are `__llcLimitsTimeoutMs` (GETs) and `__llcWriteTimeoutMs` (PUT / POST).
 
 How the page reads a write answer (`writeOutcome`):
 
 - **Saved:** the expected status (PUT 200, POST 201) with a parsed JSON body that has `row_version` (PUT) or a uuid `location_id` (POST).
-- **Session:** a 401 or any 3xx. The page shows "Your session has ended. Sign in again, then try again." and makes no save claim.
-- **Rejected:** a 4xx whose JSON body names a contract error code. The page shows that code's copy.
+- **Session:** a 401, which the API sends before any handler runs. The page shows "Your session has ended. Sign in again, then try again." and makes no save claim. The page is not locked.
+- **Session + UNKNOWN:** any 3xx or opaque redirect after a write was sent. The page shows the sign-in-again copy and locks, as for any UNKNOWN:
+  - Edit: "Your session has ended. We couldn't confirm the save. Sign in again, then reload to check before trying again."
+  - Create: the blocked state "We couldn’t confirm the create. Your session has ended. Sign in again."
+- **Rejected:** only a status + error code pair that this endpoint's handler returns before it commits (`WRITE_REJECTIONS` in `llc-core.mjs`, checked against `LoginConfigApi.cs`). The page shows that code's copy. A known code under another status is UNKNOWN.
 - **UNKNOWN:** everything else after dispatch. That covers a timeout (headers or body), a network failure, a non-JSON, unparseable or incomplete 2xx, any 5xx and any other answer. The page never says "saved" or "nothing saved" and never retries. Save / Create stay locked:
-  - **Edit:** the page shows "We couldn't confirm the save. Reload to check before trying again." and Save stays locked in the page. A reload's fresh GET is shown in view mode before any Change; the draft is never replayed.
-  - **Create:** the page shows the blocked state "We couldn’t confirm the create." with no advice. The state is kept in `localStorage` (`llc.unconfirmed.create.<partner_id>`) and the create page stays blocked. S2a has no way to find out whether that create happened (see `src/S2A-BUILD-LOG.md`, "Create gap").
+  - **Edit:** the page shows "We couldn't confirm the save. Reload to check before trying again." and Save stays locked in the page. Only a new page load gets an enabled form: a reload, the sign-in round trip, or a back-forward restore (`pageshow` with `persisted` reloads). Each load does its own fresh no-store GET, shows view mode before any Change, and takes If-Match from that GET's ETag. A failed GET leaves the page error and no form. The draft is never replayed. The GET only shows the current state: it does not prove the abandoned write can't still land. That is why the next deliberate save carries the GET's If-Match, and a write that landed later gets a 409 instead of being overwritten.
+  - **Create:** the page shows the blocked state "We couldn’t confirm the create." with no advice. The guard is kept in `localStorage` under `llc.unconfirmed.create.<partner_id>`, holding a timestamp only: no draft and no credentials. It is checked on load and again at submit. Reloading, signing in again, an empty form or time passing never clears it. It guards this browser only and is no protection against duplicates. S2a has no way to find out whether that create happened (see `src/S2A-BUILD-LOG.md`, "Create gap").
 
 History:
 

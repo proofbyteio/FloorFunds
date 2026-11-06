@@ -195,6 +195,15 @@ export function locationOutcome(r) {
  *  is an authoritative rejection by the API (spec §5.1: nothing written). */
 export const CONTRACT_ERROR_CODES = Object.freeze(["unauthenticated", "forbidden", "not_found", "precondition_required", "if_match_invalid",
   "concurrency_conflict", "malformed_body", "payload_too_large", "request_timeout", "validation_failed", "not_super_admin", "reason_required"]);
+/** [TLD 2026-11-05 16:00] Authoritative rejections: the status + error code pairs that Admin.Api's location PUT / POST handlers
+ * (src/Admin.Api/LoginConfigApi.cs PutAsync / CreateAsync) throw before their transaction commits, so nothing in the
+ * location config was written (a denial audit row may be). Any other 4xx / 5xx, or a known code under another status, is UNKNOWN. */
+export const WRITE_REJECTIONS = Object.freeze({
+  PUT: Object.freeze({ 400: ["if_match_invalid", "malformed_body", "reason_required"], 403: ["forbidden", "not_super_admin"], 404: ["not_found"],
+    408: ["request_timeout"], 409: ["concurrency_conflict"], 413: ["payload_too_large"], 422: ["validation_failed"], 428: ["precondition_required"] }),
+  POST: Object.freeze({ 400: ["malformed_body", "reason_required"], 403: ["forbidden", "not_super_admin"], 404: ["not_found"],
+    408: ["request_timeout"], 413: ["payload_too_large"], 422: ["validation_failed"] }),
+});
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The success body each write needs before the page may call it saved: PUT 200 = a login_config_view with an integer
  *  row_version; POST 201 = a body with a uuid location_id. */
@@ -215,10 +224,15 @@ export function usableWriteBody(okStatus, body) {
  *    answer -> the outcome is UNKNOWN: never "saved", never "nothing saved", no retry; the page locks Save / Create. */
 export function writeOutcome(r, okStatus) {
   if (r.timedOut || r.status === null) return { kind: "unknown" };
-  if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400) || r.status === 401) return { kind: "session" };
+  // [TLD 2026-11-05 16:00] an unexpected 3xx / opaqueredirect after dispatch is UNKNOWN (locked like any UNKNOWN) AND gets the
+  // sign-in-again treatment (session: true); never followed or replayed. A 401 is answered by the API before any handler runs.
+  if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "unknown", session: true };
+  if (r.status === 401) return { kind: "session" };
   if (r.status >= 200 && r.status < 300)
     return r.status === okStatus && r.json && usableWriteBody(okStatus, r.body) ? { kind: "ok" } : { kind: "unknown" };
-  if (r.status >= 400 && r.status < 500 && r.json && r.body && CONTRACT_ERROR_CODES.includes(r.body.error)) return { kind: "rejected" };
+  // [TLD 16:00] "rejected" only for a status + code pair this endpoint's handler returns before anything is committed.
+  const codes = WRITE_REJECTIONS[okStatus === 201 ? "POST" : "PUT"][r.status];
+  if (codes && r.json && r.body && codes.includes(r.body.error)) return { kind: "rejected" };
   return { kind: "unknown" };
 }
 

@@ -607,13 +607,16 @@ await step("P6a fetch hardening", async () => {
     g.state === "error" && !g.change && g.err.length === 1 && g.err[0].code === "history_unavailable" && g.text === "Couldn't load history — try again" && g.seen.length === 0, g);
 
   // [TLD 2026-11-05 15:08] cases reordered: an UNKNOWN outcome now locks Save / Create, so each session (3xx) case runs first.
-  // 3. PUT 302 same-site -> not followed, the shared session copy (no save claim), Save not locked.
+  // 3. PUT 302 same-site -> not followed; [TLD 2026-11-05 16:00] UNKNOWN with the sign-in-again treatment AND the lock (a second click sends nothing).
   await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6a never saved");
-  seen.length = 0; hits.length = 0; mode = { ...R3(302, `${H.ui}/p6a-sign-in`), method: "PUT", url: LOC }; await save(); mode = null;
+  seen.length = 0; hits.length = 0; mode = { ...R3(302, `${H.ui}/p6a-sign-in`), method: "PUT", url: LOC }; await click("#btn-save"); await until(`!document.querySelector("#banner-error").hidden`, 10000);
+  await click("#btn-save"); await sleep(500); mode = null;
   g = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), err: await shownError(), text: await errText(), seen: [...seen], puts: hits.length, btn: await attr("#btn-save", "aria-disabled") };
-  ok("P6a PUT 302 same-site -> not followed, 'Your session has ended. Sign in again, then try again.' (shared 401 copy, no save claim), no saved state",
-    g.state === "edit" && !g.saved && g.err.length === 1 && g.err[0].code === "401" && g.text === "Your session has ended. Sign in again, then try again." && g.seen.length === 0 && g.puts === 1 && g.btn === null, g);
+  ok("P6a PUT 302 same-site -> not followed, UNKNOWN + sign in again: 'Your session has ended. We couldn't confirm the save. Sign in again, then reload to check before trying again.', no saved state, Save locked (second click sent nothing)",
+    g.state === "edit" && !g.saved && g.err.length === 1 && g.err[0].code === "write_unconfirmed_session"
+      && g.text === "Your session has ended. We couldn't confirm the save. Sign in again, then reload to check before trying again." && g.seen.length === 0 && g.puts === 1 && g.btn === "true", g);
   // 4. PUT stalled -> aborted -> "We couldn't confirm the save. ..." exactly; no saved state, one PUT, Save locked (a second click sends nothing).
+  await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6a never saved"); // case 3 left its page locked
   hits.length = 0; mode = { kind: "stall", method: "PUT", url: LOC }; t0 = Date.now(); await click("#btn-save"); await until(`document.querySelector("#banner-error").hidden === false`, 10000); dt = Date.now() - t0; await sleep(300); await release();
   await click("#btn-save"); await sleep(1700); mode = null; await release();
   g = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), form: await vis("#form"), err: await shownError(), text: await errText(), dt, puts: hits.length, btn: await attr("#btn-save", "aria-disabled") };
@@ -621,13 +624,18 @@ await step("P6a fetch hardening", async () => {
     g.state === "edit" && !g.saved && g.form && g.err.length === 1 && g.err[0].code === "write_unconfirmed" && g.text === "We couldn't confirm the save. Reload to check before trying again."
       && !/nothing was saved/i.test(g.text) && g.puts === 1 && g.btn === "true" && dt < 8000, g);
 
-  // 5. POST 307 to login.microsoftonline.com -> not followed, the shared session copy, still on /new, Create not locked.
+  // 5. POST 307 to login.microsoftonline.com -> not followed; [TLD 16:00] UNKNOWN + sign in again: the blocked create state, kept over a reload.
   await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await type("#lname", "UI Cage P6a"); await type("#dname", "UI Casino A");
-  seen.length = 0; hits.length = 0; o0 = outside.length; mode = { ...R3(307, MS), method: "POST", url: CREATE }; await save(); mode = null; dropMs(o0);
-  g = { path: await ev(`location.pathname`), err: await shownError(), text: await errText(), seen: [...seen], posts: hits.length, btn: await attr("#btn-save", "aria-disabled") };
-  ok("P6a POST 307 cross-site -> not followed, the shared session copy, still on /new, Create not locked",
-    g.path.endsWith("/locations/new") && g.err.length === 1 && g.err[0].code === "401" && g.text === "Your session has ended. Sign in again, then try again." && g.seen.length === 0 && g.posts === 1 && g.btn === null, g);
+  seen.length = 0; hits.length = 0; o0 = outside.length; mode = { ...R3(307, MS), method: "POST", url: CREATE }; await click("#btn-save"); await until(`document.body.dataset.state === "blocked"`, 10000); mode = null; dropMs(o0);
+  g = { path: await ev(`location.pathname`), state: await ev(`document.body.dataset.state`), form: await vis("#form"), err: await shownError(), text: await errText(), seen: [...seen], posts: hits.length,
+    key: await ev(`localStorage.getItem(${JSON.stringify(`llc.unconfirmed.create.${H.partner_a}`)})`) };
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); g.after = { state: await ev(`document.body.dataset.state`), form: await vis("#form") };
+  ok("P6a POST 307 cross-site -> not followed, UNKNOWN + sign in again: blocked 'We couldn’t confirm the create. Your session has ended. Sign in again.', no form, one POST, guard stored and still blocked after a reload",
+    g.path.endsWith("/locations/new") && g.state === "blocked" && !g.form && g.err.length === 1 && g.err[0].code === "create_unconfirmed_blocked_session"
+      && g.text === "We couldn\u2019t confirm the create. Your session has ended. Sign in again." && g.seen.length === 0 && g.posts === 1 && g.key !== null && g.after.state === "blocked" && !g.after.form, g);
+  await ev(`localStorage.clear(), true`); // test isolation only
   // 6. POST (create) stalled -> UNKNOWN: the blocked state "We couldn’t confirm the create." (no reload advice), no form, one POST.
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await type("#lname", "UI Cage P6a"); await type("#dname", "UI Casino A"); // case 5 left its page blocked
   hits.length = 0; mode = { kind: "stall", method: "POST", url: CREATE }; await click("#btn-save"); await until(`document.body.dataset.state === "blocked"`, 10000); await sleep(1700); mode = null; await release();
   g = { path: await ev(`location.pathname`), hash: await ev(`location.hash`), err: await shownError(), text: await errText(), posts: hits.length, state: await ev(`document.body.dataset.state`), form: await vis("#form") };
   ok("P6a POST (create) stalled -> blocked state 'We couldn’t confirm the create.' (no reload advice), no form, still on /new, one POST",
@@ -660,6 +668,7 @@ await step("P6b body stall", async () => {
       const sig = init.signal;
       const body = new ReadableStream({ start(c) {
         c.enqueue(new TextEncoder().encode(m.partial));
+        if (m.lateMs) { setTimeout(() => { c.enqueue(new TextEncoder().encode(m.rest)); c.close(); }, m.lateMs); return; } // ignores the abort
         const fail = () => c.error(new DOMException("The operation was aborted.", "AbortError"));
         if (sig) { if (sig.aborted) fail(); else sig.addEventListener("abort", fail, { once: true }); }
       } });
@@ -682,6 +691,16 @@ await step("P6b body stall", async () => {
   ok("P6b history GET: 200 headers arrive, body never completes -> aborted (bounded), page error 'Couldn't load history — try again', no form, no history card",
     g.state === "error" && !g.change && !g.hist && g.err.length === 1 && g.err[0].code === "history_unavailable" && g.text === "Couldn't load history — try again" && g.calls === 1 && dt < 8000, g);
 
+  // 1b. location GET: real 200 headers, body withheld -> aborted -> the same page error as a stalled location GET before
+  //     its headers (P4l: 'network'), not the invalid-answer error a complete-but-unparseable 200 gets: the abort bounds the
+  //     whole answer, and a body cut off by the abort is a timeout, not a malformed response (p6b mutant f10).
+  const lm = (await cdp("Page.addScriptToEvaluateOnNewDocument", { source: `globalThis.__p6bMode = ${JSON.stringify({ method: "GET", url: `/api/orgs/locations/${H.l1}/login-config$`, real: true, partial: '{"location_id":"' })};` })).identifier;
+  t0 = Date.now(); await open(page("sa", H.l1)); dt = Date.now() - t0;
+  await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier: lm });
+  g = { state: await ev(`document.body.dataset.state`), change: await vis("#btn-change"), err: await shownError(), text: await errText(), calls: await ev(`globalThis.__p6bCalls.length`), dt };
+  ok("P6b location GET: 200 headers arrive, body never completes -> aborted (bounded), the same page error as a header stall ('network', P4l), not the invalid-answer error; no form",
+    g.state === "error" && !g.change && g.err.length === 1 && g.err[0].code === "network" && g.calls === 1 && dt < 8000, g);
+
   // 2. PUT: 200 + ETag headers, partial JSON body, then nothing -> unconfirmed copy, not saved, one PUT, no retry; the request
   //    is no longer in flight and Save stays locked (TLD 15:08 item 4) instead of busy.
   await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6b never saved");
@@ -691,6 +710,15 @@ await step("P6b body stall", async () => {
     calls: await ev(`globalThis.__p6bCalls.length`), btn: await attr("#btn-save", "aria-disabled"), cur: await txt("#cur-h-text") };
   ok("P6b PUT: 200 headers arrive, body never completes -> aborted (bounded: save() returned), the exact unconfirmed copy, Save locked, no saved banner / state, form kept, one PUT (no retry)",
     g.state === "edit" && !g.saved && g.form && g.err.length === 1 && g.err[0].code === "write_unconfirmed" && g.text === UNCONF && g.btn === "true" && g.calls === 1 && dt < 8000, g);
+
+  // 2b. [TLD 16:00] obsolete late completion: 200 headers, then the rest of a VALID saved body arrives only after the 1.5 s bound,
+  //     from a body stream that ignores the abort. The page must stay UNKNOWN + locked and never turn it into a saved state.
+  await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6b late answer");
+  await ev(`globalThis.__p6bMode = ${JSON.stringify({ method: "PUT", url: `/api/orgs/locations/${H.l1}/login-config$`, status: 200, headers: JSONH, partial: '{"row_version":', rest: '99,"name":"late"}', lateMs: 3500 })}, true`);
+  t0 = Date.now(); await click("#btn-save"); await until(`!document.querySelector("#banner-error").hidden`, 10000); dt = Date.now() - t0; await sleep(3500);
+  g = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), err: await shownError(), text: await errText(), dt, calls: await ev(`globalThis.__p6bCalls.length`), btn: await attr("#btn-save", "aria-disabled") };
+  ok("P6b PUT: the valid body completes only after the bound -> still UNKNOWN (exact unconfirmed copy), Save locked, never saved (late completion ignored)",
+    g.state === "edit" && !g.saved && g.err.length === 1 && g.err[0].code === "write_unconfirmed" && g.text === UNCONF && g.btn === "true" && g.calls === 1 && dt < 3000, g);
 
   // 3. POST (create): 201 headers, partial body, then nothing -> the blocked create state, still on /new, no navigation, one POST.
   await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await type("#lname", "UI Cage P6b"); await type("#dname", "UI Casino A");
@@ -776,6 +804,31 @@ await step("P6c uncertain outcomes", async () => {
   await click("#btn-save"); await until(`!document.querySelector("#banner-error").hidden`, 10000); mode = null;
   await unknownEdit("PUT 200 with an unparseable JSON body");
   ok("P6c: the network-failure and invalid-200 PUTs changed nothing on the server", JSON.stringify(await apiL1()) === JSON.stringify(v1), [v1, await apiL1()]);
+
+  // 3b. [TLD 16:00] re-entry: a fresh GET is the current snapshot, NOT proof the abandoned write can't still land. The
+  //     abandoned PUT lands after the page's GET (simulated by the same API, with the GET's ETag); the deliberate save keeps the
+  //     If-Match from the page's GET, so it is refused (409 concurrency_conflict), never overwrites, and is not retried.
+  const lapi = `${H.ui}/as/sa/api/orgs/locations/${H.l1}/login-config`;
+  const land = async (name) => { const g0 = await fetch(lapi); const c0 = await g0.json();
+    const r0 = await fetch(lapi, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": g0.headers.get("ETag") }, body: JSON.stringify({ provider_kind: c0.provider_kind,
+      display_name: name, entra_allowed_tenant_ids: c0.entra_allowed_tenant_ids, allow_db_fallback: c0.allow_db_fallback, mfa_required: c0.mfa_required, reason: null }) });
+    if (r0.status === 200) p6cSaChanges++; return r0.status; };
+  await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6c deliberate save");
+  const ls = await land("UI P6c abandoned write landed late");
+  const putD = sent("PUT", LOC); await click("#btn-save"); await until(`!document.querySelector("#banner-error").hidden || !document.querySelector("#banner-conflict").hidden`, 10000); await sleep(500);
+  const gE = { land: ls, err: await shownError(), saved: await vis("#banner-saved"), puts: sent("PUT", LOC) - putD, srv: (await apiL1()).dname };
+  ok("P6c re-entry: an abandoned write landing after the fresh GET -> the deliberate save carries the GET's If-Match and is refused (409 concurrency_conflict), nothing overwritten, one PUT, no retry",
+    gE.land === 200 && gE.err[0]?.code === "concurrency_conflict" && !gE.saved && gE.puts === 1 && gE.srv === "UI P6c abandoned write landed late", gE);
+  // Back-forward: the server changes while the page is in history; going back must not show / edit the old snapshot.
+  await open(page("sa", H.l1)); await open(page("sa", H.l4));
+  const lb = await land("UI P6c changed while away");
+  await ev(`history.back(), true`); await sleep(300);
+  await until(`location.pathname.includes(${JSON.stringify(H.l1)}) && document.readyState === "complete" && document.body.dataset.state === "view"`, 10000);
+  await click("#btn-change");
+  const gB = { land: lb, path: await ev(`location.pathname`), state: await ev(`document.body.dataset.state`), dname: await ev(`document.querySelector("#dname").value`), btn: await attr("#btn-save", "aria-disabled") };
+  ok("P6c back-forward: going back to the edit page shows the CURRENT server value (fresh GET, not the old snapshot) before any edit",
+    gB.land === 200 && gB.state === "edit" && gB.dname === "UI P6c changed while away" && gB.btn === null, gB);
+  await click("#btn-cancel");
 
   // 4. Create: the server commits, the 201 is lost -> blocked (no reload advice). Reload and a sign-in round trip keep it blocked;
   //    no second POST is ever sent. S2a has no surface to tell whether THIS create happened (see BUILD-LOG, Create gap).

@@ -36,7 +36,10 @@ export const TOP_LEVEL = Object.freeze({
  *  history_unavailable: the history GET failed (soft copy, verbatim). */
 export const FETCH_COPY = Object.freeze({
   write_unconfirmed: { title: "We couldn't confirm the save.", text: "Reload to check before trying again." },
+  // [TLD 2026-11-05 16:00] an unexpected redirect after a write: sign in again AND the same lock (provisional SSE copy, TLD 15:08 item 6).
+  write_unconfirmed_session: { title: "Your session has ended.", text: "We couldn't confirm the save. Sign in again, then reload to check before trying again." },
   create_unconfirmed_blocked: { title: "We couldn’t confirm the create.", text: "" },
+  create_unconfirmed_blocked_session: { title: "We couldn\u2019t confirm the create.", text: "Your session has ended. Sign in again." },
   history_unavailable: { title: "Couldn't load history — try again", text: "" },
 });
 /** 422 field code -> message shown under the field (tenant_bound_elsewhere is MK9 copy, kept in the page). */

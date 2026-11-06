@@ -40,6 +40,8 @@ async function api(method, path, { json, ifMatch, timeoutMs } = {}) {
   if (ifMatch) headers["If-Match"] = ifMatch;
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
+  const aborted = new Promise((_, reject) => ac.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }));
+  aborted.catch(() => {});
   const failed = () => ({ status: null, body: null, requestId: null, etag: null, json: false, redirected: false, opaque: false, timedOut: ac.signal.aborted });
   try {
     let res;
@@ -52,7 +54,9 @@ async function api(method, path, { json, ifMatch, timeoutMs } = {}) {
     let data = null;
     const ct = res.headers.get("Content-Type") || "";
     const isJson = ct.includes("json");
-    if (isJson) { try { data = await res.json(); } catch { if (ac.signal.aborted) return failed(); data = null; } }
+    // [TLD 2026-11-05 16:00] the body read races the abort, so a body that would still arrive after the bound is never read
+    // as an answer (an obsolete late completion is ignored, whatever the body stream does on abort).
+    if (isJson) { try { data = await Promise.race([res.json(), aborted]); } catch { if (ac.signal.aborted) return failed(); data = null; } }
     return { status: res.status, body: data, requestId: res.headers.get("X-Request-ID"), etag: res.headers.get("ETag"), json: isJson, redirected: res.redirected, opaque: res.type === "opaqueredirect", timedOut: false };
   } finally {
     clearTimeout(timer);
@@ -266,6 +270,8 @@ function applyErrors(r) {
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   if (st.locked) return; // [TLD 15:08 item 4] locked after an UNKNOWN outcome: no second write from this page
+  // [TLD 16:00] the Create guard is re-read at submit: another tab / a restored page may have recorded an unresolved create.
+  if (st.mode === "create" && pendingGet(pendingKey("create", st.route.partnerId)) !== null) { showCreateBlocked(); return; }
   hideErrors();
   const f = readForm();
   const btn = $("btn-save");
@@ -305,17 +311,19 @@ function lockUnknown() {
 function writeFailed(w, r) {
   if (w.kind === "unknown") {
     lockUnknown();
-    if (st.mode === "create") showCreateBlocked(); else showError("write_unconfirmed", r.requestId, "write_unconfirmed");
+    if (st.mode === "create") showCreateBlocked(w.session);
+    else showError(w.session ? "write_unconfirmed_session" : "write_unconfirmed", r.requestId, w.session ? "write_unconfirmed_session" : "write_unconfirmed");
     return;
   }
   applyErrors(w.kind === "session" ? { ...r, status: 401 } : r);
 }
 // [TLD 15:08 items 4 / 6] Create outcome UNKNOWN: blocked, no reload advice (no recovery path exists), no form, never unlocked here.
-function showCreateBlocked() {
+function showCreateBlocked(session = false) {
   st.locked = true;
   show($("banner-loading"), false);
   show($("form"), false);
-  showError("create_unconfirmed_blocked", null, "create_unconfirmed_blocked");
+  const k = session ? "create_unconfirmed_blocked_session" : "create_unconfirmed_blocked";
+  showError(k, null, k);
   body.dataset.state = "blocked";
 }
 function renderHistoryError() { show($("history-error"), st.historyError); }
@@ -343,6 +351,10 @@ $("history-retry").addEventListener("click", async () => {
   renderHistoryError();
   setMode(st.mode);
 });
+
+// [TLD 2026-11-05 16:00] a back-forward restore never reuses an old snapshot / form: reload, so the page's fresh no-store GET
+// (+ ETag) is the only way to an enabled form, and the Create guard is re-read.
+addEventListener("pageshow", (e) => { if (e.persisted) location.reload(); });
 
 // ---------- load ----------
 // [TLD 2026-11-05 07:54] the history GET is bounded and never follows a redirect, like the location GET (api()).
