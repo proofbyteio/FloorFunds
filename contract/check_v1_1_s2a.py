@@ -578,5 +578,15 @@ _row = [l for l in spec.splitlines() if l.startswith("| Partner Admin, own partn
 exp("DEC-106 §6 matrix: Partner Admin own partner keeps mfa->true and fallback->false allowed, downgrades 403 not_super_admin (rules unchanged)",
     [] if len(_row) == 1 and _row[0].split("|")[6:10] == [" ✔ ", " ✔ ", " 403 `not_super_admin` ", " 403 `not_super_admin` "] else _row, False)
 
+for _pin in ["### 3.7 `GET /api/ref/countries` and `GET /api/ref/time-zones` [TLD-REF1, 2026-11-06]",
+             "401, no body, `WWW-Authenticate: Bearer`", "403 `forbidden`", "No new error code, no new app grant, no new role, no new package.",
+             "A null format flag is unknown applicability.", "CLDR 49 regular territory set (257).",
+             "does not assert ISO 3166 membership.", "Eight regular codes are absent from the IANA `iso3166.tab` subset and stay: AC, CP, CQ, DG, EA, IC, TA, XK.",
+             "312 `zone1970.tab` names plus `Etc/UTC`", "### 8.6 Reference tables (schema `ref`) [TLD-REF1, 2026-11-06]",
+             "`content_sha256` is SHA-256 only (64 lowercase hex).", "Down does not use CASCADE.",
+             "`auth` stays exactly 10 tables.", "`auth.location` stays `location_id`, `partner_id`, `slug`, `name`.",
+             "The archived LDML publication and the address wiki HTML are not shipped as product assets."]:
+    exp("TLD-REF1 spec pin: " + _pin[:60], [] if _pin in spec else ["missing"], False)
+
 print("v1.1-S2a checks: %d passed, %d failed" % (PASSES[0], len(FAIL)), "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
 sys.exit(1 if FAIL else 0)

@@ -1,0 +1,2402 @@
+{
+  "archive_sha256": "7330a82bd9b4d99cbae975a943b5938adefb54b687f297b092bf375771b1813e",
+  "countries": [
+    {
+      "country_code": "AC",
+      "name": "Ascension Island",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "AD",
+      "name": "Andorra",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "AE",
+      "name": "United Arab Emirates",
+      "fmt_has_region": true,
+      "fmt_has_postal": false,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "AF",
+      "name": "Afghanistan",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "AG",
+      "name": "Antigua & Barbuda",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "AI",
+      "name": "Anguilla",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "AL",
+      "name": "Albania",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "AM",
+      "name": "Armenia",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "AO",
+      "name": "Angola",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "AQ",
+      "name": "Antarctica",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "AR",
+      "name": "Argentina",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "AS",
+      "name": "American Samoa",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "AT",
+      "name": "Austria",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "AU",
+      "name": "Australia",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "AW",
+      "name": "Aruba",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "AX",
+      "name": "Åland Islands",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "AZ",
+      "name": "Azerbaijan",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BA",
+      "name": "Bosnia & Herzegovina",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BB",
+      "name": "Barbados",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BD",
+      "name": "Bangladesh",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BE",
+      "name": "Belgium",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "BF",
+      "name": "Burkina Faso",
+      "fmt_has_region": false,
+      "fmt_has_postal": false,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BG",
+      "name": "Bulgaria",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BH",
+      "name": "Bahrain",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BI",
+      "name": "Burundi",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BJ",
+      "name": "Benin",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BL",
+      "name": "St. Barthélemy",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "BM",
+      "name": "Bermuda",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BN",
+      "name": "Brunei",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BO",
+      "name": "Bolivia",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BQ",
+      "name": "Caribbean Netherlands",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BR",
+      "name": "Brazil",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "BS",
+      "name": "Bahamas",
+      "fmt_has_region": true,
+      "fmt_has_postal": false,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BT",
+      "name": "Bhutan",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BV",
+      "name": "Bouvet Island",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BW",
+      "name": "Botswana",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BY",
+      "name": "Belarus",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "BZ",
+      "name": "Belize",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CA",
+      "name": "Canada",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "CC",
+      "name": "Cocos (Keeling) Islands",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CD",
+      "name": "Congo - Kinshasa",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CF",
+      "name": "Central African Republic",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CG",
+      "name": "Congo - Brazzaville",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CH",
+      "name": "Switzerland",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "CI",
+      "name": "Côte d’Ivoire",
+      "fmt_has_region": false,
+      "fmt_has_postal": false,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CK",
+      "name": "Cook Islands",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CL",
+      "name": "Chile",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CM",
+      "name": "Cameroon",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CN",
+      "name": "China",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "CO",
+      "name": "Colombia",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "CP",
+      "name": "Clipperton Island",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CQ",
+      "name": "Sark",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CR",
+      "name": "Costa Rica",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "CU",
+      "name": "Cuba",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CV",
+      "name": "Cape Verde",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CW",
+      "name": "Curaçao",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CX",
+      "name": "Christmas Island",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CY",
+      "name": "Cyprus",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "CZ",
+      "name": "Czechia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "DE",
+      "name": "Germany",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "DG",
+      "name": "Diego Garcia",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "DJ",
+      "name": "Djibouti",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "DK",
+      "name": "Denmark",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "DM",
+      "name": "Dominica",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "DO",
+      "name": "Dominican Republic",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "DZ",
+      "name": "Algeria",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "EA",
+      "name": "Ceuta & Melilla",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "EC",
+      "name": "Ecuador",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "EE",
+      "name": "Estonia",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "EG",
+      "name": "Egypt",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "EH",
+      "name": "Western Sahara",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "ER",
+      "name": "Eritrea",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "ES",
+      "name": "Spain",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "ET",
+      "name": "Ethiopia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "FI",
+      "name": "Finland",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "FJ",
+      "name": "Fiji",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "FK",
+      "name": "Falkland Islands",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "FM",
+      "name": "Micronesia",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "FO",
+      "name": "Faroe Islands",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "FR",
+      "name": "France",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "GA",
+      "name": "Gabon",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "GB",
+      "name": "United Kingdom",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "GD",
+      "name": "Grenada",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "GE",
+      "name": "Georgia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "GF",
+      "name": "French Guiana",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "GG",
+      "name": "Guernsey",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "GH",
+      "name": "Ghana",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "GI",
+      "name": "Gibraltar",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "GL",
+      "name": "Greenland",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "GM",
+      "name": "Gambia",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "GN",
+      "name": "Guinea",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "GP",
+      "name": "Guadeloupe",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "GQ",
+      "name": "Equatorial Guinea",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "GR",
+      "name": "Greece",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "GS",
+      "name": "South Georgia & South Sandwich Islands",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "GT",
+      "name": "Guatemala",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "GU",
+      "name": "Guam",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "GW",
+      "name": "Guinea-Bissau",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "GY",
+      "name": "Guyana",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "HK",
+      "name": "Hong Kong SAR China",
+      "fmt_has_region": true,
+      "fmt_has_postal": false,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "HM",
+      "name": "Heard Island & McDonald Islands",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "HN",
+      "name": "Honduras",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "HR",
+      "name": "Croatia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "HT",
+      "name": "Haiti",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "HU",
+      "name": "Hungary",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "IC",
+      "name": "Canary Islands",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "ID",
+      "name": "Indonesia",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "IE",
+      "name": "Ireland",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "IL",
+      "name": "Israel",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "IM",
+      "name": "Isle of Man",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "IN",
+      "name": "India",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "IO",
+      "name": "British Indian Ocean Territory",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "IQ",
+      "name": "Iraq",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "IR",
+      "name": "Iran",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "IS",
+      "name": "Iceland",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "IT",
+      "name": "Italy",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "JE",
+      "name": "Jersey",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "JM",
+      "name": "Jamaica",
+      "fmt_has_region": true,
+      "fmt_has_postal": false,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "JO",
+      "name": "Jordan",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "JP",
+      "name": "Japan",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "KE",
+      "name": "Kenya",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "KG",
+      "name": "Kyrgyzstan",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "KH",
+      "name": "Cambodia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "KI",
+      "name": "Kiribati",
+      "fmt_has_region": true,
+      "fmt_has_postal": false,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "KM",
+      "name": "Comoros",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "KN",
+      "name": "St. Kitts & Nevis",
+      "fmt_has_region": true,
+      "fmt_has_postal": false,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "KP",
+      "name": "North Korea",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "KR",
+      "name": "South Korea",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "KW",
+      "name": "Kuwait",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "KY",
+      "name": "Cayman Islands",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "KZ",
+      "name": "Kazakhstan",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "LA",
+      "name": "Laos",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "LB",
+      "name": "Lebanon",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "LC",
+      "name": "St. Lucia",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "LI",
+      "name": "Liechtenstein",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "LK",
+      "name": "Sri Lanka",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "LR",
+      "name": "Liberia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "LS",
+      "name": "Lesotho",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "LT",
+      "name": "Lithuania",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "LU",
+      "name": "Luxembourg",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "LV",
+      "name": "Latvia",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "LY",
+      "name": "Libya",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MA",
+      "name": "Morocco",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MC",
+      "name": "Monaco",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MD",
+      "name": "Moldova",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "ME",
+      "name": "Montenegro",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MF",
+      "name": "St. Martin",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "MG",
+      "name": "Madagascar",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MH",
+      "name": "Marshall Islands",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "MK",
+      "name": "North Macedonia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "ML",
+      "name": "Mali",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MM",
+      "name": "Myanmar (Burma)",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MN",
+      "name": "Mongolia",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MO",
+      "name": "Macao SAR China",
+      "fmt_has_region": false,
+      "fmt_has_postal": false,
+      "source_require_region": false,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "MP",
+      "name": "Northern Mariana Islands",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "MQ",
+      "name": "Martinique",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "MR",
+      "name": "Mauritania",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MS",
+      "name": "Montserrat",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MT",
+      "name": "Malta",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MU",
+      "name": "Mauritius",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MV",
+      "name": "Maldives",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MW",
+      "name": "Malawi",
+      "fmt_has_region": false,
+      "fmt_has_postal": false,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "MX",
+      "name": "Mexico",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "MY",
+      "name": "Malaysia",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "MZ",
+      "name": "Mozambique",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "NA",
+      "name": "Namibia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "NC",
+      "name": "New Caledonia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "NE",
+      "name": "Niger",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "NF",
+      "name": "Norfolk Island",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "NG",
+      "name": "Nigeria",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "NI",
+      "name": "Nicaragua",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "NL",
+      "name": "Netherlands",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "NO",
+      "name": "Norway",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "NP",
+      "name": "Nepal",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "NR",
+      "name": "Nauru",
+      "fmt_has_region": true,
+      "fmt_has_postal": false,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "NU",
+      "name": "Niue",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "NZ",
+      "name": "New Zealand",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "OM",
+      "name": "Oman",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "PA",
+      "name": "Panama",
+      "fmt_has_region": true,
+      "fmt_has_postal": false,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "PE",
+      "name": "Peru",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "PF",
+      "name": "French Polynesia",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "PG",
+      "name": "Papua New Guinea",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "PH",
+      "name": "Philippines",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "PK",
+      "name": "Pakistan",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "PL",
+      "name": "Poland",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "PM",
+      "name": "St. Pierre & Miquelon",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "PN",
+      "name": "Pitcairn Islands",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "PR",
+      "name": "Puerto Rico",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "PS",
+      "name": "Palestinian Territories",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "PT",
+      "name": "Portugal",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "PW",
+      "name": "Palau",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "PY",
+      "name": "Paraguay",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "QA",
+      "name": "Qatar",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "RE",
+      "name": "Réunion",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "RO",
+      "name": "Romania",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "RS",
+      "name": "Serbia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "RU",
+      "name": "Russia",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "RW",
+      "name": "Rwanda",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "SA",
+      "name": "Saudi Arabia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "SB",
+      "name": "Solomon Islands",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "SC",
+      "name": "Seychelles",
+      "fmt_has_region": true,
+      "fmt_has_postal": false,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "SD",
+      "name": "Sudan",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "SE",
+      "name": "Sweden",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "SG",
+      "name": "Singapore",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "SH",
+      "name": "St. Helena, Ascension & Tristan da Cunha",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "SI",
+      "name": "Slovenia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "SJ",
+      "name": "Svalbard & Jan Mayen",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "SK",
+      "name": "Slovakia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "SL",
+      "name": "Sierra Leone",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "SM",
+      "name": "San Marino",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "SN",
+      "name": "Senegal",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "SO",
+      "name": "Somalia",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "SR",
+      "name": "Suriname",
+      "fmt_has_region": true,
+      "fmt_has_postal": false,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "SS",
+      "name": "South Sudan",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "ST",
+      "name": "São Tomé & Príncipe",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "SV",
+      "name": "El Salvador",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "SX",
+      "name": "Sint Maarten",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "SY",
+      "name": "Syria",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "SZ",
+      "name": "Eswatini",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TA",
+      "name": "Tristan da Cunha",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TC",
+      "name": "Turks & Caicos Islands",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "TD",
+      "name": "Chad",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TF",
+      "name": "French Southern and Antarctic Lands",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TG",
+      "name": "Togo",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TH",
+      "name": "Thailand",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TJ",
+      "name": "Tajikistan",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TK",
+      "name": "Tokelau",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TL",
+      "name": "Timor-Leste",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TM",
+      "name": "Turkmenistan",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TN",
+      "name": "Tunisia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TO",
+      "name": "Tonga",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TR",
+      "name": "Türkiye",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "TT",
+      "name": "Trinidad & Tobago",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TV",
+      "name": "Tuvalu",
+      "fmt_has_region": true,
+      "fmt_has_postal": false,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "TW",
+      "name": "Taiwan",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "TZ",
+      "name": "Tanzania",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "UA",
+      "name": "Ukraine",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "UG",
+      "name": "Uganda",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "UM",
+      "name": "U.S. Outlying Islands",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "US",
+      "name": "United States",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "UY",
+      "name": "Uruguay",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "UZ",
+      "name": "Uzbekistan",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "VA",
+      "name": "Vatican City",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "VC",
+      "name": "St. Vincent & Grenadines",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "VE",
+      "name": "Venezuela",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "VG",
+      "name": "British Virgin Islands",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "VI",
+      "name": "U.S. Virgin Islands",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "VN",
+      "name": "Vietnam",
+      "fmt_has_region": true,
+      "fmt_has_postal": true,
+      "source_require_region": true,
+      "source_require_postal": false
+    },
+    {
+      "country_code": "VU",
+      "name": "Vanuatu",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "WF",
+      "name": "Wallis & Futuna",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "WS",
+      "name": "Samoa",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "XK",
+      "name": "Kosovo",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "YE",
+      "name": "Yemen",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "YT",
+      "name": "Mayotte",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "ZA",
+      "name": "South Africa",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": false,
+      "source_require_postal": true
+    },
+    {
+      "country_code": "ZM",
+      "name": "Zambia",
+      "fmt_has_region": false,
+      "fmt_has_postal": true,
+      "source_require_region": null,
+      "source_require_postal": null
+    },
+    {
+      "country_code": "ZW",
+      "name": "Zimbabwe",
+      "fmt_has_region": null,
+      "fmt_has_postal": null,
+      "source_require_region": null,
+      "source_require_postal": null
+    }
+  ],
+  "time_zones": [
+    "Africa/Abidjan",
+    "Africa/Algiers",
+    "Africa/Bissau",
+    "Africa/Cairo",
+    "Africa/Casablanca",
+    "Africa/Ceuta",
+    "Africa/El_Aaiun",
+    "Africa/Johannesburg",
+    "Africa/Juba",
+    "Africa/Khartoum",
+    "Africa/Lagos",
+    "Africa/Maputo",
+    "Africa/Monrovia",
+    "Africa/Nairobi",
+    "Africa/Ndjamena",
+    "Africa/Sao_Tome",
+    "Africa/Tripoli",
+    "Africa/Tunis",
+    "Africa/Windhoek",
+    "America/Adak",
+    "America/Anchorage",
+    "America/Araguaina",
+    "America/Argentina/Buenos_Aires",
+    "America/Argentina/Catamarca",
+    "America/Argentina/Cordoba",
+    "America/Argentina/Jujuy",
+    "America/Argentina/La_Rioja",
+    "America/Argentina/Mendoza",
+    "America/Argentina/Rio_Gallegos",
+    "America/Argentina/Salta",
+    "America/Argentina/San_Juan",
+    "America/Argentina/San_Luis",
+    "America/Argentina/Tucuman",
+    "America/Argentina/Ushuaia",
+    "America/Asuncion",
+    "America/Bahia",
+    "America/Bahia_Banderas",
+    "America/Barbados",
+    "America/Belem",
+    "America/Belize",
+    "America/Boa_Vista",
+    "America/Bogota",
+    "America/Boise",
+    "America/Cambridge_Bay",
+    "America/Campo_Grande",
+    "America/Cancun",
+    "America/Caracas",
+    "America/Cayenne",
+    "America/Chicago",
+    "America/Chihuahua",
+    "America/Ciudad_Juarez",
+    "America/Costa_Rica",
+    "America/Coyhaique",
+    "America/Cuiaba",
+    "America/Danmarkshavn",
+    "America/Dawson",
+    "America/Dawson_Creek",
+    "America/Denver",
+    "America/Detroit",
+    "America/Edmonton",
+    "America/Eirunepe",
+    "America/El_Salvador",
+    "America/Fort_Nelson",
+    "America/Fortaleza",
+    "America/Glace_Bay",
+    "America/Goose_Bay",
+    "America/Grand_Turk",
+    "America/Guatemala",
+    "America/Guayaquil",
+    "America/Guyana",
+    "America/Halifax",
+    "America/Havana",
+    "America/Hermosillo",
+    "America/Indiana/Indianapolis",
+    "America/Indiana/Knox",
+    "America/Indiana/Marengo",
+    "America/Indiana/Petersburg",
+    "America/Indiana/Tell_City",
+    "America/Indiana/Vevay",
+    "America/Indiana/Vincennes",
+    "America/Indiana/Winamac",
+    "America/Inuvik",
+    "America/Iqaluit",
+    "America/Jamaica",
+    "America/Juneau",
+    "America/Kentucky/Louisville",
+    "America/Kentucky/Monticello",
+    "America/La_Paz",
+    "America/Lima",
+    "America/Los_Angeles",
+    "America/Maceio",
+    "America/Managua",
+    "America/Manaus",
+    "America/Martinique",
+    "America/Matamoros",
+    "America/Mazatlan",
+    "America/Menominee",
+    "America/Merida",
+    "America/Metlakatla",
+    "America/Mexico_City",
+    "America/Miquelon",
+    "America/Moncton",
+    "America/Monterrey",
+    "America/Montevideo",
+    "America/New_York",
+    "America/Nome",
+    "America/Noronha",
+    "America/North_Dakota/Beulah",
+    "America/North_Dakota/Center",
+    "America/North_Dakota/New_Salem",
+    "America/Nuuk",
+    "America/Ojinaga",
+    "America/Panama",
+    "America/Paramaribo",
+    "America/Phoenix",
+    "America/Port-au-Prince",
+    "America/Porto_Velho",
+    "America/Puerto_Rico",
+    "America/Punta_Arenas",
+    "America/Rankin_Inlet",
+    "America/Recife",
+    "America/Regina",
+    "America/Resolute",
+    "America/Rio_Branco",
+    "America/Santarem",
+    "America/Santiago",
+    "America/Santo_Domingo",
+    "America/Sao_Paulo",
+    "America/Scoresbysund",
+    "America/Sitka",
+    "America/St_Johns",
+    "America/Swift_Current",
+    "America/Tegucigalpa",
+    "America/Thule",
+    "America/Tijuana",
+    "America/Toronto",
+    "America/Vancouver",
+    "America/Whitehorse",
+    "America/Winnipeg",
+    "America/Yakutat",
+    "Antarctica/Casey",
+    "Antarctica/Davis",
+    "Antarctica/Macquarie",
+    "Antarctica/Mawson",
+    "Antarctica/Palmer",
+    "Antarctica/Rothera",
+    "Antarctica/Troll",
+    "Antarctica/Vostok",
+    "Asia/Almaty",
+    "Asia/Amman",
+    "Asia/Anadyr",
+    "Asia/Aqtau",
+    "Asia/Aqtobe",
+    "Asia/Ashgabat",
+    "Asia/Atyrau",
+    "Asia/Baghdad",
+    "Asia/Baku",
+    "Asia/Bangkok",
+    "Asia/Barnaul",
+    "Asia/Beirut",
+    "Asia/Bishkek",
+    "Asia/Chita",
+    "Asia/Colombo",
+    "Asia/Damascus",
+    "Asia/Dhaka",
+    "Asia/Dili",
+    "Asia/Dubai",
+    "Asia/Dushanbe",
+    "Asia/Famagusta",
+    "Asia/Gaza",
+    "Asia/Hebron",
+    "Asia/Ho_Chi_Minh",
+    "Asia/Hong_Kong",
+    "Asia/Hovd",
+    "Asia/Irkutsk",
+    "Asia/Jakarta",
+    "Asia/Jayapura",
+    "Asia/Jerusalem",
+    "Asia/Kabul",
+    "Asia/Kamchatka",
+    "Asia/Karachi",
+    "Asia/Kathmandu",
+    "Asia/Khandyga",
+    "Asia/Kolkata",
+    "Asia/Krasnoyarsk",
+    "Asia/Kuching",
+    "Asia/Macau",
+    "Asia/Magadan",
+    "Asia/Makassar",
+    "Asia/Manila",
+    "Asia/Nicosia",
+    "Asia/Novokuznetsk",
+    "Asia/Novosibirsk",
+    "Asia/Omsk",
+    "Asia/Oral",
+    "Asia/Pontianak",
+    "Asia/Pyongyang",
+    "Asia/Qatar",
+    "Asia/Qostanay",
+    "Asia/Qyzylorda",
+    "Asia/Riyadh",
+    "Asia/Sakhalin",
+    "Asia/Samarkand",
+    "Asia/Seoul",
+    "Asia/Shanghai",
+    "Asia/Singapore",
+    "Asia/Srednekolymsk",
+    "Asia/Taipei",
+    "Asia/Tashkent",
+    "Asia/Tbilisi",
+    "Asia/Tehran",
+    "Asia/Thimphu",
+    "Asia/Tokyo",
+    "Asia/Tomsk",
+    "Asia/Ulaanbaatar",
+    "Asia/Urumqi",
+    "Asia/Ust-Nera",
+    "Asia/Vladivostok",
+    "Asia/Yakutsk",
+    "Asia/Yangon",
+    "Asia/Yekaterinburg",
+    "Asia/Yerevan",
+    "Atlantic/Azores",
+    "Atlantic/Bermuda",
+    "Atlantic/Canary",
+    "Atlantic/Cape_Verde",
+    "Atlantic/Faroe",
+    "Atlantic/Madeira",
+    "Atlantic/South_Georgia",
+    "Atlantic/Stanley",
+    "Australia/Adelaide",
+    "Australia/Brisbane",
+    "Australia/Broken_Hill",
+    "Australia/Darwin",
+    "Australia/Eucla",
+    "Australia/Hobart",
+    "Australia/Lindeman",
+    "Australia/Lord_Howe",
+    "Australia/Melbourne",
+    "Australia/Perth",
+    "Australia/Sydney",
+    "Etc/UTC",
+    "Europe/Andorra",
+    "Europe/Astrakhan",
+    "Europe/Athens",
+    "Europe/Belgrade",
+    "Europe/Berlin",
+    "Europe/Brussels",
+    "Europe/Bucharest",
+    "Europe/Budapest",
+    "Europe/Chisinau",
+    "Europe/Dublin",
+    "Europe/Gibraltar",
+    "Europe/Helsinki",
+    "Europe/Istanbul",
+    "Europe/Kaliningrad",
+    "Europe/Kirov",
+    "Europe/Kyiv",
+    "Europe/Lisbon",
+    "Europe/London",
+    "Europe/Madrid",
+    "Europe/Malta",
+    "Europe/Minsk",
+    "Europe/Moscow",
+    "Europe/Paris",
+    "Europe/Prague",
+    "Europe/Riga",
+    "Europe/Rome",
+    "Europe/Samara",
+    "Europe/Saratov",
+    "Europe/Simferopol",
+    "Europe/Sofia",
+    "Europe/Tallinn",
+    "Europe/Tirane",
+    "Europe/Ulyanovsk",
+    "Europe/Vienna",
+    "Europe/Vilnius",
+    "Europe/Volgograd",
+    "Europe/Warsaw",
+    "Europe/Zurich",
+    "Indian/Chagos",
+    "Indian/Maldives",
+    "Indian/Mauritius",
+    "Pacific/Apia",
+    "Pacific/Auckland",
+    "Pacific/Bougainville",
+    "Pacific/Chatham",
+    "Pacific/Easter",
+    "Pacific/Efate",
+    "Pacific/Fakaofo",
+    "Pacific/Fiji",
+    "Pacific/Galapagos",
+    "Pacific/Gambier",
+    "Pacific/Guadalcanal",
+    "Pacific/Guam",
+    "Pacific/Honolulu",
+    "Pacific/Kanton",
+    "Pacific/Kiritimati",
+    "Pacific/Kosrae",
+    "Pacific/Kwajalein",
+    "Pacific/Marquesas",
+    "Pacific/Nauru",
+    "Pacific/Niue",
+    "Pacific/Norfolk",
+    "Pacific/Noumea",
+    "Pacific/Pago_Pago",
+    "Pacific/Palau",
+    "Pacific/Pitcairn",
+    "Pacific/Port_Moresby",
+    "Pacific/Rarotonga",
+    "Pacific/Tahiti",
+    "Pacific/Tarawa",
+    "Pacific/Tongatapu"
+  ],
+  "releases": [
+    {
+      "release_id": "cldr-region-49",
+      "dataset": "cldr-region",
+      "version": "49",
+      "content_sha256": "78403d8d6fb1fed6e208bf9001bf5be00bb5abfd9f8110dae062bf49309d6a89",
+      "upstream_sha512": "c704a2baf9ce4e28f40e242f8b2fbd0123579bb2c56daaaf8a92d72abd02485a1f60095c3cc4fe89eaf2d5c9f5fd07954c2eaee88839f97e18b1ff37cd62e2d8",
+      "license_id": "unicode-license-v3"
+    },
+    {
+      "release_id": "address-applicability-20261106",
+      "dataset": "address-applicability",
+      "version": "20261106",
+      "content_sha256": "6b9fdecb197299829a44bb271ecabf25e719e2f57a821cca33e263e3c26fa870",
+      "upstream_sha512": null,
+      "license_id": "cc-by-4.0"
+    },
+    {
+      "release_id": "tzdata-2026f",
+      "dataset": "tzdata",
+      "version": "2026f",
+      "content_sha256": "01b4a91cec5167ed48c11e8ab78f2048cead78ce94b0cafcad0ae8c5a3044d3d",
+      "upstream_sha512": null,
+      "license_id": "iana-tz-public-domain"
+    }
+  ]
+}

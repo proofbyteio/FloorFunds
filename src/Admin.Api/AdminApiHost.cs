@@ -45,6 +45,8 @@ public static class AdminApiHost
         // Slice A (TLD 06:59 route, LD 12b1d9cd): per-partner reason-length bounds.
         app.MapGet("/api/orgs/partners/{partner_id}/login-config/reason-bounds", (HttpContext ctx, string partner_id) => api.GetReasonBoundsAsync(ctx, partner_id));
         app.MapPut("/api/orgs/partners/{partner_id}/login-config/reason-bounds", (HttpContext ctx, string partner_id) => api.PutReasonBoundsAsync(ctx, partner_id));
+        app.MapGet("/api/ref/countries", (Func<HttpContext, Task<IResult>>)(ctx => api.GetCountriesAsync(ctx)));
+        app.MapGet("/api/ref/time-zones", (Func<HttpContext, Task<IResult>>)(ctx => api.GetTimeZonesAsync(ctx)));
         return app;
     }
 
@@ -56,15 +58,15 @@ public static class AdminApiHost
             """
             SELECT r.rolsuper, r.rolbypassrls,
                    EXISTS (SELECT 1 FROM pg_class t JOIN pg_namespace n ON n.oid = t.relnamespace
-                           WHERE n.nspname = 'auth' AND pg_has_role(current_user, t.relowner, 'MEMBER'))
-                   OR EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = 'auth' AND pg_has_role(current_user, n.nspowner, 'MEMBER'))
+                           WHERE n.nspname IN ('auth', 'ref') AND pg_has_role(current_user, t.relowner, 'MEMBER'))
+                   OR EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname IN ('auth', 'ref') AND pg_has_role(current_user, n.nspowner, 'MEMBER'))
             FROM pg_roles r WHERE r.rolname = current_user
             """, c);
         await using var r = await cmd.ExecuteReaderAsync();
         if (!await r.ReadAsync()) throw new InvalidOperationException("startup guard: role not found");
         if (r.GetBoolean(0)) throw new InvalidOperationException("startup guard: the API role is a superuser");
         if (r.GetBoolean(1)) throw new InvalidOperationException("startup guard: the API role has BYPASSRLS");
-        if (r.GetBoolean(2)) throw new InvalidOperationException("startup guard: the API role owns auth objects");
+        if (r.GetBoolean(2)) throw new InvalidOperationException("startup guard: the API role owns auth or ref objects");
     }
 }
 

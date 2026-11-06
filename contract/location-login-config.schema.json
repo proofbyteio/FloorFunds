@@ -690,6 +690,43 @@
         }
       ]
     },
+    "ref_country": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["country_code", "name", "fmt_has_region", "fmt_has_postal", "retired"],
+      "properties": {
+        "country_code": { "type": "string", "pattern": "^[A-Z]{2}$" },
+        "name": { "type": "string", "minLength": 1 },
+        "fmt_has_region": { "type": ["boolean", "null"] },
+        "fmt_has_postal": { "type": ["boolean", "null"] },
+        "retired": { "type": "boolean" }
+      }
+    },
+    "ref_countries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["countries"],
+      "properties": {
+        "countries": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/ref_country" } }
+      }
+    },
+    "ref_time_zone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["time_zone_id", "retired"],
+      "properties": {
+        "time_zone_id": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)+$" },
+        "retired": { "type": "boolean" }
+      }
+    },
+    "ref_time_zones": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["time_zones"],
+      "properties": {
+        "time_zones": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/ref_time_zone" } }
+      }
+    },
     "error_response": {
       "description": "Every non-2xx body except 401 (no body, WWW-Authenticate only, as LD row 148 pattern). Never echoes submitted values (no secret_ref value, no tenant ids). An out-of-scope location and a missing one return the identical body {\"error\":\"not_found\"}.",
       "type": "object",

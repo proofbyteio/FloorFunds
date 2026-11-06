@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Admin.Api;
+using Auth.Data;
 using Auth.Data.Readers;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -191,10 +192,10 @@ Ok("startup: AdminApiOptions.ToString prints neither Entra:SecretRef nor the con
 Refuses("startup: no signing keys refused", o => o with { SigningKeys = [] }, "JwksPath");
 Refuses("startup: symmetric signing key refused", o => o with { SigningKeys = [new SymmetricSecurityKey(new byte[32])] }, "JwksPath");
 Refuses("startup: missing audit schema refused", o => o with { AuditSchemaPath = "/nonexistent/audit.json" }, "audit-events");
-await Check("startup: owner role refused by the DB guard (owns auth objects)", async () =>
+await Check("startup: owner role refused by the DB guard (owns auth or ref objects)", async () =>
 {
     try { await using var a = await AdminApiHost.BuildAsync(Opts(ownerCs)); return false; }
-    catch (InvalidOperationException e) { return e.Message.Contains("owns auth objects"); }
+    catch (InvalidOperationException e) { return e.Message.Contains("owns auth or ref objects"); }
 });
 await Check("startup: schema with an unknown keyword refused", async () =>
 {
@@ -2507,6 +2508,79 @@ try
             "SELECT count(*) FROM auth.location_login_config_change WHERE coalesce(before::text,'') || after::text || coalesce(reason,'') || array_to_string(changed_fields,',') ~ 'arn:|secretsmanager|FAKE-test'") == 0);
         Ok("secret: every outbox envelope valid against audit-events.schema.json (JsonSchemaLite)", allEvents.Count > 0 && allEvents.All(Valid), $"{allEvents.Count}");
         Ok("events: every outbox row read by the checks", await Count("audit_outbox") == allEvents.Count);
+    }
+
+    // ================= 9a. TLD-REF1 reference reads =================
+    {
+        using var expected = RefRows.Load();
+        var countries = expected.RootElement.GetProperty("countries").EnumerateArray().Select(c => (
+            code: c.GetProperty("country_code").GetString()!,
+            name: c.GetProperty("name").GetString()!,
+            region: c.GetProperty("fmt_has_region").ValueKind == JsonValueKind.Null ? (bool?)null : c.GetProperty("fmt_has_region").GetBoolean(),
+            postal: c.GetProperty("fmt_has_postal").ValueKind == JsonValueKind.Null ? (bool?)null : c.GetProperty("fmt_has_postal").GetBoolean())).ToList();
+        var ordered = countries.OrderBy(c => c.name, StringComparer.Ordinal).ThenBy(c => c.code, StringComparer.Ordinal).ToList();
+        var zones = expected.RootElement.GetProperty("time_zones").EnumerateArray().Select(z => z.GetString()!).OrderBy(z => z, StringComparer.Ordinal).ToList();
+        static bool? Flag(JsonObject o, string n)
+        {
+            var v = o[n];
+            if (v is null || v.GetValueKind() == JsonValueKind.Null) return null;
+            return v.GetValue<bool>();
+        }
+        bool ExactCountries(R r)
+        {
+            if (r.Status != 200 || r.CacheControl != "no-store" || !IsCorr(r.Corr)) return false;
+            var body = JsonNode.Parse(r.Body)!.AsObject();
+            var arr = body["countries"]!.AsArray();
+            if (arr.Count != ordered.Count || body.Count != 1) return false;
+            for (var i = 0; i < ordered.Count; i++)
+            {
+                var o = arr[i]!.AsObject();
+                var exp = ordered[i];
+                if (o.Count != 5 || (string?)o["country_code"] != exp.code || (string?)o["name"] != exp.name || Flag(o, "fmt_has_region") != exp.region || Flag(o, "fmt_has_postal") != exp.postal || Flag(o, "retired") != false)
+                    return false;
+            }
+            return true;
+        }
+        bool ExactZones(R r)
+        {
+            if (r.Status != 200 || r.CacheControl != "no-store" || !IsCorr(r.Corr)) return false;
+            var body = JsonNode.Parse(r.Body)!.AsObject();
+            var arr = body["time_zones"]!.AsArray();
+            if (arr.Count != zones.Count || body.Count != 1) return false;
+            for (var i = 0; i < zones.Count; i++)
+            {
+                var o = arr[i]!.AsObject();
+                if (o.Count != 2 || (string?)o["time_zone_id"] != zones[i] || Flag(o, "retired") != false) return false;
+            }
+            return true;
+        }
+        var outboxBefore = await Count("audit_outbox");
+        var countryCountBefore = await OScalar<long>("SELECT count(*) FROM ref.country");
+        foreach (var (label, path) in new[] { ("countries", "/api/ref/countries"), ("time-zones", "/api/ref/time-zones") })
+        {
+            var anon = await Get(path, null);
+            Ok($"ref GET {label}: no token is 401, empty body, WWW-Authenticate Bearer, no-store", anon.Status == 401 && anon.Body.Length == 0 && anon.WwwAuth == "Bearer" && anon.CacheControl == "no-store" && IsCorr(anon.Corr));
+            var bad = await Get(path, "not-a-token");
+            Ok($"ref GET {label}: rejected token is 401, empty body, WWW-Authenticate Bearer", bad.Status == 401 && bad.Body.Length == 0 && bad.WwwAuth == "Bearer" && IsCorr(bad.Corr));
+            foreach (var (who, tok) in new[] { ("no role", NO), ("org:V", RD), ("custom role", CU) })
+            {
+                var denied = await Get(path, tok);
+                Ok($"ref GET {label}: {who} is 403 forbidden", denied.Status == 403 && denied.Body == "{\"error\":\"forbidden\"}" && denied.CacheControl == "no-store" && IsCorr(denied.Corr));
+            }
+        }
+        var saC = await Get("/api/ref/countries", SA);
+        var paC = await Get("/api/ref/countries", PA);
+        var pbC = await Get("/api/ref/countries", PB);
+        Ok("ref GET countries: Super Admin 200 equals every derived row", ExactCountries(saC));
+        Ok("ref GET countries: Partner Admin 200 equals the same rows", ExactCountries(paC) && paC.Body == saC.Body);
+        Ok("ref GET countries: another partner's Partner Admin 200 equals the same rows", ExactCountries(pbC) && pbC.Body == saC.Body);
+        ForSchema("ref_countries", saC);
+        var saZ = await Get("/api/ref/time-zones", SA);
+        var paZ = await Get("/api/ref/time-zones", PA);
+        Ok("ref GET time-zones: Super Admin 200 equals the 313 derived ids", ExactZones(saZ));
+        Ok("ref GET time-zones: Partner Admin 200 equals the same ids", ExactZones(paZ) && paZ.Body == saZ.Body);
+        ForSchema("ref_time_zones", saZ);
+        Ok("ref GET: no audit row and no country row written", await Count("audit_outbox") == outboxBefore && await OScalar<long>("SELECT count(*) FROM ref.country") == countryCountBefore);
     }
 
     // ================= 9. cross-check corpus (crosscheck.py: Python jsonschema Draft 2020-12) =================

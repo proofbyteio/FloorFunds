@@ -576,7 +576,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, RefCountryTimeZone]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261106120000_RefCountryTimeZone"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
@@ -585,10 +585,12 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     foreach (var et in designModel.GetEntityTypes())
     {
         var table = et.GetTableName()!;
-        var so = Microsoft.EntityFrameworkCore.Metadata.StoreObjectIdentifier.Table(table, "auth");
+        var schema = et.GetSchema() ?? "auth";
+        var so = Microsoft.EntityFrameworkCore.Metadata.StoreObjectIdentifier.Table(table, schema);
         var dbCols = new Dictionary<string, (string type, bool nullable)>();
-        await using (var cmd = new NpgsqlCommand("SELECT column_name, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull FROM information_schema.columns ic JOIN pg_attribute a ON a.attrelid = ('auth.' || ic.table_name)::regclass AND a.attname = ic.column_name WHERE table_schema = 'auth' AND table_name = $1", c))
+        await using (var cmd = new NpgsqlCommand("SELECT ic.column_name, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull FROM information_schema.columns ic JOIN pg_attribute a ON a.attrelid = format('%I.%I', ic.table_schema, ic.table_name)::regclass AND a.attname = ic.column_name AND a.attnum > 0 AND NOT a.attisdropped WHERE ic.table_schema = $1 AND ic.table_name = $2", c))
         {
+            cmd.Parameters.Add(new NpgsqlParameter { Value = schema });
             cmd.Parameters.Add(new NpgsqlParameter { Value = table });
             await using var r = await cmd.ExecuteReaderAsync();
             while (await r.ReadAsync()) dbCols[r.GetString(0)] = (r.GetString(1), r.GetBoolean(2));
@@ -621,10 +623,14 @@ await using (var c = await ownerDs.OpenConnectionAsync())
         Ok($"role {r}: LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION",
             await Scalar<bool>(c, null, "SELECT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication FROM pg_roles WHERE rolname=$1", r));
         Ok($"role {r}: owns nothing in auth", await Scalar<long>(c, null, "SELECT count(*) FROM pg_class cl JOIN pg_namespace n ON n.oid=cl.relnamespace WHERE n.nspname='auth' AND pg_get_userbyid(cl.relowner)=$1", r) == 0);
+        Ok($"role {r}: owns nothing in ref", await Scalar<long>(c, null, "SELECT count(*) FROM pg_class cl JOIN pg_namespace n ON n.oid=cl.relnamespace WHERE n.nspname='ref' AND pg_get_userbyid(cl.relowner)=$1", r) == 0);
         Ok($"role {r}: CONNECT on db, USAGE (not CREATE) on schema auth",
             await Scalar<bool>(c, null, "SELECT has_database_privilege($1, current_database(), 'CONNECT') AND has_schema_privilege($1, 'auth', 'USAGE') AND NOT has_schema_privilege($1, 'auth', 'CREATE')", r));
     }
     Ok("schema auth: no PUBLIC privileges", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_namespace n, aclexplode(n.nspacl) x WHERE n.nspname='auth' AND x.grantee=0)"));
+    Ok("schema ref: no PUBLIC privileges", await Scalar<bool>(c, null, "SELECT NOT has_schema_privilege('public', 'ref', 'USAGE') AND NOT has_schema_privilege('public', 'ref', 'CREATE') AND NOT EXISTS (SELECT 1 FROM pg_namespace n, aclexplode(n.nspacl) x WHERE n.nspname='ref' AND x.grantee=0)"));
+    Ok("schema ref: admin_api USAGE only, login none",
+        await Scalar<bool>(c, null, "SELECT has_schema_privilege($1, 'ref', 'USAGE') AND NOT has_schema_privilege($1, 'ref', 'CREATE') AND NOT has_schema_privilege($2, 'ref', 'USAGE') AND NOT has_schema_privilege($2, 'ref', 'CREATE')", adminRole, loginRole));
     Ok("database: no PUBLIC CONNECT (ff-db.sh REVOKE)", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_database d, aclexplode(d.datacl) x WHERE d.datname=current_database() AND x.grantee=0 AND x.privilege_type='CONNECT')"));
 
     // §8.4 matrix: every (table, role, privilege) at table level.
@@ -894,6 +900,82 @@ await Check("admin_api: cannot read app_user/external_login/user_location/sessio
     await Try(adminDs, "SELECT 1 FROM auth.app_user") == "42501" && await Try(adminDs, "SELECT 1 FROM auth.external_login") == "42501"
     && await Try(adminDs, "SELECT 1 FROM auth.user_location") == "42501" && await Try(adminDs, "SELECT 1 FROM auth.session") == "42501"
     && await Try(adminDs, "SELECT 1 FROM auth.oidc_replay") == "42501" && await Try(adminDs, "SELECT 1 FROM auth.audit_outbox") == "42501");
+await Check("ref: admin_api SELECT is allowed and INSERT/UPDATE/DELETE are 42501", async () =>
+    await Try(adminDs, "SELECT count(*) FROM ref.country") == "ok"
+    && await Try(adminDs, "INSERT INTO ref.country (country_code, name) VALUES ('ZZ', 'x')") == "42501"
+    && await Try(adminDs, "UPDATE ref.country SET name = name") == "42501"
+    && await Try(adminDs, "DELETE FROM ref.country") == "42501");
+await Check("ref: login has no USAGE (SELECT country is 42501)", async () => await Try(loginDs, "SELECT count(*) FROM ref.country") == "42501");
+await Check("ref: every seeded row equals the derived input", async () =>
+{
+    using var doc = RefRows.Load();
+    await using var c = await ownerDs.OpenConnectionAsync();
+    var wantC = doc.RootElement.GetProperty("countries").EnumerateArray().ToDictionary(e => e.GetProperty("country_code").GetString()!);
+    var gotC = 0;
+    await using (var cmd = new NpgsqlCommand("SELECT country_code, name, fmt_has_region, fmt_has_postal, source_require_region, source_require_postal, retired_release_id FROM ref.country ORDER BY country_code", c))
+    await using (var r = await cmd.ExecuteReaderAsync())
+    {
+        while (await r.ReadAsync())
+        {
+            gotC++;
+            var code = r.GetString(0);
+            if (!wantC.Remove(code, out var w)) return false;
+            bool? Nb(int i) => r.IsDBNull(i) ? null : r.GetBoolean(i);
+            bool? Jb(string n) => w.GetProperty(n).ValueKind == JsonValueKind.Null ? null : w.GetProperty(n).GetBoolean();
+            if (r.GetString(1) != w.GetProperty("name").GetString() || Nb(2) != Jb("fmt_has_region") || Nb(3) != Jb("fmt_has_postal") || Nb(4) != Jb("source_require_region") || Nb(5) != Jb("source_require_postal") || !r.IsDBNull(6))
+                return false;
+        }
+    }
+    if (wantC.Count != 0 || gotC != 257) return false;
+    var wantZ = doc.RootElement.GetProperty("time_zones").EnumerateArray().Select(z => z.GetString()!).ToHashSet();
+    var gotZ = 0;
+    await using (var cmd = new NpgsqlCommand("SELECT time_zone_id, retired_release_id FROM ref.time_zone", c))
+    await using (var r = await cmd.ExecuteReaderAsync())
+    {
+        while (await r.ReadAsync())
+        {
+            gotZ++;
+            if (!wantZ.Remove(r.GetString(0)) || !r.IsDBNull(1)) return false;
+        }
+    }
+    if (wantZ.Count != 0 || gotZ != 313) return false;
+    var rel = new Dictionary<string, JsonElement>();
+    foreach (var e in doc.RootElement.GetProperty("releases").EnumerateArray()) rel[e.GetProperty("release_id").GetString()!] = e;
+    await using (var cmd = new NpgsqlCommand("SELECT release_id, dataset, version, content_sha256, upstream_sha512, license_id FROM ref.data_release", c))
+    await using (var r = await cmd.ExecuteReaderAsync())
+    {
+        while (await r.ReadAsync())
+        {
+            if (!rel.Remove(r.GetString(0), out var w)) return false;
+            var up = r.IsDBNull(4) ? null : r.GetString(4);
+            var wantUp = w.GetProperty("upstream_sha512").ValueKind == JsonValueKind.Null ? null : w.GetProperty("upstream_sha512").GetString();
+            if (r.GetString(1) != w.GetProperty("dataset").GetString() || r.GetString(2) != w.GetProperty("version").GetString() || r.GetString(3) != w.GetProperty("content_sha256").GetString() || up != wantUp || r.GetString(5) != w.GetProperty("license_id").GetString())
+                return false;
+            if (r.GetString(3).Length != 64) return false;
+        }
+    }
+    if (rel.Count != 0) return false;
+    var heads = 0;
+    await using (var cmd = new NpgsqlCommand("SELECT dataset, release_id FROM ref.dataset_head", c))
+    await using (var r = await cmd.ExecuteReaderAsync())
+        while (await r.ReadAsync())
+        {
+            heads++;
+            var id = r.GetString(1);
+            if (id is not ("cldr-region-49" or "address-applicability-20261106" or "tzdata-2026f") || r.GetString(0) != id switch { "cldr-region-49" => "cldr-region", "address-applicability-20261106" => "address-applicability", _ => "tzdata" })
+                return false;
+        }
+    return heads == 3
+        && await Scalar<long>(c, null, "SELECT count(*) FROM ref.country WHERE fmt_has_region IS NULL AND fmt_has_postal IS NULL") == 59
+        && await Scalar<long>(c, null, "SELECT count(*) FROM ref.country WHERE fmt_has_region IS NOT NULL") == 198
+        && await Scalar<long>(c, null, "SELECT count(*) FROM ref.country WHERE retired_release_id IS NOT NULL") == 0
+        && await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='ref'") == 4
+        && await Scalar<long>(c, null, "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='ref' AND c.relkind='r' AND c.relrowsecurity") == 0
+        && await Scalar<string>(c, null, "SELECT string_agg(column_name, ',' ORDER BY ordinal_position) FROM information_schema.columns WHERE table_schema='auth' AND table_name='location'") == "location_id,partner_id,slug,name";
+});
+await Check("ref: data_release rejects UPDATE and dataset_head accepts an owner UPDATE (rolled back)", async () =>
+    await Try(ownerDs, "UPDATE ref.data_release SET version = version") != "ok"
+    && await Try(ownerDs, "UPDATE ref.dataset_head SET release_id = release_id") == "ok");
 // Slice A (DEC-111 write / LS-OQ-61 read): any admin sees and writes every partner's row; nothing without a scope.
 const string cntPrb = "SELECT count(*) FROM auth.partner_reason_bounds";
 await Check("Slice A RLS prb: no app.admin_type / bogus / partner without app.partner_id -> 0 rows (fail closed)", async () =>

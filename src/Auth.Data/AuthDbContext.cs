@@ -18,6 +18,10 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
     public DbSet<OidcReplay> OidcReplays => Set<OidcReplay>();
     public DbSet<Session> Sessions => Set<Session>();
     public DbSet<PartnerReasonBounds> PartnerReasonBounds => Set<PartnerReasonBounds>();
+    public DbSet<Country> Countries => Set<Country>();
+    public DbSet<TimeZoneRow> TimeZones => Set<TimeZoneRow>();
+    public DbSet<DataRelease> DataReleases => Set<DataRelease>();
+    public DbSet<DatasetHead> DatasetHeads => Set<DatasetHead>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -152,6 +156,43 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
             b.Property(x => x.UpdatedBy).HasColumnName("updated_by").HasColumnType("uuid");
             b.Property(x => x.UpdatedAt).HasColumnName("updated_at").HasColumnType("timestamp with time zone");
             b.Property(x => x.RowVersion).HasColumnName("row_version").HasColumnType("bigint").IsConcurrencyToken();
+        });
+        modelBuilder.Entity<Country>(b =>
+        {
+            b.ToTable("country", "ref");
+            b.HasKey(x => x.CountryCode).HasName("country_pkey");
+            b.Property(x => x.CountryCode).HasColumnName("country_code").HasColumnType("character(2)").HasMaxLength(2).IsRequired().ValueGeneratedNever();
+            b.Property(x => x.Name).HasColumnName("name").HasColumnType("text").IsRequired();
+            b.Property(x => x.FmtHasPostal).HasColumnName("fmt_has_postal").HasColumnType("boolean");
+            b.Property(x => x.FmtHasRegion).HasColumnName("fmt_has_region").HasColumnType("boolean");
+            b.Property(x => x.RetiredReleaseId).HasColumnName("retired_release_id").HasColumnType("text");
+            b.Property(x => x.SourceRequirePostal).HasColumnName("source_require_postal").HasColumnType("boolean");
+            b.Property(x => x.SourceRequireRegion).HasColumnName("source_require_region").HasColumnType("boolean");
+        });
+        modelBuilder.Entity<TimeZoneRow>(b =>
+        {
+            b.ToTable("time_zone", "ref");
+            b.HasKey(x => x.TimeZoneId).HasName("time_zone_pkey");
+            b.Property(x => x.RetiredReleaseId).HasColumnName("retired_release_id").HasColumnType("text");
+            b.Property(x => x.TimeZoneId).HasColumnName("time_zone_id").HasColumnType("text").IsRequired().ValueGeneratedNever();
+        });
+        modelBuilder.Entity<DataRelease>(b =>
+        {
+            b.ToTable("data_release", "ref");
+            b.HasKey(x => x.ReleaseId).HasName("data_release_pkey");
+            b.Property(x => x.ContentSha256).HasColumnName("content_sha256").HasColumnType("text").IsRequired();
+            b.Property(x => x.Dataset).HasColumnName("dataset").HasColumnType("text").IsRequired();
+            b.Property(x => x.LicenseId).HasColumnName("license_id").HasColumnType("text").IsRequired();
+            b.Property(x => x.ReleaseId).HasColumnName("release_id").HasColumnType("text").IsRequired().ValueGeneratedNever();
+            b.Property(x => x.UpstreamSha512).HasColumnName("upstream_sha512").HasColumnType("text");
+            b.Property(x => x.Version).HasColumnName("version").HasColumnType("text").IsRequired();
+        });
+        modelBuilder.Entity<DatasetHead>(b =>
+        {
+            b.ToTable("dataset_head", "ref");
+            b.HasKey(x => x.Dataset).HasName("dataset_head_pkey");
+            b.Property(x => x.Dataset).HasColumnName("dataset").HasColumnType("text").IsRequired().ValueGeneratedNever();
+            b.Property(x => x.ReleaseId).HasColumnName("release_id").HasColumnType("text").IsRequired();
         });
     }
 }

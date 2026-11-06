@@ -789,4 +789,43 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         ctx.Response.Headers.Location = $"/api/orgs/locations/{location:D}/login-config";
         return ViewResult(ctx, 201, saved, who);
     });
+
+    /// <summary>TLD-REF1. Super Admin or Partner Admin only. Null format flags stay null. No write and no event.</summary>
+    public Task<IResult> GetCountriesAsync(HttpContext ctx) => Run(ctx, async who =>
+    {
+        if (!who.IsAdmin) throw Err(403, "forbidden");
+        await using var c = await db.OpenConnectionAsync(ctx.RequestAborted);
+        await using var cmd = new NpgsqlCommand("""
+            SELECT country_code, name, fmt_has_region, fmt_has_postal, retired_release_id IS NOT NULL
+            FROM ref.country
+            ORDER BY name COLLATE "C", country_code COLLATE "C"
+            """, c);
+        var items = new List<RefCountryItem>();
+        await using var r = await cmd.ExecuteReaderAsync(ctx.RequestAborted);
+        while (await r.ReadAsync(ctx.RequestAborted))
+            items.Add(new RefCountryItem(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetBoolean(2), r.IsDBNull(3) ? null : r.GetBoolean(3), r.GetBoolean(4)));
+        return Results.Text(JsonSerializer.Serialize(new RefCountriesBody(items)), "application/json; charset=utf-8");
+    });
+
+    /// <summary>TLD-REF1. The 313 supported zone ids. No country link and no automatic selection.</summary>
+    public Task<IResult> GetTimeZonesAsync(HttpContext ctx) => Run(ctx, async who =>
+    {
+        if (!who.IsAdmin) throw Err(403, "forbidden");
+        await using var c = await db.OpenConnectionAsync(ctx.RequestAborted);
+        await using var cmd = new NpgsqlCommand("""
+            SELECT time_zone_id, retired_release_id IS NOT NULL
+            FROM ref.time_zone
+            ORDER BY time_zone_id COLLATE "C"
+            """, c);
+        var items = new List<RefTimeZoneItem>();
+        await using var r = await cmd.ExecuteReaderAsync(ctx.RequestAborted);
+        while (await r.ReadAsync(ctx.RequestAborted))
+            items.Add(new RefTimeZoneItem(r.GetString(0), r.GetBoolean(1)));
+        return Results.Text(JsonSerializer.Serialize(new RefTimeZonesBody(items)), "application/json; charset=utf-8");
+    });
 }
+
+sealed record RefCountryItem(string country_code, string name, bool? fmt_has_region, bool? fmt_has_postal, bool retired);
+sealed record RefCountriesBody(List<RefCountryItem> countries);
+sealed record RefTimeZoneItem(string time_zone_id, bool retired);
+sealed record RefTimeZonesBody(List<RefTimeZoneItem> time_zones);

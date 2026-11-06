@@ -27,4 +27,7 @@
   <ItemGroup>
     <ProjectReference Include="../Login.Abstractions/Login.Abstractions.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="ref-rows.json" LogicalName="Auth.Data.ref-rows.json" />
+  </ItemGroup>
 </Project>

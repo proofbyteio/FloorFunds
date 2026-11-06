@@ -124,3 +124,37 @@ public sealed class Session
     public DateTimeOffset? RevokedAt { get; set; }
     public string? RevokedReason { get; set; }
 }
+
+/// <summary>CLDR 49 regular territory. Null format flags are unknown evidence, not unused and not a save ban (TLD-REF1).</summary>
+public sealed class Country
+{
+    public string CountryCode { get; set; } = "";
+    public string Name { get; set; } = "";
+    public bool? FmtHasPostal { get; set; }
+    public bool? FmtHasRegion { get; set; }
+    public string? RetiredReleaseId { get; set; }
+    public bool? SourceRequirePostal { get; set; }
+    public bool? SourceRequireRegion { get; set; }
+}
+
+public sealed class TimeZoneRow
+{
+    public string? RetiredReleaseId { get; set; }
+    public string TimeZoneId { get; set; } = "";
+}
+
+public sealed class DataRelease
+{
+    public string ContentSha256 { get; set; } = "";
+    public string Dataset { get; set; } = "";
+    public string LicenseId { get; set; } = "";
+    public string ReleaseId { get; set; } = "";
+    public string? UpstreamSha512 { get; set; }
+    public string Version { get; set; } = "";
+}
+
+public sealed class DatasetHead
+{
+    public string Dataset { get; set; } = "";
+    public string ReleaseId { get; set; } = "";
+}
