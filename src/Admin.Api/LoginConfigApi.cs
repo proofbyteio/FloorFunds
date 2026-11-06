@@ -344,17 +344,24 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
     /// </summary>
     /// ALLOWLIST [TLD 2026-11-05 13:27 item 2]: only a Super Admin, or a Partner Admin of THIS partner, sees updated_by. Any other or future
     /// admin type (e.g. a Client Admin) fails closed (no updated_by). Who may call the endpoint is decided elsewhere and is not widened here.
+    /// DEC-144 gap 1: the same predicate is also `bounds_editor` on every view, including when no row exists. A missing row is not authority
+    /// and is not a refusal. The value comes from the validated token identity, never from the row, the body, or a browser label.
     public static bool ShowsBoundsEditor(AdminIdentity id, Guid partner) =>
         id.AdminType == "super" || (id.AdminType == "partner" && id.PartnerId is { } p && p == partner);
 
     JsonObject BoundsView(Caller who, Guid partner, PrbRow? r)
     {
         var b = r is null ? ReasonBounds.FromConfig(opt) : new ReasonBounds(r.Min, r.Max);
-        var v = new JsonObject { ["partner_id"] = partner.ToString("D"), ["reason_min_length"] = b.Min, ["reason_max_length"] = b.Max, ["source"] = r is null ? "default" : "partner" };
+        var editor = ShowsBoundsEditor(who.Id, partner);
+        var v = new JsonObject
+        {
+            ["partner_id"] = partner.ToString("D"), ["reason_min_length"] = b.Min, ["reason_max_length"] = b.Max,
+            ["source"] = r is null ? "default" : "partner", ["bounds_editor"] = editor,
+        };
         if (r is not null)
         {
             v["row_version"] = r.RowVersion;
-            if (ShowsBoundsEditor(who.Id, partner)) v["updated_by"] = r.UpdatedBy.ToString("D");
+            if (editor) v["updated_by"] = r.UpdatedBy.ToString("D");
             v["updated_at"] = T(r.UpdatedAt);
         }
         return v;

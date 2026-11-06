@@ -335,8 +335,9 @@ function clearMatchingAttempt(key) {
   st.locked = false;
 }
 // [DEC-144] Create outcome UNKNOWN: the form stays hidden. Recovery controls appear only when the reason-bounds
-// read proves Super Admin or own-partner Partner Admin AND the stored value is an attempt id. Checking the box
-// alone does nothing. Neither button sends a POST.
+// read proves Super Admin or own-partner Partner Admin (bounds_editor for this partner) AND the stored value is
+// an attempt id. A missing bounds row is not a refusal and is not proof. Checking the box alone does nothing.
+// Neither button sends a POST.
 function showCreateBlocked(authority) {
   st.locked = true;
   show($("banner-loading"), false);
@@ -355,8 +356,9 @@ function showCreateBlocked(authority) {
   show($("create-recovery-note"), false);
 }
 async function readCreateAuthority() {
-  const r = await api("GET", `/orgs/partners/${encodeURIComponent(st.route.partnerId)}/login-config/reason-bounds`, { timeoutMs: getTimeout() });
-  return createAckAuthority(r).kind;
+  const partnerId = st.route.partnerId;
+  const r = await api("GET", `/orgs/partners/${encodeURIComponent(partnerId)}/login-config/reason-bounds`, { timeoutMs: getTimeout() });
+  return createAckAuthority(r, partnerId).kind;
 }
 async function enterCreateBlocked() {
   showCreateBlocked("pending");
@@ -453,7 +455,8 @@ async function start() {
     setChip(st.kind, st.route.partnerId);
     text($("bc-page"), "New location");
     // [DEC-144] a pending attempt stays blocked across reload and re-authentication. The host's data-admin-type is not
-    // the acknowledgement authority; enterCreateBlocked reads reason-bounds.
+    // the acknowledgement authority; enterCreateBlocked reads reason-bounds and keeps the guard unless bounds_editor
+    // is true for this partner.
     if (pendingGet(pendingKey("create", st.route.partnerId)) !== null) { await enterCreateBlocked(); return; }
     // DEC-107 [TLD 2026-11-04 16:32 Q2]: no location yet, so the reason bounds come from the limits endpoint.
     // [TLD 2026-11-04 17:28] a failed fetch or missing / invalid values -> the server's hard bounds 10 / 500 (REASON_BOUNDS);

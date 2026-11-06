@@ -508,6 +508,11 @@ exp("Slice A partner view without row_version rejected", errs(LLC, _PRV, m(_pp, 
 exp("Slice A partner view without updated_by accepted (PA reading another partner, TLD 11:23 identity scope)", errs(LLC, _PRV, m(_pp, updated_by=DEL)), False)
 exp("Slice A partner view without updated_at rejected", errs(LLC, _PRV, m(_pp, updated_at=DEL)), True)
 exp("Slice A default view with updated_by rejected", errs(LLC, _PRV, m(_pd, updated_by=_pp["updated_by"])), True)
+exp("Slice A bounds_editor missing on default rejected", errs(LLC, _PRV, m(_pd, bounds_editor=DEL)), True)
+exp("Slice A bounds_editor missing on partner view rejected", errs(LLC, _PRV, m(_pp, bounds_editor=DEL)), True)
+exp("Slice A bounds_editor string rejected", errs(LLC, _PRV, m(_pd, bounds_editor="true")), True)
+exp("Slice A default view bounds_editor false accepted and still has no updated_by", errs(LLC, _PRV, m(_pd, bounds_editor=False)) or ({"updated_by", "row_version"} & set(m(_pd, bounds_editor=False))), False)
+exp("Slice A other-partner view is bounds_editor false and has no updated_by", [] if EX["prb_view_pa_other_partner"]["bounds_editor"] is False and "updated_by" not in EX["prb_view_pa_other_partner"] else [EX["prb_view_pa_other_partner"]], False)
 PER = "#/$defs/prb_error_response"
 exp("Slice A prb 409 current_row_version 0 accepted (unset partner, TLD 11:23 A; scoped, TLD 13:27 item 1)", errs(LLC, PER, {"error": "concurrency_conflict", "current_row_version": 0}), False)
 exp("Slice A prb 409 current_row_version 1 accepted", errs(LLC, PER, {"error": "concurrency_conflict", "current_row_version": 1}), False)
@@ -546,7 +551,8 @@ for _pin in ["### 3.6 `GET` / `PUT /api/orgs/partners/{partner_id}/login-config/
              "even when its values equal the inherited defaults (e.g. 10/500) [TLD 11:23 C]", "exactly one 200, the other 409 with `current_row_version` v+1, one event", "**No 412** (errors.md frozen)", "(SQLSTATE 23505) and gets 409 `concurrency_conflict` with the winner's `current_row_version`",
              "Create and update both answer **200**", "**TO CONFIRM LS-OQ-61**", "**Still OPEN: LS-OQ-61**", "**No reason field** [Confirmed DEC-113]",
              "the config is held to the same range at startup or the API refuses to start [TLD 08:00b(2)]",
-             "Screen 9 only shows the resolved limits, no knobs (DEC-116); the partner settings page is Slice B (DEC-117)"]:
+             "Screen 9 only shows the resolved limits, no knobs (DEC-116); the partner settings page is Slice B (DEC-117)",
+             "**`bounds_editor`** [DEC-144 gap 1; direct user, Nov 6 2026: a saved bounds row is not required]"]:
     exp("Slice A spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
 
 # ---- DEC-106 [Mohanraj, PM t145u] [UX D-106 2b17464c]: Partner Admin and Super Admin can both turn MFA back on, no reason ----

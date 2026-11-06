@@ -494,15 +494,16 @@
       }
     },
     "partner_reason_bounds_view": {
-      "description": "v1.1 Slice A. GET and PUT 200 body of /api/orgs/partners/{partner_id}/login-config/reason-bounds. source partner = the partner's stored row (with row_version, updated_at and, except for a Partner Admin reading ANOTHER partner, updated_by [TLD 11:23 identity scope, SSE2 relay; interim pending LS-OQ-61 / PQ-240, not a DEC]; ETag = row_version); source default = no row: the deployment config LoginConfig:* (10/500 as shipped, DEC-115), and no ETag, no row_version [TLD 08:00 Q2/Q3].",
+      "description": "v1.1 Slice A. GET and PUT 200 body of /api/orgs/partners/{partner_id}/login-config/reason-bounds. source partner = the partner's stored row (with row_version, updated_at and, except for a Partner Admin reading ANOTHER partner, updated_by [TLD 11:23 identity scope, SSE2 relay; interim pending LS-OQ-61 / PQ-240, not a DEC]; ETag = row_version); source default = no row: the deployment config LoginConfig:* (10/500 as shipped, DEC-115), and no ETag, no row_version [TLD 08:00 Q2/Q3]. bounds_editor is required on both: true only for a Super Admin or a Partner Admin of this partner (ShowsBoundsEditor), from the validated token, whether or not a row exists [DEC-144 gap 1]. It is not a role string and not writable.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["partner_id", "reason_min_length", "reason_max_length", "source"],
+      "required": ["partner_id", "reason_min_length", "reason_max_length", "source", "bounds_editor"],
       "properties": {
         "partner_id": { "$ref": "#/$defs/id" },
         "reason_min_length": { "$ref": "#/$defs/reason_length_limit" },
         "reason_max_length": { "$ref": "#/$defs/reason_length_limit" },
         "source": { "enum": ["partner", "default"] },
+        "bounds_editor": { "type": "boolean" },
         "row_version": { "type": "integer", "minimum": 1 },
         "updated_by": { "$ref": "#/$defs/id" },
         "updated_at": { "type": "string", "format": "date-time" }

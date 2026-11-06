@@ -745,7 +745,7 @@ await step("P6b body stall", async () => {
 // API answered (so the server committed) and the harness drops the answer at the Response stage; "netfail" = the request is
 // failed before it is sent; "bad" = a faked 200 with an unparseable JSON body. Real writes here: one lost PUT, one lost create,
 // one confirmed PUT (counted in the real-PG totals at the end).
-let p6cCreated = 0, p6cSaChanges = 0;
+let p6cCreated = 0, p6cSaChanges = 0, gap1PaChanges = 0;
 await step("P6c uncertain outcomes", async () => {
   let mode = null; const hits = [];
   const LOC = new RegExp(`/api/orgs/locations/${H.l1}/login-config$`), HIST = new RegExp(`/api/orgs/locations/${H.l1}/login-config/changes$`), CREATE = /\/api\/orgs\/locations$/;
@@ -993,10 +993,184 @@ await step("DEC-144 manual create recovery", async () => {
   const rec = (id) => JSON.stringify({ attemptId: id, startedAt: "2026-11-06T00:00:00.000Z" });
   const ack = async (kind) => until(`document.body.dataset.createAck === ${JSON.stringify(kind)}`, 10000);
   await ev(`localStorage.clear(), true`);
+
+  // GAP1: partner A has no reason-bounds row yet. Authority is bounds_editor for this partner, not the row.
+  const viewOf = async (who) => {
+    const r = await fetch(`${H.ui}/as/${who}/api/orgs/partners/${H.partner_a}/login-config/reason-bounds`);
+    const b = r.status === 200 ? await r.json() : null;
+    return { status: r.status, body: b, etag: r.headers.get("ETag") };
+  };
+  const vSa0 = await viewOf("sa"), vPa0 = await viewOf("pa"), vPb0 = await viewOf("pb");
+  ok("GAP1 SA with no bounds row: 200 source default, bounds_editor true, no updated_by, no ETag",
+    vSa0.status === 200 && vSa0.body?.source === "default" && vSa0.body?.bounds_editor === true && vSa0.body?.partner_id === H.partner_a && !("updated_by" in vSa0.body) && vSa0.etag === null, vSa0);
+  ok("GAP1 own-partner Partner Admin with no bounds row: bounds_editor true, no updated_by",
+    vPa0.status === 200 && vPa0.body?.source === "default" && vPa0.body?.bounds_editor === true && vPa0.body?.partner_id === H.partner_a && !("updated_by" in vPa0.body), vPa0);
+  ok("GAP1 foreign Partner Admin with no bounds row: bounds_editor false, no updated_by",
+    vPb0.status === 200 && vPb0.body?.source === "default" && vPb0.body?.bounds_editor === false && !("updated_by" in (vPb0.body ?? {})), vPb0);
+
+  const lateSrc = `(() => {
+    const real = globalThis.fetch.bind(globalThis);
+    globalThis.__dec144Posts = 0;
+    globalThis.fetch = async (input, init = {}) => {
+      const url = String(input), method = (init && init.method) || "GET";
+      if (method !== "POST" || !/\\/api\\/orgs\\/locations$/.test(url)) return real(input, init);
+      globalThis.__dec144Posts++;
+      const body = new ReadableStream({ start(c) {
+        c.enqueue(new TextEncoder().encode('{"location_id":"'));
+        setTimeout(() => { try { c.enqueue(new TextEncoder().encode('3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8"}')); c.close(); } catch { /* the abort already ended the stream */ } }, 4000);
+      }});
+      return new Response(body, { status: 201, headers: { "Content-Type": "application/json" } });
+    };
+  })();`;
+  const gapIds = [];
+  for (const src of [lateSrc, "globalThis.__llcWriteTimeoutMs = 1200;"]) gapIds.push((await cdp("Page.addScriptToEvaluateOnNewDocument", { source: src })).identifier);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`);
+  await type("#lname", "UI Cage GAP1 late"); await type("#dname", "UI Casino A");
+  const gapNet0 = posts();
+  await click("#btn-save");
+  await until(`document.body.dataset.state === "blocked"`, 10000);
+  await sleep(4500);
+  await ack("allow");
+  const gGapLate = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), recov: await vis("#create-recovery"),
+    posts: await ev(`globalThis.__dec144Posts`), net: posts() - gapNet0, key: await ev(`localStorage.getItem(${JSON.stringify(key)})`) };
+  ok("GAP1 SA no-row: a late create stays blocked, shows recovery, and does not retry",
+    gGapLate.state === "blocked" && !gGapLate.form && gGapLate.recov && gGapLate.posts === 1 && gGapLate.net === 0 && gGapLate.key !== null, gGapLate);
+  for (const identifier of gapIds) await cdp("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  ok("GAP1 SA no-row: the guard and the controls survive a reload", await ev(`document.body.dataset.state`) === "blocked" && await vis("#create-recovery") && await ev(`localStorage.getItem(${JSON.stringify(key)})`) !== null);
+  const gapKey = await ev(`localStorage.getItem(${JSON.stringify(key)})`);
+  await open(`/as/anon/orgs/${H.partner_a}/locations/new`); await ack("session");
+  ok("GAP1 SA no-row: re-auth as anon adds the sign-in sentence and does not clear the guard",
+    await ev(`document.body.dataset.state`) === "blocked" && !(await vis("#create-recovery")) && await errText() === CREATE_UNKNOWN_SESSION_TEXT && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === gapKey);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const gapN0 = posts();
+  await click("#ack-missing"); await sleep(200);
+  ok("GAP1 SA no-row: the checkbox alone sends no POST and does not clear the guard", posts() === gapN0 && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === gapKey && !(await vis("#form")));
+  await ev(`document.querySelector("#ack-missing").checked = false, true`);
+  await click("#btn-enable-create"); await sleep(300);
+  ok("GAP1 SA no-row: Enable Create again without the checkbox sends no POST", posts() === gapN0 && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === gapKey && !(await vis("#form")));
+  await ev(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(rec(A2))}), true`);
+  await click("#ack-missing");
+  await click("#btn-enable-create"); await sleep(400);
+  const gGapOld = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), note: await txt("#create-recovery-note"), posts: posts() - gapN0 };
+  ok("GAP1 SA no-row: an acknowledgement of the older attempt does not clear the newer one and sends no POST",
+    gGapOld.state === "blocked" && !gGapOld.form && gGapOld.kept === rec(A2) && /not cleared/.test(gGapOld.note) && gGapOld.posts === 0, gGapOld);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const gapN1 = posts();
+  await click("#ack-missing");
+  await click("#btn-enable-create");
+  await until(`document.body.dataset.state === "create" && !document.querySelector("#form").hidden`, 10000);
+  ok("GAP1 SA no-row: Enable Create again clears only the matching attempt and sends zero POSTs",
+    await ev(`document.body.dataset.state`) === "create" && await vis("#form") && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === null && posts() === gapN1);
+  await type("#lname", "UI Cage GAP1 SA"); await type("#dname", "UI Casino A");
+  const gapN2 = posts();
+  await click("#btn-save");
+  await until(`/\\/locations\\/[0-9a-f-]{36}\\/sign-in$/.test(location.pathname) && document.body.dataset.state === "saved"`, 10000);
+  const gGapSa = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), posts: posts() - gapN2, name: await txt("#saved-loc") };
+  if (gGapSa.saved) { p6cCreated++; p6cSaChanges++; }
+  ok("GAP1 SA no-row: the next deliberate Create sends one POST and saves", gGapSa.state === "saved" && gGapSa.saved && gGapSa.posts === 1 && gGapSa.name === "UI Cage GAP1 SA", gGapSa);
+
+  await ev(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(rec(A1))}), true`);
+  await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const gapN3 = posts();
+  await click("#btn-found");
+  await until(`document.body.dataset.state === "reported"`, 5000);
+  const gGapFound = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), recov: await vis("#create-recovery"),
+    title: await txt("#create-reported-h"), text: await txt("#create-reported-text"), links: await ev(`document.querySelectorAll("#create-reported a").length`),
+    path: await ev(`location.pathname`), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), posts: posts() - gapN3 };
+  ok("GAP1 SA no-row: I found the location is an admin report, sends no POST, and invents no destination",
+    gGapFound.state === "reported" && !gGapFound.form && !gGapFound.recov && gGapFound.title === "You reported that you found the location."
+      && gGapFound.text === "This is your report, not a confirmation from the server." && gGapFound.links === 0 && gGapFound.path.endsWith("/locations/new")
+      && gGapFound.kept === null && gGapFound.posts === 0, gGapFound);
+
+  await ev(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(rec(A1))}), true`);
+  await open(`/as/pa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  ok("GAP1 own-partner Partner Admin no-row: recovery controls, guard kept", await vis("#create-recovery") && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === rec(A1) && !(await vis("#form")));
+  await open(`/as/pa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  ok("GAP1 own-partner Partner Admin no-row: reload keeps the guard and the controls", await vis("#create-recovery") && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === rec(A1));
+  await open(`/as/anon/orgs/${H.partner_a}/locations/new`); await ack("session");
+  ok("GAP1 own-partner Partner Admin no-row: re-auth as anon does not clear the guard", await ev(`localStorage.getItem(${JSON.stringify(key)})`) === rec(A1) && !(await vis("#create-recovery")));
+  await open(`/as/pa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const gapPn0 = posts();
+  await click("#ack-missing"); await sleep(200);
+  ok("GAP1 own-partner Partner Admin no-row: the checkbox alone sends no POST", posts() === gapPn0 && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === rec(A1) && !(await vis("#form")));
+  await click("#btn-enable-create");
+  await until(`document.body.dataset.state === "create" && !document.querySelector("#form").hidden`, 10000);
+  ok("GAP1 own-partner Partner Admin no-row: Enable Create again sends zero POSTs and clears only the matching attempt",
+    await ev(`document.body.dataset.state`) === "create" && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === null && posts() === gapPn0);
+  await type("#lname", "UI Cage GAP1 PA"); await type("#dname", "UI Casino A");
+  const gapPn1 = posts();
+  await click("#btn-save");
+  await until(`/\\/locations\\/[0-9a-f-]{36}\\/sign-in$/.test(location.pathname) && document.body.dataset.state === "saved"`, 10000);
+  const gGapPa = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), posts: posts() - gapPn1, name: await txt("#saved-loc") };
+  if (gGapPa.saved) { p6cCreated++; gap1PaChanges++; }
+  ok("GAP1 own-partner Partner Admin no-row: the next deliberate Create sends one POST and saves", gGapPa.state === "saved" && gGapPa.saved && gGapPa.posts === 1 && gGapPa.name === "UI Cage GAP1 PA", gGapPa);
+
+  await ev(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(rec(A1))}), true`);
+  await open(`/as/pa/orgs/${H.partner_a}/locations/new`); await ack("allow");
+  const gapPn2 = posts();
+  await click("#btn-found");
+  await until(`document.body.dataset.state === "reported"`, 5000);
+  const gGapPaFound = { state: await ev(`document.body.dataset.state`), form: await vis("#form"), links: await ev(`document.querySelectorAll("#create-reported a").length`),
+    path: await ev(`location.pathname`), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), posts: posts() - gapPn2, title: await txt("#create-reported-h") };
+  ok("GAP1 own-partner Partner Admin no-row: I found the location sends no POST and opens no new form",
+    gGapPaFound.state === "reported" && !gGapPaFound.form && gGapPaFound.links === 0 && gGapPaFound.path.endsWith("/locations/new")
+      && gGapPaFound.kept === null && gGapPaFound.posts === 0 && gGapPaFound.title === "You reported that you found the location.", gGapPaFound);
+
+  await ev(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(rec(A1))}), true`);
+  await open(`/as/pb/orgs/${H.partner_a}/locations/new`); await ack("unproven");
+  ok("GAP1 foreign Partner Admin no-row: no recovery controls, guard kept", await ev(`document.body.dataset.state`) === "blocked" && !(await vis("#create-recovery")) && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === rec(A1));
+  await open(`/as/rd/orgs/${H.partner_a}/locations/new`); await ack("deny");
+  ok("GAP1 org:V reader no-row: denied, guard kept", await ev(`document.body.dataset.state`) === "blocked" && !(await vis("#create-recovery")) && await ev(`localStorage.getItem(${JSON.stringify(key)})`) === rec(A1));
+
+  let gapMode = null;
+  const gapLsn = (msg) => {
+    if (msg.sessionId !== S || msg.method !== "Fetch.requestPaused") return;
+    const p = msg.params, id = p.requestId, go = () => cdp("Fetch.continueRequest", { requestId: id }).catch(() => {});
+    if (!gapMode || !/\/login-config\/reason-bounds/.test(p.request.url)) return go();
+    if (gapMode.kind === "fail") return cdp("Fetch.failRequest", { requestId: id, errorReason: "Failed" }).catch(() => {});
+    return cdp("Fetch.fulfillRequest", { requestId: id, responseCode: gapMode.status, responseHeaders: gapMode.headers,
+      body: Buffer.from(gapMode.body).toString("base64") }).catch(() => {});
+  };
+  listeners.push(gapLsn);
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "*/login-config/reason-bounds*", requestStage: "Request" }] });
+  const gapJson = [{ name: "Content-Type", value: "application/json" }];
+  const gapPlain = [{ name: "Content-Type", value: "text/plain" }];
+  const gapCases = [
+    ["missing bounds_editor", { kind: "fake", status: 200, headers: gapJson, body: JSON.stringify({ partner_id: H.partner_a, source: "default", reason_min_length: 10, reason_max_length: 500 }) }, "unproven"],
+    ["bounds_editor string", { kind: "fake", status: 200, headers: gapJson, body: JSON.stringify({ partner_id: H.partner_a, source: "default", bounds_editor: "true", reason_min_length: 10, reason_max_length: 500 }) }, "unproven"],
+    ["bounds_editor number", { kind: "fake", status: 200, headers: gapJson, body: JSON.stringify({ partner_id: H.partner_a, source: "default", bounds_editor: 1, reason_min_length: 10, reason_max_length: 500 }) }, "unproven"],
+    ["bounds_editor false", { kind: "fake", status: 200, headers: gapJson, body: JSON.stringify({ partner_id: H.partner_a, source: "default", bounds_editor: false, reason_min_length: 10, reason_max_length: 500 }) }, "unproven"],
+    ["updated_by without bounds_editor", { kind: "fake", status: 200, headers: gapJson, body: JSON.stringify({ partner_id: H.partner_a, source: "partner", updated_by: A1, row_version: 1, updated_at: "2026-11-06T00:00:00.000000Z", reason_min_length: 10, reason_max_length: 500 }) }, "unproven"],
+    ["bounds_editor true for another partner", { kind: "fake", status: 200, headers: gapJson, body: JSON.stringify({ partner_id: H.partner_b, source: "default", bounds_editor: true, reason_min_length: 10, reason_max_length: 500 }) }, "unproven"],
+    ["non-json 200", { kind: "fake", status: 200, headers: gapPlain, body: "ok" }, "unknown"],
+    ["500", { kind: "fake", status: 500, headers: gapJson, body: JSON.stringify({ error: "internal_error" }) }, "unknown"],
+    ["network failure", { kind: "fail" }, "unknown"],
+  ];
+  for (const [name, mode, kind] of gapCases) {
+    await ev(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(rec(A1))}), true`);
+    const before = posts();
+    gapMode = mode;
+    await open(`/as/sa/orgs/${H.partner_a}/locations/new`);
+    await ack(kind);
+    gapMode = null;
+    const got = { state: await ev(`document.body.dataset.state`), recov: await vis("#create-recovery"), form: await vis("#form"), ack: await ev(`document.body.dataset.createAck`), kept: await ev(`localStorage.getItem(${JSON.stringify(key)})`), posts: posts() - before };
+    ok(`GAP1 untrusted role evidence (${name}) does not unlock and sends no POST`,
+      got.state === "blocked" && !got.recov && !got.form && got.ack === kind && got.kept === rec(A1) && got.posts === 0, got);
+  }
+  await cdp("Fetch.disable"); listeners.splice(listeners.indexOf(gapLsn), 1);
+  await ev(`localStorage.clear(), true`);
+
   const put = await fetch(`${H.ui}/as/sa/api/orgs/partners/${H.partner_a}/login-config/reason-bounds`, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": '"0"' },
     body: JSON.stringify({ reason_min_length: 10, reason_max_length: 500 }) });
   const putBody = put.status === 200 ? await put.json() : null;
-  ok("DEC-144 setup: SA stores partner A reason-bounds so updated_by can prove the role (If-Match 0 -> 200)", put.status === 200 && typeof putBody?.updated_by === "string", put.status);
+  ok("DEC-144 setup: SA stores partner A reason-bounds; a saved row still reports bounds_editor and updated_by (If-Match 0 -> 200)", put.status === 200 && putBody?.bounds_editor === true && typeof putBody?.updated_by === "string", put.status);
+  const vSa1 = await viewOf("sa"), vPa1 = await viewOf("pa"), vPb1 = await viewOf("pb");
+  ok("GAP1 saved-bounds Super Admin and own-partner Partner Admin stay editors; the foreign Partner Admin does not",
+    vSa1.body?.bounds_editor === true && typeof vSa1.body?.updated_by === "string" && vSa1.body?.source === "partner"
+      && vPa1.body?.bounds_editor === true && typeof vPa1.body?.updated_by === "string"
+      && vPb1.body?.bounds_editor === false && !("updated_by" in (vPb1.body ?? {})), { vSa1, vPa1, vPb1 });
 
   const late = `(() => {
     const real = globalThis.fetch.bind(globalThis);
@@ -1194,8 +1368,8 @@ if (D) {
   ok("real PG: org:V reader wrote no change row (F-A3)", !(H.users.rd in D.changes_by_actor), D.changes_by_actor);
   const lenOk = (H.xss.len ?? []).filter(p => p.status === 201).length;
   ok(`real PG: change rows = 6 seeds (L1-L4 + hostile L5, L6) + ${lenOk} accepted length probes + PA edit + SA downgrade + PA conflict PUT + SA create + PA create + PA hostile save + PA MFA back on (DEC-106)`,
-    D.changes_by_actor[H.users.sa] === 8 + lenOk + p6cSaChanges && D.changes_by_actor[H.users.pa] === 5, { D: D.changes_by_actor, p6cSaChanges }); // + P6c: lost PUT, lost create, confirmed PUT [TLD 15:08]
-  ok(`real PG: ${8 + lenOk + p6cCreated} locations (refused creates and XSS probes added none; ${lenOk} accepted length probes; ${p6cCreated} later creates: the lost P6c create, the P6d saved landing, and the DEC-144 deliberate create)`, D.locations === 8 + lenOk + p6cCreated, D.locations);
+    D.changes_by_actor[H.users.sa] === 8 + lenOk + p6cSaChanges && D.changes_by_actor[H.users.pa] === 5 + gap1PaChanges, { D: D.changes_by_actor, p6cSaChanges, gap1PaChanges }); // + P6c: lost PUT, lost create, confirmed PUT [TLD 15:08]
+  ok(`real PG: ${8 + lenOk + p6cCreated} locations (refused creates and XSS probes added none; ${lenOk} accepted length probes; ${p6cCreated} later creates: the lost P6c create, the P6d saved landing, the DEC-144 deliberate create, and the GAP1 no-row creates)`, D.locations === 8 + lenOk + p6cCreated, D.locations);
   // TLD 2026-11-04 14:18 (A): stored byte-for-byte, no server-side HTML escaping; the page is the only place the text is made safe.
   const hex = (s) => Buffer.from(s, "utf8").toString("hex"), x = D.xss ?? {};
   ok("real PG (A): auth.location.name = the hostile name, byte-for-byte (UTF-8)", JSON.stringify(x.location_name_hex) === JSON.stringify([hex(H.xss.name)]), x.location_name_hex);

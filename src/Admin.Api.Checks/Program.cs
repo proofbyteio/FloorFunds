@@ -2156,9 +2156,19 @@ try
         Ok($"Slice A GET unset partner (SA): 200 default {Mn}/{Mx}, source default, no ETag, no row_version (DEC-115)", g.Status == 200 && g.ETag is null
             && (string?)Obj(g.Body)["source"] == "default" && (int?)Obj(g.Body)["reason_min_length"] == Mn && (int?)Obj(g.Body)["reason_max_length"] == Mx
             && (string?)Obj(g.Body)["partner_id"] == P_C.ToString("D") && !Obj(g.Body).ContainsKey("row_version") && g.CacheControl == "no-store", Tg(g));
+        Ok("GAP1 unset Super Admin (no row): bounds_editor true, no updated_by (the row is not the proof)", g.Status == 200
+            && (bool?)Obj(g.Body)["bounds_editor"] == true && !Obj(g.Body).ContainsKey("updated_by") && await PrbSnap(P_C) == "<none>", Tg(g));
         if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
         g = await Get(Prb(P_C), PA);
         Ok("Slice A GET other partner (PA of P_A reads P_C): 200 (cross-partner read, TL interim, TO CONFIRM LS-OQ-61)", g.Status == 200 && (string?)Obj(g.Body)["source"] == "default", Tg(g));
+        Ok("GAP1 unset other-partner Partner Admin: bounds_editor false, no updated_by (a missing row is not authority)", g.Status == 200
+            && (bool?)Obj(g.Body)["bounds_editor"] == false && !Obj(g.Body).ContainsKey("updated_by"), Tg(g));
+        g = await Get(Prb(P_B), PB);
+        Ok("GAP1 unset own-partner Partner Admin (PB reads P_B, no row): bounds_editor true, source default, no updated_by, no ETag", g.Status == 200 && g.ETag is null
+            && (string?)Obj(g.Body)["source"] == "default" && (string?)Obj(g.Body)["partner_id"] == P_B.ToString("D")
+            && (bool?)Obj(g.Body)["bounds_editor"] == true && !Obj(g.Body).ContainsKey("updated_by") && !Obj(g.Body).ContainsKey("row_version")
+            && await PrbSnap(P_B) == "<none>", Tg(g));
+        if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
         Ok("Slice A GET: no token -> 401 + WWW-Authenticate Bearer, no body", (await Get(Prb(P_C), null)) is { Status: 401, Body: "" } u && u.WwwAuth == "Bearer");
         Ok("Slice A GET: org:V reader -> 403 forbidden; no role -> 403; custom role -> 403", Err(await Get(Prb(P_A), RD), 403, "forbidden")
             && Err(await Get(Prb(P_A), NO), 403, "forbidden") && Err(await Get(Prb(P_A), CU), 403, "forbidden"));
@@ -2205,6 +2215,7 @@ try
             ("max null", B(20, null!), "reason_max_length:type"),
             ("min missing", new Dictionary<string, object?> { ["reason_max_length"] = 300 }, "reason_min_length:required"),
             ("reason field (DEC-113: no reason)", new Dictionary<string, object?> { ["reason_min_length"] = 20, ["reason_max_length"] = 300, ["reason"] = "because the ops team said so" }, "reason:unknown_field"),
+            ("bounds_editor in the body (not a client role)", new Dictionary<string, object?> { ["reason_min_length"] = 20, ["reason_max_length"] = 300, ["bounds_editor"] = true }, "bounds_editor:unknown_field"),
             ("row_version in the body", new Dictionary<string, object?> { ["reason_min_length"] = 20, ["reason_max_length"] = 300, ["row_version"] = 1 }, "row_version:unknown_field"),
             ("empty object", new Dictionary<string, object?>(), "reason_min_length:required,reason_max_length:required"),
         })
@@ -2215,7 +2226,7 @@ try
         var ev = await NewEvents();
         Ok("Slice A PUT create: PA (P_A) on P_C with If-Match \"0\" -> 200, ETag \"1\", source partner, 20/300, row_version 1, updated_at, NO updated_by (PA on another partner, TLD 11:23 identity) (DEC-111)", r.Status == 200 && r.ETag == "\"1\""
             && (string?)Obj(r.Body)["source"] == "partner" && (int?)Obj(r.Body)["reason_min_length"] == 20 && (int?)Obj(r.Body)["reason_max_length"] == 300
-            && (long?)Obj(r.Body)["row_version"] == 1 && HasBy(r, null) && Obj(r.Body).ContainsKey("updated_at") && await PrbSnap(P_C) == "20/300/v1", Tg(r));
+            && (long?)Obj(r.Body)["row_version"] == 1 && HasBy(r, null) && (bool?)Obj(r.Body)["bounds_editor"] == false && Obj(r.Body).ContainsKey("updated_at") && await PrbSnap(P_C) == "20/300/v1", Tg(r));
         if (r.Status == 200) ForSchema("partner_reason_bounds_view", r);
         Ok("Slice A event (create, cross-partner PA): one auth.partner_reason_bounds.changed, schema-valid; old = config, new = 20/300; actor P_A, target P_C, cross_partner true; no reason",
             ev.Count == 1 && Valid(ev[0]) && (string)ev[0]["event_type"]! == "auth.partner_reason_bounds.changed" && (string)ev[0]["admin_type"]! == "partner"
@@ -2229,10 +2240,10 @@ try
             && (string?)ev[0]["correlation_id"] == r.Corr, ev.Count > 0 ? ev[0].ToJsonString() : "none");
         g = await Get(Prb(P_C), PB);
         Ok("Slice A GET set partner (PB reads P_C): 200, ETag \"1\" = row_version, source partner, 20/300, updated_at, NO updated_by (PA cross-partner read, TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"1\"" && (string?)Obj(g.Body)["source"] == "partner"
-            && (long?)Obj(g.Body)["row_version"] == 1 && (int?)Obj(g.Body)["reason_min_length"] == 20 && HasBy(g, null) && Obj(g.Body).ContainsKey("updated_at"), Tg(g));
+            && (long?)Obj(g.Body)["row_version"] == 1 && (int?)Obj(g.Body)["reason_min_length"] == 20 && HasBy(g, null) && (bool?)Obj(g.Body)["bounds_editor"] == false && Obj(g.Body).ContainsKey("updated_at"), Tg(g));
         if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
         g = await Get(Prb(P_C), SA);
-        Ok("Slice A GET set partner (SA reads P_C, actor partner null): updated_by U_PA kept (every Super Admin read keeps identity, TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"1\"" && HasBy(g, U_PA), Tg(g));
+        Ok("Slice A GET set partner (SA reads P_C, actor partner null): updated_by U_PA kept (every Super Admin read keeps identity, TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"1\"" && HasBy(g, U_PA) && (bool?)Obj(g.Body)["bounds_editor"] == true, Tg(g));
         if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
         // ---- TLD 11:23 A regression: sequential stale create. A delayed second "0" on the now-set partner -> 409 with the current version, never an update ----
         {
@@ -2271,12 +2282,12 @@ try
         // no-op: same values -> 200, nothing written, no event, no bump [TLD 11:23 B: explicitly approved]
         r = await PrbPut(P_C, PA, B(25, 250), "\"2\"");
         Ok("Slice A PUT no-op (same values, TLD 11:23 B) -> 200, ETag \"2\", row_version unchanged, no event; PA on another partner: no updated_by in the PUT view either", r.Status == 200 && r.ETag == "\"2\"" && (long?)Obj(r.Body)["row_version"] == 2
-            && HasBy(r, null) && await PrbSnap(P_C) == "25/250/v2" && (await NewEvents()).Count == 0, Tg(r));
+            && HasBy(r, null) && (bool?)Obj(r.Body)["bounds_editor"] == false && await PrbSnap(P_C) == "25/250/v2" && (await NewEvents()).Count == 0, Tg(r));
         if (r.Status == 200) ForSchema("partner_reason_bounds_view", r);
         // own partner: PA on P_A -> cross_partner false; 10/10 and 500/500 edges accepted
         r = await PrbPut(P_A, PA, B(10, 10), "\"0\"");
         ev = await NewEvents();
-        Ok("Slice A PUT create own partner (PA on P_A, 10/10 edge, \"0\") -> 200, updated_by U_PA kept (own partner); event cross_partner false, actor_partner_id = target = P_A", r.Status == 200 && HasBy(r, U_PA) && ev.Count == 1 && Valid(ev[0])
+        Ok("Slice A PUT create own partner (PA on P_A, 10/10 edge, \"0\") -> 200, updated_by U_PA kept (own partner); event cross_partner false, actor_partner_id = target = P_A", r.Status == 200 && HasBy(r, U_PA) && (bool?)Obj(r.Body)["bounds_editor"] == true && ev.Count == 1 && Valid(ev[0])
             && !(bool)ev[0]["details"]!["cross_partner"]! && (string)ev[0]["details"]!["actor_partner_id"]! == P_A.ToString("D") && (string)ev[0]["details"]!["target_partner_id"]! == P_A.ToString("D"), Tg(r));
         r = await PrbPut(P_A, PA, B(500, 500), "\"1\"");
         Ok("Slice A PUT own partner 500/500 edge -> 200 v2", r.Status == 200 && r.ETag == "\"2\"" && await PrbSnap(P_A) == "500/500/v2" && (await NewEvents()).Count == 1, Tg(r));
@@ -2284,9 +2295,9 @@ try
         Ok("Slice A PUT own partner 40/120 -> 200 v3", r.Status == 200 && await PrbSnap(P_A) == "40/120/v3" && (await NewEvents()).Count == 1, Tg(r));
         // TLD 11:23 identity: PA own read keeps updated_by; SA read of a PA-written row keeps it; PB (another partner) does not get it
         g = await Get(Prb(P_A), PA);
-        Ok("Slice A GET own partner (PA reads P_A): updated_by U_PA kept (TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"3\"" && HasBy(g, U_PA), Tg(g));
+        Ok("Slice A GET own partner (PA reads P_A): updated_by U_PA kept (TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"3\"" && HasBy(g, U_PA) && (bool?)Obj(g.Body)["bounds_editor"] == true, Tg(g));
         g = await Get(Prb(P_A), SA);
-        Ok("Slice A GET (SA reads P_A, last written by PA): updated_by U_PA kept (TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"3\"" && HasBy(g, U_PA), Tg(g));
+        Ok("Slice A GET (SA reads P_A, last written by PA): updated_by U_PA kept (TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"3\"" && HasBy(g, U_PA) && (bool?)Obj(g.Body)["bounds_editor"] == true, Tg(g));
         {
             // TLD 13:27 item 2: a future admin type (Client Admin, DEC-130) gets no access and no identity; endpoint authorization unchanged
             var CT = Token("client", U_PA, P_A);
@@ -2297,6 +2308,7 @@ try
         }
         g = await Get(Prb(P_A), PB);
         Ok("Slice A GET (PB reads P_A): bounds 40/120, ETag \"3\", row_version 3, updated_at kept, NO updated_by (TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"3\"" && HasBy(g, null)
+            && (bool?)Obj(g.Body)["bounds_editor"] == false
             && (long?)Obj(g.Body)["row_version"] == 3 && (int?)Obj(g.Body)["reason_min_length"] == 40 && (int?)Obj(g.Body)["reason_max_length"] == 120 && Obj(g.Body).ContainsKey("updated_at"), Tg(g));
         if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
 
@@ -2446,7 +2458,7 @@ try
             using var h5 = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port5}") };
             var d5 = await Send(HttpMethod.Get, Prb(P_E), SA, via: h5);
             Ok("Slice A config 50/200: GET unset partner -> 50/200 source default, no ETag", d5.Status == 200 && d5.ETag is null && (int?)Obj(d5.Body)["reason_min_length"] == 50
-                && (int?)Obj(d5.Body)["reason_max_length"] == 200 && (string?)Obj(d5.Body)["source"] == "default", Tg(d5));
+                && (int?)Obj(d5.Body)["reason_max_length"] == 200 && (string?)Obj(d5.Body)["source"] == "default" && (bool?)Obj(d5.Body)["bounds_editor"] == true, Tg(d5));
             Ok("Slice A config 50/200: a set partner (P_A) still answers its row 40/120 (row wins over config)", Lim(await Send(HttpMethod.Get, LimitsP, PA, via: h5), 40, 120)
                 && Lim(await Send(HttpMethod.Get, $"{LimitsP}?partner_id={P_E:D}", SA, via: h5), 50, 200));
             var c5 = await PrbPut(P_E, SA, B(60, 70), "\"0\"", h5);

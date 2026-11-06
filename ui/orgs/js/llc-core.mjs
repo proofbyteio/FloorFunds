@@ -268,22 +268,24 @@ export function ackClearsAttempt(storedRaw, shownAttemptId) {
   return !!(p && !p.legacy && typeof shownAttemptId === "string" && shownAttemptId.length > 0 && p.attemptId === shownAttemptId);
 }
 
-/** [DEC-144] Who may acknowledge, from GET /orgs/partners/{id}/login-config/reason-bounds only.
- *  "allow": JSON 200 with source "partner" and a uuid updated_by. That field is added only by ShowsBoundsEditor
- *    (Super Admin, or Partner Admin of THIS partner) and only when a row exists.
- *  "unproven": a JSON 200 that does not carry that proof. A partner with no row, and a Partner Admin of another
- *    partner, both look like this. The page does not treat that as permission. data-admin-type is not an input.
+/** [DEC-144 gap 1] Who may acknowledge, from GET /orgs/partners/{id}/login-config/reason-bounds only.
+ *  partnerId is the partner this page asked about (the URL). It is not a role and not data-admin-type.
+ *  "allow": JSON 200 object, bounds_editor === true, and body.partner_id is that same partner.
+ *    bounds_editor is ShowsBoundsEditor (Super Admin, or Partner Admin of THIS partner) from the validated token.
+ *    It is set whether or not a reason-bounds row exists. updated_by is the row's audit identity, not this proof.
+ *  "unproven": a JSON 200 object that does not carry that proof. False, a non-boolean, a missing flag, a different
+ *    partner_id, or updated_by with no bounds_editor. The page does not treat that as permission.
  *  "session": 401. Authoritative session expiry for this read.
  *  "deny": 403 / 404 (not an admin, or not allowed to read this partner).
- *  "unknown": timeout, transport failure, 3xx / opaque redirect, or a non-JSON 200. Not session expiry. */
-export function createAckAuthority(r) {
+ *  "unknown": timeout, transport failure, 3xx / opaque redirect, or a non-object 200. Not session expiry. */
+export function createAckAuthority(r, partnerId) {
   if (!r || r.timedOut || r.status === null) return { kind: "unknown" };
   if (r.opaque || r.redirected || (r.status >= 300 && r.status < 400)) return { kind: "unknown" };
   if (r.status === 401) return { kind: "session" };
   if (r.status === 403 || r.status === 404) return { kind: "deny" };
-  if (r.status === 200 && r.json && r.body && typeof r.body === "object") {
-    const ub = r.body.updated_by;
-    if (r.body.source === "partner" && typeof ub === "string" && UUID.test(ub)) return { kind: "allow" };
+  if (r.status === 200 && r.json && r.body && typeof r.body === "object" && !Array.isArray(r.body)) {
+    const same = typeof partnerId === "string" && UUID.test(partnerId) && r.body.partner_id === partnerId;
+    if (r.body.bounds_editor === true && same) return { kind: "allow" };
     return { kind: "unproven" };
   }
   return { kind: "unknown" };
