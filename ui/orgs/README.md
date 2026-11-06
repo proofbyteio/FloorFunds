@@ -54,9 +54,9 @@ How the page reads a write answer (`writeOutcome`):
 
 - **Saved:** the expected status (PUT 200, POST 201) with a parsed JSON body that has `row_version` (PUT) or a uuid `location_id` (POST).
 - **Session:** a 401, which the API sends before any handler runs. The page shows "Your session has ended. Sign in again, then try again." and makes no save claim. The page is not locked.
-- **Session + UNKNOWN:** any 3xx or opaque redirect after a write was sent. The page shows the sign-in-again copy and locks, as for any UNKNOWN:
-  - Edit: "Your session has ended. We couldn't confirm the save. Sign in again, then reload to check before trying again."
-  - Create: the blocked state "We couldn’t confirm the create. Your session has ended. Sign in again."
+- **Session + UNKNOWN:** any 3xx or opaque redirect after a write was sent. The page asks the user to sign in again and locks, as for any UNKNOWN. It names no cause and offers no retry (TLD 16:47 copy; provisional, not UX-approved):
+  - Edit: "We couldn’t confirm the save. Sign in again, then reload to check before trying again."
+  - Create: the blocked state "We couldn’t confirm whether the location was created. Sign in again. Creating another location remains blocked until the result is confirmed."
 - **Rejected:** only a status + error code pair that this endpoint's handler returns before it commits (`WRITE_REJECTIONS` in `llc-core.mjs`, checked against `LoginConfigApi.cs`). The page shows that code's copy. A known code under another status is UNKNOWN.
 - **UNKNOWN:** everything else after dispatch. That covers a timeout (headers or body), a network failure, a non-JSON, unparseable or incomplete 2xx, any 5xx and any other answer. The page never says "saved" or "nothing saved" and never retries. Save / Create stay locked:
   - **Edit:** the page shows "We couldn't confirm the save. Reload to check before trying again." and Save stays locked in the page. Only a new page load gets an enabled form: a reload, the sign-in round trip, or a back-forward restore (`pageshow` with `persisted` reloads). Each load does its own fresh no-store GET, shows view mode before any Change, and takes If-Match from that GET's ETag. A failed GET leaves the page error and no form. The draft is never replayed. The GET only shows the current state: it does not prove the abandoned write can't still land. That is why the next deliberate save carries the GET's If-Match, and a write that landed later gets a 409 instead of being overwritten.

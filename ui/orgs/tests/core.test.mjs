@@ -249,3 +249,11 @@ test("TLD 15:08 copy: exact Edit uncertain copy; Create blocked (no reload advic
   for (const c of Object.values(FETCH_COPY)) assert.ok(!/nothing was saved|saved\./i.test(c.title + c.text));
   for (const k of Object.keys(FETCH_COPY)) assert.equal(TOP_LEVEL[k], undefined, `${k}: not an API code / D-102 key`);
 });
+test("TLD 16:47 (supersedes 16:00 strings): exact provisional sign-in-again + UNKNOWN copy, no unverified cause", () => {
+  const j = (c) => `${c.title} ${c.text}`;
+  assert.equal(j(FETCH_COPY.write_unconfirmed_session), "We couldn\u2019t confirm the save. Sign in again, then reload to check before trying again.");
+  assert.equal(j(FETCH_COPY.create_unconfirmed_blocked_session), "We couldn\u2019t confirm whether the location was created. Sign in again. Creating another location remains blocked until the result is confirmed.");
+  for (const k of ["write_unconfirmed_session", "create_unconfirmed_blocked_session"]) assert.ok(!/session has ended|nothing was saved|try again\.$/i.test(j(FETCH_COPY[k])), k);
+  assert.equal(j(TOP_LEVEL["401"]), "Your session has ended. Sign in again, then try again.", "a real 401 keeps its verified-auth copy");
+  assert.equal(j(FETCH_COPY.write_unconfirmed), "We couldn't confirm the save. Reload to check before trying again.", "timeout copy unchanged (exact)");
+});

@@ -10,7 +10,7 @@
 /** Top-level error -> { title, text }. `null` status = network failure (no response). */
 export const TOP_LEVEL = Object.freeze({
   network: { title: "Couldn't reach the server.", text: "Check your connection, then try again." }, // [TLD 2026-11-05 15:08 item 2] no "Nothing was saved": not an API answer
-  401: { title: "Your session has ended.", text: "Sign in again, then try again." }, // [TLD 15:08 item 2] shared with an unexpected 3xx: no save claim
+  401: { title: "Your session has ended.", text: "Sign in again, then try again." }, // [TLD 15:08 item 2 / 16:47] a real 401 only (verified auth); an unexpected 3xx uses the *_session copies below
   forbidden: { title: "You don't have permission to do this.", text: "Nothing was saved. Ask a Super Admin or your Partner Admin." },
   not_super_admin: { title: "Only a Super Admin can make this change.", text: "Nothing was saved. Turning off the second step or allowing backup sign-in needs a Super Admin." }, // D-102 change 2
   not_found: { title: "This location wasn't found.", text: "It may have been removed, or you may not have access to it." }, // D-102 change 1
@@ -36,10 +36,11 @@ export const TOP_LEVEL = Object.freeze({
  *  history_unavailable: the history GET failed (soft copy, verbatim). */
 export const FETCH_COPY = Object.freeze({
   write_unconfirmed: { title: "We couldn't confirm the save.", text: "Reload to check before trying again." },
-  // [TLD 2026-11-05 16:00] an unexpected redirect after a write: sign in again AND the same lock (provisional SSE copy, TLD 15:08 item 6).
-  write_unconfirmed_session: { title: "Your session has ended.", text: "We couldn't confirm the save. Sign in again, then reload to check before trying again." },
+  // [TLD 2026-11-05 16:47, provisional, not UX-approved] an unexpected redirect after a write: sign in again AND the same lock,
+  // without claiming the cause ("Your session has ended" only for a real 401) or a safe retry.
+  write_unconfirmed_session: { title: "We couldn\u2019t confirm the save.", text: "Sign in again, then reload to check before trying again." },
   create_unconfirmed_blocked: { title: "We couldn’t confirm the create.", text: "" },
-  create_unconfirmed_blocked_session: { title: "We couldn\u2019t confirm the create.", text: "Your session has ended. Sign in again." },
+  create_unconfirmed_blocked_session: { title: "We couldn\u2019t confirm whether the location was created.", text: "Sign in again. Creating another location remains blocked until the result is confirmed." }, // [TLD 16:47]
   history_unavailable: { title: "Couldn't load history — try again", text: "" },
 });
 /** 422 field code -> message shown under the field (tenant_bound_elsewhere is MK9 copy, kept in the page). */

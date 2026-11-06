@@ -612,9 +612,9 @@ await step("P6a fetch hardening", async () => {
   seen.length = 0; hits.length = 0; mode = { ...R3(302, `${H.ui}/p6a-sign-in`), method: "PUT", url: LOC }; await click("#btn-save"); await until(`!document.querySelector("#banner-error").hidden`, 10000);
   await click("#btn-save"); await sleep(500); mode = null;
   g = { state: await ev(`document.body.dataset.state`), saved: await vis("#banner-saved"), err: await shownError(), text: await errText(), seen: [...seen], puts: hits.length, btn: await attr("#btn-save", "aria-disabled") };
-  ok("P6a PUT 302 same-site -> not followed, UNKNOWN + sign in again: 'Your session has ended. We couldn't confirm the save. Sign in again, then reload to check before trying again.', no saved state, Save locked (second click sent nothing)",
+  ok("P6a PUT 302 same-site -> not followed, UNKNOWN + sign in again (TLD 16:47 exact): 'We couldn’t confirm the save. Sign in again, then reload to check before trying again.', no saved state, Save locked (second click sent nothing)",
     g.state === "edit" && !g.saved && g.err.length === 1 && g.err[0].code === "write_unconfirmed_session"
-      && g.text === "Your session has ended. We couldn't confirm the save. Sign in again, then reload to check before trying again." && g.seen.length === 0 && g.puts === 1 && g.btn === "true", g);
+      && g.text === "We couldn\u2019t confirm the save. Sign in again, then reload to check before trying again." && g.seen.length === 0 && g.puts === 1 && g.btn === "true", g);
   // 4. PUT stalled -> aborted -> "We couldn't confirm the save. ..." exactly; no saved state, one PUT, Save locked (a second click sends nothing).
   await open(page("sa", H.l1)); await click("#btn-change"); await type("#dname", "UI P6a never saved"); // case 3 left its page locked
   hits.length = 0; mode = { kind: "stall", method: "PUT", url: LOC }; t0 = Date.now(); await click("#btn-save"); await until(`document.querySelector("#banner-error").hidden === false`, 10000); dt = Date.now() - t0; await sleep(300); await release();
@@ -630,9 +630,9 @@ await step("P6a fetch hardening", async () => {
   g = { path: await ev(`location.pathname`), state: await ev(`document.body.dataset.state`), form: await vis("#form"), err: await shownError(), text: await errText(), seen: [...seen], posts: hits.length,
     key: await ev(`localStorage.getItem(${JSON.stringify(`llc.unconfirmed.create.${H.partner_a}`)})`) };
   await open(`/as/sa/orgs/${H.partner_a}/locations/new`); g.after = { state: await ev(`document.body.dataset.state`), form: await vis("#form") };
-  ok("P6a POST 307 cross-site -> not followed, UNKNOWN + sign in again: blocked 'We couldn’t confirm the create. Your session has ended. Sign in again.', no form, one POST, guard stored and still blocked after a reload",
+  ok("P6a POST 307 cross-site -> not followed, UNKNOWN + sign in again: blocked (TLD 16:47 exact) 'We couldn’t confirm whether the location was created. Sign in again. Creating another location remains blocked until the result is confirmed.', no form, one POST, guard stored and still blocked after a reload",
     g.path.endsWith("/locations/new") && g.state === "blocked" && !g.form && g.err.length === 1 && g.err[0].code === "create_unconfirmed_blocked_session"
-      && g.text === "We couldn\u2019t confirm the create. Your session has ended. Sign in again." && g.seen.length === 0 && g.posts === 1 && g.key !== null && g.after.state === "blocked" && !g.after.form, g);
+      && g.text === "We couldn\u2019t confirm whether the location was created. Sign in again. Creating another location remains blocked until the result is confirmed." && g.seen.length === 0 && g.posts === 1 && g.key !== null && g.after.state === "blocked" && !g.after.form, g);
   await ev(`localStorage.clear(), true`); // test isolation only
   // 6. POST (create) stalled -> UNKNOWN: the blocked state "We couldn’t confirm the create." (no reload advice), no form, one POST.
   await open(`/as/sa/orgs/${H.partner_a}/locations/new`); await type("#lname", "UI Cage P6a"); await type("#dname", "UI Casino A"); // case 5 left its page blocked
