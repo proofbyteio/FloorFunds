@@ -572,6 +572,42 @@ Brief: `/tmp/sse-llc1/briefs/slice-a.md` md5 d68d236c96f3c86ff49e9959143358d5 (i
 - **DISCLOSURE (also in the 402a964 commit body; note md5 1c4dd533):** on 2026-11-04 between 21:23:54 and 21:36:15 PT I ran a manual psql DELETE on the shared `ff_sse` (owner role via `psql-as.py`, no sudo, one transaction) after the killed p4o attempt 2 left rows: `location_login_config_change` 14, `location_login_config` 4, `location` 4, `audit_outbox` 51 (occurred_at 21:21–21:22 PT). Test data only (fake partners 5f0c3e1a-0001/0002). This broke the "no manual psql writes" rule. No manual psql writes were made for Slice A.
 - Evidence: `/tmp/sse-llc1/p5a-evidence.txt` (detached worktree `/tmp/sse-llc1/wt-p5a` at the final Slice A sha).
 
+## Fetch hardening — TLD 16:00 (write 3xx locked, authoritative rejections, re-entry / late completion; Create release-BLOCKED) [direct TL rulings Nov 5 2026 4:00 PM PT; TLD, NOT a product DEC] (new commits on top of 9be6765; local only, for SSE2)
+
+- **Source.** Verbatim in `/tmp/sse-llc1/snap/p6b/TLD-1600.as-received.md` (md5 050c2a9d). Brief appendix: the brief went from a451c6cf to cdc60441; the pre-append copy is in `run/`. Where 16:00 differs, it supersedes 15:08 and the SSE choices (a)–(e) in the 15:08 section below. That section is kept as written, so read it as history.
+- **Write 3xx / opaque redirect = UNKNOWN + sign in again.** This supersedes (c). The page is locked like any UNKNOWN: the Edit lock, or the stored Create guard. It never follows or replays. Copy (provisional SSE text under TLD 15:08 item 6):
+  - Edit: "Your session has ended. We couldn't confirm the save. Sign in again, then reload to check before trying again."
+  - Create: "We couldn’t confirm the create. Your session has ended. Sign in again."
+  A 401 stays session handling without a lock. `Run()` answers 401 before any handler runs, so no write was possible.
+- **Rejected = authoritative only.** This replaces "any contract code in a 4xx". `WRITE_REJECTIONS` lists the status + code pairs that `PutAsync` and `CreateAsync` throw before `tx.CommitAsync()`.
+  - Both: 400 malformed_body / reason_required, 403 forbidden / not_super_admin, 404 not_found, 408 request_timeout, 413 payload_too_large, 422 validation_failed.
+  - PUT only: 400 if_match_invalid, 409 concurrency_conflict (the UPDATE matched 0 rows), 428 precondition_required.
+  The only writes on these paths are denial audit rows (DenyAsync); the location config is never written. Anything else is UNKNOWN: a known code under another status, a non-JSON 4xx, any other 4xx, any 5xx. TL approved non-contract 4xx/5xx = UNKNOWN, which settles (a) and (b).
+- **Edit re-entry (supersedes (d); no persisted Edit flag).** Every path to an enabled form is a new page load with its own fresh no-store GET and ETag.
+  - A back-forward restore (`pageshow.persisted`) reloads.
+  - A failed GET stays a page error with no form.
+  - The draft is never replayed.
+  - The body read races the abort, so a completion that arrives after the bound is ignored. An aborted request can't resolve into the page, and leaving the page ends it.
+  - The next deliberate save carries the fresh GET's If-Match, so an abandoned write that lands later makes it a 409 rather than being overwritten.
+  - While locked, Cancel and Change stay in the page with Save still locked. Only a reload unlocks.
+- **Create guard.** The guard is re-read at submit as well as on load, which covers another tab or a restored page. It holds a timestamp only. Reload, the sign-in round trip, an empty form and time passing never clear it.
+- **Create: release-BLOCKED (unchanged; see "Create gap" below).** The localStorage guard is local to this browser and is no duplicate guarantee. Recommended server-backed recovery, a proposal only for a separate decision; nothing is implemented:
+  1. POST /orgs/locations accepts a client `Idempotency-Key` (uuid, kept for at least 24 h per partner and actor). A replay with the same key and body returns the original 201 (same location_id). The same key with a different body gets 409/422.
+  2. A read-only `GET /orgs/locations/creates/{idempotency_key}` (or `?idempotency_key=`) with the same partner scoping as the location GET. It returns the created location_id, or 404 if that key never committed.
+  3. The UI stores the key (not the draft) in the guard. To recover, it calls (2): a hit opens the created location; a confirmed miss unlocks a deliberate retry with the same key.
+  Scope: contract v1.x change, a DB table or unique column (migration), handler and tests, then the UI recovery path and copy ("Check whether the location was created…" becomes real). A partner location list alone would not identify THIS operation, because names are not unique.
+- **Tests (new / changed).**
+  - Unit: the per-endpoint rejection table, codes under the wrong status, and 3xx = UNKNOWN + session.
+  - e2e P6a: PUT 302 and POST 307 are locked or blocked with the sign-in copy (the guard survives a reload); cases 4 and 6 reopen their pages.
+  - e2e P6b: location GET body stall gives the same page error as a header stall (closes f10); a valid body completing after the bound is ignored.
+  - e2e P6c: re-entry, where a write lands after the fresh GET, then the deliberate save gets a 409 with the GET's If-Match and no retry; back-forward shows the current server value.
+- **Pending, for TL** (open, not decided by SSE):
+  - The provisional session + UNKNOWN copy above.
+  - Whether a persisted Edit marker is needed after all.
+  - The Create recovery design.
+  - Whether to require the API's X-Request-ID header before treating a response as authoritative (not done).
+- Evidence: `/tmp/sse-llc1/p6c-evidence.txt`, at the final sha. `/tmp/sse-llc1/p6b-evidence.txt` (9be6765) is kept with an addendum.
+
 ## Fetch hardening follow-up — TLD 15:08 (outcome certainty, UNKNOWN lock, f10) [direct TL rulings Nov 5 2026 3:08 PM PT; TLD, NOT a product DEC] (new commit on top of 4c7c94a; unpushed)
 
 - **Source.** Direct TL rulings 15:08, received in a parent steering message at 3:09 PM PT. Recorded verbatim in `/tmp/sse-llc1/snap/p6b/TLD-1508.as-received.md` (md5 bc5dc47a315e89eb90d2b9f263984136). They supersede the TLD 07:54 assumptions where they differ. The brief a451c6cf is unchanged (not appended). Live LD e1206d4c and project-plan 036c7897 are untouched. The TL also has the p6a decisions and OQ-FH-1..5; the 15:08 rulings settle them as below.
