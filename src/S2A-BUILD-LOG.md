@@ -572,6 +572,38 @@ Brief: `/tmp/sse-llc1/briefs/slice-a.md` md5 d68d236c96f3c86ff49e9959143358d5 (i
 - **DISCLOSURE (also in the 402a964 commit body; note md5 1c4dd533):** on 2026-11-04 between 21:23:54 and 21:36:15 PT I ran a manual psql DELETE on the shared `ff_sse` (owner role via `psql-as.py`, no sudo, one transaction) after the killed p4o attempt 2 left rows: `location_login_config_change` 14, `location_login_config` 4, `location` 4, `audit_outbox` 51 (occurred_at 21:21–21:22 PT). Test data only (fake partners 5f0c3e1a-0001/0002). This broke the "no manual psql writes" rule. No manual psql writes were made for Slice A.
 - Evidence: `/tmp/sse-llc1/p5a-evidence.txt` (detached worktree `/tmp/sse-llc1/wt-p5a` at the final Slice A sha).
 
+## Fetch hardening — TLD 16:47 (provisional copy; p6c survivors b1 / h3 / g1 closed; Create release-BLOCKED) [direct TL Nov 5 2026 4:47 PM PT; TLD, NOT a product DEC] (466faf7 copy, 732aca4 tests-only; local only, for SSE2)
+
+> **CREATE IS RELEASE-BLOCKED.** No existing surface can reconcile a lost create (see "Create gap" below). The browser guard is local and best effort only. Edit and History can be reviewed on their own.
+
+- **Source.** Verbatim in `/tmp/sse-llc1/snap/p6b/TLD-1647.as-received.md` (md5 5e6d1664). It supersedes the 16:00 strings and the 16:00 section's "pending: copy" wording, where they differ.
+- **Copy** (provisional, NOT UX-approved; exact; unit + e2e tests):
+  - Edit: "We couldn’t confirm the save. Sign in again, then reload to check before trying again."
+  - Create: "We couldn’t confirm whether the location was created. Sign in again. Creating another location remains blocked until the result is confirmed."
+  - Neither says "Your session has ended": the cause of an unexpected redirect is unverified. A real 401 keeps "Your session has ended. Sign in again, then try again."
+- **Edit re-entry: settled.** TLD 16:00 requires no persisted Edit marker as long as every re-entry gets a fresh, authorized, non-cached GET + ETag. That is implemented, so it is no longer a pending question.
+- **Survivors closed by tests only (732aca4, e2e P6d):**
+  - **b1:** a SYNTHETIC `pageshow` with `persisted: true`, dispatched by the harness. Headless Chrome under CDP did not restore pages from the bfcache, so this tests the handler, **not real bfcache behaviour**. Asserted:
+    - the stale document (draft + old ETag) is replaced;
+    - the fresh GET reaches the network with Cache-Control / Pragma no-cache on the wire;
+    - view mode comes first, with no PUT;
+    - Change shows the current server value;
+    - the deliberate save carries the fresh ETag and is saved.
+  - **h3:** a real create lands on `/locations/{new id}/sign-in#saved`, and its history GET returns an unusable non-JSON 200. The page stays SAVED and shows the soft history error. Each retry sends one history GET and no POST or PUT.
+  - **g1:** page A loads clean with a filled form. The unknown-create marker then appears in the same browser storage, written by the harness exactly as page B's `lockUnknown()` writes it: key + timestamp. Create sends no POST and the page shows the blocked state, which holds over a reload and a sign-in round trip. Guarding across tabs is best effort only.
+- **f12 retired as equivalent.** Since 16:00, `writeOutcome` returns `kind: "session"` only for `status === 401`. So `applyErrors(w.kind === "session" ? { ...r, status: 401 } : r)` and `applyErrors(r)` get the same status in every case, and no behavioural test can tell them apart. It is not reported as a survivor.
+- **Server-backed Create recovery: proposal for a SEPARATE DESIGN DECISION.** Not approved for implementation and not implemented: no contract, migration or handler change in this patch. It tightens the proposal in the 16:00 section:
+  1. **Key binding.** POST carries `Idempotency-Key` (a client uuid). The server stores (partner, actor, key) → the request-body hash, a status (`in_flight` | `committed` | `rejected`) and the result (location_id, or the contract error). The key row and the location row are written in the SAME transaction as the create. An `in_flight` row is claimed before the work, so two concurrent requests with the same key can't both create. Reusing a key with another body, partner or actor gets a 409/422 and never a second create.
+  2. **Replay.** The same key + body returns the stored terminal result: the original 201 with the same location_id, or the same rejection. While the first request is in flight, the replay waits (bounded) or gets a non-terminal "in progress" answer. It never starts a second create.
+  3. **Authorized lookup.** `GET …/creates/{key}`, scoped like the location GET to the same partner and actor. It returns only `committed` (location_id), `rejected` (code) or `in_flight`.
+  4. **What counts as proof.** A lookup 404 or any current GET snapshot is **not** proof that the earlier request can't still commit: it may still be in flight or in transit. The UI must **never unlock on a plain miss**. It unlocks only on a terminal status (committed → open that location; rejected → show the error), or by retrying with the SAME key, which the server's idempotent replay makes safe. The key row must outlive any request that could still arrive (retention ≥ the maximum request lifetime, e.g. ≥ 24 h).
+  Scope, for that decision: a contract v1.x change, a DB table / migration, the handler and concurrency tests, then the UI recovery path and copy.
+- **Pending, for TL / product:**
+  - The provisional copy above (not UX-approved).
+  - The Create server design above.
+  - Whether a rejection must also carry the API's X-Request-ID. That header is not proof of authenticity on its own; it is not used now and this stays pending.
+- Evidence: `/tmp/sse-llc1/p6d-evidence.txt`, at the final sha. p6c (and its addendum) is kept as earlier evidence for f0d69ba.
+
 ## Fetch hardening — TLD 16:00 (write 3xx locked, authoritative rejections, re-entry / late completion; Create release-BLOCKED) [direct TL rulings Nov 5 2026 4:00 PM PT; TLD, NOT a product DEC] (new commits on top of 9be6765; local only, for SSE2)
 
 - **Source.** Verbatim in `/tmp/sse-llc1/snap/p6b/TLD-1600.as-received.md` (md5 050c2a9d). Brief appendix: the brief went from a451c6cf to cdc60441; the pre-append copy is in `run/`. Where 16:00 differs, it supersedes 15:08 and the SSE choices (a)–(e) in the 15:08 section below. That section is kept as written, so read it as history.
