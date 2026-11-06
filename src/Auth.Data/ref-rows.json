@@ -38,8 +38,8 @@
       "name": "Antigua & Barbuda",
       "fmt_has_region": null,
       "fmt_has_postal": null,
-      "source_require_region": null,
-      "source_require_postal": null
+      "source_require_region": false,
+      "source_require_postal": false
     },
     {
       "country_code": "AI",
@@ -2378,6 +2378,7 @@
       "release_id": "cldr-region-49",
       "dataset": "cldr-region",
       "version": "49",
+      "source_url": "https://www.unicode.org/Public/cldr/49/cldr-common-49.zip",
       "content_sha256": "78403d8d6fb1fed6e208bf9001bf5be00bb5abfd9f8110dae062bf49309d6a89",
       "upstream_sha512": "c704a2baf9ce4e28f40e242f8b2fbd0123579bb2c56daaaf8a92d72abd02485a1f60095c3cc4fe89eaf2d5c9f5fd07954c2eaee88839f97e18b1ff37cd62e2d8",
       "license_id": "unicode-license-v3"
@@ -2386,6 +2387,7 @@
       "release_id": "address-applicability-20261106",
       "dataset": "address-applicability",
       "version": "20261106",
+      "source_url": "https://chromium-i18n.appspot.com/ssl-address/data",
       "content_sha256": "6b9fdecb197299829a44bb271ecabf25e719e2f57a821cca33e263e3c26fa870",
       "upstream_sha512": null,
       "license_id": "cc-by-4.0"
@@ -2394,6 +2396,7 @@
       "release_id": "tzdata-2026f",
       "dataset": "tzdata",
       "version": "2026f",
+      "source_url": "https://data.iana.org/time-zones/releases/tzdata2026f.tar.gz",
       "content_sha256": "01b4a91cec5167ed48c11e8ab78f2048cead78ce94b0cafcad0ae8c5a3044d3d",
       "upstream_sha512": null,
       "license_id": "iana-tz-public-domain"

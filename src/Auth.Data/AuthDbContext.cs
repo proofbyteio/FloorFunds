@@ -184,6 +184,7 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
             b.Property(x => x.Dataset).HasColumnName("dataset").HasColumnType("text").IsRequired();
             b.Property(x => x.LicenseId).HasColumnName("license_id").HasColumnType("text").IsRequired();
             b.Property(x => x.ReleaseId).HasColumnName("release_id").HasColumnType("text").IsRequired().ValueGeneratedNever();
+            b.Property(x => x.SourceUrl).HasColumnName("source_url").HasColumnType("text").IsRequired();
             b.Property(x => x.UpstreamSha512).HasColumnName("upstream_sha512").HasColumnType("text");
             b.Property(x => x.Version).HasColumnName("version").HasColumnType("text").IsRequired();
         });

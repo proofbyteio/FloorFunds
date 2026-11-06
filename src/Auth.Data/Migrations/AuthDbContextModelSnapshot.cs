@@ -524,6 +524,11 @@ namespace Auth.Data.Migrations
                         .IsRequired()
                         .ValueGeneratedNever();
 
+                    b.Property<string>("SourceUrl")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("source_url");
+
                     b.Property<string>("UpstreamSha512")
                         .HasColumnType("text")
                         .HasColumnName("upstream_sha512");

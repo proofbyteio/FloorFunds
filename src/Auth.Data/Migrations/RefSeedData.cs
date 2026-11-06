@@ -6,16 +6,16 @@ static class RefSeedData
 {
     internal const string ArchiveSha256 = "7330a82bd9b4d99cbae975a943b5938adefb54b687f297b092bf375771b1813e";
     internal const string Sql = """
-INSERT INTO ref.data_release (release_id, dataset, version, content_sha256, upstream_sha512, license_id) VALUES
-('cldr-region-49', 'cldr-region', '49', '78403d8d6fb1fed6e208bf9001bf5be00bb5abfd9f8110dae062bf49309d6a89', 'c704a2baf9ce4e28f40e242f8b2fbd0123579bb2c56daaaf8a92d72abd02485a1f60095c3cc4fe89eaf2d5c9f5fd07954c2eaee88839f97e18b1ff37cd62e2d8', 'unicode-license-v3'),
-('address-applicability-20261106', 'address-applicability', '20261106', '6b9fdecb197299829a44bb271ecabf25e719e2f57a821cca33e263e3c26fa870', NULL, 'cc-by-4.0'),
-('tzdata-2026f', 'tzdata', '2026f', '01b4a91cec5167ed48c11e8ab78f2048cead78ce94b0cafcad0ae8c5a3044d3d', NULL, 'iana-tz-public-domain');
+INSERT INTO ref.data_release (release_id, dataset, version, source_url, content_sha256, upstream_sha512, license_id) VALUES
+('cldr-region-49', 'cldr-region', '49', 'https://www.unicode.org/Public/cldr/49/cldr-common-49.zip', '78403d8d6fb1fed6e208bf9001bf5be00bb5abfd9f8110dae062bf49309d6a89', 'c704a2baf9ce4e28f40e242f8b2fbd0123579bb2c56daaaf8a92d72abd02485a1f60095c3cc4fe89eaf2d5c9f5fd07954c2eaee88839f97e18b1ff37cd62e2d8', 'unicode-license-v3'),
+('address-applicability-20261106', 'address-applicability', '20261106', 'https://chromium-i18n.appspot.com/ssl-address/data', '6b9fdecb197299829a44bb271ecabf25e719e2f57a821cca33e263e3c26fa870', NULL, 'cc-by-4.0'),
+('tzdata-2026f', 'tzdata', '2026f', 'https://data.iana.org/time-zones/releases/tzdata2026f.tar.gz', '01b4a91cec5167ed48c11e8ab78f2048cead78ce94b0cafcad0ae8c5a3044d3d', NULL, 'iana-tz-public-domain');
 INSERT INTO ref.country (country_code, name, fmt_has_region, fmt_has_postal, source_require_region, source_require_postal, retired_release_id) VALUES
 ('AC', 'Ascension Island', FALSE, TRUE, NULL, NULL, NULL),
 ('AD', 'Andorra', FALSE, TRUE, NULL, NULL, NULL),
 ('AE', 'United Arab Emirates', TRUE, FALSE, TRUE, FALSE, NULL),
 ('AF', 'Afghanistan', FALSE, TRUE, NULL, NULL, NULL),
-('AG', 'Antigua & Barbuda', NULL, NULL, NULL, NULL, NULL),
+('AG', 'Antigua & Barbuda', NULL, NULL, FALSE, FALSE, NULL),
 ('AI', 'Anguilla', FALSE, TRUE, NULL, NULL, NULL),
 ('AL', 'Albania', FALSE, TRUE, NULL, NULL, NULL),
 ('AM', 'Armenia', TRUE, TRUE, NULL, NULL, NULL),

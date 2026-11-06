@@ -10,6 +10,11 @@ The archived README says: "Source code licensed under the Apache 2.0. Data licen
 under the CC-BY 4.0". This product ships the derived flags, not the archived wiki HTML.
 Attribute the data to the libaddressinput address metadata, CC BY 4.0.
 
+The source_url stored on each ref.data_release row is the archived request URL:
+cldr-region-49 https://www.unicode.org/Public/cldr/49/cldr-common-49.zip
+address-applicability-20261106 https://chromium-i18n.appspot.com/ssl-address/data
+tzdata-2026f https://data.iana.org/time-zones/releases/tzdata2026f.tar.gz
+
 Time zone identifiers are from IANA tzdata 2026f (zone1970.tab plus Etc/UTC).
 The tzdata LICENSE says the data is in the public domain unless a file says otherwise.
 The BSD-licensed files named there (date.c, newstrftime.3, strftime.c) are not in this data.

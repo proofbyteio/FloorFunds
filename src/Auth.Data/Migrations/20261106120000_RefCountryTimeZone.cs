@@ -25,12 +25,14 @@ namespace Auth.Data.Migrations
                   release_id       text NOT NULL,
                   dataset          text NOT NULL,
                   version          text NOT NULL,
+                  source_url       text NOT NULL,
                   content_sha256   text NOT NULL,
                   upstream_sha512  text NULL,
                   license_id       text NOT NULL,
                   CONSTRAINT data_release_pkey PRIMARY KEY (release_id),
                   CONSTRAINT data_release_sha256 CHECK (content_sha256 ~ '^[0-9a-f]{64}$'),
-                  CONSTRAINT data_release_sha512 CHECK (upstream_sha512 IS NULL OR upstream_sha512 ~ '^[0-9a-f]{128}$')
+                  CONSTRAINT data_release_sha512 CHECK (upstream_sha512 IS NULL OR upstream_sha512 ~ '^[0-9a-f]{128}$'),
+                  CONSTRAINT data_release_source_url CHECK (source_url ~ '^https://[^[:space:]]+$')
                 );
 
                 CREATE FUNCTION ref.reject_release_mutation() RETURNS trigger
@@ -59,7 +61,6 @@ namespace Auth.Data.Migrations
                   CONSTRAINT country_name_present CHECK (length(name) > 0),
                   CONSTRAINT country_fmt_pair CHECK ((fmt_has_region IS NULL) = (fmt_has_postal IS NULL)),
                   CONSTRAINT country_require_pair CHECK ((source_require_region IS NULL) = (source_require_postal IS NULL)),
-                  CONSTRAINT country_require_needs_fmt CHECK (source_require_region IS NULL OR fmt_has_region IS NOT NULL),
                   CONSTRAINT country_retired_fkey FOREIGN KEY (retired_release_id) REFERENCES ref.data_release (release_id)
                 );
 

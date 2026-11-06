@@ -348,12 +348,14 @@ BEGIN
       release_id       text NOT NULL,
       dataset          text NOT NULL,
       version          text NOT NULL,
+      source_url       text NOT NULL,
       content_sha256   text NOT NULL,
       upstream_sha512  text NULL,
       license_id       text NOT NULL,
       CONSTRAINT data_release_pkey PRIMARY KEY (release_id),
       CONSTRAINT data_release_sha256 CHECK (content_sha256 ~ '^[0-9a-f]{64}$'),
-      CONSTRAINT data_release_sha512 CHECK (upstream_sha512 IS NULL OR upstream_sha512 ~ '^[0-9a-f]{128}$')
+      CONSTRAINT data_release_sha512 CHECK (upstream_sha512 IS NULL OR upstream_sha512 ~ '^[0-9a-f]{128}$'),
+      CONSTRAINT data_release_source_url CHECK (source_url ~ '^https://[^[:space:]]+$')
     );
 
     CREATE FUNCTION ref.reject_release_mutation() RETURNS trigger
@@ -382,7 +384,6 @@ BEGIN
       CONSTRAINT country_name_present CHECK (length(name) > 0),
       CONSTRAINT country_fmt_pair CHECK ((fmt_has_region IS NULL) = (fmt_has_postal IS NULL)),
       CONSTRAINT country_require_pair CHECK ((source_require_region IS NULL) = (source_require_postal IS NULL)),
-      CONSTRAINT country_require_needs_fmt CHECK (source_require_region IS NULL OR fmt_has_region IS NOT NULL),
       CONSTRAINT country_retired_fkey FOREIGN KEY (retired_release_id) REFERENCES ref.data_release (release_id)
     );
 
@@ -406,16 +407,16 @@ END $EF$;
 DO $EF$
 BEGIN
     IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261106120000_RefCountryTimeZone') THEN
-    INSERT INTO ref.data_release (release_id, dataset, version, content_sha256, upstream_sha512, license_id) VALUES
-    ('cldr-region-49', 'cldr-region', '49', '78403d8d6fb1fed6e208bf9001bf5be00bb5abfd9f8110dae062bf49309d6a89', 'c704a2baf9ce4e28f40e242f8b2fbd0123579bb2c56daaaf8a92d72abd02485a1f60095c3cc4fe89eaf2d5c9f5fd07954c2eaee88839f97e18b1ff37cd62e2d8', 'unicode-license-v3'),
-    ('address-applicability-20261106', 'address-applicability', '20261106', '6b9fdecb197299829a44bb271ecabf25e719e2f57a821cca33e263e3c26fa870', NULL, 'cc-by-4.0'),
-    ('tzdata-2026f', 'tzdata', '2026f', '01b4a91cec5167ed48c11e8ab78f2048cead78ce94b0cafcad0ae8c5a3044d3d', NULL, 'iana-tz-public-domain');
+    INSERT INTO ref.data_release (release_id, dataset, version, source_url, content_sha256, upstream_sha512, license_id) VALUES
+    ('cldr-region-49', 'cldr-region', '49', 'https://www.unicode.org/Public/cldr/49/cldr-common-49.zip', '78403d8d6fb1fed6e208bf9001bf5be00bb5abfd9f8110dae062bf49309d6a89', 'c704a2baf9ce4e28f40e242f8b2fbd0123579bb2c56daaaf8a92d72abd02485a1f60095c3cc4fe89eaf2d5c9f5fd07954c2eaee88839f97e18b1ff37cd62e2d8', 'unicode-license-v3'),
+    ('address-applicability-20261106', 'address-applicability', '20261106', 'https://chromium-i18n.appspot.com/ssl-address/data', '6b9fdecb197299829a44bb271ecabf25e719e2f57a821cca33e263e3c26fa870', NULL, 'cc-by-4.0'),
+    ('tzdata-2026f', 'tzdata', '2026f', 'https://data.iana.org/time-zones/releases/tzdata2026f.tar.gz', '01b4a91cec5167ed48c11e8ab78f2048cead78ce94b0cafcad0ae8c5a3044d3d', NULL, 'iana-tz-public-domain');
     INSERT INTO ref.country (country_code, name, fmt_has_region, fmt_has_postal, source_require_region, source_require_postal, retired_release_id) VALUES
     ('AC', 'Ascension Island', FALSE, TRUE, NULL, NULL, NULL),
     ('AD', 'Andorra', FALSE, TRUE, NULL, NULL, NULL),
     ('AE', 'United Arab Emirates', TRUE, FALSE, TRUE, FALSE, NULL),
     ('AF', 'Afghanistan', FALSE, TRUE, NULL, NULL, NULL),
-    ('AG', 'Antigua & Barbuda', NULL, NULL, NULL, NULL, NULL),
+    ('AG', 'Antigua & Barbuda', NULL, NULL, FALSE, FALSE, NULL),
     ('AI', 'Anguilla', FALSE, TRUE, NULL, NULL, NULL),
     ('AL', 'Albania', FALSE, TRUE, NULL, NULL, NULL),
     ('AM', 'Armenia', TRUE, TRUE, NULL, NULL, NULL),

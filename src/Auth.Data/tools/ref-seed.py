@@ -147,19 +147,24 @@ def flags(data: dict[str, bytes], regular: set[str]) -> dict[str, dict[str, bool
     check(len(regular - own.keys()), 59, "unknown applicability")
     out: dict[str, dict[str, bool | None]] = {}
     for c in regular:
-        if c not in own:
-            out[c] = {
-                "fmt_has_region": None, "fmt_has_postal": None,
-                "source_require_region": None, "source_require_postal": None,
-            }
-            continue
-        toks = re.findall(r"%(.)", own[c]["fmt"])
-        req = own[c].get("require") if "require" in own[c] else None
+        obj = objs.get(c)
+        if obj is not None and "fmt" in obj:
+            toks = re.findall(r"%(.)", obj["fmt"])
+            fmt_region: bool | None = "S" in toks
+            fmt_postal: bool | None = "Z" in toks
+        else:
+            fmt_region = fmt_postal = None
+        if obj is not None and "require" in obj:
+            req = obj["require"]
+            if not isinstance(req, str):
+                fail(f"require is not a string for {c}")
+            req_region: bool | None = "S" in req
+            req_postal: bool | None = "Z" in req
+        else:
+            req_region = req_postal = None
         out[c] = {
-            "fmt_has_region": "S" in toks,
-            "fmt_has_postal": "Z" in toks,
-            "source_require_region": ("S" in req) if req is not None else None,
-            "source_require_postal": ("Z" in req) if req is not None else None,
+            "fmt_has_region": fmt_region, "fmt_has_postal": fmt_postal,
+            "source_require_region": req_region, "source_require_postal": req_postal,
         }
     for token, yes, no, optional, missing in (
         ("S", 75, 123, "EE LT LV MY RO TR UA".split(), 31),
@@ -176,15 +181,25 @@ def flags(data: dict[str, bytes], regular: set[str]) -> dict[str, dict[str, bool
         "CA": (True, True, True, True),
         "DE": (False, True, False, True),
         "IE": (True, True, None, None),
-        "AG": (None, None, None, None),
+        "AG": (None, None, False, False),
         "CP": (None, None, None, None),
     }
     for c, exp in spots.items():
         row = out[c]
         got = (row["fmt_has_region"], row["fmt_has_postal"], row["source_require_region"], row["source_require_postal"])
         check(got, exp, f"spot {c}")
-    if any(v is False for c, row in out.items() if c in {"AG", "CP"} for v in row.values()):
-        fail("unknown applicability stored as false")
+    require_without_fmt = sorted(
+        c for c, row in out.items()
+        if row["fmt_has_region"] is None and row["source_require_region"] is not None
+    )
+    check(require_without_fmt, ["AG"], "require without fmt")
+    both_unknown = [
+        c for c, row in out.items()
+        if row["fmt_has_region"] is None and row["source_require_region"] is None
+    ]
+    check(len(both_unknown), 58, "both pairs unknown")
+    if any(v is False for c in both_unknown for v in out[c].values()):
+        fail("unknown evidence stored as false")
     return out
 
 
@@ -241,18 +256,47 @@ def sql_bool(v: bool | None) -> str:
     return "TRUE" if v else "FALSE"
 
 
-def build_sql(names_map: dict[str, str], flag_map: dict[str, dict[str, bool | None]], zone_ids: list[str], upstream_sha512: str) -> str:
+def provenance_urls(text: str) -> dict[str, str]:
+    """Read the three release URLs from archived PROVENANCE.md. Do not substitute a redirect or a docs URL."""
+    sections: dict[str, list[str]] = {}
+    current = ""
+    for line in text.splitlines():
+        if line and not line.startswith("-") and not line.startswith(" "):
+            current = line.strip()
+            sections.setdefault(current, [])
+        elif current and line.startswith("- "):
+            sections[current].append(line[2:])
+    address = sections["Address metadata"][0]
+    if not address.startswith("Request URL for the index: "):
+        fail("address provenance line")
+    urls = {
+        "cldr-region-49": sections["CLDR"][0],
+        "address-applicability-20261106": address.split(": ", 1)[1],
+        "tzdata-2026f": sections["Time zones"][0],
+    }
+    if urls["cldr-region-49"] != "https://www.unicode.org/Public/cldr/49/cldr-common-49.zip":
+        fail("cldr source url")
+    if urls["address-applicability-20261106"] != "https://chromium-i18n.appspot.com/ssl-address/data":
+        fail("address source url")
+    if urls["tzdata-2026f"] != "https://data.iana.org/time-zones/releases/tzdata2026f.tar.gz":
+        fail("tz source url")
+    if "https://www.gstatic.com/" in urls.values():
+        fail("redirect stored as source url")
+    return urls
+
+
+def build_sql(names_map: dict[str, str], flag_map: dict[str, dict[str, bool | None]], zone_ids: list[str], upstream_sha512: str, urls: dict[str, str]) -> str:
     releases = [
-        ("cldr-region-49", "cldr-region", "49", CLDR_SHA256, upstream_sha512, "unicode-license-v3"),
-        ("address-applicability-20261106", "address-applicability", "20261106", ADDRESS_AGGREGATE, None, "cc-by-4.0"),
-        ("tzdata-2026f", "tzdata", "2026f", TZ_SHA256, None, "iana-tz-public-domain"),
+        ("cldr-region-49", "cldr-region", "49", urls["cldr-region-49"], CLDR_SHA256, upstream_sha512, "unicode-license-v3"),
+        ("address-applicability-20261106", "address-applicability", "20261106", urls["address-applicability-20261106"], ADDRESS_AGGREGATE, None, "cc-by-4.0"),
+        ("tzdata-2026f", "tzdata", "2026f", urls["tzdata-2026f"], TZ_SHA256, None, "iana-tz-public-domain"),
     ]
     rel_values = ",\n".join(
         "(" + ", ".join([
-            sql_str(rid), sql_str(ds), sql_str(ver), sql_str(digest),
+            sql_str(rid), sql_str(ds), sql_str(ver), sql_str(url), sql_str(digest),
             "NULL" if up is None else sql_str(up), sql_str(lic),
         ]) + ")"
-        for rid, ds, ver, digest, up, lic in releases
+        for rid, ds, ver, url, digest, up, lic in releases
     )
     country_values = ",\n".join(
         "(" + ", ".join([
@@ -269,7 +313,7 @@ def build_sql(names_map: dict[str, str], flag_map: dict[str, dict[str, bool | No
         for rid, ds, *_ in releases
     )
     return (
-        "INSERT INTO ref.data_release (release_id, dataset, version, content_sha256, upstream_sha512, license_id) VALUES\n"
+        "INSERT INTO ref.data_release (release_id, dataset, version, source_url, content_sha256, upstream_sha512, license_id) VALUES\n"
         + rel_values + ";\n"
         "INSERT INTO ref.country (country_code, name, fmt_has_region, fmt_has_postal, source_require_region, source_require_postal, retired_release_id) VALUES\n"
         + country_values + ";\n"
@@ -311,7 +355,8 @@ def main() -> None:
         lic = tar.extractfile("LICENSE")
         if lic is None or b"public domain" not in lic.read().lower():
             fail("tz license notice")
-    sql = build_sql(name_map, flag_map, zone_ids, pub.group(1))
+    urls = provenance_urls(data["PROVENANCE.md"].decode())
+    sql = build_sql(name_map, flag_map, zone_ids, pub.group(1), urls)
     if '"""' in sql:
         fail("seed sql contains a raw-string delimiter")
     cs = (
@@ -339,9 +384,9 @@ def main() -> None:
         ],
         "time_zones": zone_ids,
         "releases": [
-            {"release_id": "cldr-region-49", "dataset": "cldr-region", "version": "49", "content_sha256": CLDR_SHA256, "upstream_sha512": pub.group(1), "license_id": "unicode-license-v3"},
-            {"release_id": "address-applicability-20261106", "dataset": "address-applicability", "version": "20261106", "content_sha256": ADDRESS_AGGREGATE, "upstream_sha512": None, "license_id": "cc-by-4.0"},
-            {"release_id": "tzdata-2026f", "dataset": "tzdata", "version": "2026f", "content_sha256": TZ_SHA256, "upstream_sha512": None, "license_id": "iana-tz-public-domain"},
+            {"release_id": "cldr-region-49", "dataset": "cldr-region", "version": "49", "source_url": urls["cldr-region-49"], "content_sha256": CLDR_SHA256, "upstream_sha512": pub.group(1), "license_id": "unicode-license-v3"},
+            {"release_id": "address-applicability-20261106", "dataset": "address-applicability", "version": "20261106", "source_url": urls["address-applicability-20261106"], "content_sha256": ADDRESS_AGGREGATE, "upstream_sha512": None, "license_id": "cc-by-4.0"},
+            {"release_id": "tzdata-2026f", "dataset": "tzdata", "version": "2026f", "source_url": urls["tzdata-2026f"], "content_sha256": TZ_SHA256, "upstream_sha512": None, "license_id": "iana-tz-public-domain"},
         ],
     }
     text = json.dumps(rows, ensure_ascii=False, indent=2) + "\n"

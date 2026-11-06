@@ -941,17 +941,17 @@ await Check("ref: every seeded row equals the derived input", async () =>
     if (wantZ.Count != 0 || gotZ != 313) return false;
     var rel = new Dictionary<string, JsonElement>();
     foreach (var e in doc.RootElement.GetProperty("releases").EnumerateArray()) rel[e.GetProperty("release_id").GetString()!] = e;
-    await using (var cmd = new NpgsqlCommand("SELECT release_id, dataset, version, content_sha256, upstream_sha512, license_id FROM ref.data_release", c))
+    await using (var cmd = new NpgsqlCommand("SELECT release_id, dataset, version, source_url, content_sha256, upstream_sha512, license_id FROM ref.data_release", c))
     await using (var r = await cmd.ExecuteReaderAsync())
     {
         while (await r.ReadAsync())
         {
             if (!rel.Remove(r.GetString(0), out var w)) return false;
-            var up = r.IsDBNull(4) ? null : r.GetString(4);
+            var up = r.IsDBNull(5) ? null : r.GetString(5);
             var wantUp = w.GetProperty("upstream_sha512").ValueKind == JsonValueKind.Null ? null : w.GetProperty("upstream_sha512").GetString();
-            if (r.GetString(1) != w.GetProperty("dataset").GetString() || r.GetString(2) != w.GetProperty("version").GetString() || r.GetString(3) != w.GetProperty("content_sha256").GetString() || up != wantUp || r.GetString(5) != w.GetProperty("license_id").GetString())
+            if (r.GetString(1) != w.GetProperty("dataset").GetString() || r.GetString(2) != w.GetProperty("version").GetString() || r.GetString(3) != w.GetProperty("source_url").GetString() || r.GetString(4) != w.GetProperty("content_sha256").GetString() || up != wantUp || r.GetString(6) != w.GetProperty("license_id").GetString())
                 return false;
-            if (r.GetString(3).Length != 64) return false;
+            if (r.GetString(4).Length != 64 || r.GetString(3).Length < 12) return false;
         }
     }
     if (rel.Count != 0) return false;
@@ -967,11 +967,35 @@ await Check("ref: every seeded row equals the derived input", async () =>
         }
     return heads == 3
         && await Scalar<long>(c, null, "SELECT count(*) FROM ref.country WHERE fmt_has_region IS NULL AND fmt_has_postal IS NULL") == 59
+        && await Scalar<long>(c, null, "SELECT count(*) FROM ref.country WHERE fmt_has_region IS NULL AND source_require_region IS NOT NULL") == 1
         && await Scalar<long>(c, null, "SELECT count(*) FROM ref.country WHERE fmt_has_region IS NOT NULL") == 198
         && await Scalar<long>(c, null, "SELECT count(*) FROM ref.country WHERE retired_release_id IS NOT NULL") == 0
         && await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='ref'") == 4
         && await Scalar<long>(c, null, "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='ref' AND c.relkind='r' AND c.relrowsecurity") == 0
         && await Scalar<string>(c, null, "SELECT string_agg(column_name, ',' ORDER BY ordinal_position) FROM information_schema.columns WHERE table_schema='auth' AND table_name='location'") == "location_id,partner_id,slug,name";
+});
+await Check("ref: AG source-require is false/false with fmt null; CP is null in both pairs", async () =>
+{
+    await using var c = await ownerDs.OpenConnectionAsync();
+    var ag = await Scalar<string>(c, null, "SELECT country_code || ':' || coalesce(fmt_has_region::text,'null') || '/' || coalesce(fmt_has_postal::text,'null') || '/' || coalesce(source_require_region::text,'null') || '/' || coalesce(source_require_postal::text,'null') FROM ref.country WHERE country_code='AG'");
+    var cp = await Scalar<string>(c, null, "SELECT country_code || ':' || coalesce(fmt_has_region::text,'null') || '/' || coalesce(fmt_has_postal::text,'null') || '/' || coalesce(source_require_region::text,'null') || '/' || coalesce(source_require_postal::text,'null') FROM ref.country WHERE country_code='CP'");
+    return ag == "AG:null/null/false/false" && cp == "CP:null/null/null/null";
+});
+await Check("ref: each release source_url is the archived provenance URL", async () =>
+{
+    await using var c = await ownerDs.OpenConnectionAsync();
+    var got = await Scalar<string>(c, null, "SELECT string_agg(release_id || '=' || source_url, E'\\n' ORDER BY release_id) FROM ref.data_release");
+    return got == string.Join("\n", [
+        "address-applicability-20261106=https://chromium-i18n.appspot.com/ssl-address/data",
+        "cldr-region-49=https://www.unicode.org/Public/cldr/49/cldr-common-49.zip",
+        "tzdata-2026f=https://data.iana.org/time-zones/releases/tzdata2026f.tar.gz",
+    ]);
+});
+await Check("ref: source-require is not constrained to follow fmt", async () =>
+{
+    await using var c = await ownerDs.OpenConnectionAsync();
+    return await Scalar<long>(c, null, "SELECT count(*) FROM pg_constraint WHERE conname='country_require_needs_fmt'") == 0
+        && await Scalar<long>(c, null, "SELECT count(*) FROM pg_constraint WHERE conname IN ('country_fmt_pair','country_require_pair')") == 2;
 });
 await Check("ref: data_release rejects UPDATE and dataset_head accepts an owner UPDATE (rolled back)", async () =>
     await Try(ownerDs, "UPDATE ref.data_release SET version = version") != "ok"

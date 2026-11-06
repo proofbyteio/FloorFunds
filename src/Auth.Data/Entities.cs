@@ -149,6 +149,7 @@ public sealed class DataRelease
     public string Dataset { get; set; } = "";
     public string LicenseId { get; set; } = "";
     public string ReleaseId { get; set; } = "";
+    public string SourceUrl { get; set; } = "";
     public string? UpstreamSha512 { get; set; }
     public string Version { get; set; } = "";
 }

@@ -585,7 +585,13 @@ for _pin in ["### 3.7 `GET /api/ref/countries` and `GET /api/ref/time-zones` [TL
              "312 `zone1970.tab` names plus `Etc/UTC`", "### 8.6 Reference tables (schema `ref`) [TLD-REF1, 2026-11-06]",
              "`content_sha256` is SHA-256 only (64 lowercase hex).", "Down does not use CASCADE.",
              "`auth` stays exactly 10 tables.", "`auth.location` stays `location_id`, `partner_id`, `slug`, `name`.",
-             "The archived LDML publication and the address wiki HTML are not shipped as product assets."]:
+             "The archived LDML publication and the address wiki HTML are not shipped as product assets.",
+             "Own `require` is stored independently of own `fmt`.",
+             "`source_url` is not in this response.",
+             "AG is format null/null and source-require false/false.",
+             "https://www.unicode.org/Public/cldr/49/cldr-common-49.zip",
+             "https://chromium-i18n.appspot.com/ssl-address/data",
+             "https://data.iana.org/time-zones/releases/tzdata2026f.tar.gz"]:
     exp("TLD-REF1 spec pin: " + _pin[:60], [] if _pin in spec else ["missing"], False)
 
 print("v1.1-S2a checks: %d passed, %d failed" % (PASSES[0], len(FAIL)), "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
