@@ -2,6 +2,26 @@
 
 Status: **P2 DONE (local commits, not pushed)** after TL Decision 7:58 (runtime EF approved). The blocker sections below are kept as history. Branch `feat/location-login-config`. Times are America/Los_Angeles (PT), Wed 2026-11-04.
 
+## DEC-145/146 client and location setup (local commits on `cursor/dec144-manual-create-recovery-a2af`, not pushed)
+
+Owner decision of 2026-11-06 4:34 PM PT: when a country's state/region or postal rule is unknown, an admin may confirm that one field is unused and leave it blank. Known-used fields stay required. This applies to Client and Location creation.
+
+Commits above reviewed `cc8c21c4216a3138ac6f4b676b860916ff3daf11` (tree `62d9363a20d35738cd219b84ea35d70ed869c87e`, parent `db6884dad24f351bcd21effb16acf281a45cbf6b`):
+
+| Commit | Subject |
+|---|---|
+| `609cb0c87f0f1912ee48e93f341529e7ad0885b4` | Add client and location setup columns on the reviewed country baseline. |
+| `a36cd3c19cbd73d6127d80a484e7aaf7f8c1ff6e` | Accept client and location setup on the existing create APIs. |
+| `24af092e15b3addebaa7be96f687ecf590cfc428` | Collect client and location setup in the creation forms. |
+
+Suites below ran on `24af092` (tree `329e86646cfa2de9de989d9e5be6c56beb0619dc`) after that commit, with a clean tree. This log section is the only later change.
+
+Placement: schema `auth` in the existing transaction database. New `auth.client`. Nullable setup columns on `auth.location`. No client slug. Legacy locations stay null and are not backfilled. Trigger `auth.enforce_setup` and `SetupValidator` both use `fmt_has_region` / `fmt_has_postal` only. Caps, counted in runes after trim: address 200, city and region 100, postal 32, phone input 64, email 254. Phone parsing is libphonenumber-csharp 9.0.42 (Apache-2.0, not attribution-free; see `src/Admin.Api/NOTICE-libphonenumber`). `contract/errors.md`, `src/Login.StandIn/Allowlist.cs`, and the root `README.md` were not edited. `20261106120000_RefCountryTimeZone` was not edited. `db/migrations.sql` was regenerated; its first 48770 bytes equal the `cc8c21c` script (sha256 `5f971f5a6d709ea69442ebb2a084513fdbabad6b39071751e7b3052c95724c23`). The new script sha256 is `e70e3324bc1359282fdd65c3322bae16f8399b07f528a54e27d4acb181a731fb`.
+
+`ff_kit_forms` is a fresh apply of the five-migration script (suite database). `ff_kit_formup` is a populated `cc8c21c` database after the additive migration: 7 users, 2 legacy locations, 1 login config, 0 clients, 257 countries, 313 zones; both legacy rows still have null client, address, phone, time zone, and country, and their names are unchanged. `ff_kit_ref1` still has the four old migrations and the four original location columns. An upgrade of that older reference schema was not run.
+
+Fresh totals on `24af092`, not the reviewer's `cc8c21c` totals and not the earlier 294 UI run: contract 629/0, schemas v1-d4 ALL PASS, unit 24/0, Auth.Data.Checks 189/0, Admin.Api.Checks 822/0, crosscheck 1938 docs / 0 disagreements / 693 responses, UI e2e 314/0. No mutants were applied on this tip.
+
 ## What was done
 
 | Step | Result |
