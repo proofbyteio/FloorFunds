@@ -1,0 +1,11 @@
+libphonenumber-csharp 9.0.42
+Copyright Patrick Mézard, Thomas Clegg, Jarrod Alexander, Google, and the libphonenumber contributors.
+Licensed under the Apache License, Version 2.0.
+https://www.nuget.org/packages/libphonenumber-csharp/9.0.42
+https://github.com/twcclegg/libphonenumber-csharp
+https://github.com/google/libphonenumber
+
+The package is Apache-2.0. It is not attribution-free. This notice stays with the product.
+Admin.Api uses it only to parse and check an international phone number on the server.
+The library and its metadata ship inside the package. Form use does not call a phone network,
+a paid service, or an address-validation service.

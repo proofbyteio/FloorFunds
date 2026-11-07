@@ -9,6 +9,7 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
     public const string Schema = "auth";
 
     public DbSet<Location> Locations => Set<Location>();
+    public DbSet<Client> Clients => Set<Client>();
     public DbSet<LocationLoginConfigRow> LocationLoginConfigRows => Set<LocationLoginConfigRow>();
     public DbSet<LocationLoginConfigChange> LocationLoginConfigChanges => Set<LocationLoginConfigChange>();
     public DbSet<AppUser> AppUsers => Set<AppUser>();
@@ -33,6 +34,39 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
             b.Property(x => x.PartnerId).HasColumnName("partner_id").HasColumnType("uuid");
             b.Property(x => x.Slug).HasColumnName("slug").HasColumnType("text").IsRequired();
             b.Property(x => x.Name).HasColumnName("name").HasColumnType("text").IsRequired();
+            b.Property(x => x.ClientId).HasColumnName("client_id").HasColumnType("uuid");
+            b.Property(x => x.Address1).HasColumnName("address1").HasColumnType("text");
+            b.Property(x => x.Address2).HasColumnName("address2").HasColumnType("text");
+            b.Property(x => x.City).HasColumnName("city").HasColumnType("text");
+            b.Property(x => x.Region).HasColumnName("region").HasColumnType("text");
+            b.Property(x => x.CountryCode).HasColumnName("country_code").HasColumnType("character(2)").HasMaxLength(2);
+            b.Property(x => x.PostalCode).HasColumnName("postal_code").HasColumnType("text");
+            b.Property(x => x.RegionUnusedConfirmed).HasColumnName("region_unused_confirmed").HasColumnType("boolean");
+            b.Property(x => x.PostalUnusedConfirmed).HasColumnName("postal_unused_confirmed").HasColumnType("boolean");
+            b.Property(x => x.PhoneE164).HasColumnName("phone_e164").HasColumnType("text");
+            b.Property(x => x.Email).HasColumnName("email").HasColumnType("text");
+            b.Property(x => x.TimeZoneId).HasColumnName("time_zone_id").HasColumnType("text");
+        });
+        modelBuilder.Entity<Client>(b =>
+        {
+            b.ToTable("client", Schema);
+            b.HasKey(x => x.ClientId).HasName("client_pkey");
+            b.Property(x => x.ClientId).HasColumnName("client_id").HasColumnType("uuid").ValueGeneratedNever();
+            b.Property(x => x.PartnerId).HasColumnName("partner_id").HasColumnType("uuid");
+            b.Property(x => x.Name).HasColumnName("name").HasColumnType("text").IsRequired();
+            b.Property(x => x.Address1).HasColumnName("address1").HasColumnType("text").IsRequired();
+            b.Property(x => x.Address2).HasColumnName("address2").HasColumnType("text");
+            b.Property(x => x.City).HasColumnName("city").HasColumnType("text").IsRequired();
+            b.Property(x => x.Region).HasColumnName("region").HasColumnType("text");
+            b.Property(x => x.CountryCode).HasColumnName("country_code").HasColumnType("character(2)").HasMaxLength(2).IsRequired();
+            b.Property(x => x.PostalCode).HasColumnName("postal_code").HasColumnType("text");
+            b.Property(x => x.RegionUnusedConfirmed).HasColumnName("region_unused_confirmed").HasColumnType("boolean");
+            b.Property(x => x.PostalUnusedConfirmed).HasColumnName("postal_unused_confirmed").HasColumnType("boolean");
+            b.Property(x => x.PhoneE164).HasColumnName("phone_e164").HasColumnType("text").IsRequired();
+            b.Property(x => x.Email).HasColumnName("email").HasColumnType("text");
+            b.Property(x => x.TimeZoneId).HasColumnName("time_zone_id").HasColumnType("text").IsRequired();
+            b.Property(x => x.CreatedBy).HasColumnName("created_by").HasColumnType("uuid");
+            b.Property(x => x.CreatedAt).HasColumnName("created_at").HasColumnType("timestamp with time zone");
         });
         modelBuilder.Entity<LocationLoginConfigRow>(b =>
         {

@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <!-- S2a P3: location login config API (Back Office API, interim /admin host, aud backoffice-api; spec §3-§8).
-       Packages: only ones already approved and pinned in this repo (Npgsql via Auth.Data; Microsoft.IdentityModel.JsonWebTokens
-       [8.19.2] as in Login.StandIn). No JSON Schema package: audit envelopes are checked by the in-repo JsonSchemaLite. -->
+       Packages: Microsoft.IdentityModel.JsonWebTokens [8.19.2] as in Login.StandIn; Npgsql via Auth.Data.
+       DEC-145/146 adds libphonenumber-csharp [9.0.42] (Apache-2.0, NOTICE-libphonenumber) for offline
+       international phone parsing. No JSON Schema package: audit envelopes are checked by the in-repo JsonSchemaLite. -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
@@ -15,6 +16,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="[8.19.2]" />
+    <PackageReference Include="libphonenumber-csharp" Version="[9.0.42]" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Auth.Data/Auth.Data.csproj" />

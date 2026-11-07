@@ -45,6 +45,55 @@ namespace Auth.Data.Migrations
                         .HasColumnType("text")
                         .HasColumnName("name");
 
+                    b.Property<Guid?>("ClientId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("client_id");
+
+                    b.Property<string>("Address1")
+                        .HasColumnType("text")
+                        .HasColumnName("address1");
+
+                    b.Property<string>("Address2")
+                        .HasColumnType("text")
+                        .HasColumnName("address2");
+
+                    b.Property<string>("City")
+                        .HasColumnType("text")
+                        .HasColumnName("city");
+
+                    b.Property<string>("Region")
+                        .HasColumnType("text")
+                        .HasColumnName("region");
+
+                    b.Property<string>("CountryCode")
+                        .HasMaxLength(2)
+                        .HasColumnType("character(2)")
+                        .HasColumnName("country_code");
+
+                    b.Property<string>("PostalCode")
+                        .HasColumnType("text")
+                        .HasColumnName("postal_code");
+
+                    b.Property<bool?>("RegionUnusedConfirmed")
+                        .HasColumnType("boolean")
+                        .HasColumnName("region_unused_confirmed");
+
+                    b.Property<bool?>("PostalUnusedConfirmed")
+                        .HasColumnType("boolean")
+                        .HasColumnName("postal_unused_confirmed");
+
+                    b.Property<string>("PhoneE164")
+                        .HasColumnType("text")
+                        .HasColumnName("phone_e164");
+
+                    b.Property<string>("Email")
+                        .HasColumnType("text")
+                        .HasColumnName("email");
+
+                    b.Property<string>("TimeZoneId")
+                        .HasColumnType("text")
+                        .HasColumnName("time_zone_id");
+
                     b.HasKey("LocationId")
                         .HasName("location_pkey");
 
@@ -459,6 +508,86 @@ namespace Auth.Data.Migrations
                         .HasName("partner_reason_bounds_pkey");
 
                     b.ToTable("partner_reason_bounds", "auth");
+                });
+
+            modelBuilder.Entity("Auth.Data.Entities.Client", b =>
+                {
+                    b.Property<Guid>("ClientId")
+                        .ValueGeneratedNever()
+                        .HasColumnType("uuid")
+                        .HasColumnName("client_id");
+
+                    b.Property<string>("Address1")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("address1");
+
+                    b.Property<string>("Address2")
+                        .HasColumnType("text")
+                        .HasColumnName("address2");
+
+                    b.Property<string>("City")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("city");
+
+                    b.Property<string>("CountryCode")
+                        .IsRequired()
+                        .HasMaxLength(2)
+                        .HasColumnType("character(2)")
+                        .HasColumnName("country_code");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("Email")
+                        .HasColumnType("text")
+                        .HasColumnName("email");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<Guid>("PartnerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("partner_id");
+
+                    b.Property<string>("PhoneE164")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("phone_e164");
+
+                    b.Property<string>("PostalCode")
+                        .HasColumnType("text")
+                        .HasColumnName("postal_code");
+
+                    b.Property<bool>("PostalUnusedConfirmed")
+                        .HasColumnType("boolean")
+                        .HasColumnName("postal_unused_confirmed");
+
+                    b.Property<string>("Region")
+                        .HasColumnType("text")
+                        .HasColumnName("region");
+
+                    b.Property<bool>("RegionUnusedConfirmed")
+                        .HasColumnType("boolean")
+                        .HasColumnName("region_unused_confirmed");
+
+                    b.Property<string>("TimeZoneId")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("time_zone_id");
+
+                    b.HasKey("ClientId")
+                        .HasName("client_pkey");
+
+                    b.ToTable("client", "auth");
                 });
 
             modelBuilder.Entity("Auth.Data.Entities.Country", b =>

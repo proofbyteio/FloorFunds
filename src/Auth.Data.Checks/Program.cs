@@ -576,7 +576,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, RefCountryTimeZone]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261106120000_RefCountryTimeZone"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, RefCountryTimeZone, ClientLocationSetup]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261106120000_RefCountryTimeZone", "20261107043000_ClientLocationSetup"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
@@ -606,11 +606,12 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
         bad.AddRange(dbCols.Keys.Select(k => $"{table}.{k} not in EF model"));
     }
     Ok($"schema: {designModel.GetEntityTypes().Count()} EF tables / {cols} columns == pg_catalog (name, type, nullability)", bad.Count == 0, string.Join("; ", bad));
-    Ok("schema: exactly 10 tables in auth (Slice A: + partner_reason_bounds)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='auth'") == 10);
+    Ok("schema: exactly 11 tables in auth (DEC-145: + client)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='auth'") == 11);
     Ok("schema: no sequences in auth (F5)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_sequences WHERE schemaname='auth'") == 0);
     Ok("schema: history table in public, not auth", await Scalar<bool>(c, null, "SELECT to_regclass('public.\"__EFMigrationsHistory\"') IS NOT NULL AND to_regclass('auth.\"__EFMigrationsHistory\"') IS NULL"));
     var idx = await Scalar<long>(c, null, "SELECT count(*) FROM pg_indexes WHERE schemaname='auth' AND indexname IN ('location_partner_ix','llc_tenants_gin','llcc_location_at_ix','external_login_user_ix','user_location_location_ix','oidc_replay_expires_ix','session_user_live_ix','session_last_seen_ix','location_slug_key','session_cookie_key_hash_key')");
     Ok("schema: the 10 spec indexes exist", idx == 10, idx.ToString());
+    Ok("schema: DEC-145 client_partner_ix and location_client_ix exist", await Scalar<long>(c, null, "SELECT count(*) FROM pg_indexes WHERE schemaname='auth' AND indexname IN ('client_partner_ix','location_client_ix')") == 2);
     Ok("schema: llc_tenants_gin is GIN", await Scalar<string>(c, null, "SELECT am.amname::text FROM pg_class i JOIN pg_am am ON am.oid=i.relam WHERE i.relname='llc_tenants_gin'") == "gin");
     Ok("schema: session_user_live_ix is partial (revoked_at IS NULL)", (await Scalar<string>(c, null, "SELECT indexdef FROM pg_indexes WHERE indexname='session_user_live_ix'")).Contains("WHERE (revoked_at IS NULL)"));
 }
@@ -637,6 +638,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     var privs = new[] { "SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER" };
     var expect = new Dictionary<(string, string), string[]>
     {
+        [("client", adminRole)] = ["SELECT", "INSERT"], [("client", loginRole)] = [],
         [("location", adminRole)] = ["SELECT", "INSERT"], [("location", loginRole)] = ["SELECT"],
         [("location_login_config", adminRole)] = ["SELECT", "INSERT"], [("location_login_config", loginRole)] = ["SELECT"],
         [("location_login_config_change", adminRole)] = ["SELECT", "INSERT"], [("location_login_config_change", loginRole)] = [],
@@ -698,15 +700,16 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     await using (var rr = await cmd.ExecuteReaderAsync())
         while (await rr.ReadAsync())
         {
-            bool want = rr.GetString(0) is "location" or "location_login_config" or "location_login_config_change" or "partner_reason_bounds";
+            bool want = rr.GetString(0) is "client" or "location" or "location_login_config" or "location_login_config_change" or "partner_reason_bounds";
             if (rr.GetBoolean(1) != want || rr.GetBoolean(2) != want) rls.Add(rr.GetString(0));
         }
-    Ok("RLS: ENABLE+FORCE on exactly location, location_login_config, location_login_config_change, partner_reason_bounds", rls.Count == 0, string.Join(",", rls));
+    Ok("RLS: ENABLE+FORCE on exactly client, location, location_login_config, location_login_config_change, partner_reason_bounds", rls.Count == 0, string.Join(",", rls));
     // K2 (SSE2 d787f76 review): the owner role is read from pg_database, not assumed equal to the DB name (kit --role != --db).
     var dbOwner = await Scalar<string>(c, null, "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()");
     Ok($"RLS: policy set == spec (owner {dbOwner} from pg_database/admin/login per table; no login policy on change)",
         await Scalar<string>(c, null, "SELECT string_agg(tablename || ':' || policyname || ':' || cmd || ':' || array_to_string(roles, '+'), ' ' ORDER BY tablename, policyname) FROM pg_policies WHERE schemaname='auth'")
-        == $"location:location_admin:ALL:{adminRole} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbOwner} " +
+        == $"client:client_admin:ALL:{adminRole} client:client_owner:ALL:{dbOwner} " +
+           $"location:location_admin:ALL:{adminRole} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbOwner} " +
            $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbOwner} " +
            $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbOwner} " +
            $"partner_reason_bounds:prb_admin:ALL:{adminRole} partner_reason_bounds:prb_owner:ALL:{dbOwner}");
@@ -795,7 +798,7 @@ try
 await using (var c = await ownerDs.OpenConnectionAsync())
 await using (var tx = await c.BeginTransactionAsync())
 {
-    await Exec(c, tx, "INSERT INTO auth.location VALUES ($1,$2,'pci-main','PCI main (SSE2-FAKE-TEST-ONLY)'),($3,$4,'nevada-main','Nevada main (SSE2-FAKE-TEST-ONLY)')", L_PCI, P_PCI, L_NV, P_NV);
+    await Exec(c, tx, "INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ($1,$2,'pci-main','PCI main (SSE2-FAKE-TEST-ONLY)'),($3,$4,'nevada-main','Nevada main (SSE2-FAKE-TEST-ONLY)')", L_PCI, P_PCI, L_NV, P_NV);
     await Exec(c, tx, """
         INSERT INTO auth.location_login_config (location_id, provider_kind, display_name, entra_allowed_tenant_ids, oidc_authority, oidc_client_id, secret_ref, allow_db_fallback, mfa_required, created_by, created_at, updated_by, updated_at)
         VALUES ($1,'entra','PCI Entra (SSE2-FAKE-TEST-ONLY)', ARRAY[$2]::uuid[], $3, '5f0c3e1a-00fc-4000-8000-000000000001', $4, true, true, $5, now(), $5, now()),
@@ -838,7 +841,7 @@ await Check("RLS admin_api: settings are transaction-local (next tx on same conn
     return await Scalar<long>(c, null, cntLoc) == 0;
 });
 await Check("RLS admin_api: partner pci cannot INSERT a nevada location (WITH CHECK, 42501)", async () =>
-    await Try(adminDs, $"INSERT INTO auth.location VALUES (gen_random_uuid(), '{P_NV}', 'zz-x', 'x')", "partner", P_PCI) == "42501");
+    await Try(adminDs, $"INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES (gen_random_uuid(), '{P_NV}', 'zz-x', 'x')", "partner", P_PCI) == "42501");
 await Check("RLS admin_api: partner pci UPDATE of nevada config touches 0 rows; own config 1 row", async () =>
 {
     await using var c = await adminDs.OpenConnectionAsync();
@@ -891,7 +894,7 @@ await Check("login: sees all locations and configs (no settings needed)", async 
 await Check("login: SELECT change table denied (42501)", async () => await Try(loginDs, cntChg) == "42501");
 await Check("login: cannot execute definer fns (42501)", async () => await Try(loginDs, $"SELECT auth.location_partner('{L_PCI}')") == "42501");
 await Check("login: cannot write location/config/app_user/external_login/user_location (42501)", async () =>
-    await Try(loginDs, "UPDATE auth.location_login_config SET mfa_required = true") == "42501" && await Try(loginDs, "INSERT INTO auth.location VALUES (gen_random_uuid(), gen_random_uuid(), 'zz', 'x')") == "42501"
+    await Try(loginDs, "UPDATE auth.location_login_config SET mfa_required = true") == "42501" && await Try(loginDs, "INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES (gen_random_uuid(), gen_random_uuid(), 'zz', 'x')") == "42501"
     && await Try(loginDs, "UPDATE auth.app_user SET status = 'active'") == "42501" && await Try(loginDs, "DELETE FROM auth.external_login") == "42501"
     && await Try(loginDs, "DELETE FROM auth.user_location") == "42501");
 await Check("login: session UPDATE of user_id denied; of revoked_at/revoked_reason allowed", async () =>
@@ -972,7 +975,7 @@ await Check("ref: every seeded row equals the derived input", async () =>
         && await Scalar<long>(c, null, "SELECT count(*) FROM ref.country WHERE retired_release_id IS NOT NULL") == 0
         && await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='ref'") == 4
         && await Scalar<long>(c, null, "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='ref' AND c.relkind='r' AND c.relrowsecurity") == 0
-        && await Scalar<string>(c, null, "SELECT string_agg(column_name, ',' ORDER BY ordinal_position) FROM information_schema.columns WHERE table_schema='auth' AND table_name='location'") == "location_id,partner_id,slug,name";
+        && await Scalar<string>(c, null, "SELECT string_agg(column_name, ',' ORDER BY ordinal_position) FROM information_schema.columns WHERE table_schema='auth' AND table_name='location'") == "location_id,partner_id,slug,name,client_id,address1,address2,city,region,country_code,postal_code,region_unused_confirmed,postal_unused_confirmed,phone_e164,email,time_zone_id";
 });
 await Check("ref: AG source-require is false/false with fmt null; CP is null in both pairs", async () =>
 {
@@ -1025,24 +1028,60 @@ await Check("Slice A grants prb: admin UPDATE partner_id / DELETE / TRUNCATE den
     && await Try(adminDs, "DELETE FROM auth.partner_reason_bounds", "super") == "42501" && await Try(adminDs, "TRUNCATE auth.partner_reason_bounds") == "42501"
     && await Try(loginDs, cntPrb) == "42501");
 await Check("owner: FORCE RLS + owner policy -> owner sees all rows", async () => await CountAs(ownerDs, cntLoc, null, null) == 2);
+async Task<(bool? Region, bool? Postal)> CountryFlags(string code)
+{
+    await using var c = await ownerDs.OpenConnectionAsync();
+    await using var cmd = new NpgsqlCommand("SELECT fmt_has_region, fmt_has_postal FROM ref.country WHERE country_code = $1", c);
+    cmd.Parameters.Add(new() { Value = code });
+    await using var r = await cmd.ExecuteReaderAsync();
+    if (!await r.ReadAsync()) return (false, false);
+    return (r.IsDBNull(0) ? null : r.GetBoolean(0), r.IsDBNull(1) ? null : r.GetBoolean(1));
+}
+string SetupInsert(string country, string regionSql, string postalSql, string regionConfirmed, string postalConfirmed, string zone = "America/Los_Angeles") =>
+    $"""
+    INSERT INTO auth.client (client_id, partner_id, name, address1, city, region, country_code, postal_code,
+           region_unused_confirmed, postal_unused_confirmed, phone_e164, time_zone_id, created_by, created_at)
+    VALUES (gen_random_uuid(), '{P_PCI}', 'n', '1 Main', 'City', {regionSql}, '{country}', {postalSql}, {regionConfirmed}, {postalConfirmed}, '+16502530000', '{zone}', '{ACTOR}', now())
+    """;
+await Check("DEC-145 reference flags: US used/used, DE unused/used, AG unknown/unknown", async () =>
+{
+    var us = await CountryFlags("US"); var de = await CountryFlags("DE"); var ag = await CountryFlags("AG");
+    return us == (true, true) && de == (false, true) && ag == (null, null);
+});
+await Check("DEC-145 trigger: used cannot be waived, unused stays blank, unknown is per field, legacy location stays all null", async () =>
+    await Try(ownerDs, SetupInsert("US", "NULL", "'94105'", "false", "false")) == "23514"
+    && await Try(ownerDs, SetupInsert("US", "'CA'", "'94105'", "true", "false")) == "23514"
+    && await Try(ownerDs, SetupInsert("US", "'CA'", "'94105'", "false", "false")) == "ok"
+    && await Try(ownerDs, SetupInsert("DE", "NULL", "'10115'", "false", "false")) == "ok"
+    && await Try(ownerDs, SetupInsert("DE", "'BE'", "'10115'", "false", "false")) == "23514"
+    && await Try(ownerDs, SetupInsert("DE", "NULL", "'10115'", "true", "false")) == "23514"
+    && await Try(ownerDs, SetupInsert("AG", "NULL", "NULL", "false", "false")) == "23514"
+    && await Try(ownerDs, SetupInsert("AG", "NULL", "NULL", "true", "false")) == "23514"
+    && await Try(ownerDs, SetupInsert("AG", "NULL", "NULL", "true", "true")) == "ok"
+    && await Try(ownerDs, SetupInsert("AG", "'X'", "NULL", "false", "true")) == "ok"
+    && await Try(ownerDs, SetupInsert("AG", "'X'", "NULL", "true", "true")) == "23514"
+    && await Try(ownerDs, SetupInsert("US", "'CA'", "'94105'", "false", "false", "Not/AZone")) == "23514"
+    && await Try(ownerDs, $"INSERT INTO auth.location (location_id, partner_id, slug, name, address1) VALUES (gen_random_uuid(), '{P_PCI}', 'zz-partial', 'x', '1 Main')") == "23514"
+    && await Try(ownerDs, $"INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES (gen_random_uuid(), '{P_PCI}', 'zz-legacy', 'x')") == "ok"
+    && await Try(loginDs, SetupInsert("US", "'CA'", "'94105'", "false", "false")) == "42501");
 await Check("admin/login: TRUNCATE denied (42501)", async () => await Try(adminDs, "TRUNCATE auth.location_login_config_change") == "42501" && await Try(loginDs, "TRUNCATE auth.oidc_replay") == "42501");
 
 // ================= 6. constraints (owner, each rolled back) =================
 var cfgCols = "(location_id, provider_kind, display_name, entra_allowed_tenant_ids, oidc_authority, oidc_client_id, secret_ref, allow_db_fallback, mfa_required, created_by, created_at, updated_by, updated_at, row_version)";
-string NewLoc(string id) => $"INSERT INTO auth.location VALUES ('{id}', '{P_PCI}', 'zz-{id[..8]}', 'x');";
+string NewLoc(string id) => $"INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ('{id}', '{P_PCI}', 'zz-{id[..8]}', 'x');";
 const string LX = "5f0c3e1a-00ee-4000-8000-0000000000e1";
 string Cfg(string kind, string tids, string auth, string client, string secret, string fallback, string rv = "1") =>
     NewLoc(LX) + $"INSERT INTO auth.location_login_config {cfgCols} VALUES ('{LX}', {kind}, 'd', {tids}, {auth}, {client}, {secret}, {fallback}, false, '{ACTOR}', now(), '{ACTOR}', now(), {rv})";
 string ent = $"'{Iss(T2)}'";
 var cases = new (string name, string sql, string state)[]
 {
-    ("location slug uppercase", $"INSERT INTO auth.location VALUES (gen_random_uuid(), '{P_PCI}', 'PCI-x', 'x')", "23514"),
-    ("location slug leading hyphen", $"INSERT INTO auth.location VALUES (gen_random_uuid(), '{P_PCI}', '-pci', 'x')", "23514"),
-    ("location slug 64 chars", $"INSERT INTO auth.location VALUES (gen_random_uuid(), '{P_PCI}', '{new string('a', 64)}', 'x')", "23514"),
-    ("location slug 63 chars ok", $"INSERT INTO auth.location VALUES (gen_random_uuid(), '{P_PCI}', '{new string('a', 63)}', 'x')", "ok"),
-    ("location slug duplicate", $"INSERT INTO auth.location VALUES (gen_random_uuid(), '{P_PCI}', 'pci-main', 'x')", "23505"),
-    ("location name empty", $"INSERT INTO auth.location VALUES (gen_random_uuid(), '{P_PCI}', 'zz-n', '')", "23514"),
-    ("location name 201", $"INSERT INTO auth.location VALUES (gen_random_uuid(), '{P_PCI}', 'zz-n', '{new string('n', 201)}')", "23514"),
+    ("location slug uppercase", $"INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES (gen_random_uuid(), '{P_PCI}', 'PCI-x', 'x')", "23514"),
+    ("location slug leading hyphen", $"INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES (gen_random_uuid(), '{P_PCI}', '-pci', 'x')", "23514"),
+    ("location slug 64 chars", $"INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES (gen_random_uuid(), '{P_PCI}', '{new string('a', 64)}', 'x')", "23514"),
+    ("location slug 63 chars ok", $"INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES (gen_random_uuid(), '{P_PCI}', '{new string('a', 63)}', 'x')", "ok"),
+    ("location slug duplicate", $"INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES (gen_random_uuid(), '{P_PCI}', 'pci-main', 'x')", "23505"),
+    ("location name empty", $"INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES (gen_random_uuid(), '{P_PCI}', 'zz-n', '')", "23514"),
+    ("location name 201", $"INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES (gen_random_uuid(), '{P_PCI}', 'zz-n', '{new string('n', 201)}')", "23514"),
     ("config entra ok", Cfg("'entra'", $"ARRAY['{T2}']::uuid[]", ent, "'c'", "'arn:FAKE'", "true"), "ok"),
     ("config entra 0 tenants", Cfg("'entra'", "'{}'", ent, "'c'", "'arn:FAKE'", "false"), "23514"),
     ("config entra 2 tenants", Cfg("'entra'", $"ARRAY['{T1}','{T2}']::uuid[]", ent, "'c'", "'arn:FAKE'", "false"), "23514"),
@@ -1189,7 +1228,7 @@ await Check("reader config: location without config row -> null (inner join)", a
 {
     await using var c = await ownerDs.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
-    await Exec(c, tx, $"INSERT INTO auth.location VALUES ('{LX}', '{P_PCI}', 'zz-noconfig', 'x')");
+    await Exec(c, tx, $"INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ('{LX}', '{P_PCI}', 'zz-noconfig', 'x')");
     await tx.CommitAsync();
     var r = await cfgReader.GetAsync(Guid.Parse(LX), default) is null && await cfgReader.GetBySlugAsync("zz-noconfig", default) is null;
     await Exec(c, null, $"DELETE FROM auth.location WHERE location_id = '{LX}'");

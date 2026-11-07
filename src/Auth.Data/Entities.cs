@@ -9,6 +9,40 @@ public sealed class Location
     public Guid PartnerId { get; set; }
     public string Slug { get; set; } = "";
     public string Name { get; set; } = "";
+    // DEC-145/146. Null together on a legacy row. A new create fills the required ones.
+    public Guid? ClientId { get; set; }
+    public string? Address1 { get; set; }
+    public string? Address2 { get; set; }
+    public string? City { get; set; }
+    public string? Region { get; set; }
+    public string? CountryCode { get; set; }
+    public string? PostalCode { get; set; }
+    public bool? RegionUnusedConfirmed { get; set; }
+    public bool? PostalUnusedConfirmed { get; set; }
+    public string? PhoneE164 { get; set; }
+    public string? Email { get; set; }
+    public string? TimeZoneId { get; set; }
+}
+
+/// <summary>DEC-145/146. A client belongs to one partner. There is no partners table; partner_id is the same uuid location already stores.</summary>
+public sealed class Client
+{
+    public Guid ClientId { get; set; }
+    public Guid PartnerId { get; set; }
+    public string Name { get; set; } = "";
+    public string Address1 { get; set; } = "";
+    public string? Address2 { get; set; }
+    public string City { get; set; } = "";
+    public string? Region { get; set; }
+    public string CountryCode { get; set; } = "";
+    public string? PostalCode { get; set; }
+    public bool RegionUnusedConfirmed { get; set; }
+    public bool PostalUnusedConfirmed { get; set; }
+    public string PhoneE164 { get; set; } = "";
+    public string? Email { get; set; }
+    public string TimeZoneId { get; set; } = "";
+    public Guid CreatedBy { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
 }
 
 public sealed class LocationLoginConfigRow
