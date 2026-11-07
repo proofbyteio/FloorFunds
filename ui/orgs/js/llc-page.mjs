@@ -1,7 +1,8 @@
 // S2a P4 screen 9: DOM + fetch for location-sign-in.html. Pure rules live in llc-core.mjs; error copy (approved D-102)
 // is in error-copy.mjs. The page never sends oidc_* or secret_ref and shows only secret.set (spec §3.0, D-51).
-import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, METHOD_LABEL, fallbackText, formatPT,
+import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, buildClient, METHOD_LABEL, fallbackText, formatPT,
   changeDetails, fieldTarget, ifMatchFrom, limitsFrom, limitsOrFallback, partnerMfaState, PARTNER_MFA_OFF_HINT, errIdFor, limitsTimeout,
+  usableClientBody,
   limitsOutcome, locationOutcome, writeOutcome, historyOutcome, ackClearsAttempt, createAckAuthority, classifyCreateGuard, CREATE_GUARD_UNREAD } from "./llc-core.mjs";
 import { TOP_LEVEL, FETCH_COPY, FIELD, requestIdText, reasonLengthCopy, reasonHintFallback, REASON_LENGTH_FALLBACK } from "./error-copy.mjs";
 
@@ -78,7 +79,7 @@ const BANNERS = ["banner-loading", "banner-viewonly", "banner-saved", "banner-co
 function hideErrors() {
   for (const id of ["banner-conflict", "banner-tenant", "banner-error", "banner-saved"]) show($(id), false);
   for (const el of document.querySelectorAll("[data-request-id]")) { text(el, ""); show(el, false); }
-  for (const id of ["lname", "dname", "tenant", "reason", "fallback", "mfa"]) clearFieldError(id);
+  for (const id of ["lname", "dname", "tenant", "reason", "fallback", "mfa", "parent", "address1", "address2", "city", "region", "region-unused", "country", "postal", "postal-unused", "phone", "email", "tz"]) clearFieldError(id);
 }
 // [SSE2 7b90e26f LOW-1] the same field -> slot mapping as setFieldError (errIdFor; mfa -> fallback-err); removes only that id.
 function clearFieldError(id) {
@@ -185,11 +186,24 @@ function setMode(mode) {
 }
 
 // ---------- form ----------
+function flagOf(name) {
+  const opt = $("country").selectedOptions[0];
+  const raw = opt && opt.dataset[name];
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  if (raw === "null") return null;
+  return undefined;
+}
 function readForm() {
   const m = document.querySelector('input[name="method"]:checked');
   return { method: m ? m.value : null, displayName: $("dname").value, tenant: $("tenant").value,
     mfa: $("mfa").checked, fallback: $("fallback").checked, reason: $("reason").value,
-    mfa_required: $("mfa").checked, allow_db_fallback: m && m.value === "entra" ? $("fallback").checked : false };
+    mfa_required: $("mfa").checked, allow_db_fallback: m && m.value === "entra" ? $("fallback").checked : false,
+    clientId: $("parent").value,
+    setup: { address1: $("address1").value, address2: $("address2").value, city: $("city").value, region: $("region").value,
+      country: $("country").value, postal: $("postal").value, regionFlag: flagOf("region"), postalFlag: flagOf("postal"),
+      regionChecked: $("region-unused").checked, postalChecked: $("postal-unused").checked,
+      phone: $("phone").value, email: $("email").value, timeZone: $("tz").value } };
 }
 function fillForm(v) {
   $("m-db").checked = v.provider_kind === "database";
@@ -206,9 +220,95 @@ function lockFor(input, locked, hint, hintText) {
   if (locked) input.setAttribute("aria-disabled", "true"); else input.removeAttribute("aria-disabled");
   text($(hint), hintText);
 }
+function applyApplicability() {
+  const tune = (inputId, flag, boxId, wrapId, hintId, usedHint, unusedHint) => {
+    const input = $(inputId), box = $(boxId);
+    if (flag === true) {
+      show($(wrapId), false); box.checked = false; input.readOnly = false; input.required = true;
+      text($(hintId), usedHint);
+    } else if (flag === false) {
+      input.value = ""; input.readOnly = true; input.required = false; box.checked = false; show($(wrapId), false);
+      text($(hintId), unusedHint);
+    } else if (flag === null) {
+      input.readOnly = false; input.required = false; show($(wrapId), true);
+      text($(hintId), "");
+    } else {
+      input.readOnly = false; input.required = false; box.checked = false; show($(wrapId), false);
+      text($(hintId), "");
+    }
+  };
+  tune("region", flagOf("region"), "region-unused", "f-region-unused", "region-hint", "Required for this country.", "Not used for this country.");
+  tune("postal", flagOf("postal"), "postal-unused", "f-postal-unused", "postal-hint", "Required for this country.", "Not used for this country.");
+}
+function clearSetup() {
+  for (const id of ["address1", "address2", "city", "region", "postal", "phone", "email"]) $(id).value = "";
+  $("country").value = ""; $("tz").value = ""; $("parent").value = "";
+  $("region-unused").checked = false; $("postal-unused").checked = false;
+  applyApplicability();
+}
+function fillRefSelects() {
+  const country = $("country"), tz = $("tz"), parent = $("parent");
+  const blank = (label) => { const o = document.createElement("option"); o.value = ""; o.textContent = label; return o; };
+  country.replaceChildren(blank("Select a country"));
+  for (const row of st.countries) {
+    if (row.retired) continue;
+    const o = document.createElement("option");
+    o.value = String(row.country_code).trim(); o.textContent = row.name;
+    o.dataset.region = row.fmt_has_region === true ? "true" : row.fmt_has_region === false ? "false" : "null";
+    o.dataset.postal = row.fmt_has_postal === true ? "true" : row.fmt_has_postal === false ? "false" : "null";
+    country.append(o);
+  }
+  tz.replaceChildren(blank("Select a time zone"));
+  for (const row of st.zones) if (!row.retired) { const o = document.createElement("option"); o.value = row.time_zone_id; o.textContent = row.time_zone_id; tz.append(o); }
+  parent.replaceChildren(blank("Select a client"));
+  for (const row of st.clients) { const o = document.createElement("option"); o.value = row.client_id; o.textContent = row.name; parent.append(o); }
+}
+async function loadRef() {
+  const partner = encodeURIComponent(st.route.partnerId);
+  const clientList = st.route.entity === "client" ? Promise.resolve({ status: 200, body: { clients: [] } })
+    : api("GET", `/orgs/partners/${partner}/clients`, { timeoutMs: getTimeout() });
+  const [countries, zones, clients] = await Promise.all([
+    api("GET", "/ref/countries", { timeoutMs: getTimeout() }),
+    api("GET", "/ref/time-zones", { timeoutMs: getTimeout() }),
+    clientList,
+  ]);
+  if (countries.status !== 200 || zones.status !== 200 || !countries.body || !zones.body) {
+    show($("banner-loading"), false);
+    showReadError(countries.status !== 200 ? countries : zones, "error");
+    body.dataset.state = "error";
+    return false;
+  }
+  // 403/404 on the client list is the caller's scope, not a missing country list. The dropdown stays empty and the
+  // create POST remains the denial, the same as before this form existed. Any other client-list failure blocks the form.
+  const listed = clients.status === 200 && clients.body ? (clients.body.clients || []) : null;
+  if (listed === null && clients.status !== 403 && clients.status !== 404) {
+    show($("banner-loading"), false);
+    showReadError(clients, "error");
+    body.dataset.state = "error";
+    return false;
+  }
+  st.countries = countries.body.countries || [];
+  st.zones = zones.body.time_zones || [];
+  st.clients = listed || [];
+  fillRefSelects();
+  return true;
+}
 function syncForm() {
   const f = readForm(), entra = f.method === "entra", create = st.mode === "create", k = st.kind;
+  const clientCreate = create && st.route && st.route.entity === "client";
   show($("f-lname"), create);
+  show($("f-setup"), create);
+  show($("f-parent"), create && !clientCreate);
+  show($("f-pull"), create && !clientCreate);
+  show($("f-method"), !clientCreate);
+  show($("f-dname"), !clientCreate);
+  show($("c-mfa"), !clientCreate);
+  text($("lname-kind"), clientCreate ? "Client name" : "Location name");
+  if (clientCreate) {
+    show($("f-tenant"), false); show($("c-fallback"), false); show($("f-reason"), false); show($("banner-downgrade"), false);
+    text($("btn-save"), "Create client"); title("Create client");
+    return;
+  }
   show($("f-tenant"), entra);
   show($("c-fallback"), entra);
   const before = create ? null : st.view;
@@ -284,6 +384,9 @@ function applyErrors(r) {
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   if (st.locked) return; // [TLD 15:08 item 4] locked after an UNKNOWN outcome: no second write from this page
+  // A page that never reached create or edit (still loading, or the reference lists failed) has no location id and no
+  // If-Match. A click on the hidden Save button must not turn that into an update.
+  if (st.mode !== "create" && st.mode !== "edit") return;
   // [TLD 16:00 / DEC-144] the Create guard is re-read at submit: another tab / a restored page may have recorded an unresolved create.
   if (st.mode === "create" && classifyCreateGuard(pendingGet(pendingKey("create", st.route.partnerId))).present) { await enterCreateBlocked(); return; }
   hideErrors();
@@ -294,7 +397,19 @@ $("form").addEventListener("submit", async (e) => {
     // [TLD 2026-11-05 15:08, supersedes TLD 07:54] writeOutcome: "unknown" (timeout of headers or body, transport failure,
     // unusable answer, unexpected 3xx / opaqueredirect, 5xx) -> never saved / never "nothing saved", no retry, Save / Create
     // locked; "session" (401 only) -> the verified sign-in copy, not the unknown lock; "rejected" (contract 4xx) -> the error.
-    if (st.mode === "create") {
+    if (st.mode === "create" && st.route.entity === "client") {
+      const r = await api("POST", `/orgs/partners/${encodeURIComponent(st.route.partnerId)}/clients`, { json: buildClient(st.route.partnerId, $("lname").value, f), timeoutMs: writeTimeout() });
+      if (r.status === 201 && r.json && usableClientBody(r.body)) {
+        text($("saved-client"), r.body.name || "");
+        show($("form"), false);
+        show($("banner-client-saved"), true);
+        $("banner-client-saved").focus();
+        st.locked = true;
+        body.dataset.state = "saved";
+        return;
+      }
+      await writeFailed(writeOutcome(r, 201), r);
+    } else if (st.mode === "create") {
       const r = await api("POST", "/orgs/locations", { json: buildCreate(st.route.partnerId, $("lname").value, f), timeoutMs: writeTimeout() });
       const w = writeOutcome(r, 201);
       if (w.kind === "ok") {
@@ -386,9 +501,37 @@ async function openCreateForm() {
   const lo = limitsOutcome(lr);
   if (lo.kind === "error" || lo.kind === "error401") { show($("banner-loading"), false); showReadError(lr, lo.kind); body.dataset.state = "error"; return; }
   setLimits(lo.kind === "server" ? lo.limits : null);
+  if (!(await loadRef())) return;
   fillForm({ provider_kind: "database", display_name: "", entra_allowed_tenant_ids: [], mfa_required: true, allow_db_fallback: false, name: "" });
+  clearSetup();
   setMode("create");
 }
+$("country").addEventListener("change", () => {
+  $("region-unused").checked = false;
+  $("postal-unused").checked = false;
+  applyApplicability();
+});
+$("btn-pull-address").addEventListener("click", async () => {
+  clearFieldError("parent");
+  const id = $("parent").value;
+  if (!id) { setFieldError("parent", "Select a client first."); return; }
+  const phone = $("phone").value, email = $("email").value, zone = $("tz").value;
+  const r = await api("GET", `/orgs/partners/${encodeURIComponent(st.route.partnerId)}/clients/${encodeURIComponent(id)}`, { timeoutMs: getTimeout() });
+  if (r.status !== 200 || !r.body) { applyErrors(r); return; }
+  const a = r.body;
+  $("address1").value = a.address1 ?? "";
+  $("address2").value = a.address2 ?? "";
+  $("city").value = a.city ?? "";
+  $("region").value = a.region ?? "";
+  $("postal").value = a.postal_code ?? "";
+  $("country").value = String(a.country_code ?? "").trim();
+  $("region-unused").checked = false;
+  $("postal-unused").checked = false;
+  $("phone").value = phone;
+  $("email").value = email;
+  $("tz").value = zone;
+  applyApplicability();
+});
 $("btn-enable-create").addEventListener("click", async () => {
   if (!$("ack-missing").checked) return; // the checkbox alone, and this button without it, change nothing
   const key = pendingKey("create", st.route.partnerId);
@@ -399,7 +542,9 @@ $("btn-enable-create").addEventListener("click", async () => {
   if (!clearMatchingAttempt(key)) return; // DEC144-ENABLE-CLEAR
   show($("create-recovery"), false);
   setLimits(lo.kind === "server" ? lo.limits : null);
+  if (!(await loadRef())) return;
   fillForm({ provider_kind: "database", display_name: "", entra_allowed_tenant_ids: [], mfa_required: true, allow_db_fallback: false, name: "" });
+  clearSetup();
   setMode("create");
 });
 $("btn-found").addEventListener("click", () => {
@@ -462,7 +607,7 @@ async function start() {
   if (st.route.mode === "create") {
     st.kind = createKind(body.dataset.adminType);
     setChip(st.kind, st.route.partnerId);
-    text($("bc-page"), "New location");
+    text($("bc-page"), st.route.entity === "client" ? "New client" : "New location");
     // [DEC-144] a pending attempt stays blocked across reload and re-authentication. The host's data-admin-type is not
     // the acknowledgement authority; enterCreateBlocked reads reason-bounds and keeps the guard unless bounds_editor
     // is true for this partner.

@@ -6,14 +6,44 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Route from the page path: /orgs/{partner_id}/locations/{location_id}/sign-in or /orgs/{partner_id}/locations/new.
  *  C3 (a) [TLD 2026-11-04 9:49]: the partner comes from the org in the URL; there is no partner picker. */
 export function parseRoute(pathname) {
+  const client = /\/orgs\/([^/]+)\/clients\/new\/?$/.exec(pathname);
+  if (client) {
+    const partnerId = decodeURIComponent(client[1]);
+    if (!UUID.test(partnerId)) return null;
+    return { mode: "create", entity: "client", partnerId, locationId: null };
+  }
   const m = /\/orgs\/([^/]+)\/locations\/([^/]+)(?:\/sign-in)?\/?$/.exec(pathname);
   if (!m) return null;
   const partnerId = decodeURIComponent(m[1]);
   if (!UUID.test(partnerId)) return null;
-  if (m[2] === "new" && !/\/sign-in\/?$/.test(pathname)) return { mode: "create", partnerId, locationId: null };
+  if (m[2] === "new" && !/\/sign-in\/?$/.test(pathname)) return { mode: "create", entity: "location", partnerId, locationId: null };
   const locationId = decodeURIComponent(m[2]);
   if (!UUID.test(locationId) || !/\/sign-in\/?$/.test(pathname)) return null;
-  return { mode: "edit", partnerId, locationId };
+  return { mode: "edit", entity: "location", partnerId, locationId };
+}
+
+/** flag true = used, false = unused, null = unknown. A used or unused field never sends a confirmation. */
+export function confirmationValue(flag, value, checked) {
+  if (flag === true || flag === false) return false;
+  return String(value ?? "").trim() === "" && checked === true;
+}
+
+export function setupFields(f) {
+  const s = f && f.setup || {};
+  const blank = (v) => String(v ?? "").trim() === "";
+  return {
+    address1: s.address1 ?? "",
+    address2: blank(s.address2) ? null : String(s.address2).trim(),
+    city: s.city ?? "",
+    region: blank(s.region) ? null : String(s.region).trim(),
+    country_code: s.country ?? "",
+    postal_code: blank(s.postal) ? null : String(s.postal).trim(),
+    region_unused_confirmed: confirmationValue(s.regionFlag, s.region, s.regionChecked),
+    postal_unused_confirmed: confirmationValue(s.postalFlag, s.postal, s.postalChecked),
+    phone: s.phone ?? "",
+    email: blank(s.email) ? null : String(s.email).trim(),
+    time_zone_id: s.timeZone ?? "",
+  };
 }
 
 /** Who is looking, from what the API returned (the API decides; the page only follows):
@@ -66,7 +96,14 @@ export function buildWrite(f) {
 export function buildCreate(partnerId, name, f) {
   const lc = buildWrite(f);
   if (lc.reason === null) delete lc.reason;
-  return { partner_id: partnerId, name, login_config: lc };
+  const body = { partner_id: partnerId, name, login_config: lc };
+  if (f && f.setup) Object.assign(body, setupFields(f));
+  if (f && Object.prototype.hasOwnProperty.call(f, "clientId")) body.client_id = f.clientId;
+  return body;
+}
+
+export function buildClient(partnerId, name, f) {
+  return { partner_id: partnerId, name, ...setupFields(f) };
 }
 
 export const METHOD_LABEL = Object.freeze({ database: "Username and password + one-time code", entra: "Microsoft (Entra ID)" });
@@ -113,7 +150,11 @@ export function changeDetails(c) {
  *  "method", which has no error slot (same as Edit), so it is banner-only too. */
 const WRITE_TARGET = Object.freeze({ provider_kind: "method", display_name: "dname", entra_allowed_tenant_ids: "tenant",
   mfa_required: "mfa", allow_db_fallback: "fallback", reason: "reason" });
-const CREATE_TARGET = Object.freeze({ name: "lname" });
+const CREATE_TARGET = Object.freeze({
+  name: "lname", client_id: "parent", address1: "address1", address2: "address2", city: "city", region: "region",
+  country_code: "country", postal_code: "postal", region_unused_confirmed: "region-unused", postal_unused_confirmed: "postal-unused",
+  phone: "phone", email: "email", time_zone_id: "tz",
+});
 const own = (o, k) => (Object.hasOwn(o, k) ? o[k] : null);
 export function fieldTarget(path) {
   const p = String(path);
@@ -210,6 +251,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export function usableWriteBody(okStatus, body) {
   if (!body || typeof body !== "object") return false;
   return okStatus === 201 ? typeof body.location_id === "string" && UUID_RE.test(body.location_id) : Number.isInteger(body.row_version);
+}
+
+/** A client create 201 is the address snapshot, not a location id. A location 201 must not satisfy this. */
+export function usableClientBody(body) {
+  return !!body && typeof body.client_id === "string" && UUID_RE.test(body.client_id)
+    && typeof body.name === "string" && typeof body.country_code === "string" && !("phone" in body) && !("time_zone_id" in body);
 }
 
 /** [TLD 2026-11-05 15:08 items 1-3; supersedes the TLD 07:54 version] what the page does with a write answer r

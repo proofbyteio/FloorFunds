@@ -1,18 +1,19 @@
 // node --test ui/orgs/tests/core.test.mjs  (node built-ins only; no packages)
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, formatPT, changeDetails, fieldTarget,
+import { parseRoute, viewerKind, createKind, isDowngrade, buildWrite, buildCreate, buildClient, confirmationValue, setupFields, formatPT, changeDetails, fieldTarget,
   ifMatchFrom, fallbackText, limitsFrom, limitsOrFallback, REASON_BOUNDS, partnerMfaState, PARTNER_MFA_OFF_HINT,
   errIdFor, LIMITS_TIMEOUT_MS, limitsTimeout, limitsOutcome, locationOutcome, writeOutcome, historyOutcome, CONTRACT_ERROR_CODES, WRITE_REJECTIONS,
-  parseCreateAttempt, ackClearsAttempt, createAckAuthority, classifyCreateGuard, CREATE_GUARD_UNREAD } from "../js/llc-core.mjs";
+  parseCreateAttempt, ackClearsAttempt, createAckAuthority, classifyCreateGuard, CREATE_GUARD_UNREAD, usableClientBody } from "../js/llc-core.mjs";
 import { TOP_LEVEL, FETCH_COPY, FIELD, requestIdText, reasonLengthCopy, REASON_HINT_FALLBACK, REASON_LENGTH_FALLBACK,
   REASON_HINT_FALLBACK_EDIT, reasonHintFallback } from "../js/error-copy.mjs";
 
 const P = "5f0c3e1a-0001-4000-8000-000000000001", L = "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8";
 
 test("route: edit, create, prefix, rejects", () => {
-  assert.deepEqual(parseRoute(`/orgs/${P}/locations/${L}/sign-in`), { mode: "edit", partnerId: P, locationId: L });
-  assert.deepEqual(parseRoute(`/as/sa/orgs/${P}/locations/new`), { mode: "create", partnerId: P, locationId: null });
+  assert.deepEqual(parseRoute(`/orgs/${P}/locations/${L}/sign-in`), { mode: "edit", entity: "location", partnerId: P, locationId: L });
+  assert.deepEqual(parseRoute(`/as/sa/orgs/${P}/locations/new`), { mode: "create", entity: "location", partnerId: P, locationId: null });
+  assert.deepEqual(parseRoute(`/as/sa/orgs/${P}/clients/new`), { mode: "create", entity: "client", partnerId: P, locationId: null });
   assert.equal(parseRoute(`/orgs/${P}/locations/new/sign-in`), null);
   assert.equal(parseRoute(`/orgs/example/locations/${L}/sign-in`), null);
   assert.equal(parseRoute(`/orgs/${P}/locations/${L}`), null);
@@ -54,6 +55,44 @@ test("write body: exactly the six client keys, never oidc_* or secret_ref", () =
   assert.equal(c.partner_id, P);
   assert.equal("reason" in c.login_config, false);
   for (const o of [w, d, c.login_config]) for (const k of ["oidc_authority", "oidc_client_id", "secret_ref", "secret", "row_version"]) assert.equal(k in o, false);
+});
+
+test("DEC-145 country truth table: used cannot be waived, unused needs no confirmation, unknown is per field", () => {
+  const cases = [
+    [true, "", true, false],
+    [true, "CA", true, false],
+    [false, "", true, false],
+    [false, "CA", true, false],
+    [null, "", true, true],
+    [null, "", false, false],
+    [null, "   ", true, true],
+    [null, "CA", true, false],
+    [null, "CA", false, false],
+  ];
+  for (const [flag, value, checked, want] of cases)
+    assert.equal(confirmationValue(flag, value, checked), want, JSON.stringify([flag, value, checked]));
+  const setup = setupFields({ setup: {
+    address1: " 1 Main ", address2: "  ", city: "Town", region: "  ", country: "us", postal: "94105",
+    regionFlag: null, postalFlag: true, regionChecked: true, postalChecked: true, phone: "+1 650 253 0000", email: " ", timeZone: "America/Los_Angeles",
+  }});
+  assert.equal(setup.address2, null);
+  assert.equal(setup.email, null);
+  assert.equal(setup.region, null);
+  assert.equal(setup.region_unused_confirmed, true);
+  assert.equal(setup.postal_unused_confirmed, false);
+  assert.equal(setup.country_code, "us");
+  const body = buildClient(P, "North", { setup: { address1: "1", city: "C", country: "DE", region: "", postal: "10115", regionFlag: false, postalFlag: true, regionChecked: true, postalChecked: false, phone: "+4930", timeZone: "Europe/Berlin" } });
+  assert.equal(body.region_unused_confirmed, false);
+  assert.equal("phone_e164" in body, false);
+  assert.equal("time_zone" in body, false);
+  assert.equal(fieldTarget("region_unused_confirmed"), "region-unused");
+  assert.equal(fieldTarget("postal_unused_confirmed"), "postal-unused");
+  assert.notEqual(fieldTarget("region_unused_confirmed"), fieldTarget("postal_unused_confirmed"));
+  const id = "11111111-2222-4333-8444-555555555555";
+  assert.equal(usableClientBody({ client_id: id, name: "North", country_code: "US", address1: "1" }), true);
+  assert.equal(usableClientBody({ client_id: id, name: "North", country_code: "US", phone: "+16502530000" }), false);
+  assert.equal(usableClientBody({ location_id: id, name: "Cage" }), false);
+  assert.equal(writeOutcome({ status: 201, json: true, body: { client_id: id, name: "North", country_code: "US" } }, 201).kind, "unknown");
 });
 
 test("history formatting: PT and actor-id details", () => {

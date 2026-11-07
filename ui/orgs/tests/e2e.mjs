@@ -72,9 +72,35 @@ async function open(path) { await cdp("Page.navigate", { url: H.ui + path }); aw
 const vis = (sel) => ev(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return false; for (let x = e; x; x = x.parentElement) if (x.hidden) return false; return e.getClientRects().length > 0; })()`);
 const txt = (sel) => ev(`(document.querySelector(${JSON.stringify(sel)})?.textContent ?? "").replace(/\\s+/g, " ").trim()`);
 const attr = (sel, a) => ev(`document.querySelector(${JSON.stringify(sel)})?.getAttribute(${JSON.stringify(a)}) ?? null`);
-const click = (sel) => ev(`document.querySelector(${JSON.stringify(sel)}).click(), true`);
+const clickDom = (sel) => ev(`document.querySelector(${JSON.stringify(sel)}).click(), true`);
+async function fillDefaultSetup() {
+  await ev(`(() => {
+    const box = document.querySelector("#f-setup");
+    if (!box || box.hidden) return true;
+    const address = document.querySelector("#address1");
+    if (!address || address.value.trim() !== "") return true;
+    address.value = "1 Market Street";
+    document.querySelector("#city").value = "San Francisco";
+    const country = document.querySelector("#country");
+    country.value = "US";
+    country.dispatchEvent(new Event("change", { bubbles: true }));
+    document.querySelector("#region").value = "CA";
+    document.querySelector("#postal").value = "94105";
+    document.querySelector("#tz").value = "America/Los_Angeles";
+    document.querySelector("#phone").value = "+16502530000";
+    const parent = document.querySelector("#parent");
+    const wrap = document.querySelector("#f-parent");
+    if (parent && wrap && !wrap.hidden && !parent.value) {
+      const opt = [...parent.options].find((o) => o.value);
+      if (opt) parent.value = opt.value;
+    }
+    return true;
+  })()`);
+}
+const click = async (sel) => { if (sel === "#btn-save") await fillDefaultSetup(); return clickDom(sel); };
 const type = (sel, v) => ev(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); e.focus(); e.value = ${JSON.stringify(v)}; e.dispatchEvent(new Event("input", { bubbles: true })); e.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
 async function mouseClick(sel) {
+  await ev(`document.querySelector(${JSON.stringify(sel)}).scrollIntoView({ block: "center" }), true`);
   const p = await ev(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
   for (const type of ["mousePressed", "mouseReleased"]) await cdp("Input.dispatchMouseEvent", { type, x: p.x, y: p.y, button: "left", clickCount: 1 });
   await sleep(50);
@@ -97,7 +123,9 @@ const ridInfo = (sel) => ev(`(() => { const b = document.querySelector(${JSON.st
 const ridOk = (i) => !!i && i.vis && RID.test(i.text) && i.display === "block" && i.userSelect !== "none" && i.textOverflow !== "ellipsis" && !/nowrap/.test(i.whiteSpace)
   && i.color === "rgb(107, 107, 123)" && i.last && i.ownLine && i.fits && i.selected === i.text;
 const noRidOnFields = () => ev(`[...document.querySelectorAll(".field__error")].every(e => !e.querySelector("[data-request-id]") && !/Request ID/.test(e.textContent))`);
-async function save() { await click("#btn-save"); await until(`document.querySelector("#btn-save").getAttribute("aria-disabled") !== "true"`); await sleep(100); }
+async function save() {
+  await click("#btn-save"); await until(`document.querySelector("#btn-save").getAttribute("aria-disabled") !== "true"`); await sleep(100);
+}
 const step = async (name, f) => { try { await f(); } catch (e) { ok(`${name}: ran`, false, String(e && e.stack || e)); } };
 
 // ---------- scenarios ----------
@@ -1573,11 +1601,189 @@ await step("XSS hostile API text", async () => {
   H.xssPaJs = js;
 });
 
+// ---------- DEC-145/146 client and location forms ----------
+await step("DEC-145 client and location forms", async () => {
+  await ev(`localStorage.clear(), true`);
+  const partner = H.partner_a;
+  const openCreate = async (path) => {
+    await open(path);
+    await until(`document.body.dataset.state === "create" && !document.querySelector("#form").hidden && document.querySelectorAll("#country option").length > 50`, 10000);
+  };
+  const setCountry = async (code) => ev(`(() => { const c = document.querySelector("#country"); c.value = ${JSON.stringify(code)}; c.dispatchEvent(new Event("change", { bubbles: true })); return c.value; })()`);
+  const fieldText = async (id) => txt(`#${id}`);
+  await openCreate(`/as/sa/orgs/${partner}/clients/new`);
+  const opened = {
+    countries: await ev(`document.querySelectorAll("#country option").length`),
+    zones: await ev(`document.querySelectorAll("#tz option").length`),
+    tz: await ev(`document.querySelector("#tz").value`),
+    country: await ev(`document.querySelector("#country").value`),
+    label: await txt("#lname-kind"),
+    save: await txt("#btn-save"),
+    parent: await vis("#f-parent"),
+    method: await vis("#f-method"),
+  };
+  ok("DEC-145 client form: ref dropdowns, blank country and time zone, no parent or sign-in fields",
+    opened.countries > 50 && opened.zones > 50 && opened.tz === "" && opened.country === "" && opened.label === "Client name" && opened.save === "Create client" && !opened.parent && !opened.method, opened);
+  await type("#lname", "Forms Client US");
+  await type("#address1", "1 Market Street");
+  await type("#city", "San Francisco");
+  await setCountry("US");
+  await type("#postal", "94105");
+  await type("#phone", "+16502530000");
+  await ev(`document.querySelector("#tz").value = "America/Los_Angeles", true`);
+  const usedBox = { hidden: !(await vis("#f-region-unused")), checked: await ev(`document.querySelector("#region-unused").checked`) };
+  ok("DEC-145 client: a known-used region hides the confirmation and does not check it", usedBox.hidden && usedBox.checked === false, usedBox);
+  await clickDom("#btn-save");
+  await until(`!document.querySelector("#region-err").hidden`, 10000);
+  ok("DEC-145 client: blank known-used region shows the field error and does not save",
+    await fieldText("region-err") === "Fill in this field." && await ev(`document.body.dataset.state`) === "create" && !(await vis("#banner-client-saved")));
+  await ev(`document.querySelector("#region-unused").checked = true, true`);
+  await ev(`document.querySelector("#region-err").textContent = ""`);
+  await clickDom("#btn-save");
+  await until(`document.querySelector("#region-err").textContent.includes("Fill in this field.")`, 10000);
+  ok("DEC-145 client: checking the hidden known-used box does not waive the region",
+    await fieldText("region-err") === "Fill in this field." && await ev(`document.body.dataset.state`) === "create");
+  await type("#region", "CA");
+  await clickDom("#btn-save");
+  await until(`document.querySelector("#btn-save").getAttribute("aria-disabled") !== "true"`, 10000);
+  await until(`document.body.dataset.state === "saved" && !document.querySelector("#banner-client-saved").hidden`, 10000);
+  ok("DEC-145 client: US with region, postal, phone, and an explicit zone saves",
+    await txt("#saved-client") === "Forms Client US" && await ev(`document.body.dataset.state`) === "saved");
+
+  await openCreate(`/as/sa/orgs/${partner}/clients/new`);
+  await type("#lname", "Forms Client AG");
+  await type("#address1", "1 Independence Avenue");
+  await type("#city", "St John's");
+  await setCountry("AG");
+  await type("#phone", "+12684601234");
+  await ev(`document.querySelector("#tz").value = "America/St_Johns", true`);
+  const ag = {
+    regionBox: await vis("#f-region-unused"),
+    postalBox: await vis("#f-postal-unused"),
+    regionFor: await ev(`document.querySelector("label[for=region-unused]") !== null`),
+    postalFor: await ev(`document.querySelector("label[for=postal-unused]") !== null`),
+    regionChecked: await ev(`document.querySelector("#region-unused").checked`),
+  };
+  ok("DEC-145 client: unknown region and postal each show their own confirmation, unchecked",
+    ag.regionBox && ag.postalBox && ag.regionFor && ag.postalFor && ag.regionChecked === false, ag);
+  await clickDom("#btn-save");
+  await until(`!document.querySelector("#region-unused-err").hidden && !document.querySelector("#postal-unused-err").hidden`, 10000);
+  ok("DEC-145 client: unknown blanks ask for each confirmation",
+    await fieldText("region-unused-err") === "Confirm that this field is not used for the selected country, or enter a value."
+      && await fieldText("postal-unused-err") === "Confirm that this field is not used for the selected country, or enter a value.");
+  await click("#region-unused");
+  await clickDom("#btn-save");
+  await until(`document.querySelector("#region-unused-err").hidden && !document.querySelector("#postal-unused-err").hidden`, 10000);
+  ok("DEC-145 client: confirming region leaves the postal confirmation required",
+    await fieldText("postal-unused-err") === "Confirm that this field is not used for the selected country, or enter a value." && await ev(`document.querySelector("#region-unused-err").hidden`));
+  await setCountry("US");
+  const afterChange = {
+    regionChecked: await ev(`document.querySelector("#region-unused").checked`),
+    postalChecked: await ev(`document.querySelector("#postal-unused").checked`),
+    regionBox: await vis("#f-region-unused"),
+    tz: await ev(`document.querySelector("#tz").value`),
+    phone: await ev(`document.querySelector("#phone").value`),
+  };
+  ok("DEC-145 client: changing country clears both confirmations and keeps the phone and time zone",
+    afterChange.regionChecked === false && afterChange.postalChecked === false && !afterChange.regionBox && afterChange.tz === "America/St_Johns" && afterChange.phone === "+12684601234", afterChange);
+  await setCountry("AG");
+  await type("#region", "St John's");
+  await click("#postal-unused");
+  await clickDom("#btn-save");
+  await until(`document.body.dataset.state === "saved"`, 10000);
+  ok("DEC-145 client: a filled unknown region needs no confirmation and a confirmed blank postal saves",
+    await txt("#saved-client") === "Forms Client AG");
+
+  await openCreate(`/as/sa/orgs/${partner}/clients/new`);
+  await type("#lname", "Forms Client DE");
+  await type("#address1", "1 Unter den Linden");
+  await type("#city", "Berlin");
+  await setCountry("DE");
+  await type("#phone", "+4930123456");
+  await ev(`document.querySelector("#tz").value = "Europe/Berlin", true`);
+  const de = { region: await ev(`document.querySelector("#region").readOnly`), box: await vis("#f-region-unused"), hint: await txt("#region-hint") };
+  ok("DEC-145 client: a known-unused region is blank, read-only, and has no confirmation",
+    de.region && !de.box && de.hint === "Not used for this country.", de);
+  await type("#postal", "10115");
+  await clickDom("#btn-save");
+  await until(`document.body.dataset.state === "saved"`, 10000);
+  ok("DEC-145 client: Germany with a postal code and a blank region saves", await txt("#saved-client") === "Forms Client DE");
+
+  const tamper = await fetch(`${H.ui}/as/sa/api/orgs/partners/${partner}/clients`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+    partner_id: partner, name: "Tampered waiver", address1: "1 Market Street", city: "San Francisco", region: "   ", country_code: "US", postal_code: "94105",
+    region_unused_confirmed: true, postal_unused_confirmed: false, phone: "+16502530000", time_zone_id: "America/Los_Angeles" }) });
+  const tamperBody = await tamper.json();
+  const tamperFields = (tamperBody.fields || []).map(f => `${f.field}:${f.code}`);
+  ok("DEC-145 server: whitespace region plus a known-used confirmation is still required",
+    tamper.status === 422 && tamperFields.includes("region:required") && tamperFields.includes("region_unused_confirmed:confirmation_not_applicable"), tamperFields);
+  const cross = await fetch(`${H.ui}/as/pa/api/orgs/partners/${H.partner_b}/clients`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+    partner_id: H.partner_b, name: "Cross", address1: "1 Market Street", city: "San Francisco", region: "CA", country_code: "US", postal_code: "94105",
+    region_unused_confirmed: false, postal_unused_confirmed: false, phone: "+16502530000", time_zone_id: "America/Los_Angeles" }) });
+  ok("DEC-145 Partner Admin cannot create a client under another partner", cross.status === 404, cross.status);
+  const reader = await fetch(`${H.ui}/as/rd/api/orgs/partners/${partner}/clients`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  ok("DEC-145 org:V cannot create a client", reader.status === 403, reader.status);
+
+  await openCreate(`/as/sa/orgs/${partner}/locations/new`);
+  const locOpen = { tz: await ev(`document.querySelector("#tz").value`), parent: await vis("#f-parent"), label: await txt("#lname-kind"), save: await txt("#btn-save") };
+  ok("DEC-145 location form: time zone starts blank and the client list is a separate choice",
+    locOpen.tz === "" && locOpen.parent && locOpen.label === "Location name" && locOpen.save === "Create location", locOpen);
+  await ev(`(() => { const s = document.querySelector("#parent"); const o = [...s.options].find(x => x.textContent === "Forms Client US"); if (o) s.value = o.value; return s.value; })()`);
+  const clientId = await ev(`document.querySelector("#parent").value`);
+  await type("#phone", "+16502530001");
+  await type("#email", "desk@example.test");
+  await ev(`document.querySelector("#tz").value = "America/Chicago", true`);
+  await setCountry("AG");
+  await click("#region-unused");
+  await click("#postal-unused");
+  await clickDom("#btn-pull-address");
+  await until(`document.querySelector("#address1").value === "1 Market Street"`, 10000);
+  const pulled = {
+    address1: await ev(`document.querySelector("#address1").value`),
+    city: await ev(`document.querySelector("#city").value`),
+    region: await ev(`document.querySelector("#region").value`),
+    country: await ev(`document.querySelector("#country").value`),
+    postal: await ev(`document.querySelector("#postal").value`),
+    phone: await ev(`document.querySelector("#phone").value`),
+    email: await ev(`document.querySelector("#email").value`),
+    tz: await ev(`document.querySelector("#tz").value`),
+    regionChecked: await ev(`document.querySelector("#region-unused").checked`),
+    postalChecked: await ev(`document.querySelector("#postal-unused").checked`),
+    regionBox: await vis("#f-region-unused"),
+  };
+  ok("DEC-145 location: pull copies the address only, clears confirmations, and keeps phone, email, and time zone",
+    pulled.address1 === "1 Market Street" && pulled.city === "San Francisco" && pulled.region === "CA" && pulled.country === "US" && pulled.postal === "94105"
+      && pulled.phone === "+16502530001" && pulled.email === "desk@example.test" && pulled.tz === "America/Chicago"
+      && pulled.regionChecked === false && pulled.postalChecked === false && !pulled.regionBox, pulled);
+  await type("#address1", "9 Edited Street");
+  await type("#lname", "Forms Location");
+  await type("#dname", "Forms Casino");
+  await clickDom("#btn-save");
+  const locationSaved = await until(`/\\/locations\\/[0-9a-f-]{36}\\/sign-in$/.test(location.pathname) && document.body.dataset.state === "saved"`, 10000);
+  if (locationSaved) { p6cCreated++; p6cSaChanges++; }
+  const pre = await fetch(`${H.ui}/as/sa/api/orgs/partners/${partner}/clients/${clientId}`);
+  const preBody = pre.status === 200 ? await pre.json() : {};
+  const preKeys = Object.keys(preBody).sort().join(",");
+  ok("DEC-145 location save does not change the client, and the address read has no phone, email, or time zone",
+    pre.status === 200 && preBody.address1 === "1 Market Street" && preKeys === "address1,address2,city,client_id,country_code,name,partner_id,postal_code,region", preKeys);
+  const other = await fetch(`${H.ui}/as/pb/api/orgs/partners/${H.partner_b}/clients/${clientId}`);
+  ok("DEC-145 another partner cannot read the client address", other.status === 404, other.status);
+  const badPhone = await fetch(`${H.ui}/as/sa/api/orgs/locations`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+    partner_id: partner, name: "Bad phone", client_id: clientId, address1: "1 Market Street", city: "San Francisco", region: "CA", country_code: "US", postal_code: "94105",
+    region_unused_confirmed: false, postal_unused_confirmed: false, phone: "not-a-phone", time_zone_id: "America/Los_Angeles",
+    login_config: { provider_kind: "database", display_name: "Forms Casino", entra_allowed_tenant_ids: [], allow_db_fallback: false, mfa_required: true } }) });
+  const badBody = await badPhone.json();
+  ok("DEC-145 invalid phone is 422 and returns no location id",
+    badPhone.status === 422 && (badBody.fields || []).some(f => f.field === "phone" && f.code === "phone_invalid") && !badBody.location_id, badPhone.status);
+});
+
 // ---------- global ----------
 ok("no CSP violation, script exception or console error/warning on any page", problems.length === 0, problems);
 ok("no request left 127.0.0.1 (ui host only)", outside.length === 0, outside);
 ok("every write body: no oidc_*, secret_ref or secret key", bodies.length >= 8 && bodies.every(b => !/oidc_|secret/.test(b.body)), bodies.map(b => b.body));
-ok("every PUT carried a strong If-Match", bodies.filter(b => b.method === "PUT").every(b => /^"\d+"$/.test(b.ifMatch ?? "")));
+{
+  const badPuts = bodies.filter(b => b.method === "PUT" && !/^"\d+"$/.test(b.ifMatch ?? "")).map(b => ({ url: b.url, ifMatch: b.ifMatch ?? null, body: b.body.slice(0, 180) }));
+  ok("every PUT carried a strong If-Match", badPuts.length === 0, badPuts);
+}
 
 // ---------- real PG after the run ----------
 host.stdin.end();
