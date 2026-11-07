@@ -44,13 +44,28 @@ public sealed class AuditOutbox(JsonSchemaLite schema)
     }
 
     public static JsonObject ProviderChanged(Guid eventId, DateTimeOffset at, AdminIdentity actor, string requestId, Guid partner, Guid location, Guid changeId,
-        bool created, long rowVersion, IEnumerable<string> changed, JsonObject? before, JsonObject after, string? reason) =>
-        Envelope(eventId, "auth.provider.changed", "success", at, actor, requestId, true, "location", location, created ? "create" : "update", partner, [location],
-            new JsonObject
-            {
-                ["location_id"] = location.ToString("D"), ["change_id"] = changeId.ToString("D"), ["change_kind"] = created ? "created" : "updated",
-                ["row_version"] = rowVersion, ["changed_fields"] = Arr(changed), ["before"] = before, ["after"] = after, ["reason"] = reason,
-            });
+        bool created, long rowVersion, IEnumerable<string> changed, JsonObject? before, JsonObject after, string? reason, JsonObject? setup = null)
+    {
+        var details = new JsonObject
+        {
+            ["location_id"] = location.ToString("D"), ["change_id"] = changeId.ToString("D"), ["change_kind"] = created ? "created" : "updated",
+            ["row_version"] = rowVersion, ["changed_fields"] = Arr(changed), ["before"] = before, ["after"] = after, ["reason"] = reason,
+        };
+        if (setup is not null) details["setup"] = setup;
+        var e = Envelope(eventId, "auth.provider.changed", "success", at, actor, requestId, true, "location", location, created ? "create" : "update", partner, [location], details);
+        if (setup?["client_id"] is JsonValue id) e["scope"]!["cachd_client_id"] = id.DeepClone();
+        return e;
+    }
+
+    /// <summary>DEC-145/146. Who confirmed an unknown region or postal field, and which country that confirmation belongs to. No street, phone, or email.</summary>
+    public static JsonObject SetupRecorded(Guid eventId, DateTimeOffset at, AdminIdentity actor, string requestId, string entity, Guid targetId,
+        Guid partner, Guid? location, JsonObject setup)
+    {
+        var locations = location is { } l ? new[] { l } : Array.Empty<Guid>();
+        var e = Envelope(eventId, "auth.setup.recorded", "success", at, actor, requestId, true, entity, targetId, "create", partner, locations, setup);
+        if (setup["client_id"] is JsonValue id) e["scope"]!["cachd_client_id"] = id.DeepClone();
+        return e;
+    }
 
     /// <summary>
     /// auth.partner_reason_bounds.changed (Slice A; LD 12b1d9cd name; DEC-113: no reason field). old_* = the bounds in force before

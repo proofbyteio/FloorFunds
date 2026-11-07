@@ -13,7 +13,7 @@ public sealed record LoginConfigInput(
     string ProviderKind, string DisplayName, Guid[] Tenants,
     bool AllowDbFallback, bool MfaRequired, string? Reason, IReadOnlyList<string> PresentConfigFields);
 
-public sealed record CreateInput(Guid PartnerId, string Name, LoginConfigInput Config);
+public sealed record CreateInput(Guid PartnerId, string Name, LoginConfigInput Config, SetupValidator.Draft Setup);
 
 /// <summary>
 /// The reason-length bounds in force for one partner (Slice A, TLD 08:00 Q3): the partner's auth.partner_reason_bounds row when
@@ -59,7 +59,7 @@ public static class LoginConfigValidator
         return AuditFieldNames.Where(keys.Contains).ToList();
     }
 
-    static string KeyName(string prefix, string key) => prefix + (SafeKeyRe.IsMatch(key) ? key : "*");
+    internal static string KeyName(string prefix, string key) => prefix + (SafeKeyRe.IsMatch(key) ? key : "*");
 
     public static LoginConfigInput? ValidateWrite(JsonElement o, string prefix, CurrentConfig? current, ReasonBounds bounds, List<FieldError> errs, out Guid[] boundCandidates)
     {
@@ -150,13 +150,16 @@ public static class LoginConfigValidator
         return new LoginConfigInput(kind!, display!, tenants.ToArray(), fallback!.Value, mfa!.Value, reason, present);
     }
 
-    public static CreateInput? ValidateCreate(JsonElement o, ReasonBounds bounds, List<FieldError> errs, out Guid[] boundCandidates)
+    public static CreateInput? ValidateCreate(JsonElement o, ReasonBounds bounds, List<FieldError> errs, out Guid[] boundCandidates, out SetupValidator.Draft setup)
     {
         boundCandidates = [];
         int before = errs.Count;
         foreach (var p in o.EnumerateObject())
-            if (p.Name is not ("partner_id" or "name" or "login_config")) errs.Add(new(KeyName("", p.Name), "unknown_field"));
+            if (p.Name is not ("partner_id" or "name" or "login_config" or "client_id" or "address1" or "address2" or "city" or "region"
+                or "country_code" or "postal_code" or "region_unused_confirmed" or "postal_unused_confirmed" or "phone" or "email" or "time_zone_id"))
+                errs.Add(new(KeyName("", p.Name), "unknown_field"));
         Guid partner = default; string? name = null; LoginConfigInput? cfg = null;
+        setup = SetupValidator.Parse(o, errs, requireClientId: true);
         if (!o.TryGetProperty("partner_id", out var pid)) errs.Add(new("partner_id", "required"));
         else if (pid.ValueKind != JsonValueKind.String) errs.Add(new("partner_id", "type"));
         else if (!TryUuid(pid, out partner) || partner == Guid.Empty) errs.Add(new("partner_id", "partner_id_format"));
@@ -171,7 +174,7 @@ public static class LoginConfigValidator
         if (!o.TryGetProperty("login_config", out var lc)) errs.Add(new("login_config", "required"));
         else if (lc.ValueKind != JsonValueKind.Object) errs.Add(new("login_config", "type"));
         else cfg = ValidateWrite(lc, "login_config/", null, bounds, errs, out boundCandidates);
-        return errs.Count > before || cfg is null ? null : new CreateInput(partner, name!, cfg);
+        return errs.Count > before || cfg is null ? null : new CreateInput(partner, name!, cfg, setup);
     }
 
     /// <summary>

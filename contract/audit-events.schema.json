@@ -23,7 +23,8 @@
     { "$ref": "#/$defs/auth.mfa.recovery_codes_issued" },
     { "$ref": "#/$defs/auth.config.session_cap_changed" },
     { "$ref": "#/$defs/auth.config.change_denied" },
-    { "$ref": "#/$defs/auth.partner_reason_bounds.changed" }
+    { "$ref": "#/$defs/auth.partner_reason_bounds.changed" },
+    { "$ref": "#/$defs/auth.setup.recorded" }
   ],
   "$defs": {
     "id": { "type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" },
@@ -372,7 +373,8 @@
             "changed_fields": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/login_config_field" } },
             "before": { "oneOf": [ { "$ref": "#/$defs/provider_state" }, { "type": "null" } ] },
             "after": { "$ref": "#/$defs/provider_state" },
-            "reason": { "description": "Stored and emitted TRIMMED: null, or 10..500 characters after trim [TLD 2026-11-04 7:39, OQ-S2a-7]; the server applies LoginConfig:ReasonMinLength..ReasonMaxLength, always inside 10..500 (DB CHECK llcc_reason) [DEC-107, TLD 2026-11-04 16:32 Q1=A].", "oneOf": [ { "type": "null" }, { "type": "string", "minLength": 10, "maxLength": 500, "pattern": "^\\s*\\S[\\s\\S]{8,498}\\S\\s*$" } ] }
+            "reason": { "description": "Stored and emitted TRIMMED: null, or 10..500 characters after trim [TLD 2026-11-04 7:39, OQ-S2a-7]; the server applies LoginConfig:ReasonMinLength..ReasonMaxLength, always inside 10..500 (DB CHECK llcc_reason) [DEC-107, TLD 2026-11-04 16:32 Q1=A].", "oneOf": [ { "type": "null" }, { "type": "string", "minLength": 10, "maxLength": 500, "pattern": "^\\s*\\S[\\s\\S]{8,498}\\S\\s*$" } ] },
+            "setup": { "$ref": "#/$defs/setup_assertion" }
           }
         }
       },
@@ -598,6 +600,49 @@
           "then": { "required": ["scope"], "properties": { "scope": { "required": ["partner_id"]}}}
         }
       ]
+    },
+    "setup_assertion": {
+      "description": "DEC-145/146. Country applicability and the admin's per-field unused confirmation. No street address, phone, or email. Applicability is fmt_has_region / fmt_has_postal: used, unused, or unknown. source_require is not product requiredness.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client_id", "country_code", "region_applicability", "postal_applicability", "region_unused_confirmed", "postal_unused_confirmed", "time_zone_id"],
+      "properties": {
+        "client_id": { "$ref": "#/$defs/id" },
+        "country_code": { "type": "string", "pattern": "^[A-Z]{2}$" },
+        "region_applicability": { "enum": ["used", "unused", "unknown"] },
+        "postal_applicability": { "enum": ["used", "unused", "unknown"] },
+        "region_unused_confirmed": { "type": "boolean" },
+        "postal_unused_confirmed": { "type": "boolean" },
+        "time_zone_id": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "auth.setup.recorded": {
+      "description": "DEC-145/146. Emitted in the same transaction as a new auth.client row. Records who confirmed an unknown region or postal field for that country. A location create records the same assertion on auth.provider.changed details.setup so that create stays one event.",
+      "required": ["admin_type", "actor", "target", "scope"],
+      "properties": {
+        "event_type": { "const": "auth.setup.recorded" },
+        "outcome": { "const": "success" },
+        "admin_type": { "enum": ["super", "partner"] },
+        "target": {
+          "required": ["type", "id"],
+          "properties": { "type": { "enum": ["client", "location"] }, "id": { "$ref": "#/$defs/id" } }
+        },
+        "scope": { "required": ["partner_id", "location_ids", "cachd_client_id"] },
+        "details": {
+          "required": ["entity", "client_id", "country_code", "region_applicability", "postal_applicability", "region_unused_confirmed", "postal_unused_confirmed", "time_zone_id"],
+          "additionalProperties": false,
+          "properties": {
+            "entity": { "enum": ["client", "location"] },
+            "client_id": { "$ref": "#/$defs/id" },
+            "country_code": { "type": "string", "pattern": "^[A-Z]{2}$" },
+            "region_applicability": { "enum": ["used", "unused", "unknown"] },
+            "postal_applicability": { "enum": ["used", "unused", "unknown"] },
+            "region_unused_confirmed": { "type": "boolean" },
+            "postal_unused_confirmed": { "type": "boolean" },
+            "time_zone_id": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        }
+      }
     }
   }
 }

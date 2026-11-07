@@ -38,15 +38,41 @@ static class UiHost
         // DEC-107: the same API code started with LoginConfig 50/200 (Program.cs), proxied under /c50/{persona}/...
         using var api50 = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{c50Port}") };
         // ---- seed via the API as the Super Admin ----
-        async Task<JsonObject> Create(Guid partner, string name, object cfg)
+        async Task<Guid> MakeClient(Guid partner, string name)
         {
-            using var req = new HttpRequestMessage(HttpMethod.Post, "/api/orgs/locations")
-            { Content = new StringContent(JsonSerializer.Serialize(new { partner_id = partner.ToString("D"), name, login_config = cfg }), Encoding.UTF8, "application/json") };
+            var body = new Dictionary<string, object?>
+            {
+                ["partner_id"] = partner.ToString("D"), ["name"] = name, ["address1"] = "1 Market Street", ["city"] = "San Francisco",
+                ["region"] = "CA", ["country_code"] = "US", ["postal_code"] = "94105", ["region_unused_confirmed"] = false,
+                ["postal_unused_confirmed"] = false, ["phone"] = "+16502530000", ["time_zone_id"] = "America/Los_Angeles",
+            };
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"/api/orgs/partners/{partner:D}/clients")
+            { Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json") };
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", personas["sa"].Token);
             using var res = await api.SendAsync(req);
-            var body = await res.Content.ReadAsStringAsync();
-            if (res.StatusCode != HttpStatusCode.Created) throw new InvalidOperationException($"ui-host seed {name}: {(int)res.StatusCode} {body}");
-            return JsonNode.Parse(body)!.AsObject();
+            var raw = await res.Content.ReadAsStringAsync();
+            if (res.StatusCode != HttpStatusCode.Created) throw new InvalidOperationException($"ui-host client {name}: {(int)res.StatusCode} {raw}");
+            return Guid.Parse((string)JsonNode.Parse(raw)!["client_id"]!);
+        }
+        var clientA = await MakeClient(partnerA, "UI Client A");
+        var clientB = await MakeClient(partnerB, "UI Client B");
+        Dictionary<string, object?> Setup(Guid client) => new()
+        {
+            ["client_id"] = client.ToString("D"), ["address1"] = "1 Market Street", ["city"] = "San Francisco", ["region"] = "CA",
+            ["country_code"] = "US", ["postal_code"] = "94105", ["region_unused_confirmed"] = false, ["postal_unused_confirmed"] = false,
+            ["phone"] = "+16502530000", ["time_zone_id"] = "America/Los_Angeles",
+        };
+        async Task<JsonObject> Create(Guid partner, string name, object cfg)
+        {
+            var body = Setup(partner == partnerB ? clientB : clientA);
+            body["partner_id"] = partner.ToString("D"); body["name"] = name; body["login_config"] = cfg;
+            using var req = new HttpRequestMessage(HttpMethod.Post, "/api/orgs/locations")
+            { Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json") };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", personas["sa"].Token);
+            using var res = await api.SendAsync(req);
+            var raw = await res.Content.ReadAsStringAsync();
+            if (res.StatusCode != HttpStatusCode.Created) throw new InvalidOperationException($"ui-host seed {name}: {(int)res.StatusCode} {raw}");
+            return JsonNode.Parse(raw)!.AsObject();
         }
         object Db(string d) => new { provider_kind = "database", display_name = d, entra_allowed_tenant_ids = Array.Empty<string>(), allow_db_fallback = false, mfa_required = true };
         object Entra(string d, Guid t) => new { provider_kind = "entra", display_name = d, entra_allowed_tenant_ids = new[] { t.ToString("D") }, allow_db_fallback = false, mfa_required = true };
@@ -75,8 +101,12 @@ static class UiHost
         readerLocations.Add(Id(l6));
         async Task<JsonObject> Probe(string label, object body)
         {
+            var node = JsonSerializer.SerializeToNode(body)!.AsObject();
+            var pid = (string?)node["partner_id"];
+            var setupClient = pid == partnerB.ToString("D") ? clientB : clientA;
+            foreach (var (k, v) in Setup(setupClient)) if (!node.ContainsKey(k)) node[k] = JsonSerializer.SerializeToNode(v);
             using var req = new HttpRequestMessage(HttpMethod.Post, "/api/orgs/locations")
-            { Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json") };
+            { Content = new StringContent(node.ToJsonString(), Encoding.UTF8, "application/json") };
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", personas["sa"].Token);
             using var res = await api.SendAsync(req);
             var fields = new JsonArray();
@@ -202,6 +232,7 @@ static class UiHost
         {
             ["ui"] = $"http://127.0.0.1:{uiPort}",
             ["partner_a"] = partnerA.ToString("D"), ["partner_b"] = partnerB.ToString("D"),
+            ["client_a"] = clientA.ToString("D"), ["client_b"] = clientB.ToString("D"),
             ["l1"] = Id(l1).ToString("D"), ["l2"] = Id(l2).ToString("D"), ["l3"] = Id(l3).ToString("D"), ["l4"] = Id(l4).ToString("D"),
             ["t_free"] = tenants[2].ToString("D"), ["t_taken"] = tenants[1].ToString("D"),
             ["l5"] = Id(l5).ToString("D"), ["xss"] = new JsonObject { ["name"] = xName, ["display_name"] = xDname, ["reason"] = xReason, ["probes"] = probes,

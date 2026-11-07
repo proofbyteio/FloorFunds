@@ -59,7 +59,7 @@ async Task OExec(string sql, params object?[] ps) // owner-side fixture edit (te
     if (await cmd.ExecuteNonQueryAsync() != 1) throw new InvalidOperationException("fixture edit hit != 1 row");
 }
 async Task<long> Count(string table) => await OScalar<long>($"SELECT count(*) FROM auth.{table}");
-string[] Tables = ["audit_outbox", "location_login_config_change", "location_login_config", "location", "partner_reason_bounds"]; // Slice A: + partner_reason_bounds (no FK)
+string[] Tables = ["audit_outbox", "location_login_config_change", "location_login_config", "location", "client", "partner_reason_bounds"]; // DEC-145: client after location (FK)
 foreach (var t in Tables)
     if (await Count(t) != 0)
     { Console.Error.WriteLine($"refuse: auth.{t} is not empty (run on a migrated, unseeded DB; the checks delete what they create)"); return 2; }
@@ -374,6 +374,7 @@ async Task<R> Send(HttpMethod m, string path, string? token, string? body = null
 Task<R> Get(string path, string? tok) => Send(HttpMethod.Get, path, tok);
 Task<R> Put(Guid loc, string? tok, object body, string? ifMatch) => Send(HttpMethod.Put, $"/api/orgs/locations/{loc:D}/login-config", tok, J(body), ifMatch);
 Task<R> Post(string? tok, object body) => Send(HttpMethod.Post, "/api/orgs/locations", tok, J(body));
+Task<R> PostClient(string? tok, Guid partner, object body) => Send(HttpMethod.Post, $"/api/orgs/partners/{partner:D}/clients", tok, J(body));
 string Cfg(Guid l) => $"/api/orgs/locations/{l:D}/login-config";
 static string J(object o) => o is string s ? s : JsonSerializer.Serialize(o);
 // [SSE2 review 3fac1d52 Info, MD4b] A body that is not a JSON object records a FAIL and yields the placeholder, so the run carries on.
@@ -438,7 +439,25 @@ static Dictionary<string, object?> Merge(Dictionary<string, object?> d, object? 
 }
 Dictionary<string, object?> With(Dictionary<string, object?> d, string k, object? v) { var n = new Dictionary<string, object?>(d) { [k] = v }; return n; }
 Dictionary<string, object?> Without(Dictionary<string, object?> d, string k) { var n = new Dictionary<string, object?>(d); n.Remove(k); return n; }
-object Create(Guid partner, string name, object cfg) => new Dictionary<string, object?> { ["partner_id"] = partner.ToString("D"), ["name"] = name, ["login_config"] = cfg };
+var setupClients = new Dictionary<Guid, Guid>();
+Guid ClientFor(Guid partner)
+{
+    if (setupClients.TryGetValue(partner, out var have)) return have;
+    var id = Guid.NewGuid();
+    OExec("""
+        INSERT INTO auth.client (client_id, partner_id, name, address1, city, region, country_code, postal_code,
+               region_unused_confirmed, postal_unused_confirmed, phone_e164, time_zone_id, created_by, created_at)
+        VALUES ($1, $2, 'Fixture client', '1 Market Street', 'San Francisco', 'CA', 'US', '94105', false, false, '+16502530000', 'America/Los_Angeles', $3, now())
+        """, id, partner, U_SA).GetAwaiter().GetResult();
+    setupClients[partner] = id;
+    return id;
+}
+object Create(Guid partner, string name, object cfg) => new Dictionary<string, object?>
+{
+    ["partner_id"] = partner.ToString("D"), ["name"] = name, ["login_config"] = cfg, ["client_id"] = ClientFor(partner).ToString("D"),
+    ["address1"] = "1 Market Street", ["city"] = "San Francisco", ["region"] = "CA", ["country_code"] = "US", ["postal_code"] = "94105",
+    ["region_unused_confirmed"] = false, ["postal_unused_confirmed"] = false, ["phone"] = "+16502530000", ["time_zone_id"] = "America/Los_Angeles",
+};
 Guid LocOf(R r) => Guid.Parse((string)Obj(r.Body)["location_id"]!);
 long Rv(Guid loc) => OScalar<long>("SELECT row_version FROM auth.location_login_config WHERE location_id = $1", loc).GetAwaiter().GetResult();
 
@@ -2581,6 +2600,70 @@ try
         Ok("ref GET time-zones: Partner Admin 200 equals the same ids", ExactZones(paZ) && paZ.Body == saZ.Body);
         ForSchema("ref_time_zones", saZ);
         Ok("ref GET: no audit row and no country row written", await Count("audit_outbox") == outboxBefore && await OScalar<long>("SELECT count(*) FROM ref.country") == countryCountBefore);
+    }
+
+    // ================= 8b. DEC-145/146 client and location setup =================
+    {
+        Dictionary<string, object?> ClientBody(Guid partner, string country, string? region, string? postal, bool regionConfirmed, bool postalConfirmed, string phone = "+16502530000", string zone = "America/Los_Angeles", string? email = null) => new()
+        {
+            ["partner_id"] = partner.ToString("D"), ["name"] = "Setup client", ["address1"] = "1 Market Street", ["city"] = "City",
+            ["region"] = region, ["country_code"] = country, ["postal_code"] = postal, ["region_unused_confirmed"] = regionConfirmed,
+            ["postal_unused_confirmed"] = postalConfirmed, ["phone"] = phone, ["email"] = email, ["time_zone_id"] = zone,
+        };
+        async Task<long> Clients() => await Count("client");
+        var before = await Clients();
+        var missingPhone = ClientBody(P_A, "US", "CA", "94105", false, false, phone: "not a phone");
+        var bad = await PostClient(SA, P_A, missingPhone);
+        Ok("DEC-145 client: invalid phone -> 422 phone_invalid and no row", HasField(bad, "phone", "phone_invalid") && await Clients() == before, bad.Body);
+        var waive = ClientBody(P_A, "US", null, "94105", true, false);
+        var waived = await PostClient(SA, P_A, waive);
+        Ok("DEC-145 client: known-used region cannot be waived", HasField(waived, "region", "required") && HasField(waived, "region_unused_confirmed", "confirmation_not_applicable") && await Clients() == before, waived.Body);
+        var blankUs = ClientBody(P_A, "US", "   ", "94105", false, false);
+        Ok("DEC-145 client: whitespace region is blank and still required", HasField(await PostClient(SA, P_A, blankUs), "region", "required"));
+        var de = await PostClient(SA, P_A, ClientBody(P_A, "DE", null, "10115", false, false, phone: "+4930123456"));
+        Ok("DEC-145 client: known-unused region stays blank with no confirmation", de.Status == 201 && !Obj(de.Body).ContainsKey("phone") && !Obj(de.Body).ContainsKey("time_zone_id") && !Obj(de.Body).ContainsKey("region_unused_confirmed"), de.Body);
+        var deFilled = await PostClient(SA, P_A, ClientBody(P_A, "DE", "BE", "10115", false, false, phone: "+4930123456"));
+        Ok("DEC-145 client: a value in a known-unused region is field_not_used", HasField(deFilled, "region", "field_not_used"));
+        var agOpen = await PostClient(SA, P_A, ClientBody(P_A, "AG", null, null, false, false, phone: "+12684601234"));
+        Ok("DEC-145 client: unknown blanks without per-field confirmation are refused separately", HasField(agOpen, "region_unused_confirmed", "unused_confirmation_required") && HasField(agOpen, "postal_unused_confirmed", "unused_confirmation_required"));
+        var agOne = await PostClient(SA, P_A, ClientBody(P_A, "AG", null, null, true, false, phone: "+12684601234"));
+        Ok("DEC-145 client: confirming region does not confirm postal", agOne.Status == 422 && HasField(agOne, "postal_unused_confirmed", "unused_confirmation_required") && !HasField(agOne, "region_unused_confirmed", "unused_confirmation_required"), agOne.Body);
+        var agOk = await PostClient(SA, P_A, ClientBody(P_A, "AG", "St John's", null, false, true, phone: "+12684601234"));
+        Ok("DEC-145 client: a nonblank unknown region needs no confirmation", agOk.Status == 201, agOk.Body);
+        var agBoth = await PostClient(PA, P_A, ClientBody(P_A, "AG", null, null, true, true, phone: "+12684601234", email: "a@example.test"));
+        Ok("DEC-145 client: Partner Admin creates in its own partner", agBoth.Status == 201, agBoth.Body);
+        if (agBoth.Status == 201)
+        {
+            var id = Guid.Parse((string)Obj(agBoth.Body)["client_id"]!);
+            var pre = await Get($"/api/orgs/partners/{P_A:D}/clients/{id:D}", PA);
+            var keys = pre.Status == 200 ? Obj(pre.Body).Select(kv => kv.Key).OrderBy(k => k).ToArray() : [];
+            Ok("DEC-145 prefill: address fields only", pre.Status == 200 && string.Join(",", keys) == "address1,address2,city,client_id,country_code,name,partner_id,postal_code,region", string.Join(",", keys));
+            var other = await Get($"/api/orgs/partners/{P_B:D}/clients/{id:D}", PB);
+            Ok("DEC-145 prefill: another partner's client id is 404", other.Status == 404, other.Body);
+            var moved = await OScalar<string>("SELECT address1 FROM auth.client WHERE client_id = $1", id);
+            Ok("DEC-145 prefill read does not change the client", moved == "1 Market Street");
+        }
+        Ok("DEC-145 client: Partner Admin cannot create under another partner", (await PostClient(PA, P_B, ClientBody(P_B, "US", "CA", "94105", false, false))).Status == 404);
+        Ok("DEC-145 client: Client Admin, custom role, and org:V are 403",
+            (await PostClient(NO, P_A, ClientBody(P_A, "US", "CA", "94105", false, false))).Status == 403
+            && (await PostClient(CU, P_A, ClientBody(P_A, "US", "CA", "94105", false, false))).Status == 403
+            && (await PostClient(RD, P_A, ClientBody(P_A, "US", "CA", "94105", false, false))).Status == 403);
+        var locs = await Count("location");
+        var stolen = Create(P_B, "Stolen", DbCfg());
+        ((Dictionary<string, object?>)stolen)["client_id"] = ClientFor(P_A).ToString("D");
+        var stolenR = await Post(SA, stolen);
+        Ok("DEC-145 location: a client from another partner is 404 and writes nothing", stolenR.Status == 404 && await Count("location") == locs, stolenR.Body);
+        var stolenPa = Create(P_A, "Stolen PA", DbCfg());
+        ((Dictionary<string, object?>)stolenPa)["client_id"] = ClientFor(P_B).ToString("D");
+        var stolenPaR = await Post(PA, stolenPa);
+        Ok("DEC-145 location: Partner Admin cannot attach another partner's client", stolenPaR.Status == 404 && await Count("location") == locs, stolenPaR.Body);
+        var noZone = Create(P_A, "No zone", DbCfg());
+        ((Dictionary<string, object?>)noZone)["time_zone_id"] = "";
+        Ok("DEC-145 location: a blank time zone is required and writes nothing", HasField(await Post(SA, noZone), "time_zone_id", "required") && await Count("location") == locs);
+        var ev = await NewEvents();
+        Ok("DEC-145: client creates recorded auth.setup.recorded and no street or phone in that event",
+            ev.Any(e => (string?)e["event_type"] == "auth.setup.recorded" && (string?)e["details"]!["country_code"] == "AG" && !e.ToJsonString().Contains("Market") && !e.ToJsonString().Contains("+1")),
+            ev.Count > 0 ? ev[0]["event_type"]?.ToString() : "none");
     }
 
     // ================= 9. cross-check corpus (crosscheck.py: Python jsonschema Draft 2020-12) =================

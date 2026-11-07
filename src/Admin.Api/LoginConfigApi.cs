@@ -28,7 +28,7 @@ sealed record LlcRow(Guid LocationId, Guid PartnerId, string Slug, string Name, 
 /// set only by <see cref="SetScopeAsync"/>, transaction-local (set_config(..., true)), from the <see cref="Caller"/> (validated token +
 /// server-side directory) or from the definer function's answer, never from the body, headers, query or path. All SQL is parameterised.
 /// </summary>
-public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, AdminTokenValidator tokens, IAdminDirectory directory,
+public sealed partial class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, AdminTokenValidator tokens, IAdminDirectory directory,
     AuditOutbox outbox, ILogger<LoginConfigApi> log, TimeProvider clock)
 {
     const int MaxBody = 64 * 1024;
@@ -721,7 +721,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         var errs = new List<FieldError>();
         // Slice A: the body's partner's bounds; with no valid partner_id (422 anyway) the deployment config.
         var bounds = bodyPartner is { } rp ? await ResolveBoundsAsync(c, tx, rp) : ReasonBounds.FromConfig(opt);
-        var n = LoginConfigValidator.ValidateCreate(o, bounds, errs, out var bound);
+        var n = LoginConfigValidator.ValidateCreate(o, bounds, errs, out var bound, out var setup);
+        await SetupValidator.ApplyAsync(c, tx, setup, errs, ctx.RequestAborted);
         var tenantBound = bound.Length > 0 && bodyPartner is { } tp && await TenantBoundAsync(c, tx, bound, tp);
         if (tenantBound) errs.Add(new("login_config/entra_allowed_tenant_ids/0", "tenant_bound_elsewhere"));
         if (errs.Count > 0)
@@ -741,15 +742,42 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         }
         if (down.Count > 0 && cfg.Reason is null) throw Err(400, "reason_required");
 
+        var clientPartner = await ClientPartnerAsync(c, tx, setup.ClientId!.Value);
+        if (clientPartner is null || clientPartner != n.PartnerId)
+        {
+            await tx.RollbackAsync();
+            // forbidden_scope requires a Partner Admin actor_partner_id. A Super Admin has no partner, so the
+            // same 404 is returned without that event. A missing client and a client from another partner look the same.
+            if (who.IsPartnerAdmin)
+                await DenyAsync(who, "forbidden_scope", n.PartnerId, null, LoginConfigValidator.AttemptedFields(o.TryGetProperty("login_config", out var lc) ? lc : null));
+            throw Err(404, "not_found");
+        }
+
         var entra = cfg.ProviderKind == "entra";
         var location = Guid.NewGuid();
         var now = Now();
-        await using (var ins = new NpgsqlCommand("INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ($1, $2, $3, $4)", c, tx))
+        await using (var ins = new NpgsqlCommand("""
+            INSERT INTO auth.location (location_id, partner_id, slug, name, client_id, address1, address2, city, region, country_code, postal_code,
+                   region_unused_confirmed, postal_unused_confirmed, phone_e164, email, time_zone_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            """, c, tx))
         {
             ins.Parameters.Add(new() { Value = location });
             ins.Parameters.Add(new() { Value = n.PartnerId });
             ins.Parameters.Add(new() { Value = NewSlug() });
             ins.Parameters.Add(new() { Value = n.Name });
+            ins.Parameters.Add(new() { Value = setup.ClientId });
+            ins.Parameters.Add(new() { Value = setup.Address1 });
+            ins.Parameters.Add(new() { Value = (object?)setup.Address2 ?? DBNull.Value });
+            ins.Parameters.Add(new() { Value = setup.City });
+            ins.Parameters.Add(new() { Value = (object?)setup.Region ?? DBNull.Value });
+            ins.Parameters.Add(new() { Value = setup.CountryCode });
+            ins.Parameters.Add(new() { Value = (object?)setup.PostalCode ?? DBNull.Value });
+            ins.Parameters.Add(new() { Value = setup.RegionConfirmed });
+            ins.Parameters.Add(new() { Value = setup.PostalConfirmed });
+            ins.Parameters.Add(new() { Value = setup.PhoneE164 });
+            ins.Parameters.Add(new() { Value = (object?)setup.Email ?? DBNull.Value });
+            ins.Parameters.Add(new() { Value = setup.TimeZoneId });
             await ins.ExecuteNonQueryAsync();
         }
         await using (var ins = new NpgsqlCommand(
@@ -783,7 +811,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         var after = AuditOutbox.State(cfg.ProviderKind, cfg.Tenants, cfg.AllowDbFallback, cfg.MfaRequired);
         await InsertChangeAsync(c, tx, changeId, location, who, cfg.Reason, now, true, cf, null, after, 1);
         await outbox.InsertAsync(c, tx, AuditOutbox.ProviderChanged(Guid.CreateVersion7(), now, who.Id, who.RequestId, n.PartnerId, location, changeId, true,
-            1, cf, null, after, cfg.Reason), CancellationToken.None);
+            1, cf, null, after, cfg.Reason, SetupEvent(setup)), CancellationToken.None);
         var saved = await LoadAsync(c, tx, location, n.PartnerId, false) ?? throw new InvalidOperationException("row vanished");
         await tx.CommitAsync();
         ctx.Response.Headers.Location = $"/api/orgs/locations/{location:D}/login-config";

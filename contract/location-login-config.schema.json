@@ -166,7 +166,15 @@
       "required": [
         "partner_id",
         "name",
-        "login_config"
+        "login_config",
+        "client_id",
+        "address1",
+        "city",
+        "country_code",
+        "region_unused_confirmed",
+        "postal_unused_confirmed",
+        "phone",
+        "time_zone_id"
       ],
       "properties": {
         "partner_id": {
@@ -180,7 +188,19 @@
         },
         "login_config": {
           "$ref": "#/$defs/login_config_write"
-        }
+        },
+        "client_id": { "$ref": "#/$defs/id" },
+        "address1": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "address2": { "type": ["string", "null"], "maxLength": 200 },
+        "city": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "region": { "type": ["string", "null"], "maxLength": 100 },
+        "country_code": { "type": "string", "pattern": "^[A-Za-z]{2}$" },
+        "postal_code": { "type": ["string", "null"], "maxLength": 32 },
+        "region_unused_confirmed": { "type": "boolean" },
+        "postal_unused_confirmed": { "type": "boolean" },
+        "phone": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "email": { "type": ["string", "null"], "maxLength": 254 },
+        "time_zone_id": { "type": "string", "minLength": 1, "maxLength": 64 }
       }
     },
     "secret_view": {
@@ -675,7 +695,19 @@
         "name_invalid",
         "reason_length",
         "reason_bound_range",
-        "reason_bound_order"
+        "reason_bound_order",
+        "text_invalid",
+        "country_code_invalid",
+        "country_unknown",
+        "country_retired",
+        "time_zone_unknown",
+        "time_zone_retired",
+        "phone_invalid",
+        "email_invalid",
+        "confirmation_not_applicable",
+        "unused_confirmation_required",
+        "field_not_used",
+        "client_id_format"
       ]
     },
     "prb_error_response": {
