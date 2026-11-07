@@ -1,0 +1,16 @@
+/* ui/orgs page additions on top of the verbatim theme.css (aaae47e3). No inline styles (CSP style-src 'self'). */
+/* Request ID line, approved D-102 (UX): own last line of a top-level error banner, small, muted #6b6b7b (AA on white),
+   selectable, never truncated (wraps; no ellipsis, no nowrap). Hidden via [hidden] when there is no id. */
+.request-id {
+  display: block;
+  margin-top: .35rem;
+  font-size: .8125rem;
+  line-height: 1.4;
+  color: #6b6b7b;
+  user-select: text;
+  -webkit-user-select: text;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  text-overflow: clip;
+}

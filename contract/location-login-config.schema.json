@@ -1,0 +1,897 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cachd-ones.invalid/contract/location-login-config.schema.json",
+  "title": "Location login config API, contract v1.1 (slice S2a, screen 9)",
+  "description": "Request/response bodies for the location login config API. Prose, check order, error table and DDL intent: v1.1-S2a-location-login-config.md. Table columns [SRC: LD \u00a74.1 L167]. secret_ref is SERVER-FILLED from deployment config key Entra:SecretRef [TLD 2026-11-04 9:49, D-51 (TL 7:40): one app registration per deployment]: it appears in no request, response, event or log (any secret_ref key in a client body -> 422 field_not_writable, value never echoed) [SRC: LD \u00a74.1 L171 'secret_ref is never shown (only set / rotated on)'] [TL Decision, S2a brief]. TLD 2026-11-04 7:39 (OQ rulings) and TLD 2026-11-04 7:41 (UX D-51: oidc_authority/oidc_client_id are server-filled from deployment config, never client-written, and shown only to a Super Admin) and TLD 2026-11-04 9:49 (D-51: secret_ref server-filled too; an Entra create or switch needs only the tenant id from the client) applied. Labels: [SRC], [Confirmed DEC-n], [TL Decision], ASSUMPTION, OPEN.",
+  "$defs": {
+    "id": {
+      "description": "UUID string; same rule as claims/audit schemas (format uuid plus 8-4-4-4-12 pattern, CR-01).",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "provider_kind": {
+      "description": "[SRC: LD \u00a74.1 L167; audit-events $defs.provider_kind].",
+      "enum": [
+        "database",
+        "entra"
+      ]
+    },
+    "tenant_id": {
+      "description": "Entra tenant id (tid). Lower-case canonical form in responses. The nil UUID is refused (ASSUMPTION A-7).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        }
+      ]
+    },
+    "tenant_ids": {
+      "description": "Column is uuid[] [SRC: LD \u00a74.1 L167]; the API accepts EXACTLY ONE for entra and none for database [TL Decision, S2a interim; LD \u00a74.2 L188 'a location lists one allowed tenant ID'].",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/tenant_id"
+      },
+      "maxItems": 1
+    },
+    "oidc_authority": {
+      "description": "SERVER-FILLED from deployment config key Entra:Authority (DRAFT name) [TLD 2026-11-04 7:41, UX D-51]; never accepted from a client. Absolute https BASE URL, scheme+host[:port] only, no path, query, fragment or userinfo, no trailing slash, e.g. https://login.microsoftonline.com. The login service builds {authority}/{tid}/v2.0 per request [TL Decision, S2a brief]. The same rule validates the deployment value at admin API startup.",
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^https://[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252}[A-Za-z0-9])?(?::[0-9]{1,5})?$"
+    },
+    "oidc_client_id": {
+      "description": "SERVER-FILLED from deployment config key Entra:ClientId (DRAFT name): our app registration's client id, a GUID (ASSUMPTION A-8) [TLD 2026-11-04 7:41, UX D-51]; never accepted from a client. Fixtures use fake ids only.",
+      "$ref": "#/$defs/id"
+    },
+    "secret_ref_config": {
+      "description": "NOT a request field [TLD 2026-11-04 9:49, D-51 (TL 7:40): one app registration per deployment]. Shape of the deployment config value Entra:SecretRef (DRAFT name), the one app registration's client-credential reference: ASSUMPTION A-1, an AWS Secrets Manager ARN [SRC: LD \u00a74.1 L168 'secret_ref is an AWS Secrets Manager ARN'], whose account id and region must also be in SecretRef:AllowedAccountIds / SecretRef:AllowedRegions (K4). The admin API checks it at startup and refuses to start (exit 2, the message names the key, never the value). The server copies it into secret_ref on create with entra and on a switch to entra; Entra -> Entra keeps the stored value (A-21). Fixtures use fake account 000000000000 and the word FAKE. Secret kind (client secret vs certificate) deferred.",
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$"
+    },
+    "display_name": {
+      "description": "'Name shown on the sign-in page' [SRC: mockup 09]. Trimmed length 1..100 (ASSUMPTION A-9).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^\\S(?:.*\\S)?$"
+    },
+    "reason": {
+      "description": "Written reason [Confirmed DEC-096, DEC-098]. The server trims it; whitespace-only counts as absent. Non-null after trim: LoginConfig:ReasonMinLength..LoginConfig:ReasonMaxLength code points [DEC-107; TLD 2026-11-04 16:32 Q1=A], deployment config snapshotted at startup (code defaults 10 and 500, Confirmed DEC-108, PM Nov 5 2026 6:47 AM PT, Mohanraj verbatim \"10 to 500\"), always inside the DB's 10..500 (CHECK llcc_reason), so this schema pins 10..500 and the server applies the configured bounds (else 422 reason_length). The bounds in effect: GET reason_min_length / reason_max_length, and GET /api/orgs/login-config/limits. Required for a downgrade (absent/null/blank -> 400 reason_required). Stored trimmed in the change row and the event. Raw input capped at 2000 characters. v1.1 Slice A note [TLD 08:00 Q3]: the configured bounds are now the location's partner's bounds (create: the body's partner_id): the partner's auth.partner_reason_bounds row if present, else LoginConfig:ReasonMinLength / ReasonMaxLength; still always inside 10..500 (DB CHECK prb_bounds and llcc_reason).",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "maxLength": 2000,
+          "pattern": "^\\s*$"
+        },
+        {
+          "type": "string",
+          "maxLength": 2000,
+          "pattern": "^\\s*\\S[\\s\\S]{8,498}\\S\\s*$"
+        }
+      ]
+    },
+    "slug": {
+      "description": "Server-generated, >=64 bits of randomness [SRC: LD \u00a74.3 L193]. Match rule after trim + ASCII lower-case [TL Decision, S2a brief].",
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62})$"
+    },
+    "login_config_write": {
+      "description": "Full replacement of the CLIENT-editable fields (PUT body and the login_config of a create) [TLD 2026-11-04 7:41, UX D-51; TLD 2026-11-04 9:49]: provider_kind, display_name, entra_allowed_tenant_ids, mfa_required, allow_db_fallback, reason. Every editable key except reason is REQUIRED (send [] explicitly) so nothing is cleared silently. oidc_authority / oidc_client_id / secret_ref are server-filled from deployment config (Entra:Authority, Entra:ClientId, Entra:SecretRef): any of them in a body, with any value including null -> 422 field_not_writable, value never echoed [TLD 2026-11-04 9:49, D-51 (TL 7:40): one app registration per deployment]. An Entra create or switch needs only the tenant id. row_version is NOT in the body: it travels in If-Match. Other unknown keys -> 422 unknown_field.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_kind",
+        "display_name",
+        "entra_allowed_tenant_ids",
+        "allow_db_fallback",
+        "mfa_required"
+      ],
+      "properties": {
+        "provider_kind": {
+          "$ref": "#/$defs/provider_kind"
+        },
+        "display_name": {
+          "$ref": "#/$defs/display_name"
+        },
+        "entra_allowed_tenant_ids": {
+          "$ref": "#/$defs/tenant_ids"
+        },
+        "allow_db_fallback": {
+          "type": "boolean"
+        },
+        "mfa_required": {
+          "type": "boolean"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "provider_kind": {
+                "const": "entra"
+              }
+            },
+            "required": [
+              "provider_kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entra_allowed_tenant_ids": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "provider_kind": {
+                "const": "database"
+              }
+            },
+            "required": [
+              "provider_kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entra_allowed_tenant_ids": {
+                "maxItems": 0
+              },
+              "allow_db_fallback": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "create_location_request": {
+      "description": "POST create: a location cannot be created without a provider choice [SRC: LD \u00a74.1 L169]. Needs the registry row 2 org create/edit permission AND org:location_login_method:write [TLD 2026-11-04 7:39, OQ-S2a-2]. slug is server-generated (not accepted). The server fills oidc_authority / oidc_client_id [TLD 2026-11-04 7:41] and secret_ref (from Entra:SecretRef) [TLD 2026-11-04 9:49, D-51 (TL 7:40): one app registration per deployment]; an entra create sends only the tenant id.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "partner_id",
+        "name",
+        "login_config"
+      ],
+      "properties": {
+        "partner_id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^\\S(?:.*\\S)?$"
+        },
+        "login_config": {
+          "$ref": "#/$defs/login_config_write"
+        }
+      }
+    },
+    "secret_view": {
+      "description": "The only secret information ever returned [SRC: LD \u00a74.1 L171], and only to a Super Admin (login_config_view_super) [TLD 2026-11-04 10:02 Q2]. Exactly {set}: set = the location is entra (its secret is deployment config Entra:SecretRef, never the per-row copy) [TLD 2026-11-04 10:02 Q1]. rotated_at is dropped [TLD 2026-11-04 10:42]: real rotation happens in the secret store (AWS Secrets Manager) and the ref usually does not change, so the date of the last rotation is to be read from the secret store (V11-ROTATEDAT).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "set"
+      ],
+      "properties": {
+        "set": {
+          "type": "boolean"
+        }
+      }
+    },
+    "reason_length_limit": {
+      "description": "DEC-107 [TLD 2026-11-04 16:32]: a reason bound in effect (code points after trim), from LoginConfig:ReasonMinLength / LoginConfig:ReasonMaxLength, snapshotted at startup. The API refuses to start unless 10 <= min <= max <= 500 (DB CHECK llcc_reason, db/migrations.sql L94), so every value is in 10..500. Read-only: a client sending reason_min_length / reason_max_length in a write gets 422 unknown_field. v1.1 Slice A note [TLD 08:00 Q3]: a partner's own row (PUT .../partners/{partner_id}/login-config/reason-bounds) overrides the config; DB CHECK prb_bounds keeps it in 10..500 [DEC-114].",
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 500,
+      "readOnly": true
+    },
+    "login_config_view_super": {
+      "description": "GET / PUT 200 / POST 201 body for a SUPER ADMIN caller: includes the server-filled oidc_authority / oidc_client_id [TLD 2026-11-04 7:41] and secret {set} [TLD 2026-11-04 10:02 Q2: Super Admin only; rotated_at dropped, TLD 2026-11-04 10:42], all from deployment config, never the per-row copy [TLD 2026-11-04 10:02 Q1]. Closed: no secret_ref key (additionalProperties false). row_version mirrors the ETag. reason_min_length / reason_max_length: GET 200 only [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)], see login_config_get_* / login_config_saved_*.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "location_id",
+        "partner_id",
+        "slug",
+        "name",
+        "provider_kind",
+        "display_name",
+        "entra_allowed_tenant_ids",
+        "oidc_authority",
+        "oidc_client_id",
+        "secret",
+        "allow_db_fallback",
+        "mfa_required",
+        "row_version",
+        "created_by",
+        "created_at",
+        "updated_by",
+        "updated_at"
+      ],
+      "properties": {
+        "location_id": {
+          "$ref": "#/$defs/id"
+        },
+        "partner_id": {
+          "$ref": "#/$defs/id"
+        },
+        "slug": {
+          "$ref": "#/$defs/slug"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_kind": {
+          "$ref": "#/$defs/provider_kind"
+        },
+        "display_name": {
+          "$ref": "#/$defs/display_name"
+        },
+        "entra_allowed_tenant_ids": {
+          "$ref": "#/$defs/tenant_ids"
+        },
+        "oidc_authority": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/oidc_authority"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "oidc_client_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/oidc_client_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "secret": {
+          "$ref": "#/$defs/secret_view"
+        },
+        "allow_db_fallback": {
+          "type": "boolean"
+        },
+        "mfa_required": {
+          "type": "boolean"
+        },
+        "row_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "created_by": {
+          "$ref": "#/$defs/id"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_by": {
+          "$ref": "#/$defs/id"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reason_min_length": {
+          "$ref": "#/$defs/reason_length_limit"
+        },
+        "reason_max_length": {
+          "$ref": "#/$defs/reason_length_limit"
+        }
+      }
+    },
+    "login_config_view_restricted": {
+      "description": "GET / PUT 200 / POST 201 body for a Partner Admin or an org:V reader: oidc_authority and oidc_client_id are NOT present [TLD 2026-11-04 7:41], and neither is secret {set}: the key is omitted, not null [TLD 2026-11-04 10:02 Q2; UX mockup cbb3ab4b]. Closed (additionalProperties false): no secret_ref, no secret, no oidc_* key. reason_min_length / reason_max_length: GET 200 only [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)], see login_config_get_* / login_config_saved_*.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "location_id",
+        "partner_id",
+        "slug",
+        "name",
+        "provider_kind",
+        "display_name",
+        "entra_allowed_tenant_ids",
+        "allow_db_fallback",
+        "mfa_required",
+        "row_version",
+        "created_by",
+        "created_at",
+        "updated_by",
+        "updated_at"
+      ],
+      "properties": {
+        "location_id": {
+          "$ref": "#/$defs/id"
+        },
+        "partner_id": {
+          "$ref": "#/$defs/id"
+        },
+        "slug": {
+          "$ref": "#/$defs/slug"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_kind": {
+          "$ref": "#/$defs/provider_kind"
+        },
+        "display_name": {
+          "$ref": "#/$defs/display_name"
+        },
+        "entra_allowed_tenant_ids": {
+          "$ref": "#/$defs/tenant_ids"
+        },
+        "allow_db_fallback": {
+          "type": "boolean"
+        },
+        "mfa_required": {
+          "type": "boolean"
+        },
+        "row_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "created_by": {
+          "$ref": "#/$defs/id"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_by": {
+          "$ref": "#/$defs/id"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reason_min_length": {
+          "$ref": "#/$defs/reason_length_limit"
+        },
+        "reason_max_length": {
+          "$ref": "#/$defs/reason_length_limit"
+        }
+      }
+    },
+    "login_config_view": {
+      "description": "Either view; which one is decided by the caller (spec \u00a73.1).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/login_config_view_super"
+        },
+        {
+          "$ref": "#/$defs/login_config_view_restricted"
+        }
+      ]
+    },
+    "login_config_get_super": {
+      "description": "GET /api/orgs/locations/{location_id}/login-config 200 body (super): login_config_view_super plus reason_min_length and reason_max_length, the reason bounds in effect (screen 9 Edit) [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)]. v1.1 Slice A note [TLD 08:00 Q3; DEC-115]: the bounds in effect come from the resolver: the location's partner's auth.partner_reason_bounds row if present, else LoginConfig:ReasonMinLength / ReasonMaxLength (ships 10/500).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/login_config_view_super"
+        },
+        {
+          "required": [
+            "reason_min_length",
+            "reason_max_length"
+          ]
+        }
+      ]
+    },
+    "login_config_get_restricted": {
+      "description": "GET /api/orgs/locations/{location_id}/login-config 200 body (restricted): login_config_view_restricted plus reason_min_length and reason_max_length, the reason bounds in effect (screen 9 Edit) [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)]. v1.1 Slice A note [TLD 08:00 Q3; DEC-115]: the bounds in effect come from the resolver: the location's partner's auth.partner_reason_bounds row if present, else LoginConfig:ReasonMinLength / ReasonMaxLength (ships 10/500).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/login_config_view_restricted"
+        },
+        {
+          "required": [
+            "reason_min_length",
+            "reason_max_length"
+          ]
+        }
+      ]
+    },
+    "login_config_saved_super": {
+      "description": "PUT 200 / POST 201 body (super): login_config_view_super, unchanged by DEC-107: no reason_min_length / reason_max_length [TLD 2026-11-04 16:32 Q2=(ii)].",
+      "allOf": [
+        {
+          "$ref": "#/$defs/login_config_view_super"
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "reason_min_length"
+                ]
+              },
+              {
+                "required": [
+                  "reason_max_length"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "login_config_saved_restricted": {
+      "description": "PUT 200 / POST 201 body (restricted): login_config_view_restricted, unchanged by DEC-107: no reason_min_length / reason_max_length [TLD 2026-11-04 16:32 Q2=(ii)].",
+      "allOf": [
+        {
+          "$ref": "#/$defs/login_config_view_restricted"
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "reason_min_length"
+                ]
+              },
+              {
+                "required": [
+                  "reason_max_length"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "login_config_limits": {
+      "description": "GET /api/orgs/login-config/limits 200 body [DEC-107; TLD 2026-11-04 16:32 Q2=(ii)]: exactly the reason bounds in effect, read-only from the startup snapshot, for screen 9 Create (no location yet). The server guarantees reason_min_length <= reason_max_length (startup rule; not expressible here). Read rule = the location GET's step 2 (org:V): 401 unauthenticated, 403 forbidden without org:V. v1.1 Slice A note [TLD 08:00 Q3]: optional ?partner_id=X (screen 9 Create's partner) answers X's bounds through the resolver (partner row, else LoginConfig:*), behind the cross-partner read check point (Super Admin or any Partner Admin, TO CONFIRM LS-OQ-61; else 404 not_found); malformed partner_id = 422 [{partner_id, partner_id_format}]. Without it: a Partner Admin's own partner, else (Super Admin, org:V reader) the config.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason_min_length",
+        "reason_max_length"
+      ],
+      "properties": {
+        "reason_min_length": {
+          "$ref": "#/$defs/reason_length_limit"
+        },
+        "reason_max_length": {
+          "$ref": "#/$defs/reason_length_limit"
+        }
+      }
+    },
+    "partner_reason_bounds_write": {
+      "description": "v1.1 Slice A. PUT /api/orgs/partners/{partner_id}/login-config/reason-bounds request body: exactly these two integers [DEC-114: 10 <= min <= max <= 500; min > max is 422 reason_bound_order, not expressible here]. No reason field [Confirmed DEC-113]. If-Match is required: the GET's ETag, or \"0\" (expect unset) when the GET had no ETag [TLD 2026-11-05 11:23 A; was \"1\", TLD 08:00 Q2]. A late \"0\" on a set partner is 409 with the current row_version.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason_min_length", "reason_max_length"],
+      "properties": {
+        "reason_min_length": { "$ref": "#/$defs/reason_length_limit" },
+        "reason_max_length": { "$ref": "#/$defs/reason_length_limit" }
+      }
+    },
+    "partner_reason_bounds_view": {
+      "description": "v1.1 Slice A. GET and PUT 200 body of /api/orgs/partners/{partner_id}/login-config/reason-bounds. source partner = the partner's stored row (with row_version, updated_at and, except for a Partner Admin reading ANOTHER partner, updated_by [TLD 11:23 identity scope, SSE2 relay; interim pending LS-OQ-61 / PQ-240, not a DEC]; ETag = row_version); source default = no row: the deployment config LoginConfig:* (10/500 as shipped, DEC-115), and no ETag, no row_version [TLD 08:00 Q2/Q3]. bounds_editor is required on both: true only for a Super Admin or a Partner Admin of this partner (ShowsBoundsEditor), from the validated token, whether or not a row exists [DEC-144 gap 1]. It is not a role string and not writable.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["partner_id", "reason_min_length", "reason_max_length", "source", "bounds_editor"],
+      "properties": {
+        "partner_id": { "$ref": "#/$defs/id" },
+        "reason_min_length": { "$ref": "#/$defs/reason_length_limit" },
+        "reason_max_length": { "$ref": "#/$defs/reason_length_limit" },
+        "source": { "enum": ["partner", "default"] },
+        "bounds_editor": { "type": "boolean" },
+        "row_version": { "type": "integer", "minimum": 1 },
+        "updated_by": { "$ref": "#/$defs/id" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "if": { "properties": { "source": { "const": "partner" } } },
+      "then": { "required": ["row_version", "updated_at"] },
+      "else": { "not": { "anyOf": [{ "required": ["row_version"] }, { "required": ["updated_by"] }, { "required": ["updated_at"] }] } }
+    },
+    "audited_state": {
+      "description": "The before/after shape shared by the change row and auth.provider.changed. Exactly these four keys; never secret_ref [SRC: LD \u00a74.1 L184 'before/after provider kind and tenant ids, no secrets'] [Confirmed DEC-096/098 for the two flags].",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_kind",
+        "entra_allowed_tenant_ids",
+        "allow_db_fallback",
+        "mfa_required"
+      ],
+      "properties": {
+        "provider_kind": {
+          "$ref": "#/$defs/provider_kind"
+        },
+        "entra_allowed_tenant_ids": {
+          "$ref": "#/$defs/tenant_ids"
+        },
+        "allow_db_fallback": {
+          "type": "boolean"
+        },
+        "mfa_required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "changed_field": {
+      "description": "Field NAMES only (never values). secret_ref here means 'set or cleared by the server from deployment config' (set on create with entra / a switch to entra, cleared on a switch to database) [TLD 2026-11-04 9:49, D-51 (TL 7:40): one app registration per deployment]; the value is never recorded (ASSUMPTION A-4).",
+      "enum": [
+        "provider_kind",
+        "display_name",
+        "entra_allowed_tenant_ids",
+        "oidc_authority",
+        "oidc_client_id",
+        "secret_ref",
+        "allow_db_fallback",
+        "mfa_required"
+      ]
+    },
+    "change_history": {
+      "description": "GET .../login-config/changes body (screen 9 'Change history' [SRC: mockup 09]). Newest first. Visible ONLY to a Super Admin and to a Partner Admin of the location's own partner, reasons included; org:V readers get 403 forbidden, another partner's Partner Admin 404 not_found [TLD 2026-11-04 7:39, OQ-S2a-5/-9]. reason is stored trimmed (10..500 or null).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "change_id",
+              "at",
+              "actor_user_id",
+              "admin_type",
+              "change_kind",
+              "changed_fields",
+              "before",
+              "after",
+              "reason",
+              "row_version"
+            ],
+            "properties": {
+              "change_id": {
+                "$ref": "#/$defs/id"
+              },
+              "at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "actor_user_id": {
+                "$ref": "#/$defs/id"
+              },
+              "admin_type": {
+                "enum": [
+                  "super",
+                  "partner"
+                ]
+              },
+              "change_kind": {
+                "enum": [
+                  "created",
+                  "updated"
+                ]
+              },
+              "changed_fields": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/changed_field"
+                },
+                "uniqueItems": true
+              },
+              "before": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/audited_state"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "after": {
+                "$ref": "#/$defs/audited_state"
+              },
+              "reason": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string",
+                    "minLength": 10,
+                    "maxLength": 500,
+                    "pattern": "^\\s*\\S[\\s\\S]{8,498}\\S\\s*$"
+                  }
+                ]
+              },
+              "row_version": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "error_code": {
+      "description": "Top-level error codes; table in the spec \u00a75. No forbidden_scope code: an out-of-scope location answers exactly like a missing one (404 not_found) [TLD 2026-11-04 7:39, OQ-S2a-3]. payload_too_large = 413, body over 64 KiB by Content-Length or while reading, authorised callers only, nothing written [TLD 2026-11-04 9:28, P3-2]. request_timeout = 408, a body under the cap not fully received within the read deadline, authorised callers only, nothing written; S2a-only, frozen v1 errors.md unchanged, the general code waits for v1.1 [TLD 2026-11-04 9:53/10:02, P3-7].",
+      "enum": [
+        "unauthenticated",
+        "forbidden",
+        "not_found",
+        "precondition_required",
+        "if_match_invalid",
+        "concurrency_conflict",
+        "malformed_body",
+        "payload_too_large",
+        "request_timeout",
+        "validation_failed",
+        "not_super_admin",
+        "reason_required"
+      ]
+    },
+    "field_error_code": {
+      "description": "Per-field codes inside a 422 (spec \u00a75.2). field_not_writable = a server-filled key (oidc_authority, oidc_client_id [TLD 2026-11-04 7:41]; secret_ref [TLD 2026-11-04 9:49, D-51]) in the body, any value; reason_length = a non-blank reason not LoginConfig:ReasonMinLength..LoginConfig:ReasonMaxLength code points after trim (defaults 10..500; always inside 10..500) [TLD 2026-11-04 7:39; DEC-107, TLD 2026-11-04 16:32]. secret_ref_required and secret_ref_format were removed at TLD 9:49 (no client-supplied secret_ref left to require or check). v1.1 Slice A (PUT .../reason-bounds): reason_bound_range = reason_min_length or reason_max_length outside 10..500; reason_bound_order = both in range but min > max (on reason_min_length) [DEC-114].",
+      "enum": [
+        "required",
+        "unknown_field",
+        "type",
+        "provider_kind_invalid",
+        "display_name_invalid",
+        "tenant_count",
+        "tenant_id_format",
+        "tenant_bound_elsewhere",
+        "field_not_writable",
+        "field_not_allowed",
+        "fallback_not_applicable",
+        "partner_id_format",
+        "name_invalid",
+        "reason_length",
+        "reason_bound_range",
+        "reason_bound_order"
+      ]
+    },
+    "prb_error_response": {
+      "description": "v1.1 Slice A: every non-2xx body of PUT /api/orgs/partners/{partner_id}/login-config/reason-bounds. Either an error_response (current_row_version >= 1, as every other endpoint), or the one extra case: 409 concurrency_conflict with current_row_version 0 = the partner has no row yet, send If-Match \"0\" [TLD 11:23 A, derived; TLD 13:27 item 1: scoped here, error_response keeps minimum 1].",
+      "anyOf": [
+        { "$ref": "#/$defs/error_response" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["error", "current_row_version"],
+          "properties": { "error": { "const": "concurrency_conflict" }, "current_row_version": { "const": 0 } }
+        }
+      ]
+    },
+    "error_response": {
+      "description": "Every non-2xx body except 401 (no body, WWW-Authenticate only, as LD row 148 pattern). Never echoes submitted values (no secret_ref value, no tenant ids). An out-of-scope location and a missing one return the identical body {\"error\":\"not_found\"}.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "error"
+      ],
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/error_code"
+        },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "field",
+              "code"
+            ],
+            "properties": {
+              "field": {
+                "description": "JSON pointer-ish name, e.g. entra_allowed_tenant_ids/0 or login_config/oidc_client_id.",
+                "type": "string",
+                "minLength": 1
+              },
+              "code": {
+                "$ref": "#/$defs/field_error_code"
+              }
+            }
+          }
+        },
+        "current_row_version": {
+          "description": "409 only: lets the UI show the 'Someone else changed this setting' banner [SRC: mockup 09] and reload. Always >= 1 here; the reason-bounds PUT's unset-partner 0 is only in $defs/prb_error_response [TLD 2026-11-05 13:27 item 1].",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "error": {
+                "const": "validation_failed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "fields"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "fields"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "error": {
+                "const": "concurrency_conflict"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "current_row_version"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "current_row_version"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "access_rules": {
+      "description": "Machine-readable pins of TLD 2026-11-04 7:39 / 7:41 / 10:02 (spec \u00a76.1). check_v1_1_s2a.py validates the spec's access_rules block against this and runs negative cases.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "missing_location",
+        "out_of_scope_location",
+        "history_visible_to",
+        "oidc_fields_visible_to",
+        "secret_visible_to",
+        "reason_trimmed_length",
+        "server_filled_fields",
+        "server_filled_config_keys"
+      ],
+      "properties": {
+        "missing_location": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "http",
+            "body",
+            "event_reason"
+          ],
+          "properties": {
+            "http": {
+              "const": 404
+            },
+            "body": {
+              "const": {
+                "error": "not_found"
+              }
+            },
+            "event_reason": {
+              "const": null
+            }
+          }
+        },
+        "out_of_scope_location": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "http",
+            "body",
+            "event_reason"
+          ],
+          "properties": {
+            "http": {
+              "const": 404
+            },
+            "body": {
+              "const": {
+                "error": "not_found"
+              }
+            },
+            "event_reason": {
+              "const": "forbidden_scope"
+            }
+          }
+        },
+        "history_visible_to": {
+          "const": [
+            "super_admin",
+            "partner_admin_own_partner"
+          ]
+        },
+        "history_refused": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "org_v_reader": {
+              "const": 403
+            },
+            "partner_admin_other_partner": {
+              "const": 404
+            }
+          }
+        },
+        "oidc_fields_visible_to": {
+          "const": [
+            "super_admin"
+          ]
+        },
+        "secret_visible_to": {
+          "description": "secret {set} is in Super Admin responses only (GET, PUT 200, POST 201); Partner Admin and org:V responses omit the key [TLD 2026-11-04 10:02 Q2].",
+          "const": [
+            "super_admin"
+          ]
+        },
+        "reason_trimmed_length": {
+          "description": "DEC-107 [TLD 2026-11-04 16:32 Q1=A]: the reason length (code points after trim) is deployment config, snapshotted at startup; code defaults min 10 and max 500 (Confirmed DEC-108, PM Nov 5 2026 6:47 AM PT, Mohanraj verbatim \"10 to 500\"); startup requires hard_bounds.min <= min <= max <= hard_bounds.max (DB CHECK llcc_reason). Widening the hard bounds needs a migration (DB-WIDEN).",
+          "const": {
+            "min_config_key": "LoginConfig:ReasonMinLength",
+            "max_config_key": "LoginConfig:ReasonMaxLength",
+            "default": {
+              "min": 10,
+              "max": 500
+            },
+            "hard_bounds": {
+              "min": 10,
+              "max": 500
+            }
+          }
+        },
+        "server_filled_fields": {
+          "const": [
+            "oidc_authority",
+            "oidc_client_id",
+            "secret_ref"
+          ]
+        },
+        "server_filled_config_keys": {
+          "const": {
+            "oidc_authority": "Entra:Authority",
+            "oidc_client_id": "Entra:ClientId",
+            "secret_ref": "Entra:SecretRef"
+          }
+        }
+      }
+    }
+  }
+}

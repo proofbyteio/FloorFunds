@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <!-- S2a P3: location login config API (Back Office API, interim /admin host, aud backoffice-api; spec §3-§8).
+       Packages: only ones already approved and pinned in this repo (Npgsql via Auth.Data; Microsoft.IdentityModel.JsonWebTokens
+       [8.19.2] as in Login.StandIn). No JSON Schema package: audit envelopes are checked by the in-repo JsonSchemaLite. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Admin.Api</RootNamespace>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- NU3018 (revocation server unreachable) stays a WARNING: not suppressed, not made an error (TLD 7:56). -->
+    <WarningsNotAsErrors>NU3018</WarningsNotAsErrors>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode>true</RestoreLockedMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" Version="[8.19.2]" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Auth.Data/Auth.Data.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../contract/audit-events.schema.json" Link="contract/audit-events.schema.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

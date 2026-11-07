@@ -1,0 +1,582 @@
+"""Contract v1.1 slice S2a checks (location login config, screen 9).
+
+Validates every ```json example=NAME schema=FILE[#/$defs/X] kind=request|response|event|rules``` block in
+contract/v1.1-S2a-location-login-config.md, asserts secret_ref never appears in response/event examples or
+schemas, and runs negative cases. Run beside check_schemas.py with the same venv. No network, no secrets.
+"""
+import copy, json, os, re, sys
+from jsonschema import Draft202012Validator as V
+
+D = os.path.dirname(os.path.abspath(__file__)) + "/"
+FC = V.FORMAT_CHECKER
+S = {n: json.load(open(D + n, encoding="utf-8")) for n in ["location-login-config.schema.json", "audit-events.schema.json"]}
+for n, x in S.items():
+    V.check_schema(x)
+
+FAIL, PASSES = [], [0]
+def errs(file, ref, inst):
+    sch = S[file]
+    if ref:
+        sch = dict(sch, **{"$ref": ref}); sch.pop("description", None)
+    return sorted(e.message[:120] for e in V(sch, format_checker=FC).iter_errors(inst))
+def exp(name, e, want_err):
+    ok = bool(e) == want_err
+    print(("PASS " if ok else "FAIL ") + name, ("" if ok else e))
+    if ok: PASSES[0] += 1
+    else: FAIL.append(name)
+
+# ---- 1. examples in the spec ----
+spec = open(D + "v1.1-S2a-location-login-config.md", encoding="utf-8").read()
+blocks = re.findall(r"```json example=(\S+) schema=(\S+) kind=(request|response|event|rules)\n(.*?)\n```", spec, re.S)
+EX = {}
+ARN = re.compile(r"arn:aws:secretsmanager", re.I)
+def walk(o, path=""):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            yield path + "/" + k, k, v
+            yield from walk(v, path + "/" + k)
+    elif isinstance(o, list):
+        for i, v in enumerate(o):
+            yield from walk(v, f"{path}/{i}")
+exp("spec has >= 15 example blocks", [] if len(blocks) >= 15 else [f"only {len(blocks)}"], False)
+for name, schema, kind, body in blocks:
+    inst = json.loads(body)
+    EX[name] = inst
+    file, _, frag = schema.partition("#")
+    exp(f"example {name} valid vs {schema}", errs(file, "#" + frag if frag else None, inst), False)
+    if kind in ("response", "event"):
+        leaks = [p for p, k, v in walk(inst) if k == "secret_ref" or (isinstance(v, str) and ARN.search(v))]
+        exp(f"example {name} ({kind}) has no secret_ref / ARN", leaks, False)
+    if kind == "request":
+        real = [p for p, k, v in walk(inst) if isinstance(v, str) and ARN.search(v) and ":000000000000:" not in v]
+        exp(f"example {name} uses only fake ARNs (account 000000000000)", real, False)
+names_needed = {"put_req_pa_mfa_on", "ev_changed_pa_mfa_on", "get_200_entra", "get_200_entra_restricted", "err_404", "access_rules", "put_req_pa_db_to_entra", "put_req_sa_mfa_off", "put_req_entra_to_db", "post_req_create_db", "post_201_db", "changes_200", "err_409", "err_422", "err_403_not_super_admin", "ev_changed_pa_upgrade", "ev_changed_sa_mfa_off", "ev_changed_created", "ev_denied_not_super_admin", "ev_denied_forbidden_scope", "ev_denied_tenant_bound_sa_create", "ev_denied_not_admin_create", "limits_200"}
+exp("all required examples present", sorted(names_needed - EX.keys()), False)
+
+# ---- 2. no response/event schema declares secret_ref ----
+L = S["location-login-config.schema.json"]["$defs"]; A = S["audit-events.schema.json"]["$defs"]
+def declares_secret(o):
+    return any(k == "secret_ref" for p, k, v in walk(o) if "/properties/" in p + "/" and p.split("/")[-2] == "properties")
+for d in ["login_config_view", "login_config_view_super", "login_config_view_restricted", "login_config_get_super", "login_config_get_restricted", "login_config_saved_super", "login_config_saved_restricted", "login_config_limits", "secret_view", "change_history", "audited_state", "error_response"]:
+    exp(f"schema llc $defs.{d} has no secret_ref property", ["declares secret_ref"] if declares_secret(L[d]) else [], False)
+for d in ["auth.provider.changed", "provider_state", "auth.config.change_denied.location_login_config", "auth.config.change_denied.config"]:
+    exp(f"schema audit $defs.{d} has no secret_ref property", ["declares secret_ref"] if declares_secret(A[d]) else [], False)
+exp("audit not_emitted list no longer has change_requested", ["present"] if "auth.provider.change_requested" in json.dumps(A["not_emitted_fields_not_stated"]["properties"]) else [], False)
+
+FAKE = "arn:aws:secretsmanager:us-west-2:000000000000:secret:FAKE-test-only/x-AbCdEf"
+def m(base, **kw):
+    o = copy.deepcopy(base)
+    for k, v in kw.items():
+        cur = o; parts = k.split("__")
+        for pp in parts[:-1]: cur = cur[pp]
+        if v is DEL: cur.pop(parts[-1], None)
+        else: cur[parts[-1]] = v
+    return o
+DEL = object()
+LLC = "location-login-config.schema.json"; W = "#/$defs/login_config_write"; VIEW = "#/$defs/login_config_view_super"; RV = "#/$defs/login_config_view_restricted"; ANYV = "#/$defs/login_config_view"; ER = "#/$defs/error_response"; CR = "#/$defs/create_location_request"
+ent = EX["put_req_pa_db_to_entra"]; db = EX["put_req_entra_to_db"]; view = EX["get_200_entra"]
+
+# ---- 3. leak negatives: secret_ref injected into responses/events is rejected ----
+exp("view + secret_ref rejected", errs(LLC, VIEW, m(view, secret_ref=FAKE)), True)
+exp("view secret + value rejected", errs(LLC, VIEW, m(view, secret={"set": True, "value": FAKE})), True)
+# TLD 2026-11-04 10:42: rotated_at dropped, secret is exactly {set}
+for _rv in ["2026-10-30T17:05:00Z", None]:
+    for _set in [True, False]:
+        exp(f"10:42 view secret {{set: {_set}, rotated_at: {_rv!r}}} rejected", errs(LLC, VIEW, m(view, secret={"set": _set, "rotated_at": _rv})), True)
+exp("10:42 view secret {set: true} ok", errs(LLC, VIEW, m(view, secret={"set": True})), False)
+exp("10:42 view secret {set: false} ok", errs(LLC, VIEW, m(view, secret={"set": False})), False)
+exp("10:42 view secret {} rejected (set required)", errs(LLC, VIEW, m(view, secret={})), True)
+exp("10:42 secret_view declares exactly {set}", [] if (L["secret_view"]["required"] == ["set"] and list(L["secret_view"]["properties"]) == ["set"] and L["secret_view"]["additionalProperties"] is False) else ["shape"], False)
+exp("10:42 example get_200_entra secret is {set: true}", [] if view.get("secret") == {"set": True} else ["differ"], False)
+exp("error + secret_ref rejected", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "secret_ref", "code": "field_not_writable"}], "secret_ref": FAKE}), True)
+exp("error field entry + value rejected", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "secret_ref", "code": "field_not_writable", "value": FAKE}]}), True)
+chg = EX["ev_changed_pa_upgrade"]; den = EX["ev_denied_not_super_admin"]
+AE = "audit-events.schema.json"
+exp("provider.changed details + secret_ref rejected", errs(AE, None, m(chg, details__secret_ref=FAKE)), True)
+exp("provider.changed after + secret_ref rejected", errs(AE, None, m(chg, details__after=dict(chg["details"]["after"], secret_ref=FAKE))), True)
+exp("provider.changed + approval_id rejected (DEC-096)", errs(AE, None, m(chg, details__approval_id="ap1")), True)
+exp("change_denied llc + attempted_value rejected", errs(AE, None, m(den, details__attempted_value=FAKE)), True)
+exp("change_denied llc + secret_ref rejected", errs(AE, None, m(den, details__secret_ref=FAKE)), True)
+exp("history item + secret_ref rejected", errs(LLC, "#/$defs/change_history", {"items": [dict(EX["changes_200"]["items"][0], secret_ref=FAKE)]}), True)
+
+# ---- 4. request field rules (schema-level part of §5.2) ----
+exp("entra two tenants rejected (tenant_count)", errs(LLC, W, m(ent, entra_allowed_tenant_ids=["9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d", "1a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"])), True)
+exp("entra zero tenants rejected", errs(LLC, W, m(ent, entra_allowed_tenant_ids=[])), True)
+exp("tenant not uuid rejected (tenant_id_format)", errs(LLC, W, m(ent, entra_allowed_tenant_ids=["contoso.onmicrosoft.com"])), True)
+exp("nil tenant rejected", errs(LLC, W, m(ent, entra_allowed_tenant_ids=["00000000-0000-0000-0000-000000000000"])), True)
+# server-filled OIDC [TLD 2026-11-04 7:41]: any oidc_* key in a client body is rejected (field_not_writable)
+for k, v in [("oidc_authority", "https://login.microsoftonline.com"), ("oidc_client_id", "5f4e3d2c-1b0a-4f9e-8d7c-6b5a4f3e2d1c"), ("oidc_authority", None), ("oidc_client_id", None)]:
+    exp(f"PUT entra body with {k}={v!r} rejected (field_not_writable)", errs(LLC, W, m(ent, **{k: v})), True)
+    exp(f"PUT database body with {k}={v!r} rejected (field_not_writable)", errs(LLC, W, m(db, **{k: v})), True)
+    exp(f"create body login_config with {k}={v!r} rejected (field_not_writable)", errs(LLC, CR, m(EX["post_req_create_db"], **{"login_config__" + k: v})), True)
+# TLD 2026-11-04 9:49 (D-51): secret_ref is server-filled from Entra:SecretRef; any secret_ref key in a body is rejected (field_not_writable)
+exp("entra body without secret_ref ok (tenant only) [TLD 9:49]", errs(LLC, W, m(ent, secret_ref=DEL)), False)
+exp("entra example has no secret_ref key [TLD 9:49]", ["present"] if "secret_ref" in ent or "secret_ref" in db else [], False)
+for v in [FAKE, "arn:aws:secretsmanager:us-west-2:111111111111:secret:FAKE-x", "my-client-secret", None, 42, "", {"arn": FAKE}]:
+    exp(f"9:49 PUT entra body with secret_ref={v!r:.40} rejected", errs(LLC, W, m(ent, secret_ref=v)), True)
+    exp(f"9:49 PUT database body with secret_ref={v!r:.40} rejected", errs(LLC, W, m(db, secret_ref=v)), True)
+    exp(f"9:49 create login_config with secret_ref={v!r:.40} rejected", errs(LLC, CR, m(EX["post_req_create_db"], login_config__secret_ref=v)), True)
+exp("9:49 field codes have no secret_ref_required / secret_ref_format", ["present"] if {"secret_ref_required", "secret_ref_format"} & set(L["field_error_code"]["enum"]) else [], False)
+exp("9:49 error with secret_ref_required rejected", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "login_config/secret_ref", "code": "secret_ref_required"}]}), True)
+exp("9:49 error secret_ref field_not_writable ok", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "login_config/secret_ref", "code": "field_not_writable"}]}), False)
+exp("9:49 login_config_write declares no secret_ref", ["declares"] if "secret_ref" in json.dumps({k: v for k, v in L["login_config_write"].items() if k != "description"}) else [], False)
+exp("9:49 no secret_ref_input $def left", ["present"] if "secret_ref_input" in L else [], False)
+for bad in ["http://login.microsoftonline.com", "https://login.microsoftonline.com/", "https://login.microsoftonline.com/9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d/v2.0", "https://login.microsoftonline.com?x=1", "https://user@login.microsoftonline.com", "login.microsoftonline.com"]:
+    exp(f"super view oidc_authority {bad!r} rejected (deployment value rule)", errs(LLC, VIEW, m(view, oidc_authority=bad)), True)
+exp("super view oidc_authority with port ok", errs(LLC, VIEW, m(view, oidc_authority="https://login.example.test:8443")), False)
+exp("super view oidc_client_id not uuid rejected", errs(LLC, VIEW, m(view, oidc_client_id="riverbend-app")), True)
+# oidc visible to Super Admin only [TLD 2026-11-04 7:41]
+rview = EX["get_200_entra_restricted"]
+exp("restricted view + oidc_authority rejected", errs(LLC, RV, m(rview, oidc_authority="https://login.microsoftonline.com")), True)
+exp("restricted view + oidc_client_id rejected", errs(LLC, RV, m(rview, oidc_client_id="5f4e3d2c-1b0a-4f9e-8d7c-6b5a4f3e2d1c")), True)
+exp("super view without oidc_authority rejected", errs(LLC, VIEW, m(view, oidc_authority=DEL)), True)
+exp("super view without oidc_client_id rejected", errs(LLC, VIEW, m(view, oidc_client_id=DEL)), True)
+exp("10:02 restricted view = super view minus oidc keys and secret", [] if rview == {k: v for k, v in view.items() if not k.startswith("oidc_") and k != "secret"} else ["differ"], False)
+# secret {set} visible to Super Admin only [TLD 2026-11-04 10:02 Q2, mockup cbb3ab4b; rotated_at dropped TLD 10:42]
+exp("10:02 restricted view + secret rejected", errs(LLC, RV, m(rview, secret={"set": True})), True)
+exp("10:02 restricted view + secret null rejected (omitted, not null)", errs(LLC, RV, m(rview, secret=None)), True)
+exp("10:02 super view without secret rejected", errs(LLC, VIEW, m(view, secret=DEL)), True)
+exp("10:02 restricted schema declares no secret / does not require it", ["present"] if "secret" in L["login_config_view_restricted"]["properties"] or "secret" in L["login_config_view_restricted"]["required"] else [], False)
+exp("10:02 post_201_db (restricted) has no secret key", ["present"] if "secret" in EX["post_201_db"] else [], False)
+exp("restricted view + secret_ref rejected", errs(LLC, RV, m(rview, secret_ref=FAKE)), True)
+exp("provider_kind other rejected", errs(LLC, W, m(ent, provider_kind="saml")), True)
+exp("database + tenant rejected", errs(LLC, W, m(db, entra_allowed_tenant_ids=["9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"])), True)
+exp("database + allow_db_fallback true rejected (A-16)", errs(LLC, W, m(db, allow_db_fallback=True)), True)
+exp("database without secret_ref ok (server clears it)", errs(LLC, W, m(db, secret_ref=DEL)), False)
+for k in ["provider_kind", "display_name", "entra_allowed_tenant_ids", "allow_db_fallback", "mfa_required"]:
+    exp(f"PUT missing {k} rejected (no silent clearing)", errs(LLC, W, m(ent, **{k: DEL})), True)
+exp("PUT + row_version in body rejected (If-Match only)", errs(LLC, W, m(ent, row_version=7)), True)
+exp("PUT + unknown field rejected", errs(LLC, W, m(ent, approval_id="x")), True)
+exp("display_name blank rejected", errs(LLC, W, m(ent, display_name="  ")), True)
+exp("display_name 101 chars rejected", errs(LLC, W, m(ent, display_name="x" * 101)), True)
+# reason 10..500 after trim [TLD 2026-11-04 7:39, OQ-S2a-7]
+exp("reason 9 chars rejected", errs(LLC, W, m(ent, reason="x" * 9)), True)
+exp("reason 9 chars padded to 13 rejected (trim first)", errs(LLC, W, m(ent, reason="  " + "x" * 9 + "  ")), True)
+exp("reason 10 chars ok", errs(LLC, W, m(ent, reason="x" * 10)), False)
+exp("reason 10 chars padded ok", errs(LLC, W, m(ent, reason=" \t" + "x" * 10 + "\n ")), False)
+exp("reason 500 chars ok", errs(LLC, W, m(ent, reason="x" * 500)), False)
+exp("reason 501 chars rejected", errs(LLC, W, m(ent, reason="x" * 501)), True)
+exp("reason 501 chars after trim rejected even if padded", errs(LLC, W, m(ent, reason=" " + "x" * 501 + " ")), True)
+exp("reason inner spaces count (a + 8 spaces + b = 10) ok", errs(LLC, W, m(ent, reason="a" + " " * 8 + "b")), False)
+exp("reason whitespace-only ok at schema level (= no reason; server 400 on a downgrade)", errs(LLC, W, m(ent, reason="     ")), False)
+exp("reason null ok", errs(LLC, W, m(ent, reason=None)), False)
+exp("create without login_config rejected (LD L169)", errs(LLC, CR, m(EX["post_req_create_db"], login_config=DEL)), True)
+exp("create with slug rejected (server-generated)", errs(LLC, CR, m(EX["post_req_create_db"], slug="riverbend")), True)
+exp("view slug uppercase rejected", errs(LLC, VIEW, m(view, slug="XK4M-9Q2C")), True)
+exp("view slug leading hyphen rejected", errs(LLC, VIEW, m(view, slug="-xk4m")), True)
+exp("view slug 63 chars ok", errs(LLC, VIEW, m(view, slug="a" * 63)), False)
+exp("view slug 64 chars rejected", errs(LLC, VIEW, m(view, slug="a" * 64)), True)
+exp("error 422 without fields rejected", errs(LLC, ER, {"error": "validation_failed"}), True)
+exp("error 409 without current_row_version rejected", errs(LLC, ER, {"error": "concurrency_conflict"}), True)
+exp("error 403 with fields rejected", errs(LLC, ER, {"error": "not_super_admin", "fields": [{"field": "mfa_required", "code": "type"}]}), True)
+exp("error unknown code rejected", errs(LLC, ER, {"error": "approval_required"}), True)
+# 404 vs forbidden_scope [TLD 2026-11-04 7:39, OQ-S2a-3]
+exp("error forbidden_scope rejected (out of scope answers 404)", errs(LLC, ER, {"error": "forbidden_scope"}), True)
+exp("err_404 body is exactly {error: not_found}", [] if EX["err_404"] == {"error": "not_found"} else ["differs"], False)
+exp("field code field_not_writable ok", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "oidc_client_id", "code": "field_not_writable"}]}), False)
+exp("field code oidc_authority_format rejected (no longer client-supplied)", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "oidc_authority", "code": "oidc_authority_format"}]}), True)
+exp("field code reason_length ok", errs(LLC, ER, {"error": "validation_failed", "fields": [{"field": "reason", "code": "reason_length"}]}), False)
+# access_rules pins (history visibility, 404 rule, oidc visibility, reason bounds, server-filled keys)
+AR = "#/$defs/access_rules"; ar = EX["access_rules"]
+exp("access_rules missing and out-of-scope bodies identical", [] if ar["missing_location"]["body"] == ar["out_of_scope_location"]["body"] and ar["missing_location"]["http"] == ar["out_of_scope_location"]["http"] == 404 else ["differ"], False)
+exp("access_rules out_of_scope 403 rejected", errs(LLC, AR, m(ar, out_of_scope_location__http=403)), True)
+exp("access_rules out_of_scope body forbidden_scope rejected", errs(LLC, AR, m(ar, out_of_scope_location__body={"error": "forbidden_scope"})), True)
+exp("access_rules out_of_scope event wrong_partner rejected", errs(LLC, AR, m(ar, out_of_scope_location__event_reason="wrong_partner")), True)
+exp("access_rules missing location with event rejected", errs(LLC, AR, m(ar, missing_location__event_reason="forbidden_scope")), True)
+exp("access_rules history + org_v rejected", errs(LLC, AR, m(ar, history_visible_to=["super_admin", "partner_admin_own_partner", "org_v_reader"])), True)
+exp("access_rules history + other partner rejected", errs(LLC, AR, m(ar, history_visible_to=["super_admin", "partner_admin_own_partner", "partner_admin_other_partner"])), True)
+exp("access_rules history org_v 200 rejected", errs(LLC, AR, m(ar, history_refused__org_v_reader=200)), True)
+exp("access_rules oidc visible to partner rejected", errs(LLC, AR, m(ar, oidc_fields_visible_to=["super_admin", "partner_admin_own_partner"])), True)
+exp("10:02 access_rules secret visible to partner rejected", errs(LLC, AR, m(ar, secret_visible_to=["super_admin", "partner_admin_own_partner"])), True)
+exp("10:02 access_rules without secret_visible_to rejected", errs(LLC, AR, m(ar, secret_visible_to=DEL)), True)
+exp("access_rules reason 1..500 rejected", errs(LLC, AR, m(ar, reason_trimmed_length={"min": 1, "max": 500})), True)
+exp("access_rules config key rename rejected", errs(LLC, AR, m(ar, server_filled_config_keys={"oidc_authority": "Entra:Instance", "oidc_client_id": "Entra:ClientId", "secret_ref": "Entra:SecretRef"})), True)
+exp("9:49 access_rules secret_ref config key rename rejected", errs(LLC, AR, m(ar, server_filled_config_keys={"oidc_authority": "Entra:Authority", "oidc_client_id": "Entra:ClientId", "secret_ref": "Entra:ClientSecret"})), True)
+exp("9:49 access_rules without secret_ref config key rejected", errs(LLC, AR, m(ar, server_filled_config_keys={"oidc_authority": "Entra:Authority", "oidc_client_id": "Entra:ClientId"})), True)
+exp("9:49 access_rules server_filled_fields without secret_ref rejected", errs(LLC, AR, m(ar, server_filled_fields=["oidc_authority", "oidc_client_id"])), True)
+
+# ---- 5. auth.provider.changed v1.1 rules ----
+sa = EX["ev_changed_sa_mfa_off"]; cre = EX["ev_changed_created"]
+exp("MFA-off by partner rejected (DEC-098)", errs(AE, None, m(sa, admin_type="partner")), True)
+exp("MFA-off without reason rejected", errs(AE, None, m(sa, details__reason=None)), True)
+exp("MFA-off blank reason rejected", errs(AE, None, m(sa, details__reason="   ")), True)
+exp("event reason 9 chars rejected", errs(AE, None, m(sa, details__reason="x" * 9)), True)
+exp("event reason 10 chars ok", errs(AE, None, m(sa, details__reason="x" * 10)), False)
+exp("event reason 500 chars ok", errs(AE, None, m(sa, details__reason="x" * 500)), False)
+exp("event reason 501 chars rejected", errs(AE, None, m(sa, details__reason="x" * 501)), True)
+exp("event reason on a non-downgrade, 9 chars rejected", errs(AE, None, m(chg, details__reason="x" * 9)), True)
+exp("event reason on a non-downgrade, 10 chars ok", errs(AE, None, m(chg, details__reason="x" * 10)), False)
+fb_before = dict(sa["details"]["before"], allow_db_fallback=False); fb_after = dict(sa["details"]["before"], allow_db_fallback=True)
+fb = m(sa, details__before=fb_before, details__after=fb_after, details__changed_fields=["allow_db_fallback"])
+exp("fallback-on by super with reason ok (DEC-096)", errs(AE, None, fb), False)
+exp("fallback-on by partner rejected (DEC-096)", errs(AE, None, m(fb, admin_type="partner")), True)
+exp("fallback-on by super without reason rejected", errs(AE, None, m(fb, details__reason=None)), True)
+up = m(sa, admin_type="partner", details__before=sa["details"]["after"], details__after=sa["details"]["before"], details__reason=None)
+exp("MFA-on by partner, no reason ok (TL upgrade rule)", errs(AE, None, up), False)
+fboff = m(fb, admin_type="partner", details__before=fb_after, details__after=fb_before, details__reason=None)
+exp("fallback-off by partner, no reason ok (TL upgrade rule)", errs(AE, None, fboff), False)
+keep = m(fb, admin_type="partner", details__before=fb_after, details__after=dict(fb_after, mfa_required=True), details__reason=None, details__changed_fields=["display_name"])
+exp("partner edit leaving fallback on (unchanged) ok", errs(AE, None, keep), False)
+exp("created with MFA off by partner rejected (A-5)", errs(AE, None, m(cre, details__after=dict(cre["details"]["after"], mfa_required=False))), True)
+exp("created with before object rejected", errs(AE, None, m(cre, details__before=cre["details"]["after"])), True)
+exp("updated with before null rejected", errs(AE, None, m(chg, details__before=None)), True)
+exp("provider.changed no admin_type rejected", errs(AE, None, m(chg, admin_type=DEL)), True)
+exp("provider.changed no row_version rejected", errs(AE, None, m(chg, details__row_version=DEL)), True)
+exp("provider.changed no change_id rejected", errs(AE, None, m(chg, details__change_id=DEL)), True)
+exp("provider.changed two location_ids rejected", errs(AE, None, m(chg, scope__location_ids=[chg["details"]["location_id"], "4d3c2b1a-0f9e-4d8c-b7a6-f5e4d3c2b1a0"])), True)
+exp("provider.changed outcome denied rejected", errs(AE, None, m(chg, outcome="denied")), True)
+exp("provider.changed before 2 tenants rejected", errs(AE, None, m(chg, details__after=dict(chg["details"]["after"], entra_allowed_tenant_ids=["9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d", "1a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"]))), True)
+exp("provider.changed changed_fields unknown name rejected", errs(AE, None, m(chg, details__changed_fields=["password"])), True)
+exp("auth.provider.change_requested rejected (v1.1)", errs(AE, None, m(chg, event_type="auth.provider.change_requested", details={})), True)
+
+# ---- 6. auth.config.change_denied: S2a branch + v1 branch intact ----
+wp = EX["ev_denied_forbidden_scope"]; tb = EX["ev_denied_tenant_bound_sa_create"]
+exp("denied not_super_admin by super rejected", errs(AE, None, m(den, admin_type="super", details__actor_partner_id=DEL)), True)
+exp("denied forbidden_scope without actor_partner_id rejected", errs(AE, None, m(wp, details__actor_partner_id=DEL)), True)
+exp("denied not_admin without admin_type ok", errs(AE, None, m(den, admin_type=DEL, details__reason="not_admin", details__actor_partner_id=DEL)), False)
+exp("denied not_admin with admin_type rejected", errs(AE, None, m(den, details__reason="not_admin")), True)
+exp("denied super with actor_partner_id rejected", errs(AE, None, m(tb, details__actor_partner_id="7d3f6c1e-2b4a-4c8e-9f10-1a2b3c4d5e6f")), True)
+exp("denied create with target location rejected", errs(AE, None, m(tb, target__type="location_login_config")), True)
+exp("denied update with target partner rejected", errs(AE, None, m(den, target__type="partner")), True)
+exp("denied update without location_ids rejected", errs(AE, None, m(den, scope__location_ids=DEL)), True)
+exp("denied reason not_location_admin rejected", errs(AE, None, m(den, details__reason="not_location_admin")), True)
+exp("denied wrong_partner rejected on llc (now forbidden_scope)", errs(AE, None, m(wp, details__reason="wrong_partner")), True)
+exp("denied forbidden_scope by super rejected", errs(AE, None, m(wp, admin_type="super", details__actor_partner_id=DEL)), True)
+exp("denied forbidden_scope on create ok", errs(AE, None, m(wp, details__operation="create", details__location_id=None, target={"type": "partner", "id": "7d3f6c1e-2b4a-4c8e-9f10-1a2b3c4d5e6f"}, scope={"partner_id": "7d3f6c1e-2b4a-4c8e-9f10-1a2b3c4d5e6f", "location_ids": []})), False)
+exp("denied reason out_of_range (v1 only) rejected on llc", errs(AE, None, m(den, details__reason="out_of_range")), True)
+exp("denied setting other rejected", errs(AE, None, m(den, details__setting="LoginService:Session:AbsoluteLifetime")), True)
+exp("denied outcome success rejected", errs(AE, None, m(den, outcome="success")), True)
+exp("denied no attempted_fields rejected", errs(AE, None, m(den, attempted_fields=DEL, details__attempted_fields=DEL)), True)
+exp("denied attempted_fields value-like rejected", errs(AE, None, m(den, details__attempted_fields=["9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"])), True)
+v1 = {"event_id": "019a4f2e-7c10-7a3b-9c4d-5e6f7a8b9c09", "schema": "cachd.log", "schema_version": "1.0.0", "category": "event", "event_type": "auth.config.change_denied", "occurred_at": "2026-11-02T19:40:00Z", "outcome": "denied", "is_audit": True, "actor": {"user_id": None}, "source": {"service": "login-standin"}, "target": {"type": "config", "id": "LoginService:Session:AbsoluteLifetime"}, "scope": {"partner_id": "7d3f6c1e-2b4a-4c8e-9f10-1a2b3c4d5e6f", "location_ids": ["3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8"]}, "details": {"setting": "LoginService:Session:AbsoluteLifetime", "attempted_value": "08:00:00", "reason": "not_admin"}}
+exp("v1 change_denied config baseline still ok", errs(AE, None, v1), False)
+exp("v1 change_denied config attempted_value secret text still rejected", errs(AE, None, m(v1, details__attempted_value="hunter2")), True)
+exp("v1 change_denied config reason not_super_admin rejected (S2a reasons only on llc)", errs(AE, None, m(v1, details__reason="not_super_admin")), True)
+exp("v1 change_denied config wrong_partner partner ok", errs(AE, None, m(v1, admin_type="partner", details__reason="wrong_partner")), False)
+
+# ---- 7. F16: optional config_row_version on auth.login.* [TLD 2026-11-04 7:45] ----
+ls = {"event_id": "019a4f2e-7c10-7a3b-9c4d-5e6f7a8b9c10", "schema": "cachd.log", "schema_version": "1.1.0", "category": "event", "event_type": "auth.login.succeeded", "occurred_at": "2026-11-04T15:50:00Z", "outcome": "success", "is_audit": True, "actor": {"user_id": "5f0c3e1a-0003-4000-8000-000000000c01"}, "source": {"service": "login-service"}, "target": {"type": "user", "id": "5f0c3e1a-0003-4000-8000-000000000c01"}, "scope": {"partner_id": "5f0c3e1a-0001-4000-8000-000000000001", "location_ids": ["5f0c3e1a-0001-4000-8000-0000000000a1"]}, "details": {"provider_kind": "entra", "tenant_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d", "amr": ["pwd", "mfa"]}}
+exp("login.succeeded baseline (no config_row_version) ok", errs(AE, None, ls), False)
+exp("login.succeeded config_row_version 7 ok", errs(AE, None, m(ls, details__config_row_version=7)), False)
+exp("login.succeeded config_row_version 0 rejected", errs(AE, None, m(ls, details__config_row_version=0)), True)
+exp("login.succeeded config_row_version string rejected", errs(AE, None, m(ls, details__config_row_version="7")), True)
+exp("login.succeeded config_row_version 1.5 rejected", errs(AE, None, m(ls, details__config_row_version=1.5)), True)
+lf = m(ls, event_type="auth.login.failed", outcome="failure", details={"username_hmac": "0" * 64, "reason": "tenant_mismatch", "provider_kind": "entra"})
+exp("login.failed baseline (no config_row_version) ok", errs(AE, None, lf), False)
+exp("login.failed config_row_version 3 ok", errs(AE, None, m(lf, details__config_row_version=3)), False)
+exp("login.failed config_row_version null rejected", errs(AE, None, m(lf, details__config_row_version=None)), True)
+exp("login.failed config_row_version -1 rejected", errs(AE, None, m(lf, details__config_row_version=-1)), True)
+
+# ---- 8. TLD 2026-11-04 8:30: not_location_user on auth.login.failed; 8:44 K4 spec pins ----
+exp("login.failed not_location_user ok", errs(AE, None, m(lf, details__reason="not_location_user")), False)
+exp("login.failed not_location_user + config_row_version ok", errs(AE, None, m(lf, details__reason="not_location_user", details__config_row_version=2)), False)
+exp("login.failed reason with upper case still rejected", errs(AE, None, m(lf, details__reason="Not_Location_User")), True)
+_lfr = S[AE]["$defs"]["auth.login.failed"]["properties"]["details"]["properties"]["reason"]
+exp("login.failed reason lists not_location_user (examples + description)", [] if ("not_location_user" in _lfr["examples"] and "not_location_user" in _lfr["description"]) else ["missing"], False)
+for _pin in ["### 7.4 `not_location_user` on `auth.login.failed`", "**Trust boundary [TLD 2026-11-04 8:44, K4].**", "**V11-RLSROLES**", "`SecretRef:AllowedAccountIds`", "`updated_by`, `updated_at` (and `partner_id` in a PUT body)"]:
+    exp("spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+
+# ---- 9. TLD 2026-11-04 9:04 (OQ-P3-2): refused create audited with details.location_id null; null refused everywhere else ----
+na = EX["ev_denied_not_admin_create"]; L = "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8"; P = "7d3f6c1e-2b4a-4c8e-9f10-1a2b3c4d5e6f"
+exp("9:04 not_admin create (no admin_type, scope [], location_id null) ok", errs(AE, None, na), False)
+exp("9:04 not_admin create, partner unknown (target.id + scope.partner_id both absent) ok", errs(AE, None, m(na, target={"type": "partner"}, scope={"location_ids": []})), False)
+exp("9:04 not_admin create, target.id without scope.partner_id rejected", errs(AE, None, m(na, scope={"location_ids": []})), True)
+exp("9:04 not_admin create, scope.partner_id without target.id rejected", errs(AE, None, m(na, target={"type": "partner"})), True)
+exp("9:04 not_admin create without details.location_id rejected", errs(AE, None, m(na, details__location_id=DEL)), True)
+exp("9:04 not_admin create with a location_id rejected", errs(AE, None, m(na, details__location_id=L)), True)
+exp("9:04 not_admin create with scope.location_ids [L] rejected", errs(AE, None, m(na, scope={"partner_id": P, "location_ids": [L]})), True)
+exp("9:04 not_admin create without scope.location_ids rejected", errs(AE, None, m(na, scope={"partner_id": P})), True)
+exp("9:04 not_admin create with admin_type rejected", errs(AE, None, m(na, admin_type="partner")), True)
+exp("9:04 null exemption only for operation create (update + null + scope []) rejected", errs(AE, None, m(na, details__operation="update", target={"type": "location_login_config", "id": L})), True)
+exp("9:04 null exemption only for this setting (v1 config) rejected", errs(AE, None, m(na, details__setting="LoginService:Session:AbsoluteLifetime")), True)
+exp("9:04 null exemption only for change_denied (provider.changed) rejected", errs(AE, None, m(na, event_type="auth.provider.changed", outcome="success")), True)
+exp("9:04 admin create denial (tenant_bound) without partner rejected", errs(AE, None, m(tb, target={"type": "partner"}, scope={"location_ids": []})), True)
+exp("9:04 admin create denial with location_id rejected", errs(AE, None, m(tb, details__location_id=L)), True)
+exp("9:04 update denial with location_id null rejected", errs(AE, None, m(den, details__location_id=None)), True)
+exp("9:04 update denial without location_id rejected", errs(AE, None, m(den, details__location_id=DEL)), True)
+exp("9:04 update not_admin (no admin_type) + location_id null + scope [] rejected", errs(AE, None, m(den, admin_type=DEL, details__reason="not_admin", details__actor_partner_id=DEL, details__location_id=None, scope__location_ids=[])), True)
+exp("9:04 provider.changed location_id null rejected", errs(AE, None, m(chg, details__location_id=None)), True)
+exp("9:04 provider.changed no admin_type + scope [] + location_id null rejected", errs(AE, None, m(chg, admin_type=DEL, details__location_id=None, scope__location_ids=[])), True)
+exp("9:04 v1 config denial + details.location_id null rejected", errs(AE, None, m(v1, details__location_id=None)), True)
+exp("9:04 v1 config denial with scope [] still rejected (envelope rule kept)", errs(AE, None, m(v1, scope__location_ids=[])), True)
+exp("9:04 login.failed with scope [] still rejected (envelope rule kept)", errs(AE, None, m(lf, scope__location_ids=[])), True)
+for _pin in ["**Refused create [TLD 2026-11-04 9:04, OQ-P3-2]:**", "**Order [TLD 2026-11-04 9:04, OQ-P3-8]:**", "OQ-P3-10"]:
+    exp("spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+
+# ---- 10. TLD 2026-11-04 9:20: X-Request-ID (as frozen v1 errors.md L67), OQ-P3-10 resolved ----
+for _pin in ["**Request id [TLD 2026-11-04 9:04, OQ-P3-3; name TLD 2026-11-04 9:20]:** every response (2xx, 4xx, 401, 500) carries `X-Request-ID`",
+             "`correlation_id` = the `X-Request-ID`", "**OQ-P3-10 [TLD 2026-11-04 9:20, approved as implemented]:**",
+             "- **OQ-P3-10** a `not_admin` create whose body gives no valid `partner_id` (unreadable, too large, duplicate keys, not a UUID). **TLD 9:20: approved as implemented**"]:
+    exp("spec pin 9:20: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+exp("spec 9:20: no X-Correlation-Id left", ["found"] if "X-Correlation" in spec else [], False)
+_open = [l for l in spec.splitlines() if l.startswith("**Still OPEN:**")]
+exp("spec 9:20: OQ-P3-10 not under Still OPEN", ["still open"] if len(_open) != 1 or "OQ-P3-10" in _open[0] else [], False)
+exp("spec 9:20: X-Request-ID is the v1 errors.md header", [] if "`X-Request-ID`" in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "errors.md")).read() else ["missing"], False)
+_env = S[AE]["$defs"]["envelope"]; _ce = _env["properties"]["correlation_id"]
+exp("schema 9:20: correlation_id stays an optional string", [] if _ce == {"type": "string"} and "correlation_id" not in _env["required"] else [str(_ce)], False)
+exp("9:20 not_admin create with a correlation_id (UUIDv7) ok", errs(AE, None, m(EX["ev_denied_not_admin_create"], correlation_id="019a4f2e-7c10-7a3b-9c4d-5e6f7a8b9c10")), False)
+
+# ---- 11. TLD 2026-11-04 9:28: SSE2 review P3-2 (413), P3-4 (X-Request-ID middleware), P3-5/P3-6 backlog ----
+exp("9:28 413 body {error: payload_too_large} ok", errs(LLC, ER, {"error": "payload_too_large"}), False)
+exp("9:28 payload_too_large with fields rejected", errs(LLC, ER, {"error": "payload_too_large", "fields": [{"field": "name", "code": "x"}]}), True)
+exp("9:28 unknown code too_large still rejected", errs(LLC, ER, {"error": "too_large"}), True)
+for _pin in ["| 413 | `payload_too_large` | step 7: body over 64 KiB by `Content-Length` or while reading (chunked / unknown length); `Connection: close` [TLD 2026-11-04 9:28, P3-2] | none (nothing written) |",
+             "over 64 KiB → **413 `payload_too_large`**, `Connection: close`, nothing written (no row, no event) [TLD 2026-11-04 9:28, P3-2]",
+             "401/403 never 413 [TLD 2026-11-04 9:04, OQ-P3-8]", "**Oversize and unread bodies [TLD 2026-11-04 9:28, P3-2]:**",
+             "**[TLD 2026-11-04 9:28, P3-4]:** the header is set by middleware before routing", "405 wrong method on a mapped path, unrouted 404",
+             "**V11-AUDITRATE** (backlog, TLD 2026-11-04 9:28, SSE2 review P3-5)", "**V11-TIMING** (backlog, TLD 2026-11-04 9:28, SSE2 review P3-6)",
+             "**P3-3** stale `If-Match` checked before the oversize body (409). **TLD 9:28: no change.**", "md5 c6f7258b0ecce00dd33ceb0197b9e2cd",
+             "[TLD 2026-11-04 9:28] (TLD 9:28)"]:
+    exp("spec pin 9:28: " + _pin[:60], [] if _pin in spec else ["missing"], False)
+exp("spec 9:28: malformed_body row no longer claims the 64 KiB case", ["stale"] if "| 400 `malformed_body`; no event |" in spec else [], False)
+exp("spec 9:28: V11-AUDITRATE / V11-TIMING in §12, not under Still OPEN", [] if all(k in spec.split("## 12.")[1].split("## 13.")[0] for k in ["V11-AUDITRATE", "V11-TIMING"])
+    and not any(k in _open[0] for k in ["P3-5", "P3-6", "AUDITRATE", "TIMING"]) else ["misplaced"], False)
+
+# ---- 12. TLD 2026-11-04 9:49 (D-51): secret_ref from deployment config, V11-ACTORNAME, resolver note ----
+for _pin in ["**`secret_ref` [TLD 2026-11-04 9:49, D-51] (TL 7:40 D-51 ruling: one app registration per deployment):**", "deployment config key **`Entra:SecretRef`**",
+             "Missing or invalid → it refuses to start, **exit 2**, the message names the key only", "**SSE2 resolver note [TLD 2026-11-04 9:49, D-51]:**",
+             "SSE2's `ISecretResolver` (`src/Login.Entra/Contracts/HostHooks.cs`, SSE2-owned, unchanged)", "**V11-ACTORNAME** (backlog, [TLD 2026-11-04 9:49, D-51])",
+             "| TLD 9:49 |", "Entra on create needs only the tenant id", "\"Microsoft app connection: set / rotated <date>\", never the value"]:
+    exp("spec pin 9:49: " + _pin[:60], [] if _pin in spec else ["missing"], False)
+exp("spec 9:49: no secret_ref_required / secret_ref_format rule row left", ["stale"] if any(f"| `{c}` |" in spec for c in ["secret_ref_required", "secret_ref_format"]) else [], False)
+exp("spec 9:49: V11-ACTORNAME in §12", [] if "V11-ACTORNAME" in spec.split("## 12.")[1].split("## 13.")[0] else ["missing"], False)
+exp("spec 9:49: no request example carries secret_ref", ["present"] if any("secret_ref" in v for k, v in EX.items() if k.startswith(("put_req", "post_req"))) else [], False)
+
+# ---- 13. TLD 2026-11-04 10:02: Q1 config is the source of truth, Q2 secret Super Admin only, Q3 confirmed ----
+_s12 = spec.split("## 12.")[1].split("## 13.")[0]
+for _pin in ["**Config is the source of truth [TLD 2026-11-04 10:02] (Q1):**", "nothing reads that copy (cleanup: V11-ROWSECRETCLEANUP, §12)",
+             "A config change therefore applies to **all** entra locations after a restart, with no row rewrite",
+             "**`secret {set}` is Super Admin only [TLD 2026-11-04 10:02] (Q2, UX mockup cbb3ab4b):**", "**omitted, not null,**",
+             "`NpgsqlLocationLoginConfigReader` no longer selects `oidc_authority`, `oidc_client_id` or `secret_ref`", "`Auth.Data.EntraDeployment`",
+             "**TLD 10:02 [TLD 2026-11-04 10:02]:** **Q1**", "**Q3** confirmed: both `secret_ref_required` and `secret_ref_format` are removed", "| TLD 10:02 |"]:
+    exp("spec pin 10:02: " + _pin[:60], [] if _pin in spec else ["missing"], False)
+exp("spec 10:02: V11-ROWSECRETCLEANUP in §12", [] if "V11-ROWSECRETCLEANUP" in _s12 else ["missing"], False)
+exp("spec 10:02: no stale 'Entra → Entra edits keep the stored values'", ["stale"] if "Entra → Entra edits keep the stored value" in spec else [], False)
+exp("spec 10:02: q1-q3 no longer listed as OPEN", ["stale"] if "**OPEN (SSE, for TL):** (q1)" in spec else [], False)
+for _pin in ["**Config is read once at startup; changes apply after a restart, no hot reload [TLD 2026-11-04 10:12].**",
+             "`EntraDeployment` is a plain carrier and does not validate", "**TLD 10:12 [TLD 2026-11-04 10:12]:**", "C1-2 (SSE2 review of db8f360) is Info only", "| TLD 10:12 |"]:
+    exp("spec pin 10:12: " + _pin[:60], [] if _pin in spec else ["missing"], False)
+# ---- TLD 2026-11-04 9:53/10:02: SSE2 review P3-7 (408), P3-8 (drain log, Expect), P3-9 (V11-HTTPFRAMING), P3-10 (no global 1 MiB) ----
+exp("9:53 408 body {error: request_timeout} ok", errs(LLC, ER, {"error": "request_timeout"}), False)
+exp("9:53 request_timeout with fields rejected", errs(LLC, ER, {"error": "request_timeout", "fields": [{"field": "name", "code": "x"}]}), True)
+exp("9:53 unknown code timeout still rejected", errs(LLC, ER, {"error": "timeout"}), True)
+exp("9:53 schema: request_timeout listed once, next to payload_too_large", [] if (lambda e: e.count("request_timeout") == 1 and e.index("request_timeout") == e.index("payload_too_large") + 1)(S[LLC]["$defs"]["error_code"]["enum"]) else ["enum"], False)
+exp("9:53 frozen errors.md has no request_timeout (S2a-only code)", ["found"] if "request_timeout" in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "errors.md")).read() else [], False)
+for _pin in ["| 408 | `request_timeout` | step 7: body (under 64 KiB) not fully received within the read deadline (DRAFT 10 s); `Connection: close`; S2a-only code, frozen v1 `errors.md` unchanged, the general code waits for v1.1 [TLD 2026-11-04 9:53/10:02, P3-7] | none (nothing written) |",
+             "**Slow body [TLD 2026-11-04 9:53/10:02, P3-7]:**", "**Slow bodies, `Expect`, drain log [TLD 2026-11-04 9:53/10:02, P3-7/P3-8]:**",
+             "never a `100 Continue`", "ONE Warning log line (`request_id`, no exception, no stack trace)",
+             "There is no server-wide body-size limit [TLD 2026-11-04 9:53/10:02, P3-10]",
+             "**V11-HTTPFRAMING** (backlog, TLD 2026-11-04 9:53/10:02, SSE2 review P3-9; no S2a code change)",
+             "**P3-9** HTTP framing edge cases. **No code change: backlog V11-HTTPFRAMING** (§12).", "| TLD 9:53 / 10:02 (P3-7..P3-10) |"]:
+    exp("spec pin 9:53: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+exp("spec 9:53: V11-HTTPFRAMING in §12", [] if "V11-HTTPFRAMING" in spec.split("## 12.")[1].split("## 13.")[0] else ["missing"], False)
+exp("spec 9:53 P3-10: no 'Kestrel's 1 MiB' / 'Kestrel 1 MiB' / '8 KiB buffer' left", [k for k in ["Kestrel's 1 MiB", "Kestrel 1 MiB", "Kestrel's own 1 MiB", "8 KiB buffer"] if k in spec], False)
+exp("spec 9:53: the 408 row sits before 400 malformed_body in the §5 table", [] if spec.find("| 408 | `request_timeout`") < spec.find("| 400 | `malformed_body`") and spec.find("| 408 | `request_timeout`") > spec.find("| 413 | `payload_too_large`") else ["order"], False)
+# ---- TLD 2026-11-04 10:42: rotated_at dropped (V11-ROTATEDAT), Expect 413 abort, backlog notes ----
+_s12 = spec.split("## 12.")[1].split("## 13.")[0]
+_s5 = spec.split("## 5. Errors")[1].split("### 5.2")[0]
+exp("10:42 schema: no rotated_at property anywhere", [] if '"rotated_at":' not in json.dumps(S[LLC]) else ["present"], False)
+exp("10:42 spec: no JSON example carries rotated_at", [k for k, v in EX.items() if "rotated_at" in json.dumps(v)], False)
+for _b in ["V11-ROTATEDAT", "V11-BODYTIMEOUT-CONFIG"]:
+    exp(f"10:42 §12 lists {_b}", [] if f"**{_b}** (backlog, [TLD 2026-11-04 10:42])" in _s12 else ["missing"], False)
+exp("10:42 V11-ROTATEDAT says: read from the secret store (AWS)", [] if "read from the secret store (AWS Secrets Manager" in _s12 else ["missing"], False)
+exp("10:42 V11-HTTPFRAMING records body-read reset / bad framing 500 + Error, no S2a change", [] if "a body read that fails (connection reset, bad chunked framing) ends in 500 + one Error log line; no S2a change" in _s12 else ["missing"], False)
+exp("10:42 §5 states the 408/413 vs 404/428/409 order and why", [] if "**Order of 408 / 413 vs 404 / 428 / 409 [TLD 2026-11-04 10:42] [TLD 2026-11-04 11:00]:**" in _s5 and "nothing about the request is known until it has been read" in _s5 else ["missing"], False)
+exp("10:42 §5.1 Expect: connection closed right after the 413 is sent", [] if "the server closes the connection right after the 413 is sent [TLD 2026-11-04 10:42]" in _s5 else ["missing"], False)
+for _pin in ["**TLD 10:42 [TLD 2026-11-04 10:42] (on 8c3ccce..06dc8ac):**", "TL **kept** the `EntraDeployment` constructor parameter", "`access_rules.secret_visible_to` (§6.1)",
+             "A-3 retired [TLD 2026-11-04 10:42]", "| TLD 10:42 |", "**`secret` is exactly `{set}`; `rotated_at` is dropped [TLD 2026-11-04 10:42]:**"]:
+    exp("spec pin 10:42: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+exp("10:42 spec: rotated_at question no longer OPEN", ["stale"] if "`rotated_at` after a config-only rotation" in spec else [], False)
+exp("10:42 spec: no live rotated_at derivation text left", [k for k in ["`rotated_at` = latest change row", "`rotated_at` only moves on a change row", "Set, rotated …\" (= `secret`;"] if k in spec], False)
+exp("P4 spec Sources cite the review snapshot c6f7258b, not the old full md5 bfaa2efb", [] if "c6f7258b0ecce00dd33ceb0197b9e2cd" in spec and "bfaa2efbe4ee6f41cca4447ac36d21ba" not in spec else ["stale"], False)
+exp("P4 spec §11: UI built in P4 from MK9 90d2a8fa [D-103]", [] if "built in P4 from MK9 90d2a8fa" in spec and "(recorded, not built in C1)" not in spec else ["stale"], False)
+# ---- D-103 (MK9 90d2a8fa), D-102 (UX error copy, review 8c7d5274), TLD 2026-11-04 11:57 (P4) ----
+exp("D-103: MK9 source row pins 90d2a8fa0052d5496f8fc4c274bc779c", [] if "| MK9 | `login-hub-mockups/09-location-method.html`, snapshot `/tmp/sse-llc1/09-location-method.90d2a8fa.snapshot.html` | `90d2a8fa0052d5496f8fc4c274bc779c` |" in spec else ["missing"], False)
+exp("D-103: no live MK9 pin to 939e41bd / 9dae6040 left", [k for k in ["MK9 939e41bd", "MK9 9dae6040", "v939e41bd", "snapshot md5 9dae6040", "939e41bd0d087a35e1f00688dca53a6c"] if k in spec], False)
+_s11 = spec.split("## 11. UI notes")[1].split("## 12.")[0]
+for _pin in ["**approved by UX under D-102** (review md5 8c7d5274)", "\"It may have been removed, or you may not have access to it.\"",
+             "\"Only a Super Admin can make this change.\" / \"Nothing was saved. Turning off the second step or allowing backup sign-in needs a Super Admin.\"",
+             "`reason_length` \"Enter a reason of {min} to {max} characters.\" [DEC-107] [TLD 2026-11-04 16:32]", "**Request ID line [D-102]:**", "never on field errors",
+             "(**V11-CREATE-SECRETCARD**, §12)", "(**V11-PARTNERNAME**, §12)", "waits on OQ-S2a-1 [TLD 2026-11-04 11:57]"]:
+    exp("§11 pin D-102 / 11:57: " + _pin[:50], [] if _pin in _s11 else ["missing"], False)
+exp("§11: no stale 'SSE PROPOSAL FOR UX, NOT APPROVED' / PROPOSAL-error-copy path as the live file", [k for k in ["labelled \"SSE PROPOSAL FOR UX, NOT APPROVED\"", "live in `ui/orgs/js/PROPOSAL-error-copy.mjs`"] if k in _s11], False)
+for _b in ["V11-PARTNERNAME", "V11-CREATE-SECRETCARD"]:
+    exp(f"11:57 §12 lists {_b}", [] if f"**{_b}** (backlog, [TLD 2026-11-04 11:57])" in _s12 else ["missing"], False)
+exp("Sources list D-102 (8c7d5274) and TLD 11:57 (P4)", [] if "| D-102 |" in spec and "8c7d5274d549d45d18ae0415964e2236" in spec and "| TLD 11:57 (P4) |" in spec else ["missing"], False)
+exp("spec 10:12: no stale 'validated with the same rules and messages as the admin API'", ["stale"] if "validated with the same rules and messages as the admin API" in spec else [], False)
+exp("spec 10:02: access_rules example pins secret_visible_to super_admin", [] if EX["access_rules"].get("secret_visible_to") == ["super_admin"] else ["missing"], False)
+
+# ---- TLD 2026-11-04 10:58 / 10:59 / 11:00 (SSE2 range review ce1151ae): F-A1, F-B1, F-A2, F-A3; Expect close approved; §5 order; LD L171 quote ----
+_s5 = spec.split("## 5. Errors")[1].split("### 5.2")[0]
+_s13 = spec.split("## 13.")[1].split("## 14.")[0]
+for _pin in ["**On PUT, 413 stays at step 7, after 404 / 428 / 409, per P3-3 [TLD 2026-11-04 9:28], which stands**", "**On create, 408 and 413 come first**",
+             "**408 comes first everywhere**", "TL's 10:42 item 5 was too broad [TLD 2026-11-04 11:00]"]:
+    exp("11:00 §5 order: " + _pin[:50], [] if _pin in _s5 else ["missing"], False)
+exp("11:00 §5.1: Expect close via that request's MaxRequestBodySize = 0, approved, 200 repeats, that request only",
+    [] if all(k in _s5 for k in ["**that request's** `MaxRequestBodySize` to 0", "approved [TLD 2026-11-04 11:00]", "200 repeats (100 PUT + 100 POST), 0 resets", "The limit applies to that one request only", "mutation MC2"]) else ["missing"], False)
+exp("10:58 F-B1 §5.1: total deadline, never reset by a read, under-limit trickle 408", [] if "**Total deadline [TLD 2026-11-04 10:58 F-B1]:**" in _s5 and "never reset by a read" in _s5 else ["missing"], False)
+exp("11:00: no OPEN left on the Expect close or the PUT 413 order", [k for k in ["**OPEN, for TL:** confirm this form", "**OPEN (SSE, for TL):** 10:42 says 408", "OPEN for TL, §13", "TL asked for an abort after the flush"] if k in spec], False)
+exp("11:00 LD L171 quote kept verbatim + V11-ROTATEDAT note", [] if '[SRC: LD L171: "`secret_ref` is never shown (only "set / rotated on")."; S2a shows no date (V11-ROTATEDAT) [TLD 2026-11-04 11:00]]' in spec else ["missing"], False)
+for _pin in ["**Superseded by [TLD 2026-11-04 10:58 F-A1, clarified 10:59]:** the `EntraDeployment` constructor is **internal**", "**`EntraDeployment.Create(authority, clientId, secretRef, allowedAccountIds, allowedRegions)`**",
+             "a reason code (`entra_authority_invalid`", "that never contains the value", "no `InternalsVisibleTo` anywhere"]:
+    exp("10:58 F-A1 pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+for _pin in ["**F-A1** `EntraDeployment` is validated by construction", "**F-B1** the body deadline is total", "**F-A2** Info only, no change",
+             "**F-A3** backlog for P4 tests: org:V coverage against real PG"]:
+    exp("10:58 §13 pin: " + _pin[:40], [] if _pin in _s13 else ["missing"], False)
+for _pin in ["| TLD 10:58 / 10:59 |", "| TLD 11:00 |", "| RANGE | `docs/reviews/RANGE-8c3ccce-06dc8ac-REVIEW.md`", "`ce1151aef3fd3e09dd863be3575654a0`"]:
+    exp("10:58 Sources: " + _pin[:40], [] if _pin in spec else ["missing"], False)
+
+exp("11:19 Q1 §5: 401/403 stay first (TLD 9:04 #8), 408 straight after", [] if "**401 / 403 stay first (TLD 9:04 #8) and 408 comes straight after them** [TLD 2026-11-04 11:19]" in spec.split("## 5. Errors")[1].split("### 5.2")[0] else ["missing"], False)
+exp("11:19 Sources row", [] if "| TLD 11:19 |" in spec else ["missing"], False)
+exp("RANGE2 Sources row (SSE2 review 3fac1d52)", [] if "| RANGE2 | `/tmp/sse2-fverify/RANGE-06dc8ac-ba85c77-REVIEW.md`" in spec and "`3fac1d52402e99371b9fc254b03b74f0`" in spec else ["missing"], False)
+exp("F-C1 §13: EntraDeployment public surface = type + Create + Reasons + Result", [] if "**SSE2 review 06dc8ac..ba85c77 F-C1 (Low) [SSE2 review 3fac1d52]" in spec and "`IsValidAuthority` and `SecretRefAllowed` are internal" in spec else ["missing"], False)
+exp("11:21 Sources row (Q2 option b scratch DB)", [] if "| TLD 11:21 | TL ruling 11:21 AM PT on Q2: option (b)" in spec else ["missing"], False)
+exp("11:21 §14: N3/N1 probes on a marked scratch DB via the public FindUserAsync", [] if "**N3 / N1 fail-closed probes [TLD 2026-11-04 11:21]:**" in spec.split("## 14. Contract tests")[1] and "/tmp/sse-d0/venv" not in spec.split("## 14. Contract tests")[1] else ["missing"], False)
+_s14 = spec.split("## 14. Contract tests")[1]
+for _pin in ["| TLD 11:57 (P3) | TL decisions 11:57 AM PT on the scratch DB", "| TLD 12:04 | TL decision 12:04 AM PT on SSE2 review de9c1946 F1", "| RANGE3 | `/tmp/sse2-fverify/RANGE-06dc8ac-6a71fbf-REVIEW.md`"]:
+    exp("11:57/12:04 Sources: " + _pin[:40], [] if _pin in spec else ["missing"], False)
+for _pin in ["**Scratch rules [TLD 2026-11-04 11:57] [TLD 2026-11-04 12:04]:**", "loopback host only (`127.0.0.1` / `::1`", "default `postgres`", "older than 1 h and has no `pg_stat_activity` connections", "reported by name, not dropped, and the run fails", "[SSE2 review de9c1946 F2]"]:
+    exp("11:57/12:04 §14: " + _pin[:40], [] if _pin in _s14 else ["missing"], False)
+
+exp("12:33 Sources row", [] if "| TLD 12:33 | TL decisions 12:33 PM PT on the scratch DB" in spec else ["missing"], False)
+for _pin in ["**Maintenance-DB exception [TLD 2026-11-04 12:33]:**", "everything else is refused before it is sent", "**o3 [TLD 2026-11-04 12:33]: net role set identical; per-run roles allowed only if marked and dropped.**", "an unmarked `ff_scratch_*` look-alike role is reported, never dropped, and the run fails", "`ff_scratchadm` is documented kit infrastructure", "`src/Auth.Data.Checks/README.md`"]:
+    exp("12:33 §14: " + _pin[:40], [] if _pin in _s14 else ["missing"], False)
+exp("12:33 §14: the old 'only CONNECT and catalog reads' / 'o3 not fully met' wording is gone", [] if "only `CONNECT` and catalog reads there" not in _s14 and "why o3 is not fully met" not in _s14 else ["present"], False)
+exp("13:15 Sources row (KF-A)", [] if "| TLD 13:15 | TL decisions 1:15 PM PT: items 1, 3–9 accepted" in spec and "on the kit's KF-A rule" in spec else ["missing"], False)
+exp("RANGE4 Sources row (SSE2 review 04dba71d)", [] if "| RANGE4 | `/tmp/sse2-fverify/RANGE-9771ad3-1b9f5bd-REVIEW.md`" in spec and "`04dba71d9eb8f4a85d9425e4e7774505`" in spec else ["missing"], False)
+for _pin in ["**KF-A [TLD 2026-11-04 13:15]:**", "never cleartext in `CREATE/ALTER ROLE`", "only `SCRAM-SHA-256$4096:` may follow", "**Scratch lock per kit DB [TLD 2026-11-04 13:15 #5]:**", "do not block each other", "exits 2 with the key named, never its value"]:
+    exp("13:15 §14: " + _pin[:40], [] if _pin in _s14 else ["missing"], False)
+exp("04dba71d Info §13: EntraDeployment getters Authority / ClientId / SecretRef + redacted ToString allowed, reflection allows exactly those", [] if "**Allowed public getters [SSE2 review 9771ad3..1b9f5bd Info] [SSE2 review 04dba71d]:**" in spec and "allows exactly these members and fails on any other public member" in spec else ["missing"], False)
+
+# ---- DEC-107 [PM t149u/t150u] [TLD 2026-11-04 16:32 Q1=A, Q2=(ii)]: configurable reason bounds inside the DB's 10..500 ----
+LIM = "#/$defs/login_config_limits"; lim = EX["limits_200"]
+exp("DEC-107 limits_200 example is exactly {reason_min_length, reason_max_length}", [] if sorted(lim) == ["reason_max_length", "reason_min_length"] else [sorted(lim)], False)
+exp("DEC-107 limits extra key rejected", errs(LLC, LIM, m(lim, reason_trimmed_length=10)), True)
+exp("DEC-107 limits without reason_max_length rejected", errs(LLC, LIM, m(lim, reason_max_length=DEL)), True)
+exp("DEC-107 limits min 9 (below DB floor) rejected", errs(LLC, LIM, m(lim, reason_min_length=9)), True)
+exp("DEC-107 limits max 501 (above DB ceiling) rejected", errs(LLC, LIM, m(lim, reason_max_length=501)), True)
+exp("DEC-107 limits string value rejected", errs(LLC, LIM, m(lim, reason_min_length="10")), True)
+exp("DEC-107 limits 50/200 accepted", errs(LLC, LIM, m(lim, reason_min_length=50, reason_max_length=200)), False)
+_g = EX["get_200_entra"]; _gr = EX["get_200_entra_restricted"]; _p = EX["post_201_db"]
+exp("DEC-107 GET super without reason_min_length rejected", errs(LLC, "#/$defs/login_config_get_super", m(_g, reason_min_length=DEL)), True)
+exp("DEC-107 GET restricted without reason_max_length rejected", errs(LLC, "#/$defs/login_config_get_restricted", m(_gr, reason_max_length=DEL)), True)
+exp("DEC-107 GET reason_max_length 501 rejected", errs(LLC, "#/$defs/login_config_get_super", m(_g, reason_max_length=501)), True)
+exp("DEC-107 GET reason_min_length 9 rejected", errs(LLC, "#/$defs/login_config_get_restricted", m(_gr, reason_min_length=9)), True)
+exp("DEC-107 POST 201 / PUT 200 (saved) with reason_min_length rejected", errs(LLC, "#/$defs/login_config_saved_restricted", m(_p, reason_min_length=10)), True)
+exp("DEC-107 saved super with reason_max_length rejected", errs(LLC, "#/$defs/login_config_saved_super", {k: v for k, v in _g.items() if k not in ("reason_min_length",)}), True)
+exp("DEC-107 saved super without the bounds accepted", errs(LLC, "#/$defs/login_config_saved_super", {k: v for k, v in _g.items() if not k.startswith("reason_")}), False)
+for _d, _b in [("login_config_write", EX["put_req_pa_db_to_entra"]), ("create_location_request", EX["post_req_create_db"])]:
+    exp(f"DEC-107 {_d} with reason_min_length rejected (unknown_field)", errs(LLC, f"#/$defs/{_d}", m(_b, reason_min_length=10)), True)
+exp("DEC-107 create login_config with reason_max_length rejected", errs(LLC, "#/$defs/create_location_request", m(EX["post_req_create_db"], login_config__reason_max_length=500)), True)
+exp("DEC-107 access_rules: the old fixed {min 10, max 500} rejected", errs(LLC, AR, m(ar, reason_trimmed_length={"min": 10, "max": 500})), True)
+exp("DEC-107 access_rules: hard bounds widened to 1..500 rejected (DB-WIDEN)", errs(LLC, AR, m(ar, reason_trimmed_length={**ar["reason_trimmed_length"], "hard_bounds": {"min": 1, "max": 500}})), True)
+exp("DEC-107 access_rules: default min 100 rejected (t151u)", errs(LLC, AR, m(ar, reason_trimmed_length={**ar["reason_trimmed_length"], "default": {"min": 100, "max": 500}})), True)
+exp("DEC-107 access_rules pins the config keys", [] if ar["reason_trimmed_length"]["min_config_key"] == "LoginConfig:ReasonMinLength" and ar["reason_trimmed_length"]["max_config_key"] == "LoginConfig:ReasonMaxLength" else ["keys"], False)
+_rl = S["location-login-config.schema.json"]["$defs"]["reason_length_limit"]
+exp("DEC-107 reason_length_limit is integer 10..500", [] if (_rl.get("type"), _rl.get("minimum"), _rl.get("maximum")) == ("integer", 10, 500) else [str(_rl)], False)
+exp("DEC-107 change_history reason of 9 chars rejected", errs(LLC, "#/$defs/change_history", m(EX["changes_200"], items=[{**EX["changes_200"]["items"][0], "reason": "x" * 9}])), True)
+exp("DEC-107 change_history reason of 501 chars rejected", errs(LLC, "#/$defs/change_history", m(EX["changes_200"], items=[{**EX["changes_200"]["items"][0], "reason": "x" * 501}])), True)
+_ev = EX["ev_changed_sa_mfa_off"]
+for _n, _ok in [(9, True), (10, False), (500, False), (501, True)]:
+    exp(f"DEC-107 auth.provider.changed reason {_n} chars {'rejected' if _ok else 'accepted'}", errs(AE, None, m(_ev, details__reason="x" * _n)), _ok)
+exp("DEC-107 auth.provider.changed reason 9 astral rejected", errs(AE, None, m(_ev, details__reason="\U0001F608" * 9)), True)
+exp("DEC-107 auth.provider.changed reason 10 astral accepted", errs(AE, None, m(_ev, details__reason="\U0001F608" * 10)), False)
+_s3 = spec.split("### 3.2")[0]
+for _pin in ["### 3.5 `GET /api/orgs/login-config/limits` [DEC-107] [TLD 2026-11-04 16:32 Q2=(ii)]", "**Reason bounds [DEC-107] [TLD 2026-11-04 16:32 Q2=(ii)]:**",
+             "**`LoginConfig:ReasonMinLength` to `LoginConfig:ReasonMaxLength` code points after trimming**", "the API refuses to start unless 10 ≤ min ≤ max ≤ 500",
+             "code defaults min 10 and max 500 (**Confirmed DEC-108**, PM Nov 5 2026 6:47 AM PT; Mohanraj verbatim \"10 to 500\")", "| DEC-107 | PM t149u/t150u", "| TLD 16:32 |", "| D-106 |", "`2b17464c29521b9b479155d6cc96f144`",
+             "**DB-WIDEN** (follow-up, not S2a)", "PQ-238 (who may change it) was open at DEC-107", "**closed by DEC-111** (v1.1 Slice A: per-partner bounds, §3.6)"]:
+    exp("DEC-107 spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+exp("DEC-107 spec: no fixed '10–500 characters after trimming' / old interim copy left as live text", [k for k in ["**10–500 characters after trimming**", "(TO CONFIRM: once Mohanraj confirms 10 to 500", "\"Saved in the audit log.\", 10 to 500 characters;", "non-blank reason not 10..500 chars after trim", "`reason` (null or trimmed 10..500)."] if k in spec], False)
+exp("DEC-107 spec: default min 100 appears nowhere as a default", [k for k in ["default min 100", "min 100"] if k in spec], False)
+
+exp("Slice A spec: PQ-238 is no longer described as open", [k for k in ["PQ-238 (who may change it) is open", "(PQ-238 open)", "is PQ-238 (open)"] if k in spec], False)
+
+# ---- v1.1 Slice A [Confirmed DEC-109..117] [TLD 06:59, 08:00, 08:00b] [LD 12b1d9cd]: per-partner reason bounds ----
+_PRV = "#/$defs/partner_reason_bounds_view"; _PRW = "#/$defs/partner_reason_bounds_write"
+_pd = EX["prb_get_200_default"]; _pp = EX["prb_get_200_partner"]; _pw = EX["prb_put_req"]; _pe = EX["ev_prb_changed_cross_partner"]
+exp("Slice A write body is exactly {reason_min_length, reason_max_length}", [] if sorted(_pw) == ["reason_max_length", "reason_min_length"] else [sorted(_pw)], False)
+exp("Slice A write with reason rejected (DEC-113)", errs(LLC, _PRW, m(_pw, reason="x" * 20)), True)
+exp("Slice A write with row_version rejected", errs(LLC, _PRW, m(_pw, row_version=1)), True)
+exp("Slice A write min 9 rejected", errs(LLC, _PRW, m(_pw, reason_min_length=9)), True)
+exp("Slice A write max 501 rejected", errs(LLC, _PRW, m(_pw, reason_max_length=501)), True)
+exp("Slice A write string rejected", errs(LLC, _PRW, m(_pw, reason_min_length="20")), True)
+exp("Slice A write 10/500 accepted", errs(LLC, _PRW, m(_pw, reason_min_length=10, reason_max_length=500)), False)
+exp("Slice A default view without row_version/ETag fields", [] if _pd["source"] == "default" and not ({"row_version", "updated_by", "updated_at"} & set(_pd)) else [_pd], False)
+exp("Slice A default view with row_version rejected", errs(LLC, _PRV, m(_pd, row_version=1)), True)
+exp("Slice A partner view without row_version rejected", errs(LLC, _PRV, m(_pp, row_version=DEL)), True)
+exp("Slice A partner view without updated_by accepted (PA reading another partner, TLD 11:23 identity scope)", errs(LLC, _PRV, m(_pp, updated_by=DEL)), False)
+exp("Slice A partner view without updated_at rejected", errs(LLC, _PRV, m(_pp, updated_at=DEL)), True)
+exp("Slice A default view with updated_by rejected", errs(LLC, _PRV, m(_pd, updated_by=_pp["updated_by"])), True)
+exp("Slice A bounds_editor missing on default rejected", errs(LLC, _PRV, m(_pd, bounds_editor=DEL)), True)
+exp("Slice A bounds_editor missing on partner view rejected", errs(LLC, _PRV, m(_pp, bounds_editor=DEL)), True)
+exp("Slice A bounds_editor string rejected", errs(LLC, _PRV, m(_pd, bounds_editor="true")), True)
+exp("Slice A default view bounds_editor false accepted and still has no updated_by", errs(LLC, _PRV, m(_pd, bounds_editor=False)) or ({"updated_by", "row_version"} & set(m(_pd, bounds_editor=False))), False)
+exp("Slice A other-partner view is bounds_editor false and has no updated_by", [] if EX["prb_view_pa_other_partner"]["bounds_editor"] is False and "updated_by" not in EX["prb_view_pa_other_partner"] else [EX["prb_view_pa_other_partner"]], False)
+PER = "#/$defs/prb_error_response"
+exp("Slice A prb 409 current_row_version 0 accepted (unset partner, TLD 11:23 A; scoped, TLD 13:27 item 1)", errs(LLC, PER, {"error": "concurrency_conflict", "current_row_version": 0}), False)
+exp("Slice A prb 409 current_row_version 1 accepted", errs(LLC, PER, {"error": "concurrency_conflict", "current_row_version": 1}), False)
+exp("Slice A prb 409 current_row_version -1 rejected", errs(LLC, PER, {"error": "concurrency_conflict", "current_row_version": -1}), True)
+exp("Slice A prb 0 only with concurrency_conflict (not_found + current_row_version 0 rejected)", errs(LLC, PER, {"error": "not_found", "current_row_version": 0}), True)
+exp("Slice A prb 409 without current_row_version rejected", errs(LLC, PER, {"error": "concurrency_conflict"}), True)
+exp("Slice A prb 422 validation_failed accepted (error_response branch)", errs(LLC, PER, {"error": "validation_failed", "fields": [{"field": "reason_max_length", "code": "reason_bound_range"}]}), False)
+exp("TLD 13:27 (1) separation: location error_response 409 with current_row_version 0 REJECTED (minimum stays 1)", errs(LLC, ER, {"error": "concurrency_conflict", "current_row_version": 0}), True)
+exp("TLD 13:27 (1) separation: location error_response 409 current_row_version 1 accepted", errs(LLC, ER, {"error": "concurrency_conflict", "current_row_version": 1}), False)
+exp("TLD 13:27 (1) separation: error_response.current_row_version minimum is exactly 1", [] if S[LLC]["$defs"]["error_response"]["properties"]["current_row_version"].get("minimum") == 1 else ["minimum " + str(S[LLC]["$defs"]["error_response"]["properties"]["current_row_version"].get("minimum"))], False)
+exp("Slice A view unknown source rejected", errs(LLC, _PRV, m(_pp, source="config")), True)
+exp("Slice A view extra key rejected", errs(LLC, _PRV, m(_pp, reason="x" * 20)), True)
+exp("Slice A view max 501 rejected", errs(LLC, _PRV, m(_pp, reason_max_length=501)), True)
+_fc = S["location-login-config.schema.json"]["$defs"]["field_error_code"]["enum"]
+exp("Slice A field codes reason_bound_range / reason_bound_order listed", [k for k in ["reason_bound_range", "reason_bound_order"] if k not in _fc], False)
+_ec = S["location-login-config.schema.json"]["$defs"]["error_code"]["enum"]
+exp("Slice A: no 412 / precondition_failed code (errors.md frozen)", [k for k in ["precondition_failed"] if k in _ec], False)
+exp("Slice A event: cross_partner true for a Partner Admin on another partner, no reason",
+    [] if _pe["event_type"] == "auth.partner_reason_bounds.changed" and _pe["admin_type"] == "partner" and _pe["details"]["cross_partner"] is True
+    and _pe["details"]["actor_partner_id"] != _pe["details"]["target_partner_id"] and _pe["target"] == {"type": "partner", "id": _pe["details"]["target_partner_id"]}
+    and _pe["scope"]["partner_id"] == _pe["details"]["target_partner_id"] and "reason" not in _pe["details"] else [_pe["details"]], False)
+exp("Slice A event with details.reason rejected (DEC-113)", errs(AE, None, m(_pe, details__reason="x" * 20)), True)
+exp("Slice A event without cross_partner rejected", errs(AE, None, m(_pe, details__cross_partner=DEL)), True)
+exp("Slice A event without actor_partner_id rejected", errs(AE, None, m(_pe, details__actor_partner_id=DEL)), True)
+exp("Slice A event Super Admin (actor_partner_id null) accepted", errs(AE, None, m(_pe, admin_type="super", details__actor_partner_id=None)), False)
+exp("Slice A event without admin_type rejected", errs(AE, None, m(_pe, admin_type=DEL)), True)
+exp("Slice A event target location rejected", errs(AE, None, m(_pe, target={"type": "location", "id": _pe["target"]["id"]})), True)
+exp("Slice A event new max 501 rejected", errs(AE, None, m(_pe, details__new_reason_max_length=501)), True)
+exp("Slice A event old min 9 rejected", errs(AE, None, m(_pe, details__old_reason_min_length=9)), True)
+exp("Slice A event location_ids non-empty rejected", errs(AE, None, m(_pe, scope__location_ids=[_pe["target"]["id"]])), True)
+exp("Slice A event outcome denied rejected", errs(AE, None, m(_pe, outcome="denied")), True)
+for _pin in ["### 3.6 `GET` / `PUT /api/orgs/partners/{partner_id}/login-config/reason-bounds` (v1.1 Slice A)",
+             "`org:partner_reason_bounds:write`", "### 7.5 `auth.partner_reason_bounds.changed` (v1.1 Slice A)", "- **`auth.partner_reason_bounds`** (v1.1 Slice A,",
+             "**unset partner: `\"0\"` = expect unset**", "a late second `\"0\"` is a 409 and never updates the row", "**Identity in the view** [TLD 2026-11-05 11:23 identity scope, SSE2 relay; **interim** pending LS-OQ-61 / PQ-240, **not a DEC**",
+             "gets the view **without `updated_by`**", "The rule is an **allowlist** [TLD 13:27 item 2]", "any other or future admin type (e.g. a Client Admin) gets no `updated_by` by default", "every other endpoint keeps `current_row_version` ≥ 1 [TLD 13:27 item 1]", "**derived** from TLD 11:23 A", "is bounds-only (§3.5), so it has no identity field and does not change", "[TLD 11:23 B: explicitly approved]",
+             "even when its values equal the inherited defaults (e.g. 10/500) [TLD 11:23 C]", "exactly one 200, the other 409 with `current_row_version` v+1, one event", "**No 412** (errors.md frozen)", "(SQLSTATE 23505) and gets 409 `concurrency_conflict` with the winner's `current_row_version`",
+             "Create and update both answer **200**", "**TO CONFIRM LS-OQ-61**", "**Still OPEN: LS-OQ-61**", "**No reason field** [Confirmed DEC-113]",
+             "the config is held to the same range at startup or the API refuses to start [TLD 08:00b(2)]",
+             "Screen 9 only shows the resolved limits, no knobs (DEC-116); the partner settings page is Slice B (DEC-117)",
+             "**`bounds_editor`** [DEC-144 gap 1; direct user, Nov 6 2026: a saved bounds row is not required]"]:
+    exp("Slice A spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+
+# ---- DEC-106 [Mohanraj, PM t145u] [UX D-106 2b17464c]: Partner Admin and Super Admin can both turn MFA back on, no reason ----
+_pm = EX["put_req_pa_mfa_on"]; _em = EX["ev_changed_pa_mfa_on"]
+exp("DEC-106 put_req_pa_mfa_on: mfa_required true, reason null, fallback false", [] if _pm["mfa_required"] is True and _pm["reason"] is None and _pm["allow_db_fallback"] is False else [_pm], False)
+exp("DEC-106 ev_changed_pa_mfa_on: partner actor, changed_fields [mfa_required], before false -> after true, reason null",
+    [] if _em["admin_type"] == "partner" and _em["actor"]["user_id"] and _em["details"]["changed_fields"] == ["mfa_required"]
+    and _em["details"]["before"]["mfa_required"] is False and _em["details"]["after"]["mfa_required"] is True and _em["details"]["reason"] is None else [_em["details"]], False)
+exp("DEC-106 ev_changed_pa_mfa_on without actor rejected", errs(AE, None, m(_em, actor=DEL)), True)
+exp("DEC-106 ev_changed_pa_mfa_on without details.before rejected", errs(AE, None, m(_em, details__before=DEL)), True)
+for _pin in ["| DEC-106 | Mohanraj, PM chat t145u", "and since DEC-106 (PM t145u) that Partner Admins and Super Admins can both turn MFA back on",
+             "`mfa_required` → true [Confirmed DEC-106] (no reason needed;", "`allow_db_fallback` → false [**Confirmed DEC-118/120/121** (DEC-118 PM, Nov 5 2026 6:58 AM PT); LD L181, row 164;",
+             "`mfa_required` → true Confirmed DEC-106; `allow_db_fallback` → false Confirmed DEC-118/120/121]",
+             "own partner only: another partner's location gets steps 3–4 (404 `not_found`, event `forbidden_scope`) [Confirmed DEC-120; DEC-111's cross-partner exception covers the reason-length bounds only]",
+             "no reason needed, a reason that is sent follows §3.2 [Confirmed DEC-121]",
+             "**Partner Admin, MFA off (`partner-mfa-off`) [Confirmed DEC-106] [D-106, md5 2b17464c]:**",
+             "\"Off at this location now. Turn it on to add a second step at sign-in. Once saved, only a Super Admin can turn it off again.\"",
+             "`partner-create` keeps MFA ticked and locked"]:
+    exp("DEC-106 spec pin: " + _pin[:50], [] if _pin in spec else ["missing"], False)
+exp("DEC-118 spec: the Partner Admin fallback-back-off TO CONFIRM labels are gone", [k for k in ["**TO CONFIRM** with Mohanraj, DEC-106 does not state it", "`allow_db_fallback` → false TLD, TO CONFIRM]", "turning backup sign-in back off: **TO CONFIRM**", "Partner Admin backup-sign-in-back-off wording (TO CONFIRM"] if k in spec], False)
+exp("DEC-106 spec: the old 'upgrades being confirmed with Mohanraj' labels are gone", [k for k in ["TLD 2026-11-04 7:44 labels this as TL's, being confirmed with Mohanraj]", "Partner Admin upgrades (MFA back on, fallback back off) being allowed", "[Confirmed DEC-096, DEC-098; upgrades TLD]"] if k in spec], False)
+_row = [l for l in spec.splitlines() if l.startswith("| Partner Admin, own partner |")]
+exp("DEC-106 §6 matrix: Partner Admin own partner keeps mfa->true and fallback->false allowed, downgrades 403 not_super_admin (rules unchanged)",
+    [] if len(_row) == 1 and _row[0].split("|")[6:10] == [" ✔ ", " ✔ ", " 403 `not_super_admin` ", " 403 `not_super_admin` "] else _row, False)
+
+print("v1.1-S2a checks: %d passed, %d failed" % (PASSES[0], len(FAIL)), "ALL PASS" if not FAIL else "FAILED: %s" % FAIL)
+sys.exit(1 if FAIL else 0)
