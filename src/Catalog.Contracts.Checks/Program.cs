@@ -236,8 +236,16 @@ var offReason = new string('r', 501);
 var off = service.Execute(sa, Call("off"), CatalogCommandParser.ParseEntryActivation("fee_type", globalId, "{\"desired_active\":false,\"reason\":\"" + offReason + "\",\"expected_version\":9}"));
 Check("a long Off reason is not held to the login bounds, and the Off writes nothing", off.Status == ProposedStatus.Unavailable && off.Gate == CatalogGates.GraphUnconfiguredAllOff && !off.Wrote
     && !JsonSerializer.Serialize(off).Contains(offReason, StringComparison.Ordinal) && repo.EntryVersionOrZero(globalId) == 1 && repo.Scopes.MutationCount == 0);
+var shortOffHistory = repo.HistoryCount;
+var shortOffIntents = repo.IntentCount;
+var shortOffEntries = repo.EntryCount;
+var shortOffKeys = repo.IdempotencyCount;
 var shortOff = service.Execute(sa, Call("off-short"), CatalogCommandParser.ParseEntryActivation("fee_type", globalId, "{\"desired_active\":false,\"reason\":\"short\",\"expected_version\":\"ABSENT\"}"));
-Check("a short Off reason is present enough and still writes nothing", shortOff.Gate == CatalogGates.GraphUnconfiguredAllOff && repo.Scopes.Count == 0);
+Check("a short Off reason is present enough and still writes nothing", shortOff.Status == ProposedStatus.Unavailable && shortOff.Gate == CatalogGates.GraphUnconfiguredAllOff && !shortOff.Wrote
+    && repo.EntryVersionOrZero(globalId) == 1
+    && repo.HistoryCount == shortOffHistory && repo.IntentCount == shortOffIntents
+    && repo.EntryCount == shortOffEntries && repo.IdempotencyCount == shortOffKeys
+    && repo.Scopes.Count == 0 && repo.Scopes.MutationCount == 0);
 var blankReason = CatalogCommandParser.ParseEntryActivation("fee_type", globalId, "{\"desired_active\":false,\"reason\":\"   \",\"expected_version\":1}");
 Check("blank reason is refused without importing a minimum length", blankReason is CatalogCommand.Rejected blank && blank.Code == "catalog_reason_required" && blank.Status == ProposedStatus.Unprocessable);
 var capped = CatalogCommandParser.ParseEntryActivation("fee_type", globalId, "{\"desired_active\":false,\"reason\":\"" + new string('r', 4001) + "\",\"expected_version\":1}");
