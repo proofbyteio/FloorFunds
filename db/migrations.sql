@@ -342,7 +342,7 @@ DO $EF$
 BEGIN
     IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261108190000_CatalogMasterData') THEN
     -- DEC-161 catalog foundation. Additive. No seed. No outbox writer. No cause table.
-    -- No flag definer. economic_role is not a column. Nested dollar quotes are not $EF$.
+    -- No flag definer. economic_role is not a column. Nested dollar quotes use their own tags.
 
     CREATE SCHEMA catalog;
     REVOKE ALL ON SCHEMA catalog FROM PUBLIC;
