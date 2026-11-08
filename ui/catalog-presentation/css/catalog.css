@@ -25,14 +25,17 @@
 html, body { margin: 0; }
 body { font-family: var(--font); color: var(--text); background: var(--page); font-size: 16px; line-height: 1.5; }
 a { color: #7a4d00; }
-:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+:focus-visible,
+.program-focus:focus { outline: 3px solid var(--focus); outline-offset: 2px; }
 .skip-link { position: absolute; left: 8px; top: -40px; background: #fff; padding: 8px 12px; z-index: 5; }
 .skip-link:focus { top: 8px; }
 
 .draft-banner, .page-foot { margin: 0; background: var(--banner); color: #fff; padding: 8px 20px; font-size: 14px; }
+.page-foot, .fine { overflow-wrap: anywhere; }
 .topbar, .actor-bar { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 12px 20px; background: var(--surface); }
 .topbar { border-bottom: 1px solid var(--line); }
 .actor-bar { background: #eef2f6; flex-wrap: wrap; }
+.actor-bar > * { min-width: 0; max-width: 100%; }
 .actor-bar p, .crumbs, .context { margin: 0; }
 .actor-bar select, .filters input, .filters select, .stack-form input, .stack-form textarea, .stack-form select {
   font: inherit; color: var(--text); background: #fff; border: 1px solid var(--input); border-radius: 8px; min-height: 44px; padding: 8px 10px;

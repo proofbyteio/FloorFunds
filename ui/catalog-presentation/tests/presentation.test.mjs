@@ -525,6 +525,21 @@ test("documented color pairs meet WCAG AA contrast", () => {
   for (const [fg, bg, minimum] of pairs) assert.ok(ratio(fg, bg) >= minimum, `${fg} on ${bg}`);
 });
 
+test("narrow layout keeps the proof token and shows script focus", () => {
+  const html = renderApp(freshState("super_admin"));
+  assert.match(html, /class="page-foot"/);
+  assert.match(html, /synthetic_fixture_projection_not_the_dotnet_double_api_or_database/);
+  assert.match(html, /role="alert"|role="status"|<h1 id="screen-title"/);
+  const css = readFileSync(join(here, "..", "css", "catalog.css"), "utf8");
+  assert.match(css, /:focus-visible,\s*\.program-focus:focus \{ outline: 3px solid var\(--focus\); outline-offset: 2px; \}/);
+  assert.match(css, /\.page-foot, \.fine \{ overflow-wrap: anywhere; \}/);
+  assert.match(css, /\.actor-bar > \* \{ min-width: 0; max-width: 100%; \}/);
+  const app = readFileSync(join(here, "..", "js", "app.mjs"), "utf8");
+  assert.match(app, /scrollTo\(0, 0\)/);
+  assert.match(app, /classList\.add\("program-focus"\)/);
+  assert.equal(app.includes("localStorage"), false);
+});
+
 test("presentation source does not touch storage, host, or the double", () => {
   const sourceDir = join(here, "..", "js");
   const text = readdirSync(sourceDir).map((name) => readFileSync(join(sourceDir, name), "utf8")).join("\n");

@@ -7,6 +7,13 @@ let lastRoute = "";
 let restoreId = null;
 
 const app = document.querySelector("#app");
+if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+
+function focusProgram(el, preventScroll) {
+  if (!(el instanceof HTMLElement)) return;
+  el.classList.add("program-focus");
+  el.focus({ preventScroll });
+}
 
 function paint(moveToTitle) {
   const query = document.querySelector("#catalog-query");
@@ -16,14 +23,21 @@ function paint(moveToTitle) {
   document.title = title ? `${title.textContent} — Cash Advance master data` : "Cash Advance master data";
   const restore = restoreId ? document.getElementById(restoreId) : null;
   restoreId = null;
-  if (restore) restore.focus();
-  else if (moveToTitle && title) title.focus();
-  else if (active && document.getElementById(active)) document.getElementById(active).focus();
+  let target = null;
+  if (restore) target = restore;
+  else if (moveToTitle && title) target = title;
+  else if (active && document.getElementById(active)) target = document.getElementById(active);
+  let caret = false;
   if (query && document.querySelector("#catalog-query") && active === "catalog-query") {
-    const field = document.querySelector("#catalog-query");
-    field.focus();
-    const length = field.value.length;
-    field.setSelectionRange(length, length);
+    target = document.querySelector("#catalog-query");
+    caret = true;
+  }
+  if (target) {
+    focusProgram(target, moveToTitle);
+    if (caret) {
+      const length = target.value.length;
+      target.setSelectionRange(length, length);
+    }
   }
 }
 
@@ -35,6 +49,16 @@ function show(hash, moveToTitle) {
   lastRoute = key;
   if ((location.hash || "#/overview") !== key) location.hash = key;
   paint(moveToTitle && changed);
+  if (changed) {
+    window.scrollTo(0, 0);
+    if (moveToTitle) {
+      const title = document.getElementById("screen-title");
+      const box = title ? title.getBoundingClientRect() : null;
+      if (box && (box.top < 0 || box.bottom > window.innerHeight)) {
+        window.scrollTo(0, Math.max(0, box.top - 8));
+      }
+    }
+  }
 }
 
 function readFields() {
