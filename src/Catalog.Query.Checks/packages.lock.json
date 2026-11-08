@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "Npgsql": {
+        "type": "Direct",
+        "requested": "[10.0.3, 10.0.3]",
+        "resolved": "10.0.3",
+        "contentHash": "7nb5YzXuvWWJxB0J8DiyL3we+X4FOctZrt0fIBnucOIaIevFEEwGQVZKtiu9olXdlNAK1eNgqSral6r/jlhI4w=="
+      },
+      "catalog.contracts": {
+        "type": "Project"
+      },
+      "catalog.query": {
+        "type": "Project",
+        "dependencies": {
+          "Catalog.Contracts": "[1.0.0, )",
+          "Catalog.Read": "[1.0.0, )"
+        }
+      },
+      "catalog.read": {
+        "type": "Project",
+        "dependencies": {
+          "Npgsql": "[10.0.3, 10.0.3]"
+        }
+      }
+    }
+  }
+}
