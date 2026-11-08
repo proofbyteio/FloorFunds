@@ -8,11 +8,15 @@ namespace Catalog.ScratchAuth;
 /// Resource-server check for one synthetic access_token_admin.
 /// Signature, audience, lifetime, and header rules follow the Admin API validator and errors.md.
 /// Required claim shape follows claims.schema.json access_token_admin. This type does not grant a catalog role.
+/// Stricter than that validator: a repeated JSON member in the header or payload is rejected, and kid must
+/// equal the configured scratch key id. No production mode is consulted.
 /// </summary>
 public sealed class FrozenAdminTokenGate
 {
     public const string Audience = "backoffice-api";
     public const int MaximumTokenLength = 8192;
+
+    private static readonly JsonDocumentOptions StrictJson = new() { AllowDuplicateProperties = false };
 
     private static readonly HashSet<string> PayloadNames = new(StringComparer.Ordinal)
     {
@@ -27,6 +31,7 @@ public sealed class FrozenAdminTokenGate
 
     private readonly JsonWebTokenHandler _handler = new() { MapInboundClaims = false };
     private readonly TokenValidationParameters _parameters;
+    private readonly string _keyId;
 
     public FrozenAdminTokenGate(string issuer, SecurityKey publicKey)
     {
@@ -34,6 +39,9 @@ public sealed class FrozenAdminTokenGate
             throw new ArgumentException("The scratch issuer is required.", nameof(issuer));
         if (publicKey is not RsaSecurityKey)
             throw new ArgumentException("The scratch validation key must be RSA.", nameof(publicKey));
+        if (string.IsNullOrEmpty(publicKey.KeyId))
+            throw new ArgumentException("The scratch validation key must name its kid.", nameof(publicKey));
+        _keyId = publicKey.KeyId;
         _parameters = new TokenValidationParameters
         {
             ValidIssuer = issuer,
@@ -67,7 +75,7 @@ public sealed class FrozenAdminTokenGate
             return false;
         try
         {
-            return TryClaims(jwt, out userId);
+            return TryClaims(jwt, _keyId, out userId);
         }
         catch (Exception)
         {
@@ -76,12 +84,12 @@ public sealed class FrozenAdminTokenGate
         }
     }
 
-    private static bool TryClaims(JsonWebToken jwt, out Guid userId)
+    private static bool TryClaims(JsonWebToken jwt, string keyId, out Guid userId)
     {
         userId = Guid.Empty;
-        using var header = JsonDocument.Parse(Base64UrlEncoder.Decode(jwt.EncodedHeader));
-        using var payload = JsonDocument.Parse(Base64UrlEncoder.Decode(jwt.EncodedPayload));
-        if (!HeaderAccepted(header.RootElement) || payload.RootElement.ValueKind != JsonValueKind.Object)
+        using var header = JsonDocument.Parse(Base64UrlEncoder.Decode(jwt.EncodedHeader), StrictJson);
+        using var payload = JsonDocument.Parse(Base64UrlEncoder.Decode(jwt.EncodedPayload), StrictJson);
+        if (!HeaderAccepted(header.RootElement, keyId) || payload.RootElement.ValueKind != JsonValueKind.Object)
             return false;
         foreach (var property in payload.RootElement.EnumerateObject())
         {
@@ -112,7 +120,7 @@ public sealed class FrozenAdminTokenGate
         return !partnerPresent;
     }
 
-    private static bool HeaderAccepted(JsonElement header)
+    private static bool HeaderAccepted(JsonElement header, string keyId)
     {
         if (header.ValueKind != JsonValueKind.Object)
             return false;
@@ -120,7 +128,7 @@ public sealed class FrozenAdminTokenGate
             return false;
         if (!header.TryGetProperty("typ", out var typ) || typ.GetString() != "at+jwt")
             return false;
-        return header.TryGetProperty("kid", out var kid) && kid.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(kid.GetString());
+        return header.TryGetProperty("kid", out var kid) && kid.ValueKind == JsonValueKind.String && kid.GetString() == keyId;
     }
 
     private static bool RequiredText(JsonElement payload, string name, int minimum = 1)

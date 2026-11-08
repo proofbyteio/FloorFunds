@@ -101,6 +101,23 @@ Check("a malformed token is 401", Denied(Captured.Body, Captured.StatusCode, "no
 var wrongKey = Mint(key: otherKey);
 Send("GET", "/admin/catalogs/fee_type/entries", null, wrongKey);
 Check("a token signed by another key is 401", Denied(Captured.Body, Captured.StatusCode, wrongKey));
+var acceptedParts = super.Split('.');
+var acceptedHeader = Base64UrlEncoder.Decode(acceptedParts[0]);
+var acceptedPayload = Base64UrlEncoder.Decode(acceptedParts[1]);
+const string secondSubject = "22222222-2222-4222-8222-222222222222";
+var duplicateSub = Resign(acceptedHeader, acceptedPayload[..^1] + ",\"sub\":\"" + secondSubject + "\"}");
+Send("GET", "/admin/catalogs/fee_type/entries", null, duplicateSub);
+Check("a duplicated sub member is 401",
+    acceptedPayload.EndsWith('}') && Denied(Captured.Body, Captured.StatusCode, duplicateSub) && !Captured.Raw.Contains(secondSubject, StringComparison.Ordinal));
+var duplicateKidHeader = acceptedHeader.Replace("\"kid\":\"scratch-synthetic-1\"", "\"kid\":\"scratch-synthetic-1\",\"kid\":\"scratch-synthetic-1\"", StringComparison.Ordinal);
+var duplicateKid = Resign(duplicateKidHeader, acceptedPayload);
+Send("GET", "/admin/catalogs/fee_type/entries", null, duplicateKid);
+Check("a duplicated header kid is 401",
+    duplicateKidHeader.Contains("\"kid\":\"scratch-synthetic-1\",\"kid\":\"scratch-synthetic-1\"", StringComparison.Ordinal)
+    && Denied(Captured.Body, Captured.StatusCode, duplicateKid));
+var unknownKid = Resign("{\"alg\":\"RS256\",\"typ\":\"at+jwt\",\"kid\":\"not-the-scratch-key\"}", acceptedPayload);
+Send("GET", "/admin/catalogs/fee_type/entries", null, unknownKid);
+Check("an unknown kid on the configured scratch key is 401", Denied(Captured.Body, Captured.StatusCode, unknownKid));
 var unsigned = Unsigned();
 Send("GET", "/admin/catalogs/fee_type/entries", null, unsigned);
 Check("an unsigned token is 401", Denied(Captured.Body, Captured.StatusCode, unsigned));
@@ -246,6 +263,15 @@ string Field(string name)
     using var document = JsonDocument.Parse(Captured.Body);
     var value = document.RootElement.GetProperty(name);
     return value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : value.GetRawText();
+}
+
+string Resign(string headerJson, string payloadJson)
+{
+    var header = Base64UrlEncoder.Encode(headerJson);
+    var payload = Base64UrlEncoder.Encode(payloadJson);
+    var input = Encoding.ASCII.GetBytes(header + "." + payload);
+    var signature = rsa.SignData(input, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+    return header + "." + payload + "." + Base64UrlEncoder.Encode(signature);
 }
 
 string Unsigned()
