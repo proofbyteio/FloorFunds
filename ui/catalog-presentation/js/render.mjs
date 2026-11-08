@@ -391,10 +391,12 @@ function sameCode(state) {
   state.scope = previous.scope;
   const actor = ACTORS[state.role];
   const entries = listed.status === 200 ? listed.list.entries.filter((entry) => entry.code === "EXAMPLE-5-A") : [];
-  const ownsPrivate = state.role === "partner_admin";
+  const ownsPrivate = state.role === "partner_admin" && listed.status === 200;
   const note = ownsPrivate
-    ? "The table is this selected principal's manufacturer list. Both identities are here because this principal is the owning Partner Admin. This screen does not give the private row to any other principal."
-    : "The table is this selected principal's manufacturer list, not another principal's list. This principal does not receive the private non-claim row. That result is the same as a missing row. This screen does not show a hidden count. Choose Partner Admin (own test partner) in the synthetic principal selector to see both identities.";
+    ? `The table is ${actor.label}'s manufacturer list. Both identities are here because this principal is the owning Partner Admin. This screen does not give the private row to any other principal.`
+    : listed.status === 200
+      ? `The table is ${actor.label}'s manufacturer list. This principal does not receive the private non-claim row. A direct read of that private row is the same as a missing row. This screen does not show a hidden count. Choose Partner Admin (own test partner) in the synthetic principal selector to see both identities.`
+      : `${actor.label} has no manufacturer table on this screen. The list status is ${listed.status} ${listed.code || listed.detail || ""}. That refusal is not a missing row.`;
   const badge = `<p class="principal-badge">Selected principal: ${esc(actor.label)}</p>`;
   const table = listed.status !== 200
     ? outcomeBlock(listed)
@@ -403,7 +405,7 @@ function sameCode(state) {
     </tbody></table></div>`;
   return `
     ${badge}
-    <p class="amber" role="note">${note}</p>
+    <p class="amber" role="note">${esc(note)}</p>
     <p>DEC-170 allows the same code on a global row and a private row. They keep distinct ids. Code alone is not the selected record.</p>
     ${table}
     <p>A further private-code collision writes nothing. Cross-partner code policy is not built.</p>
@@ -498,11 +500,14 @@ export function plainReason(outcome) {
   if (outcome.status === 404 || code === "not_found") {
     return "This result matches a missing row. Nothing was written.";
   }
-  if (gate === "create_dto_unresolved" || detail === "required_fields_unresolved") {
-    return "This create is unavailable because the required fields are not settled. Nothing was written.";
-  }
   if (detail === "create_fields_not_closed") {
     return "This create is unavailable because its fields are not closed. Nothing was written.";
+  }
+  if (detail === "required_fields_unresolved") {
+    return "This create is unavailable because the required fields are not settled. Nothing was written.";
+  }
+  if (gate === "create_dto_unresolved") {
+    return "This create is unavailable. Nothing was written.";
   }
   if (detail === "metadata_update_route_withheld") {
     return "No metadata update is available. Nothing was written.";

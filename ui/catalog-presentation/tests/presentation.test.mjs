@@ -5,7 +5,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyAction, freshState, parseRoute } from "../js/actions.mjs";
-import { renderApp } from "../js/render.mjs";
+import { plainReason, renderApp } from "../js/render.mjs";
 import {
   GATES,
   OPEN_POLICIES,
@@ -428,6 +428,73 @@ test("presentation lows keep the denied list, same-code principal, plain result,
   const restoreReason = "Restoring this value depends on the graph, which is unknown. No record was changed.";
   assert.ok(restoreCard.indexOf(restoreReason) < restoreCard.indexOf("graph_dependent_restore_unavailable"));
   assert.equal(offState.outcome.wrote, false);
+});
+
+test("unavailable create copy matches its detail and same-code copy matches the list status", () => {
+  assert.equal(
+    plainReason({ status: 503, code: "unavailable", gate: "create_dto_unresolved", detail: "create_fields_not_closed", wrote: false }),
+    "This create is unavailable because its fields are not closed. Nothing was written.",
+  );
+  assert.equal(
+    plainReason({ status: 503, code: "unavailable", gate: "create_dto_unresolved", detail: "required_fields_unresolved", wrote: false }),
+    "This create is unavailable because the required fields are not settled. Nothing was written.",
+  );
+  const closed = freshState("super_admin");
+  const before = closed.session.entries.size;
+  applyAction(closed, { type: "navigate", route: parseRoute("#/family/transaction_type/add") });
+  applyAction(closed, { type: "try-closed-create" });
+  const transaction = renderApp(closed);
+  const transactionCard = transaction.slice(transaction.indexOf('aria-label="Request result"'));
+  assert.equal(closed.outcome.status, 503);
+  assert.equal(closed.outcome.gate, "create_dto_unresolved");
+  assert.equal(closed.outcome.detail, "create_fields_not_closed");
+  assert.equal(closed.outcome.wrote, false);
+  assert.match(transaction, /Create stays unavailable \(create_fields_not_closed\)/);
+  assert.match(transactionCard, /its fields are not closed/);
+  assert.equal(/required fields are not settled/.test(transactionCard), false);
+  assert.ok(transactionCard.indexOf("its fields are not closed") < transactionCard.indexOf("create_fields_not_closed"));
+  assert.match(transactionCard, /<dt>Wrote<\/dt><dd>No<\/dd>/);
+  assert.notEqual(closed.outcome.status, 201);
+  assert.equal(closed.session.entries.size, before);
+
+  applyAction(closed, { type: "navigate", route: parseRoute("#/family/catalog_release/add") });
+  applyAction(closed, { type: "try-closed-create" });
+  const release = renderApp(closed);
+  const releaseCard = release.slice(release.indexOf('aria-label="Request result"'));
+  assert.equal(closed.outcome.detail, "required_fields_unresolved");
+  assert.equal(closed.outcome.gate, "create_dto_unresolved");
+  assert.equal(closed.outcome.wrote, false);
+  assert.match(release, /Create stays unavailable \(required_fields_unresolved\)/);
+  assert.match(releaseCard, /required fields are not settled/);
+  assert.equal(/fields are not closed/.test(releaseCard), false);
+  assert.match(releaseCard, /<dt>Wrote<\/dt><dd>No<\/dd>/);
+  assert.equal(closed.session.entries.size, before);
+
+  const privateId = "11000000-0000-4000-8005-200000000001";
+  const hidden = readEntry(closed.session, sa, "manufacturer", privateId);
+  const missing = readEntry(closed.session, sa, "manufacturer", "00000000-0000-4000-8000-000000000099");
+  assert.equal(hidden.status, 404);
+  assert.equal(sameRefusal(hidden, missing), true);
+  assert.equal(sameRefusal(readEntry(closed.session, other, "manufacturer", privateId), missing), true);
+
+  for (const role of ["client_admin", "supervisor", "cashier", "auditor", "accounting", "support", "none"]) {
+    const state = freshState(role);
+    applyAction(state, { type: "navigate", route: parseRoute("#/shared/same-code") });
+    const html = renderApp(state);
+    const note = html.slice(html.indexOf('role="note"'), html.indexOf("DEC-170"));
+    const card = html.slice(html.indexOf('aria-label="Request result"'));
+    assert.equal(state.role, role);
+    assert.match(note, new RegExp(`list status is 403 no_management_grant`));
+    assert.match(note, /not a missing row/);
+    assert.equal(/same as a missing row/.test(note), false);
+    assert.equal(/The table is/.test(note), false);
+    assert.match(card, /This principal has no management grant\. Nothing was written\./);
+    assert.match(card, /403 no_management_grant/);
+    assert.match(card, /<dt>Wrote<\/dt><dd>No<\/dd>/);
+    assert.equal(card.includes("same as a missing row"), false);
+    assert.equal(html.includes(privateId), false);
+    assert.equal(listEntries(state.session, actorByKey(role), "manufacturer").status, 403);
+  }
 });
 
 test("documented color pairs meet WCAG AA contrast", () => {

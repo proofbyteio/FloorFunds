@@ -206,6 +206,7 @@ try {
   let sameText = await evaluate("document.body.innerText");
   let sameActor = await evaluate(`document.getElementById("actor-role").value`);
   check("same code follows super admin", sameActor === "super_admin" && sameText.includes("Selected principal: Super Admin") && sameText.includes("11000000-0000-4000-8005-100000000001") && !sameText.includes("11000000-0000-4000-8005-200000000001") && sameText.includes("same as a missing row"));
+  report.shots.push(await shot("same-code-super-admin-1600"));
   check("same code selects owning partner admin", await setActor("partner_admin") === "partner_admin");
   await evaluate("window.scrollTo(0,0)");
   sameText = await evaluate("document.body.innerText");
@@ -217,6 +218,17 @@ try {
   report.shots.push(await shot("same-code-768"));
   await resize(1600, 1000);
   check("same code returns to super admin", await setActor("super_admin") === "super_admin");
+  check("cashier same-code is a list refusal", await setActor("cashier") === "cashier");
+  await evaluate("window.scrollTo(0,0)");
+  const cashierSameNote = await evaluate(`document.querySelector('[role="note"]').innerText`);
+  const cashierSameCard = await evaluate(`document.querySelector(".outcome").innerText`);
+  check("cashier same-code copy matches 403", cashierSameNote.includes("Cashier") && cashierSameNote.includes("403") && cashierSameNote.includes("no_management_grant") && cashierSameNote.includes("not a missing row") && !cashierSameNote.includes("same as a missing row") && !cashierSameNote.includes("The table is") && cashierSameCard.includes("This principal has no management grant") && cashierSameCard.includes("403"));
+  report.shots.push(await shot("same-code-cashier-1600"));
+  await resize(768, 1000);
+  await evaluate("window.scrollTo(0,0)");
+  report.shots.push(await shot("same-code-cashier-768"));
+  await resize(1600, 1000);
+  check("same code restores super admin after cashier", await setActor("super_admin") === "super_admin");
 
   await navigate("#/shared/graph");
   check("unknown graph", (await evaluate("document.body.innerText")).includes("UNCONFIGURED"));
@@ -305,7 +317,24 @@ try {
   await evaluate("document.getElementById('closed-create').click()");
   await sleep(150);
   const releaseText = await evaluate("document.body.innerText");
+  const releaseCard = await evaluate(`document.querySelector(".outcome").innerText`);
   check("release create unavailable", releaseText.includes("required_fields_unresolved") && /Wrote\s*No/.test(releaseText));
+  check("release plain reason matches required fields", releaseCard.includes("required fields are not settled") && !releaseCard.includes("fields are not closed") && releaseCard.includes("required_fields_unresolved") && releaseCard.indexOf("required fields are not settled") < releaseCard.indexOf("required_fields_unresolved") && /Wrote\s*No/.test(releaseCard));
+  await evaluate("document.querySelector('.outcome')?.scrollIntoView({block:'center'})");
+  report.shots.push(await shot("required-fields-unresolved-1600"));
+
+  await navigate("#/family/transaction_type/add");
+  await evaluate("document.getElementById('closed-create').click()");
+  await sleep(150);
+  const closedCard = await evaluate(`document.querySelector(".outcome").innerText`);
+  const closedHelp = await evaluate(`document.getElementById("create-help").textContent`);
+  check("unclosed create copy matches its detail", closedHelp.includes("create_fields_not_closed") && closedCard.includes("its fields are not closed") && !closedCard.includes("required fields are not settled") && closedCard.includes("create_fields_not_closed") && closedCard.indexOf("its fields are not closed") < closedCard.indexOf("create_dto_unresolved") && /Wrote\s*No/.test(closedCard) && !closedCard.includes("201"));
+  await evaluate("document.getElementById('create-help')?.scrollIntoView({block:'start'})");
+  report.shots.push(await shot("create-fields-not-closed-1600"));
+  await resize(768, 1000);
+  await evaluate("document.querySelector('.outcome')?.scrollIntoView({block:'center'})");
+  report.shots.push(await shot("create-fields-not-closed-768"));
+  await resize(1600, 1000);
 
   await navigate("#/family/model_hardware_claim/list");
   const claimOnLink = await evaluate(`(() => {
