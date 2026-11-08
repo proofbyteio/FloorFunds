@@ -78,19 +78,48 @@ async function navigate(hash) {
   throw new Error(`No screen title for ${hash}`);
 }
 
+let view = { width: 1600, height: 1000 };
+
 async function shot(name) {
+  const place = await evaluate(`(() => ({
+    scrollX: window.scrollX,
+    scrollY: window.scrollY,
+    actor: document.getElementById("actor-role")?.value || "",
+    actorLabel: document.getElementById("actor-role")?.selectedOptions?.[0]?.textContent?.trim() || "",
+    hash: location.hash,
+  }))()`);
   const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
   const path = `${outDir}/${name}.png`;
   writeFileSync(path, Buffer.from(image.data, "base64"));
+  report.captures.push({
+    file: `${name}.png`,
+    route: place.hash,
+    actor: place.actor,
+    actorLabel: place.actorLabel,
+    viewport: { width: view.width, height: view.height },
+    scroll: { x: place.scrollX, y: place.scrollY },
+  });
   return path;
 }
 
 async function resize(width, height) {
+  view = { width, height };
   await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 900 });
   await sleep(150);
 }
 
-const report = { passes: [], failures: [], focus: [], shots: [], limits: [] };
+async function setActor(role) {
+  const selected = await evaluate(`(() => {
+    const select = document.getElementById("actor-role");
+    select.value = ${JSON.stringify(role)};
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    return select.value;
+  })()`);
+  await sleep(200);
+  return selected;
+}
+
+const report = { passes: [], failures: [], focus: [], shots: [], captures: [], limits: [] };
 
 function check(name, ok, detail) {
   (ok ? report.passes : report.failures).push({ name, detail });
@@ -149,6 +178,8 @@ try {
   check("focused controls have names", focus.every((item) => item.text.length > 0), JSON.stringify(focus));
 
   await navigate("#/family/transaction_type/list");
+  const listPolicy = await evaluate("document.body.innerText");
+  check("list policy separates agreed reverse from this page", listPolicy.includes("Agreed policy record") && listPolicy.includes("Currently unavailable on this synthetic page") && listPolicy.includes("write nothing") && !listPolicy.includes("Partner Admin can reverse"));
   report.shots.push(await shot("transaction-type-list-1600"));
   await resize(1280, 900);
   report.shots.push(await shot("transaction-type-list-1280"));
@@ -171,10 +202,21 @@ try {
   report.shots.push(await shot("empty-results-1600"));
 
   await navigate("#/shared/same-code");
-  const sameText = await evaluate("document.body.innerText");
-  check("same code both identities", sameText.includes("EXAMPLE-5-A") && sameText.includes("11000000-0000-4000-8005-100000000001") && sameText.includes("11000000-0000-4000-8005-200000000001") && sameText.includes("same as a missing row") && sameText.includes("Super Admin"));
-  await evaluate("document.querySelector('.results-card')?.scrollIntoView({block:'center'})");
+  await evaluate("window.scrollTo(0,0)");
+  let sameText = await evaluate("document.body.innerText");
+  let sameActor = await evaluate(`document.getElementById("actor-role").value`);
+  check("same code follows super admin", sameActor === "super_admin" && sameText.includes("Selected principal: Super Admin") && sameText.includes("11000000-0000-4000-8005-100000000001") && !sameText.includes("11000000-0000-4000-8005-200000000001") && sameText.includes("same as a missing row"));
+  check("same code selects owning partner admin", await setActor("partner_admin") === "partner_admin");
+  await evaluate("window.scrollTo(0,0)");
+  sameText = await evaluate("document.body.innerText");
+  const sameLabel = await evaluate(`document.getElementById("actor-role").selectedOptions[0].textContent.trim()`);
+  check("same code table matches selected principal", sameText.includes(`Selected principal: ${sameLabel}`) && sameText.includes("11000000-0000-4000-8005-100000000001") && sameText.includes("11000000-0000-4000-8005-200000000001") && sameLabel === "Partner Admin (own test partner)");
   report.shots.push(await shot("same-code-1600"));
+  await resize(768, 1000);
+  await evaluate("window.scrollTo(0,0)");
+  report.shots.push(await shot("same-code-768"));
+  await resize(1600, 1000);
+  check("same code returns to super admin", await setActor("super_admin") === "super_admin");
 
   await navigate("#/shared/graph");
   check("unknown graph", (await evaluate("document.body.innerText")).includes("UNCONFIGURED"));
@@ -240,10 +282,15 @@ try {
   const offText = await evaluate("document.body.innerText");
   check("off is 503 unknown impact", offText.includes("503") && offText.includes("Unavailable. Not zero.") && offText.includes("Wrote") && !offText.includes("0 linked"));
   check("off wrote no", /Wrote\s*No/.test(offText));
+  const offCard = await evaluate(`document.querySelector(".outcome").innerText`);
+  check("off plain reason leads", offCard.indexOf("The graph is unknown, so this Off is unavailable") >= 0 && offCard.indexOf("The graph is unknown, so this Off is unavailable") < offCard.indexOf("graph_unconfigured_all_off") && /Wrote\s*No/.test(offCard));
   await evaluate("document.querySelector('.outcome')?.scrollIntoView({block:'center'})");
   report.shots.push(await shot("off-unavailable-1600"));
   await resize(1280, 900);
   report.shots.push(await shot("off-unavailable-1280"));
+  await resize(768, 1000);
+  await evaluate("document.querySelector('.outcome')?.scrollIntoView({block:'center'})");
+  report.shots.push(await shot("off-unavailable-768"));
   await resize(1600, 1000);
 
   await navigate("#/family/catalog_release/add");
@@ -272,8 +319,14 @@ try {
   await sleep(200);
   const onText = await evaluate("document.body.innerText");
   check("claim on 503", onText.includes("503") && onText.includes("pending_pq272") && /Wrote\s*No/.test(onText));
+  const onCard = await evaluate(`document.querySelector(".outcome").innerText`);
+  check("claim on plain reason leads", onCard.indexOf("Claim entry On is not approved for any actor") >= 0 && onCard.indexOf("Claim entry On is not approved for any actor") < onCard.indexOf("claim_reactivation_pending_pq272") && /Wrote\s*No/.test(onCard));
   await evaluate("document.querySelector('.outcome')?.scrollIntoView({block:'center'})");
   report.shots.push(await shot("claim-on-unavailable-1600"));
+  await resize(768, 1000);
+  await evaluate("document.querySelector('.outcome')?.scrollIntoView({block:'center'})");
+  report.shots.push(await shot("claim-on-unavailable-768"));
+  await resize(1600, 1000);
 
   const storageAfter = await evaluate("localStorage.length + ':' + sessionStorage.length");
   check("web storage unchanged", storageBefore === storageAfter, storageBefore + " -> " + storageAfter);
@@ -286,17 +339,24 @@ try {
   })()`);
   await sleep(200);
   const cashierText = await evaluate("document.body.innerText");
-  check("cashier list forbidden", cashierText.includes("no_management_grant") && cashierText.includes("403"));
+  const cashierAdd = await evaluate(`!!document.querySelector('a[href="#/family/transaction_type/add"]')`);
+  check("cashier list forbidden", cashierText.includes("no_management_grant") && cashierText.includes("403") && cashierText.includes("This principal has no management grant") && cashierText.includes("Add is omitted") && cashierAdd === false);
+  await evaluate("window.scrollTo(0,0)");
   report.shots.push(await shot("cashier-forbidden-1600"));
+  await resize(768, 1000);
+  await evaluate("window.scrollTo(0,0)");
+  report.shots.push(await shot("cashier-forbidden-768"));
   check("cashier dispatch", cashier === "set");
 } catch (error) {
   report.failures.push({ name: "browser harness", detail: String(error && error.stack || error) });
 } finally {
   report.limits = [
-    "Headless Chrome only. No screen reader, no zoom session, and no physical keyboard.",
-    "Contrast figures in the node test use the stylesheet tokens, not a pixel sample of every state.",
+    "Headless Chrome only. No screen reader, no zoom session, and no physical keyboard. Tab is a synthetic key event.",
+    "No viewport below 768 CSS pixels was requested. A phone width under 539 CSS pixels was not rendered.",
+    "The external 005c470 review closed E1 behavior. This harness does not rerun that matrix and does not treat it as new proof.",
+    "Contrast figures in the node test use the stylesheet tokens, plus computed style on the disabled claim and closed-create fields.",
     "Tab order is the first 12 Tab presses from the skip link on the overview.",
-    "Screenshots are the viewport, not a full-page capture of every route.",
+    "Screenshots are the viewport, not a full-page capture of every route. scroll in each capture is the viewport origin at the shot.",
   ];
   writeFileSync(`${outDir}/browser-audit.json`, JSON.stringify(report, null, 2));
   chrome.kill();

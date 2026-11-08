@@ -156,7 +156,9 @@ function listScreen(state, family) {
         </select>
       </div>
       <button type="button" id="search-button" data-action="search">Search</button>
-      <a class="button-link" href="#/family/${family.wire}/add">Add</a>
+      ${listed.status === 200
+        ? `<a class="button-link" href="#/family/${family.wire}/add">Add</a>`
+        : `<p class="field-help" id="add-withheld">Add is omitted. A refused list does not offer a create, and it is not a management grant.</p>`}
     </form>
     ${listed.status !== 200 ? outcomeBlock(listed) : resultsTable(state, family, listed)}
     ${below}
@@ -379,24 +381,31 @@ function historyScreen(state, family) {
 }
 
 function sameCode(state) {
-  const previous = { route: state.route, query: state.query, scope: state.scope, role: state.role };
+  const previous = { route: state.route, query: state.query, scope: state.scope };
   state.route = { screen: "list", family: "manufacturer" };
   state.query = "";
   state.scope = "all";
-  state.role = "partner_admin";
   const listed = visibleRows(state);
   state.route = previous.route;
   state.query = previous.query;
   state.scope = previous.scope;
-  state.role = previous.role;
+  const actor = ACTORS[state.role];
   const entries = listed.status === 200 ? listed.list.entries.filter((entry) => entry.code === "EXAMPLE-5-A") : [];
-  const selected = ACTORS[state.role]?.label || state.role;
-  return `
-    <p class="amber" role="note">This table is the owning Partner Admin preview. Both identities are visible to that principal. Super Admin and a non-owning partner do not receive the private non-claim row. Their result is the same as a missing row. This screen does not show a hidden count. The selected principal remains ${esc(selected)}.</p>
-    <p>DEC-170 allows the same code on a global row and a private row. They keep distinct ids. Code alone is not the selected record.</p>
-    ${listed.status !== 200 ? outcomeBlock(listed) : `<div class="results-card"><table><caption>TEST-ONLY manufacturer rows that share EXAMPLE-5-A, as the owning Partner Admin sees them</caption><thead><tr><th scope="col">Identity</th><th scope="col">Scope</th><th scope="col">Label</th></tr></thead><tbody>
+  const ownsPrivate = state.role === "partner_admin";
+  const note = ownsPrivate
+    ? "The table is this selected principal's manufacturer list. Both identities are here because this principal is the owning Partner Admin. This screen does not give the private row to any other principal."
+    : "The table is this selected principal's manufacturer list, not another principal's list. This principal does not receive the private non-claim row. That result is the same as a missing row. This screen does not show a hidden count. Choose Partner Admin (own test partner) in the synthetic principal selector to see both identities.";
+  const badge = `<p class="principal-badge">Selected principal: ${esc(actor.label)}</p>`;
+  const table = listed.status !== 200
+    ? outcomeBlock(listed)
+    : `<div class="results-card"><table><caption>TEST-ONLY manufacturer rows with code EXAMPLE-5-A for ${esc(actor.label)}</caption><thead><tr><th scope="col">Identity</th><th scope="col">Scope</th><th scope="col">Label</th></tr></thead><tbody>
       ${entries.map((entry) => `<tr><td><strong class="test-flag">TEST-ONLY</strong> ${esc(entry.code)}<br>${esc(entry.entryId)}</td><td>${esc(entry.entryClass)}</td><td>${esc(entry.displayName)}</td></tr>`).join("")}
-    </tbody></table></div>`}
+    </tbody></table></div>`;
+  return `
+    ${badge}
+    <p class="amber" role="note">${note}</p>
+    <p>DEC-170 allows the same code on a global row and a private row. They keep distinct ids. Code alone is not the selected record.</p>
+    ${table}
     <p>A further private-code collision writes nothing. Cross-partner code policy is not built.</p>
     <p><a href="#/family/manufacturer/list">Open the manufacturer list</a></p>`;
 }
@@ -437,7 +446,7 @@ function graphScreen(state) {
 
 function policyNote(family) {
   const add = !family ? "Private Add exists only for the six UX-candidate catalogs, and only fee create has a closed names-only DTO." : family.privateAdd ? "Private Add is a UX candidate for the owning Partner Admin. The create DTO is closed only for names-only fees." : "No Partner Admin private Add for this catalog.";
-  return `<aside class="amber" role="note"><p>All 20 catalogs can be switched under DEC-162. Partner Admin can reverse a Super Admin single-partner Off (DEC-166), not a global deactivation (DEC-174).</p><p>Visible rows are TEST-ONLY examples (DEC-176), not production seeds.</p><p>${esc(add)}</p></aside>`;
+  return `<aside class="amber" role="note"><p>Agreed policy record: DEC-162 is the agreed switch coverage for all 20 catalogs. DEC-166 is the agreed Partner Admin reverse of a Super Admin single-partner Off. DEC-174 excludes a global deactivation from that reverse.</p><p>Currently unavailable on this synthetic page: Off and that reverse are not performed here. The graph is UNCONFIGURED, and both write nothing.</p><p>Visible rows are TEST-ONLY examples (DEC-176), not production seeds.</p><p>${esc(add)}</p></aside>`;
 }
 
 function ownerNote(family) {
@@ -467,6 +476,44 @@ function familyNotes(family) {
   return "";
 }
 
+export function plainReason(outcome) {
+  const gate = outcome.gate || "";
+  const detail = outcome.detail || "";
+  const code = outcome.code || "";
+  if (gate === "graph_unconfigured_all_off" || detail === "graph_unconfigured_all_off") {
+    return "The graph is unknown, so this Off is unavailable. No record was changed.";
+  }
+  if (gate === "graph_dependent_restore_unavailable" || detail === "graph_dependent_restore_unavailable") {
+    return "Restoring this value depends on the graph, which is unknown. No record was changed.";
+  }
+  if (gate === "claim_reactivation_pending_pq272" || detail === "pending_pq272") {
+    return "Claim entry On is not approved for any actor. No record was changed.";
+  }
+  if (gate === "pq252_sa1_field_gate" || detail === "edit_controls_and_persistence_disabled") {
+    return "The six claim fields are not approved for saving. No record was changed.";
+  }
+  if (code === "no_management_grant" || detail === "no_management_grant") {
+    return "This principal has no management grant. Nothing was written.";
+  }
+  if (outcome.status === 404 || code === "not_found") {
+    return "This result matches a missing row. Nothing was written.";
+  }
+  if (gate === "create_dto_unresolved" || detail === "required_fields_unresolved") {
+    return "This create is unavailable because the required fields are not settled. Nothing was written.";
+  }
+  if (detail === "create_fields_not_closed") {
+    return "This create is unavailable because its fields are not closed. Nothing was written.";
+  }
+  if (detail === "metadata_update_route_withheld") {
+    return "No metadata update is available. Nothing was written.";
+  }
+  if (outcome.wrote === true && outcome.status < 400) {
+    return "A names-only fee was recorded in this page session. Refresh discards it. This is not an API or database write.";
+  }
+  if (outcome.wrote === false) return "Nothing was written.";
+  return "This is the result of the synthetic check.";
+}
+
 export function outcomeBlock(outcome) {
   if (!outcome) return "";
   const wrote = outcome.wrote === true;
@@ -474,6 +521,7 @@ export function outcomeBlock(outcome) {
   return `
     <section class="${outcome.status >= 400 ? "outcome bad" : "outcome ok"}" role="${outcome.status >= 400 ? "alert" : "status"}" aria-label="Request result">
       <h2>Request result</h2>
+      <p class="reason">${esc(plainReason(outcome))}</p>
       <dl class="facts">
         <div><dt>Status</dt><dd>${esc(outcome.status)} ${esc(outcome.code)}</dd></div>
         <div><dt>Wrote</dt><dd>${wrote ? "Synthetic session only" : "No"}</dd></div>

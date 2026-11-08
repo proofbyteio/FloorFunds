@@ -101,6 +101,8 @@ button:disabled,
 .outcome.bad { background: var(--danger-soft); border: 1px solid #f3c3bd; }
 .outcome.ok { background: var(--ok-soft); border: 1px solid #abefc6; }
 .outcome h2 { color: var(--text); }
+.reason { font-weight: 600; margin: 0 0 12px; }
+.principal-badge { display: inline-block; margin: 0 0 12px; padding: 4px 10px; border: 1px solid var(--amber-line); border-radius: 999px; background: var(--amber); color: var(--text); font-weight: 600; }
 .checkline { display: flex; gap: 8px; align-items: center; min-height: 44px; }
 .route-list { columns: 2; padding-left: 18px; }
 .empty-card { background: var(--surface); }

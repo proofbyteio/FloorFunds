@@ -339,18 +339,12 @@ test("empty, denied, and same-code screens stay truthful", () => {
   assert.match(claimList, />Edit</);
   applyAction(state, { type: "navigate", route: parseRoute("#/shared/same-code") });
   const same = renderApp(state);
-  assert.match(same, /EXAMPLE-5-A/);
+  assert.equal(state.role, "partner_admin");
+  assert.match(same, /value="partner_admin" selected>Partner Admin \(own test partner\)/);
+  assert.match(same, /Selected principal: Partner Admin \(own test partner\)/);
   assert.match(same, /11000000-0000-4000-8005-100000000001/);
   assert.match(same, /11000000-0000-4000-8005-200000000001/);
-  assert.match(same, /owning Partner Admin preview/);
-  assert.match(same, /same as a missing row/);
-  const saState = freshState("super_admin");
-  applyAction(saState, { type: "navigate", route: parseRoute("#/shared/same-code") });
-  const saSame = renderApp(saState);
-  assert.match(saSame, /selected principal remains Super Admin/);
-  assert.match(saSame, /11000000-0000-4000-8005-200000000001/);
-  assert.match(saSame, /same as a missing row/);
-  assert.equal(saSame.includes("hidden count:"), false);
+  assert.equal(same.includes("hidden count:"), false);
   applyAction(state, { type: "navigate", route: parseRoute("#/shared/graph") });
   const graph = renderApp(state);
   assert.match(graph, /UNCONFIGURED/);
@@ -358,6 +352,82 @@ test("empty, denied, and same-code screens stay truthful", () => {
   applyAction(state, { type: "toggle-fixture", on: true });
   assert.equal(state.outcome.graph.affectedCount, null);
   assert.equal(state.outcome.graph.authorizesWrites, false);
+});
+
+test("presentation lows keep the denied list, same-code principal, plain result, and policy tense", () => {
+  const cashierState = freshState("cashier");
+  applyAction(cashierState, { type: "navigate", route: parseRoute("#/family/transaction_type/list") });
+  const deniedList = renderApp(cashierState);
+  assert.match(deniedList, /Add is omitted/);
+  assert.match(deniedList, /This principal has no management grant/);
+  assert.match(deniedList, /no_management_grant/);
+  assert.match(deniedList, />No</);
+  assert.equal(deniedList.includes('href="#/family/transaction_type/add"'), false);
+  assert.equal(deniedList.includes(">Add</a>"), false);
+  const feeRefusal = submitCreate(cashierState.session, cashier, call("cashier-list"), "fee_type", feeJson());
+  assert.equal(feeRefusal.status, 403);
+  assert.equal(feeRefusal.wrote, false);
+  assert.equal(cashierState.session.entries.size, freshState().session.entries.size);
+
+  const allowed = freshState("super_admin");
+  applyAction(allowed, { type: "navigate", route: parseRoute("#/family/transaction_type/list") });
+  const allowedList = renderApp(allowed);
+  assert.match(allowedList, /href="#\/family\/transaction_type\/add">Add</);
+  assert.match(allowedList, /Agreed policy record/);
+  assert.match(allowedList, /Currently unavailable on this synthetic page/);
+  assert.match(allowedList, /DEC-166/);
+  assert.match(allowedList, /DEC-174/);
+  assert.equal(/Partner Admin can reverse/.test(allowedList), false);
+
+  const saSameState = freshState("super_admin");
+  applyAction(saSameState, { type: "navigate", route: parseRoute("#/shared/same-code") });
+  const saSame = renderApp(saSameState);
+  assert.equal(saSameState.role, "super_admin");
+  assert.match(saSame, /value="super_admin" selected>Super Admin/);
+  assert.match(saSame, /Selected principal: Super Admin/);
+  assert.match(saSame, /11000000-0000-4000-8005-100000000001/);
+  assert.equal(saSame.includes("11000000-0000-4000-8005-200000000001"), false);
+  assert.match(saSame, /same as a missing row/);
+  assert.equal(saSame.includes("hidden count:"), false);
+  const otherState = freshState("partner_admin_other");
+  applyAction(otherState, { type: "navigate", route: parseRoute("#/shared/same-code") });
+  const otherSame = renderApp(otherState);
+  assert.match(otherSame, /Selected principal: Partner Admin \(other test partner\)/);
+  assert.equal(otherSame.includes("11000000-0000-4000-8005-200000000001"), false);
+  assert.match(otherSame, /11000000-0000-4000-8005-100000000001/);
+
+  const offState = freshState("super_admin");
+  const fee = findCode(offState.session, "fee_type", "EXAMPLE-20-A", "global");
+  applyAction(offState, { type: "navigate", route: parseRoute(`#/family/fee_type/off/${fee.entryId}`) });
+  offState.form.reason = "stop this test row";
+  applyAction(offState, { type: "check-activation", mode: "entry", desiredActive: false });
+  const offHtml = renderApp(offState);
+  const offCard = offHtml.slice(offHtml.indexOf('aria-label="Request result"'));
+  const offReason = "The graph is unknown, so this Off is unavailable. No record was changed.";
+  assert.ok(offCard.indexOf(offReason) >= 0);
+  assert.ok(offCard.indexOf(offReason) < offCard.indexOf("graph_unconfigured_all_off"));
+  assert.match(offCard, /<dt>Wrote<\/dt><dd>No<\/dd>/);
+  assert.equal(offState.outcome.wrote, false);
+
+  const claim = [...offState.session.entries.values()].find((entry) => entry.code === "EXAMPLE-CLAIM-P");
+  applyAction(offState, { type: "navigate", route: parseRoute(`#/family/model_hardware_claim/on/${claim.entryId}`) });
+  offState.form.reason = "reactivate";
+  applyAction(offState, { type: "check-activation", mode: "entry", desiredActive: true });
+  const onHtml = renderApp(offState);
+  const onCard = onHtml.slice(onHtml.indexOf('aria-label="Request result"'));
+  const onReason = "Claim entry On is not approved for any actor. No record was changed.";
+  assert.ok(onCard.indexOf(onReason) < onCard.indexOf("claim_reactivation_pending_pq272"));
+  assert.match(onCard, /<dt>Wrote<\/dt><dd>No<\/dd>/);
+  assert.equal(offState.outcome.wrote, false);
+
+  applyAction(offState, { type: "navigate", route: parseRoute(`#/family/fee_type/on/${fee.entryId}`) });
+  offState.form.reason = "restore";
+  applyAction(offState, { type: "check-activation", mode: "entry", desiredActive: true });
+  const restoreHtml = renderApp(offState);
+  const restoreCard = restoreHtml.slice(restoreHtml.indexOf('aria-label="Request result"'));
+  const restoreReason = "Restoring this value depends on the graph, which is unknown. No record was changed.";
+  assert.ok(restoreCard.indexOf(restoreReason) < restoreCard.indexOf("graph_dependent_restore_unavailable"));
+  assert.equal(offState.outcome.wrote, false);
 });
 
 test("documented color pairs meet WCAG AA contrast", () => {
