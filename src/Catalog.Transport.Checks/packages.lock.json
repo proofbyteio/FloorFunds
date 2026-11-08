@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "catalog.contracts": {
+        "type": "Project"
+      },
+      "catalog.transport": {
+        "type": "Project",
+        "dependencies": {
+          "Catalog.Contracts": "[1.0.0, )"
+        }
+      }
+    }
+  }
+}
