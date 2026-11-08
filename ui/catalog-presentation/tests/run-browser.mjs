@@ -244,6 +244,7 @@ try {
   report.shots.push(await shot("off-unavailable-1600"));
   await resize(1280, 900);
   report.shots.push(await shot("off-unavailable-1280"));
+  await resize(1600, 1000);
 
   await navigate("#/family/catalog_release/add");
   const closedField = await evaluate(`(() => {
