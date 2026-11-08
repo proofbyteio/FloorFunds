@@ -379,18 +379,22 @@ function historyScreen(state, family) {
 }
 
 function sameCode(state) {
-  const previous = { route: state.route, query: state.query, scope: state.scope };
+  const previous = { route: state.route, query: state.query, scope: state.scope, role: state.role };
   state.route = { screen: "list", family: "manufacturer" };
   state.query = "";
   state.scope = "all";
+  state.role = "partner_admin";
   const listed = visibleRows(state);
   state.route = previous.route;
   state.query = previous.query;
   state.scope = previous.scope;
+  state.role = previous.role;
   const entries = listed.status === 200 ? listed.list.entries.filter((entry) => entry.code === "EXAMPLE-5-A") : [];
+  const selected = ACTORS[state.role]?.label || state.role;
   return `
+    <p class="amber" role="note">This table is the owning Partner Admin preview. Both identities are visible to that principal. Super Admin and a non-owning partner do not receive the private non-claim row. Their result is the same as a missing row. This screen does not show a hidden count. The selected principal remains ${esc(selected)}.</p>
     <p>DEC-170 allows the same code on a global row and a private row. They keep distinct ids. Code alone is not the selected record.</p>
-    ${listed.status !== 200 ? outcomeBlock(listed) : `<div class="results-card"><table><caption>TEST-ONLY manufacturer rows that share EXAMPLE-5-A</caption><thead><tr><th scope="col">Identity</th><th scope="col">Scope</th><th scope="col">Label</th></tr></thead><tbody>
+    ${listed.status !== 200 ? outcomeBlock(listed) : `<div class="results-card"><table><caption>TEST-ONLY manufacturer rows that share EXAMPLE-5-A, as the owning Partner Admin sees them</caption><thead><tr><th scope="col">Identity</th><th scope="col">Scope</th><th scope="col">Label</th></tr></thead><tbody>
       ${entries.map((entry) => `<tr><td><strong class="test-flag">TEST-ONLY</strong> ${esc(entry.code)}<br>${esc(entry.entryId)}</td><td>${esc(entry.entryClass)}</td><td>${esc(entry.displayName)}</td></tr>`).join("")}
     </tbody></table></div>`}
     <p>A further private-code collision writes nothing. Cross-partner code policy is not built.</p>

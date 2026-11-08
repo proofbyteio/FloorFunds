@@ -340,7 +340,17 @@ test("empty, denied, and same-code screens stay truthful", () => {
   applyAction(state, { type: "navigate", route: parseRoute("#/shared/same-code") });
   const same = renderApp(state);
   assert.match(same, /EXAMPLE-5-A/);
-  assert.equal((same.match(/EXAMPLE-5-A/g) || []).length >= 2, true);
+  assert.match(same, /11000000-0000-4000-8005-100000000001/);
+  assert.match(same, /11000000-0000-4000-8005-200000000001/);
+  assert.match(same, /owning Partner Admin preview/);
+  assert.match(same, /same as a missing row/);
+  const saState = freshState("super_admin");
+  applyAction(saState, { type: "navigate", route: parseRoute("#/shared/same-code") });
+  const saSame = renderApp(saState);
+  assert.match(saSame, /selected principal remains Super Admin/);
+  assert.match(saSame, /11000000-0000-4000-8005-200000000001/);
+  assert.match(saSame, /same as a missing row/);
+  assert.equal(saSame.includes("hidden count:"), false);
   applyAction(state, { type: "navigate", route: parseRoute("#/shared/graph") });
   const graph = renderApp(state);
   assert.match(graph, /UNCONFIGURED/);

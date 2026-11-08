@@ -171,7 +171,9 @@ try {
   report.shots.push(await shot("empty-results-1600"));
 
   await navigate("#/shared/same-code");
-  check("same code", (await evaluate("document.body.innerText")).includes("EXAMPLE-5-A"));
+  const sameText = await evaluate("document.body.innerText");
+  check("same code both identities", sameText.includes("EXAMPLE-5-A") && sameText.includes("11000000-0000-4000-8005-100000000001") && sameText.includes("11000000-0000-4000-8005-200000000001") && sameText.includes("same as a missing row") && sameText.includes("Super Admin"));
+  await evaluate("document.querySelector('.results-card')?.scrollIntoView({block:'center'})");
   report.shots.push(await shot("same-code-1600"));
 
   await navigate("#/shared/graph");
@@ -200,6 +202,13 @@ try {
   await sleep(200);
   const claimResult = await evaluate("document.body.innerText");
   check("claim edit writes nothing", claimResult.includes("Wrote") && claimResult.includes("No") && claimResult.includes("503"));
+  const claimField = await evaluate(`(() => {
+    const el = document.getElementById("claim-availability");
+    const style = getComputedStyle(el);
+    return { disabled: el.disabled, bg: style.backgroundColor, color: style.color };
+  })()`);
+  check("disabled claim fields are muted", claimField.disabled && claimField.bg === "rgb(243, 245, 248)" && claimField.color === "rgb(91, 100, 114)", JSON.stringify(claimField));
+  await evaluate("document.getElementById('claim-availability')?.scrollIntoView({block:'center'})");
   report.shots.push(await shot("claim-edit-refused-1600"));
   await resize(768, 1000);
   report.shots.push(await shot("claim-edit-refused-768"));
@@ -237,6 +246,14 @@ try {
   report.shots.push(await shot("off-unavailable-1280"));
 
   await navigate("#/family/catalog_release/add");
+  const closedField = await evaluate(`(() => {
+    const el = document.getElementById("closed-code");
+    const style = getComputedStyle(el);
+    return { disabled: el.disabled, bg: style.backgroundColor };
+  })()`);
+  check("closed create fields look disabled", closedField.disabled && closedField.bg === "rgb(243, 245, 248)", JSON.stringify(closedField));
+  await evaluate("document.getElementById('closed-code')?.scrollIntoView({block:'center'})");
+  report.shots.push(await shot("closed-create-disabled-1600"));
   await evaluate("document.getElementById('closed-create').click()");
   await sleep(150);
   const releaseText = await evaluate("document.body.innerText");
