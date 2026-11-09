@@ -73,6 +73,7 @@ h2 { font-size: 18px; margin: 0 0 8px; }
 .test-flag { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 12px; letter-spacing: .02em; }
 .table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
+td, th, caption { overflow-wrap: anywhere; }
 caption { text-align: left; font-weight: 600; margin-bottom: 8px; }
 th, td { text-align: left; vertical-align: top; padding: 12px 8px; border-bottom: 1px solid var(--line); }
 th { font-size: 14px; }

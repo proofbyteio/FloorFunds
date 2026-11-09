@@ -534,6 +534,7 @@ test("narrow layout keeps the proof token and shows script focus", () => {
   assert.match(css, /:focus-visible,\s*\.program-focus:focus \{ outline: 3px solid var\(--focus\); outline-offset: 2px; \}/);
   assert.match(css, /\.page-foot, \.fine \{ overflow-wrap: anywhere; \}/);
   assert.match(css, /\.actor-bar > \* \{ min-width: 0; max-width: 100%; \}/);
+  assert.match(css, /td, th, caption \{ overflow-wrap: anywhere; \}/);
   const app = readFileSync(join(here, "..", "js", "app.mjs"), "utf8");
   assert.match(app, /scrollTo\(0, 0\)/);
   assert.match(app, /classList\.add\("program-focus"\)/);
