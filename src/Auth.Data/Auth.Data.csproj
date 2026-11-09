@@ -27,4 +27,12 @@
   <ItemGroup>
     <ProjectReference Include="../Login.Abstractions/Login.Abstractions.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Migrations\CatalogMasterData.Up.sql" />
+    <EmbeddedResource Include="Migrations\CatalogMasterData.Functions.sql" />
+    <EmbeddedResource Include="Migrations\CatalogMasterData.Behavior.sql" />
+    <EmbeddedResource Include="Migrations\CatalogMasterData.Triggers.sql" />
+    <EmbeddedResource Include="Migrations\CatalogMasterData.Grants.sql" />
+    <EmbeddedResource Include="Migrations\CatalogMasterData.Down.sql" />
+  </ItemGroup>
 </Project>

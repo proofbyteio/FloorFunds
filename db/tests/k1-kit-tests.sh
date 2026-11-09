@@ -128,7 +128,7 @@ export FF_DB_PASSWORD="$(PW)" FF_ADMIN_API_PASSWORD="$(PW)" FF_LOGIN_PASSWORD="$
 # B1 setup.sh fresh, --role != --db (K2)
 rc=$(SH --db ${P}a --role ${P}a_owner --seed)
 ok "[sh] fresh ${P}a (--role ${P}a_owner) -> rc 0; DB + 3 roles carry the kit marker" "$([[ $rc == 0 && $(marked ${P}a_owner,${P}a_admin_api,${P}a_login ${P}a) == 4 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
-r=$(checks ${P}a ${P}a_owner); ok "[sh] DB checks on ${P}a with --role != --db (K2) -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
+r=$(checks ${P}a ${P}a_owner); ok "[sh] DB checks on ${P}a with --role != --db (K2) -> $r" "$([[ $r == '174 passed, 0 failed' ]] && echo 1 || echo 0)"
 s0=$(snap); rc=$(SH --db ${P}a --role ${P}a_owner --seed)
 ok "[sh] re-run without --force -> rc 5, nothing changed" "$([[ $rc == 5 && $(snap) == "$s0" ]] && grep -q 're-run with --force' "$T/out" && echo 1 || echo 0)" "rc=$rc"
 rc=$(SH --db ${P}a --role ${P}a_owner --drop)
@@ -139,19 +139,19 @@ ok "[sh] --force on the kit's own objects -> rc 0, same DB oid, owner password r
   "$([[ $rc == 0 && $(dboid ${P}a) == "$oid0" && $(pwhash ${P}a_owner) != "$h0" ]] && PGPASSWORD="$TRICKY" psql -X -tA -h 127.0.0.1 -U ${P}a_owner -d ${P}a -c 'select 1' >/dev/null 2>&1 && echo 1 || echo 0)" "rc=$rc"
 rc=$(SH --db ${P}a --role ${P}a_owner --force --drop --seed)
 ok "[sh] --force --drop -> rc 0, DB recreated (new oid), still marked" "$([[ $rc == 0 && $(dboid ${P}a) != "$oid0" && $(marked x ${P}a) == 1 ]] && echo 1 || echo 0)" "rc=$rc"
-r=$(checks ${P}a ${P}a_owner); ok "[sh] DB checks after --force --drop -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
+r=$(checks ${P}a ${P}a_owner); ok "[sh] DB checks after --force --drop -> $r" "$([[ $r == '174 passed, 0 failed' ]] && echo 1 || echo 0)"
 
 # B2 setup.ps1 fresh, --role == --db
 rc=$(PS -Db ${P}b -Role ${P}b -Seed)
 ok "[ps1] fresh ${P}b -> rc 0; DB + 3 roles carry the kit marker" "$([[ $rc == 0 && $(marked ${P}b,${P}b_admin_api,${P}b_login ${P}b) == 4 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
-r=$(checks ${P}b ${P}b); ok "[ps1] DB checks on ${P}b -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
+r=$(checks ${P}b ${P}b); ok "[ps1] DB checks on ${P}b -> $r" "$([[ $r == '174 passed, 0 failed' ]] && echo 1 || echo 0)"
 s0=$(snap); rc=$(PS -Db ${P}b -Role ${P}b)
 ok "[ps1] re-run without -Force -> rc 5, nothing changed" "$([[ $rc == 5 && $(snap) == "$s0" ]] && grep -q 're-run with -Force' "$T/out" && echo 1 || echo 0)" "rc=$rc"
 rc=$(PS -Db ${P}b -Role ${P}b -Drop)
 ok "[ps1] -Drop without -Force -> rc 2, nothing changed" "$([[ $rc == 2 && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
 oid0=$(dboid ${P}b); rc=$(PS -Db ${P}b -Role ${P}b -Force -Drop -Seed)
 ok "[ps1] -Force -Drop -> rc 0, DB recreated (new oid), still marked" "$([[ $rc == 0 && $(dboid ${P}b) != "$oid0" && $(marked x ${P}b) == 1 ]] && echo 1 || echo 0)" "rc=$rc"
-r=$(checks ${P}b ${P}b); ok "[ps1] DB checks after -Force -Drop -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
+r=$(checks ${P}b ${P}b); ok "[ps1] DB checks after -Force -Drop -> $r" "$([[ $r == '174 passed, 0 failed' ]] && echo 1 || echo 0)"
 
 # B3 hand-made UNMARKED scratch objects (stand-ins for "someone else's DB/role") + a marked superuser
 q "CREATE ROLE ${P}u NOLOGIN" >/dev/null; q "CREATE DATABASE ${P}u OWNER ${P}u" >/dev/null
@@ -259,7 +259,7 @@ for w in sh ps1; do
   ok "KF-A [$w] client-side verifier: ${P}a_login logs in with the new password, not with a wrong one" \
     "$([[ $rc == 0 ]] && PGPASSWORD="$pw" psql -X -tA -h 127.0.0.1 -U ${P}a_login -d ${P}a -c 'select 1' >/dev/null 2>&1 && ! PGPASSWORD="x$pw" psql -X -tA -h 127.0.0.1 -U ${P}a_login -d ${P}a -c 'select 1' >/dev/null 2>&1 && echo 1 || echo 0)" "rc=$rc"
 done
-r=$(checks ${P}b ${P}b); ok "KF-A DB checks on ${P}b after the SCRAM change -> $r" "$([[ $r == '162 passed, 0 failed' ]] && echo 1 || echo 0)"
+r=$(checks ${P}b ${P}b); ok "KF-A DB checks on ${P}b after the SCRAM change -> $r" "$([[ $r == '174 passed, 0 failed' ]] && echo 1 || echo 0)"
 # KF-A 2: force an error INSIDE the DO block's EXECUTE (CREATE ROLE "none": reserved name, passes the name check, not
 # in pg_roles). The unique password must appear neither on stderr/stdout nor in the server log after the offset.
 for w in sh ps1; do
