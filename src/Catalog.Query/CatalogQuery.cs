@@ -70,18 +70,13 @@ public sealed class CatalogQuery
         if (expectedVersion is long version && version != authorized.Row.RowVersion)
             return CatalogQueryResult.VersionConflict();
 
-        var changes = await _storage.ListChangesAsync(authorized.Scope, entryId, cancellationToken);
+        var changes = await _storage.ListChangesAsync(authorized.Scope, entryId, authorized.Row.Family, cancellationToken);
         if (changes.Any(change => change.EntryId != entryId))
             throw new InvalidOperationException("catalog history returned a different entry.");
         var history = changes
             .OrderBy(change => change.RowVersion)
             .ThenBy(change => change.ChangeId)
-            .Select(change => new CatalogQueryHistory(
-                change.ChangeId,
-                change.EntryId,
-                change.ChangeKind,
-                change.RowVersion,
-                change.ScopeLevel))
+            .Select(change => HistoryAllowlist.Project(authorized.Row.Family, change))
             .ToArray();
         return CatalogQueryResult.OkHistory(history);
     }

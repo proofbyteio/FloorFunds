@@ -71,10 +71,16 @@ public sealed record CatalogQueryEntry(
     string Code,
     long EntryVersion);
 
-/// <summary>Visible history row. Actor, reason, and before/after images are not fields of this DTO.</summary>
+/// <summary>
+/// Closed history row. Same members as the accepted <c>HistoryProjection</c>.
+/// Actor identity is not a member. Before and after contain allowlisted value keys only.
+/// </summary>
 public sealed record CatalogQueryHistory(
     Guid ChangeId,
     Guid EntryId,
     string ChangeKind,
     long EntryVersion,
-    string ScopeLevel);
+    IReadOnlyList<string> ChangedFields,
+    IReadOnlyDictionary<string, string?>? Before,
+    IReadOnlyDictionary<string, string?> After,
+    DateTimeOffset OccurredAt);

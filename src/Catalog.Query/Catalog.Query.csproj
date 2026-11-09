@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Scratch catalog-query boundary. No host, no token mapping, no new package. -->
+  <!-- Scratch catalog-query boundary. No host, no token mapping. Npgsql pin matches Catalog.Read. -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
@@ -13,6 +13,9 @@
   <ItemGroup>
     <!-- Supplies Microsoft.Extensions.* so the Npgsql graph is pruned, not fetched. -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="[10.0.3]" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Catalog.Contracts/Catalog.Contracts.csproj" />

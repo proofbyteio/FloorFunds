@@ -152,6 +152,30 @@ if (queryScan == "clean")
 else
     Fail("query-source-has-no-write-or-host", queryScan);
 
+Note("SECTION history-shape");
+ProjectParity();
+var historySql = File.ReadAllText(Path.Combine(repo, "src", "Catalog.Query", "NpgsqlAllowlistedHistory.cs"));
+var historySqlClean = !historySql.Contains("actor_user_id", StringComparison.Ordinal)
+    && !historySql.Contains("created_by", StringComparison.Ordinal)
+    && !historySql.Contains("definition", StringComparison.Ordinal)
+    && !historySql.Contains("legal_name", StringComparison.Ordinal)
+    && !historySql.Contains("SELECT after", StringComparison.Ordinal)
+    && !historySql.Contains("SELECT before", StringComparison.Ordinal)
+    && historySql.Contains("CASE WHEN change_kind = 'created' THEN after #>> '{subtype,code}'", StringComparison.Ordinal)
+    && historySql.Contains("CASE WHEN change_kind = 'created' THEN after #>> '{subtype,display_name}'", StringComparison.Ordinal)
+    && historySql.Contains("CASE WHEN change_kind = 'created' THEN after #>> '{subtype,description}'", StringComparison.Ordinal)
+    && historySql.Contains("CASE WHEN change_kind = 'updated' THEN after #>> '{subtype,claim_value}'", StringComparison.Ordinal)
+    && historySql.Contains("CASE WHEN change_kind = 'updated' THEN before #>> '{subtype,claim_value}'", StringComparison.Ordinal);
+if (historySqlClean) Pass("history-sql-is-allowlisted-paths", "no actor, definition, or document select");
+else Fail("history-sql-is-allowlisted-paths", "select list drifted");
+var contractNames = string.Join(",", typeof(Catalog.Contracts.HistoryProjection).GetProperties().Select(property => property.Name).OrderBy(name => name, StringComparer.Ordinal));
+var queryNames = string.Join(",", typeof(CatalogQueryHistory).GetProperties().Select(property => property.Name).OrderBy(name => name, StringComparer.Ordinal));
+if (contractNames == queryNames && !queryNames.Contains("Actor", StringComparison.Ordinal) && !queryNames.Contains("Scope", StringComparison.Ordinal))
+    Pass("history-dto-matches-contract-members", queryNames);
+else
+    Fail("history-dto-matches-contract-members", contractNames + " vs " + queryNames);
+
+NpgsqlDataSource? ownerDs = null;
 Note("SECTION memory-projection");
 var memory = new MemoryStorage(fixtures);
 var memoryQuery = new CatalogQuery(memory);
@@ -168,7 +192,6 @@ if (before != "postgres,template0,template1")
 }
 Note($"databases-before {before}");
 NpgsqlDataSource? pooled = null;
-NpgsqlDataSource? ownerDs = null;
 try
 {
     await Exec(bootstrap, $"CREATE ROLE {OwnerRole} LOGIN NOSUPERUSER NOBYPASSRLS CREATEDB NOCREATEROLE NOREPLICATION");
@@ -219,7 +242,7 @@ try
 
     pooled = NpgsqlDataSource.Create(Cs(AdminRole, DbName, true, 4));
     var reader = new NpgsqlCatalogReader(pooled);
-    var storage = new CountingStorage(new NpgsqlCatalogStorage(reader));
+    var storage = new CountingStorage(new NpgsqlCatalogStorage(pooled));
     var query = new CatalogQuery(storage);
     var rawSuper = await reader.ListEntriesAsync(CatalogReadScope.Super(), "g", CancellationToken.None);
     var rawFees = string.Join(",", rawSuper.Where(row => row.Family == "fee_type").Select(row => row.EntryId).OrderBy(id => id));
@@ -241,14 +264,13 @@ try
         Fail("query-sa-fee-list-omits-private", $"{saFees.Status} {saFeeIds}");
 
     var guc = await PooledGuc(pooled);
-    if (guc == "||0") Pass("pool-after-query", guc);
+    if (PoolClear(guc)) Pass("pool-after-query", guc);
     else Fail("pool-after-query", guc);
 
-    var ownerReader = new NpgsqlCatalogReader(ownerDs);
     var threw = false;
     try
     {
-        await new CatalogQuery(new NpgsqlCatalogStorage(ownerReader)).ListAsync(actors[0].Principal, CatalogFamily.FeeType, CancellationToken.None);
+        await new CatalogQuery(new NpgsqlCatalogStorage(ownerDs)).ListAsync(actors[0].Principal, CatalogFamily.FeeType, CancellationToken.None);
     }
     catch (CatalogReadRoleException)
     {
@@ -257,7 +279,7 @@ try
     if (threw) Pass("owner-connection-still-refused", "CatalogReadRoleException");
     else Fail("owner-connection-still-refused", "no role exception");
     var gucAfterThrow = await PooledGuc(pooled);
-    if (gucAfterThrow == "||0") Pass("pool-unchanged-by-owner-refusal", gucAfterThrow);
+    if (PoolClear(gucAfterThrow)) Pass("pool-unchanged-by-owner-refusal", gucAfterThrow);
     else Fail("pool-unchanged-by-owner-refusal", gucAfterThrow);
 }
 catch (Exception ex)
@@ -309,16 +331,131 @@ Note("SECTION limits");
 Note("PQ-252.SA2 is not closed. This projection is the accepted contract fail-closed rule.");
 Note("RLS, grants, raw reader, schema, and auth mapping were not changed.");
 Note("No token mapping, host registration, product seed, write adapter, outbox, or candidate-function test.");
-Note("Mutant campaign was not re-run. r2 accounting remains 4 of 5 caught. Mutant 4, finally-clear removed and set_config left transaction-local, was no leak.");
+Note("Fee updated, claim created, and the other eighteen families stay closed. No accepted value allowlist names them.");
+Note("Claim-edit before and after are projector parity. apply_claim_edit is not called and no updated row is stored.");
 Note($"checks {passed} passed, {failed} failed");
 return Exit();
 
 int Exit()
 {
-    var path = "/opt/cursor/artifacts/dec192-query-log.txt";
+    var path = "/opt/cursor/artifacts/dec192-history-log.txt";
     File.WriteAllLines(path, log);
     Console.WriteLine($"log {path}");
     return failed == 0 ? 0 : 1;
+}
+
+void ProjectParity()
+{
+    var occurred = DateTimeOffset.Parse("2026-11-08T19:00:00Z");
+    var fee = new AllowlistedHistoryScalars(
+        Guid.Parse("30000000-0000-4000-8000-000000000099"), Id(20), "created", 1, occurred,
+        "g", "nonproduct", null,
+        "old", "next", "unknown", "unknown", null, null, "t0", "t1", "name", "name", null, "leak");
+    var projected = HistoryAllowlist.Project("fee_type", fee);
+    var feeOk = projected.ChangedFields.SequenceEqual(["code", "display_name"])
+        && projected.Before is null
+        && projected.After.Count == 2
+        && projected.After["code"] == "g"
+        && projected.After["display_name"] == "nonproduct"
+        && !projected.After.ContainsKey("description")
+        && !projected.After.ContainsKey("claim_value")
+        && projected.OccurredAt == occurred
+        && !Json(CatalogQueryResult.OkHistory([projected])).Contains("leak", StringComparison.Ordinal);
+    if (feeOk) Pass("fee-create-shape-matches-contract-allowlist", "code, display_name; description omitted");
+    else Fail("fee-create-shape-matches-contract-allowlist", Json(CatalogQueryResult.OkHistory([projected])));
+
+    var edited = new AllowlistedHistoryScalars(
+        Guid.Parse("30000000-0000-4000-8000-000000000098"), Id(28), "updated", 2, occurred,
+        "should-not-copy", "should-not-copy", "should-not-copy",
+        "old", "next", "unknown", "unknown", null, null,
+        "2026-11-08T12:00:00-07:00", "2026-11-08T19:00:00Z",
+        "nonproduct", "nonproduct", null, null);
+    var claim = HistoryAllowlist.Project("model_hardware_claim", edited);
+    var claimOk = claim.ChangedFields.SequenceEqual(["checked_at", "claim_value"])
+        && claim.Before is not null
+        && claim.Before.Count == 2
+        && claim.After.Count == 2
+        && claim.Before["claim_value"] == "old"
+        && claim.After["claim_value"] == "next"
+        && claim.Before["checked_at"] == "2026-11-08T12:00:00-07:00"
+        && claim.After["checked_at"] == "2026-11-08T19:00:00Z"
+        && !claim.After.ContainsKey("availability")
+        && !claim.After.ContainsKey("display_name")
+        && !claim.After.ContainsKey("code")
+        && !Json(CatalogQueryResult.OkHistory([claim])).Contains("should-not-copy", StringComparison.Ordinal);
+    if (claimOk) Pass("claim-edit-shape-matches-contract-changed-keys", "checked_at, claim_value");
+    else Fail("claim-edit-shape-matches-contract-changed-keys", Json(CatalogQueryResult.OkHistory([claim])));
+
+    var createdClaim = HistoryAllowlist.Project("model_hardware_claim", fee with { ChangeKind = "created", EntryId = Id(28), AfterClaimValue = "secret" });
+    if (createdClaim.ChangedFields.Count == 0 && createdClaim.After.Count == 0 && createdClaim.Before is null)
+        Pass("claim-create-stays-closed", "edit allowlist is not a create map");
+    else
+        Fail("claim-create-stays-closed", Json(CatalogQueryResult.OkHistory([createdClaim])));
+
+    var other = HistoryAllowlist.Project("manufacturer", fee with { EntryId = Id(5) });
+    if (other.ChangedFields.Count == 0 && other.After.Count == 0)
+        Pass("family-without-allowlist-stays-closed", "manufacturer");
+    else
+        Fail("family-without-allowlist-stays-closed", Json(CatalogQueryResult.OkHistory([other])));
+
+    Note("GAP fee updated has no accepted value allowlist and stays closed.");
+    Note("GAP model_hardware_claim created is not a claim edit. ClaimEditValueKeys are not copied.");
+    Note("GAP the other eighteen families have no accepted history value allowlist.");
+    Note("GAP a stored updated claim row is produced by apply_claim_edit. This gate does not call it. The edit map above is projector parity, not a stored updated row.");
+}
+
+static bool HistoryShape(string wire, CatalogQueryHistory row)
+{
+    if (row.Before is not null || row.OccurredAt == default)
+        return false;
+    if (wire == "fee_type")
+    {
+        return row.ChangedFields.SequenceEqual(["code", "display_name"])
+            && row.After.Count == 2
+            && row.After["code"] == "g"
+            && row.After["display_name"] == "nonproduct"
+            && !row.After.ContainsKey("description")
+            && !row.After.ContainsKey("definition");
+    }
+    return row.ChangedFields.Count == 0 && row.After.Count == 0;
+}
+
+async Task StoredImageStaysOutOfDto(CatalogQuery query)
+{
+    var definition = await Scalar(ownerDs!, $"SELECT after #>> '{{subtype,definition}}' FROM catalog.entry_change WHERE entry_id = '{Id(20)}'");
+    var createdBy = await Scalar(ownerDs!, $"SELECT after->>'created_by' FROM catalog.entry_change WHERE entry_id = '{Id(20)}'");
+    var legal = await Scalar(ownerDs!, $"SELECT after #>> '{{subtype,legal_name}}' FROM catalog.entry_change WHERE entry_id = '{Id(5)}'");
+    var claimValue = await Scalar(ownerDs!, $"SELECT after #>> '{{subtype,claim_value}}' FROM catalog.entry_change WHERE entry_id = '{Id(8)}'");
+    var updated = await Scalar(ownerDs!, "SELECT count(*) FROM catalog.entry_change WHERE change_kind = 'updated'");
+    var feeHistory = await query.HistoryAsync(actors[0].Principal, CatalogFamily.FeeType, Id(20), null, CancellationToken.None);
+    var makerHistory = await query.HistoryAsync(actors[1].Principal, CatalogFamily.Manufacturer, Id(5), null, CancellationToken.None);
+    var claimHistory = await query.HistoryAsync(actors[0].Principal, CatalogFamily.ModelHardwareClaim, Id(8), null, CancellationToken.None);
+    await using var conn = await ownerDs!.OpenConnectionAsync();
+    await using var atCmd = new NpgsqlCommand("SELECT at FROM catalog.entry_change WHERE entry_id = $1", conn);
+    atCmd.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = Id(20) });
+    var atValue = await atCmd.ExecuteScalarAsync();
+    var at = atValue is DateTimeOffset dto ? dto : atValue is DateTime time ? new DateTimeOffset(DateTime.SpecifyKind(time, DateTimeKind.Utc)) : default;
+    var feeJson = Json(feeHistory);
+    var storedOk = definition == "names only fixture"
+        && createdBy == fixtureActor.ToString("D")
+        && legal == "nonproduct"
+        && claimValue == "nonproduct"
+        && updated == "0";
+    var dtoOk = feeHistory.History?[0].OccurredAt == at
+        && !feeJson.Contains(definition, StringComparison.Ordinal)
+        && !feeJson.Contains(createdBy, StringComparison.Ordinal)
+        && makerHistory.History?[0].After.Count == 0
+        && !Json(makerHistory).Contains("legal_name", StringComparison.Ordinal)
+        && claimHistory.History?[0].After.Count == 0
+        && !Json(claimHistory).Contains("claim_value", StringComparison.Ordinal);
+    if (storedOk && dtoOk) Pass("DB stored-image-stays-out-of-history-dto", "definition, actor, legal_name, claim_value");
+    else Fail("DB stored-image-stays-out-of-history-dto", $"stored {definition}|{createdBy}|{legal}|{claimValue}|updated {updated}; at {at:o} dto {feeHistory.History?[0].OccurredAt:o}");
+    var other = await query.HistoryAsync(actors[2].Principal, CatalogFamily.FeeType, Id(26), 9, CancellationToken.None);
+    var missing = await query.HistoryAsync(actors[2].Principal, CatalogFamily.FeeType, missingId, 9, CancellationToken.None);
+    if (Json(other) == Json(missing) && other.Status == 404 && other.History is null)
+        Pass("DB other-partner-history-matches-missing-with-version", "404");
+    else
+        Fail("DB other-partner-history-matches-missing-with-version", Json(other));
 }
 
 async Task RunMatrix(string label, CatalogQuery query, ICallCounts counts)
@@ -365,7 +502,12 @@ async Task RunMatrix(string label, CatalogQuery query, ICallCounts counts)
                         && read.Entry.Family == wire && read.Entry.EntryVersion == 1
                         && history.Status == 200 && history.History?.Count == 1 && history.History[0].ChangeKind == "created"
                         && history.History[0].EntryId == row.Id
+                        && HistoryShape(wire, history.History[0])
                         && !Json(history).Contains(fixtureActor.ToString("D"), StringComparison.Ordinal)
+                        && !Json(history).Contains("names only fixture", StringComparison.Ordinal)
+                        && !Json(history).Contains("created_by", StringComparison.Ordinal)
+                        && !Json(history).Contains("legal_name", StringComparison.Ordinal)
+                        && !Json(history).Contains("claim_value", StringComparison.Ordinal)
                         && readFetch == (actor.Management ? 2 : 0)
                         && histFetch == 1;
                     reads.Add($"{Short(row.Id)}:200/200");
@@ -494,6 +636,9 @@ async Task RunFocused(string label, CatalogQuery query, ICallCounts counts)
     var onlyPrivate = new MemoryStorage([fixtures.Single(row => row.Id == Id(26))]);
     var onlyQuery = new CatalogQuery(onlyPrivate);
     var empty = await onlyQuery.ListAsync(sa, CatalogFamily.FeeType, CancellationToken.None);
+    if (label == "DB")
+        await StoredImageStaysOutOfDto(query);
+
     if (label != "MEMORY")
         return;
     if (empty.Status == 200 && empty.Entries?.Count == 0 && !Json(empty).Contains(Id(26).ToString(), StringComparison.Ordinal))
@@ -711,15 +856,32 @@ async Task Sql(NpgsqlConnection conn, NpgsqlTransaction tx, string sql, params o
 
 async Task<string> PooledGuc(NpgsqlDataSource ds)
 {
-    await using var conn = await ds.OpenConnectionAsync();
-    await using var cmd = new NpgsqlCommand("""
-        SELECT coalesce(current_setting('app.admin_type', true), '') || '|' ||
-               coalesce(current_setting('app.partner_id', true), '') || '|' ||
-               (SELECT count(*)::text FROM catalog.registered_entry)
-        """, conn);
-    var value = await cmd.ExecuteScalarAsync();
-    return Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "";
+    var connections = new List<NpgsqlConnection>();
+    try
+    {
+        for (var i = 0; i < 4; i++)
+            connections.Add(await ds.OpenConnectionAsync());
+        var parts = new List<string>();
+        foreach (var conn in connections)
+        {
+            await using var cmd = new NpgsqlCommand("""
+                SELECT coalesce(current_setting('app.admin_type', true), '') || '|' ||
+                       coalesce(current_setting('app.partner_id', true), '') || '|' ||
+                       (SELECT count(*)::text FROM catalog.registered_entry)
+                """, conn);
+            var value = await cmd.ExecuteScalarAsync();
+            parts.Add(Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "");
+        }
+        return string.Join(",", parts);
+    }
+    finally
+    {
+        foreach (var conn in connections)
+            await conn.DisposeAsync();
+    }
 }
+
+static bool PoolClear(string guc) => guc.Split(',').All(part => part == "||0");
 
 static bool Expected(CheckActor actor, FixtureRow row)
 {
@@ -815,12 +977,21 @@ interface ICallCounts
 sealed class MemoryStorage : ICatalogStorage, ICallCounts
 {
     private readonly IReadOnlyList<CatalogEntryRow> _rows;
-    private readonly IReadOnlyList<CatalogEntryChangeRow> _changes;
+    private readonly IReadOnlyList<AllowlistedHistoryScalars> _changes;
+    private static readonly DateTimeOffset MemoryAt = DateTimeOffset.Parse("2026-11-08T19:00:00Z");
 
     public MemoryStorage(IReadOnlyList<FixtureRow> fixtures)
     {
-        _rows = fixtures.Select(row => new CatalogEntryRow(row.Id, row.Family, row.Owner is null ? "descriptive" : "descriptive", row.Owner, row.Code, true, 1)).ToArray();
-        _changes = fixtures.Select(row => new CatalogEntryChangeRow(Guid.Parse("30000000-0000-4000-8000-" + row.Id.ToString("N")[^12..]), row.Id, "created", 1, "entry")).ToArray();
+        _rows = fixtures.Select(row => new CatalogEntryRow(row.Id, row.Family, "descriptive", row.Owner, row.Code, true, 1)).ToArray();
+        _changes = fixtures.Select(row => new AllowlistedHistoryScalars(
+            Guid.Parse("30000000-0000-4000-8000-" + row.Id.ToString("N")[^12..]),
+            row.Id,
+            "created",
+            1,
+            MemoryAt,
+            row.Family == "fee_type" ? "g" : null,
+            row.Family == "fee_type" ? "nonproduct" : null,
+            null, null, null, null, null, null, null, null, null, null, null, null, null)).ToArray();
     }
 
     public int Lists { get; private set; }
@@ -845,12 +1016,13 @@ sealed class MemoryStorage : ICatalogStorage, ICallCounts
         return Task.FromResult(_rows.SingleOrDefault(row => row.EntryId == entryId));
     }
 
-    public Task<IReadOnlyList<CatalogEntryChangeRow>> ListChangesAsync(CatalogReadScope scope, Guid entryId, CancellationToken cancellationToken)
+    public Task<IReadOnlyList<AllowlistedHistoryScalars>> ListChangesAsync(CatalogReadScope scope, Guid entryId, string family, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         Histories++;
         ScopeLog.Add(Tag(scope));
-        return Task.FromResult<IReadOnlyList<CatalogEntryChangeRow>>(_changes.Where(row => row.EntryId == entryId).ToArray());
+        _ = family;
+        return Task.FromResult<IReadOnlyList<AllowlistedHistoryScalars>>(_changes.Where(row => row.EntryId == entryId).ToArray());
     }
 
     private static string Tag(CatalogReadScope scope) => scope.AdminType + "|" + (scope.PartnerId?.ToString("D") ?? "");
@@ -881,10 +1053,10 @@ sealed class CountingStorage : ICatalogStorage, ICallCounts
         return await _inner.FindEntryAsync(scope, entryId, cancellationToken);
     }
 
-    public async Task<IReadOnlyList<CatalogEntryChangeRow>> ListChangesAsync(CatalogReadScope scope, Guid entryId, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<AllowlistedHistoryScalars>> ListChangesAsync(CatalogReadScope scope, Guid entryId, string family, CancellationToken cancellationToken)
     {
         Histories++;
         ScopeLog.Add(scope.AdminType + "|" + (scope.PartnerId?.ToString("D") ?? ""));
-        return await _inner.ListChangesAsync(scope, entryId, cancellationToken);
+        return await _inner.ListChangesAsync(scope, entryId, family, cancellationToken);
     }
 }

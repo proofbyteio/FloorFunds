@@ -15,7 +15,8 @@
         "type": "Project",
         "dependencies": {
           "Catalog.Contracts": "[1.0.0, )",
-          "Catalog.Read": "[1.0.0, )"
+          "Catalog.Read": "[1.0.0, )",
+          "Npgsql": "[10.0.3, 10.0.3]"
         }
       },
       "catalog.read": {
