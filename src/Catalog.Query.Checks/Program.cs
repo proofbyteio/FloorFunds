@@ -281,6 +281,9 @@ try
     var gucAfterThrow = await PooledGuc(pooled);
     if (PoolClear(gucAfterThrow)) Pass("pool-unchanged-by-owner-refusal", gucAfterThrow);
     else Fail("pool-unchanged-by-owner-refusal", gucAfterThrow);
+
+    Note("pool-after-query reads connections only after they return to the pool. Cs() leaves No Reset On Close unset, so Npgsql 10.0.3 resets first. That sample stayed ||0 for writer mutant 5. It is not the session-cleanup proof.");
+    await SessionCleanupProof(Id(20));
 }
 catch (Exception ex)
 {
@@ -333,12 +336,16 @@ Note("RLS, grants, raw reader, schema, and auth mapping were not changed.");
 Note("No token mapping, host registration, product seed, write adapter, outbox, or candidate-function test.");
 Note("Fee updated, claim created, and the other eighteen families stay closed. No accepted value allowlist names them.");
 Note("Claim-edit before and after are projector parity. apply_claim_edit is not called and no updated row is stored.");
+Note("The 409 catalog_version_conflict result is the CatalogQueryResult wrapper. It is not HTTP contract parity.");
+Note("Writer mutant 5 at 478b540 passed 447/0 because the pool sample ran after the default driver reset. The reviewer probe with No Reset On Close saw super||1 on the same class of mutant. This run keeps transaction-local set_config and the finally clear, and samples the session before that reset can mask it.");
+Note("Finally clear stays. Default driver reset is not a reason to remove it.");
+Note("PQ-252.SA2, Super Admin security, and integration stay unresolved. SSE2 rereview of this test correction is still required.");
 Note($"checks {passed} passed, {failed} failed");
 return Exit();
 
 int Exit()
 {
-    var path = "/opt/cursor/artifacts/dec192-history-log.txt";
+    var path = "/opt/cursor/artifacts/dec192-history-poolproof-log.txt";
     File.WriteAllLines(path, log);
     Console.WriteLine($"log {path}");
     return failed == 0 ? 0 : 1;
@@ -852,6 +859,227 @@ async Task Sql(NpgsqlConnection conn, NpgsqlTransaction tx, string sql, params o
             throw new InvalidOperationException("BLOCKER fixture argument is not a uuid.");
     }
     await cmd.ExecuteNonQueryAsync();
+}
+
+async Task SessionCleanupProof(Guid feeId)
+{
+    Note("SECTION session-cleanup-before-driver-reset");
+    Note("The one-row GUC is app.admin_type|app.partner_id|count of registered_entry for the global fee. super||1 means the session GUC is set and RLS returns that row.");
+
+    await using (var masked = ProbeSource(noResetOnClose: false))
+    {
+        int pid;
+        await using (var conn = await masked.OpenConnectionAsync())
+        {
+            await PlantSessionSuper(conn);
+            var before = await ReadSession(conn, feeId);
+            pid = before.Pid;
+            ExpectSample("default-reset-before-close", before, pid, "super||1", "before-close");
+        }
+        await using (var conn = await masked.OpenConnectionAsync())
+        {
+            var after = await ReadSession(conn, feeId);
+            ExpectSample("default-reset-after-return", after, pid, "||0", "after-return-default-reset");
+        }
+    }
+
+    await using (var retained = ProbeSource(noResetOnClose: true))
+    {
+        int pid;
+        await using (var conn = await retained.OpenConnectionAsync())
+        {
+            await PlantSessionSuper(conn);
+            var before = await ReadSession(conn, feeId);
+            pid = before.Pid;
+            ExpectSample("reset-disabled-before-close", before, pid, "super||1", "before-close");
+        }
+        await using (var conn = await retained.OpenConnectionAsync())
+        {
+            var after = await ReadSession(conn, feeId);
+            ExpectSample("reset-disabled-after-return", after, pid, "super||1", "after-return-reset-disabled");
+        }
+        var history = await new CatalogQuery(new NpgsqlCatalogStorage(retained)).HistoryAsync(
+            actors[0].Principal, CatalogFamily.FeeType, feeId, null, CancellationToken.None);
+        var historyJson = Json(history);
+        await using (var conn = await retained.OpenConnectionAsync())
+        {
+            var cleared = await ReadSession(conn, feeId);
+            ExpectSample("history-clears-session-guc-with-reset-disabled", cleared, pid, "||0", "after-history-return-reset-disabled");
+        }
+        var shape = history.Status == 200
+            && history.History?.Count == 1
+            && history.History[0].ChangedFields.SequenceEqual(["code", "display_name"])
+            && history.History[0].Before is null
+            && history.History[0].After.Count == 2
+            && !historyJson.Contains(fixtureActor.ToString("D"), StringComparison.Ordinal)
+            && !historyJson.Contains("names only fixture", StringComparison.Ordinal)
+            && !historyJson.Contains("actor_user_id", StringComparison.Ordinal);
+        if (shape) Pass("reset-disabled-history-keeps-fee-allowlist", "code, display_name");
+        else Fail("reset-disabled-history-keeps-fee-allowlist", historyJson);
+    }
+
+    await ErrorRollbackReuse(feeId);
+    await PoolExhaustion();
+}
+
+async Task ErrorRollbackReuse(Guid feeId)
+{
+    await using var source = ProbeSource(noResetOnClose: true, commandTimeout: 30);
+    int plantedPid;
+    await using (var conn = await source.OpenConnectionAsync())
+    {
+        await PlantSessionSuper(conn);
+        plantedPid = (await ReadSession(conn, feeId)).Pid;
+    }
+    await using (var conn = await source.OpenConnectionAsync())
+    {
+        var held = await ReadSession(conn, feeId);
+        ExpectSample("error-path-reset-disabled-still-holds-session-guc", held, plantedPid, "super||1", "after-return-before-error");
+    }
+
+    await using var lockConn = await ownerDs!.OpenConnectionAsync();
+    await using var lockTx = await lockConn.BeginTransactionAsync();
+    await using (var lockCmd = new NpgsqlCommand("LOCK TABLE catalog.entry_change IN ACCESS EXCLUSIVE MODE", lockConn, lockTx))
+        await lockCmd.ExecuteNonQueryAsync();
+    using var cts = new CancellationTokenSource();
+    var call = new NpgsqlAllowlistedHistory(source).ListAsync(CatalogReadScope.Super(), feeId, "fee_type", cts.Token);
+    int? waitingPid = null;
+    var waitUntil = DateTime.UtcNow.AddSeconds(5);
+    while (DateTime.UtcNow < waitUntil && !call.IsCompleted)
+    {
+        waitingPid = await WaitingHistoryPid();
+        if (waitingPid is not null)
+            break;
+        await Task.Delay(50);
+    }
+    Exception? error = null;
+    if (waitingPid is null)
+    {
+        cts.Cancel();
+        try { await call; }
+        catch (Exception ex) { error = ex; }
+        await lockTx.RollbackAsync();
+        Fail("error-rollback-saw-lock-wait", error is null ? "history finished without waiting" : error.GetType().Name);
+        return;
+    }
+    Note($"error-rollback waiting pid={waitingPid.Value} timing=blocked-on-entry-change-before-cancel");
+    cts.Cancel();
+    try { await call; }
+    catch (Exception ex) { error = ex; }
+    await lockTx.RollbackAsync();
+    if (error is null)
+    {
+        Fail("error-rollback-threw", "history completed after cancel");
+        return;
+    }
+    Pass("error-rollback-threw", error.GetType().Name);
+    await using var reused = await source.OpenConnectionAsync();
+    var after = await ReadSession(reused, feeId);
+    Note($"error-rollback reuse timing=after-rollback-reset-disabled waiting-pid={waitingPid.Value} reuse-pid={after.Pid} guc={after.Guc}");
+    if (after.Pid == waitingPid.Value && after.Guc == "||0")
+        Pass("error-rollback-reuse-is-clear", $"pid={after.Pid} guc={after.Guc}");
+    else
+        Fail("error-rollback-reuse-is-clear", $"waiting-pid={waitingPid.Value} reuse-pid={after.Pid} guc={after.Guc}");
+}
+
+async Task<int?> WaitingHistoryPid()
+{
+    await using var look = NpgsqlDataSource.Create(Cs(BootstrapRole, DbName, false));
+    await using var conn = await look.OpenConnectionAsync();
+    await using var cmd = new NpgsqlCommand("""
+        SELECT pid
+          FROM pg_stat_activity
+         WHERE datname = current_database()
+           AND usename = $1
+           AND wait_event_type = 'Lock'
+           AND query ILIKE '%catalog.entry_change%'
+         ORDER BY pid
+         LIMIT 1
+        """, conn);
+    cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = AdminRole });
+    var value = await cmd.ExecuteScalarAsync();
+    return value is int pid ? pid : null;
+}
+
+async Task PoolExhaustion()
+{
+    await using var source = ProbeSource(noResetOnClose: true, timeoutSeconds: 2);
+    await using var held = await source.OpenConnectionAsync();
+    await using var pidCmd = new NpgsqlCommand("SELECT pg_backend_pid()", held);
+    var heldPid = (int)(await pidCmd.ExecuteScalarAsync())!;
+    var started = Stopwatch.StartNew();
+    Exception? blocked = null;
+    try
+    {
+        await using var second = await source.OpenConnectionAsync();
+    }
+    catch (Exception ex)
+    {
+        blocked = ex;
+    }
+    started.Stop();
+    Note($"pool-exhaustion held-pid={heldPid} waited-ms={started.ElapsedMilliseconds} second-open={(blocked is null ? "obtained" : blocked.GetType().Name)}");
+    if (blocked is not null && started.ElapsedMilliseconds >= 1500)
+        Pass("pool-exhaustion-second-open-times-out", $"{blocked.GetType().Name} {started.ElapsedMilliseconds}ms held-pid={heldPid}");
+    else
+        Fail("pool-exhaustion-second-open-times-out", blocked is null ? "second connection opened" : $"{blocked.GetType().Name} {started.ElapsedMilliseconds}ms");
+    await held.DisposeAsync();
+    await using var reused = await source.OpenConnectionAsync();
+    await using var reusedCmd = new NpgsqlCommand("SELECT pg_backend_pid()", reused);
+    var reusedPid = (int)(await reusedCmd.ExecuteScalarAsync())!;
+    Note($"pool-exhaustion reuse timing=after-release-of-single-slot held-pid={heldPid} reuse-pid={reusedPid}");
+    if (reusedPid == heldPid)
+        Pass("pool-exhaustion-reuses-same-backend", $"pid={reusedPid}");
+    else
+        Fail("pool-exhaustion-reuses-same-backend", $"held-pid={heldPid} reuse-pid={reusedPid}");
+}
+
+NpgsqlDataSource ProbeSource(bool noResetOnClose, int timeoutSeconds = 10, int commandTimeout = 10) =>
+    NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder
+    {
+        Host = Host,
+        Port = Port,
+        Username = AdminRole,
+        Database = DbName,
+        Pooling = true,
+        MaxPoolSize = 1,
+        MinPoolSize = 0,
+        Timeout = timeoutSeconds,
+        CommandTimeout = commandTimeout,
+        NoResetOnClose = noResetOnClose,
+    }.ConnectionString);
+
+async Task PlantSessionSuper(NpgsqlConnection conn)
+{
+    await using var tx = await conn.BeginTransactionAsync();
+    await using var cmd = new NpgsqlCommand(
+        "SELECT set_config('app.admin_type', 'super', false), set_config('app.partner_id', '', false)", conn, tx);
+    await cmd.ExecuteNonQueryAsync();
+    await tx.CommitAsync();
+}
+
+async Task<(int Pid, string Guc)> ReadSession(NpgsqlConnection conn, Guid entryId)
+{
+    await using var cmd = new NpgsqlCommand("""
+        SELECT pg_backend_pid(),
+               coalesce(current_setting('app.admin_type', true), '') || '|' ||
+               coalesce(current_setting('app.partner_id', true), '') || '|' ||
+               (SELECT count(*)::text FROM catalog.registered_entry WHERE entry_id = $1)
+        """, conn);
+    cmd.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = entryId });
+    await using var reader = await cmd.ExecuteReaderAsync();
+    if (!await reader.ReadAsync())
+        throw new InvalidOperationException("session sample returned no row");
+    return (reader.GetInt32(0), reader.GetString(1));
+}
+
+void ExpectSample(string name, (int Pid, string Guc) sample, int expectedPid, string expectedGuc, string timing)
+{
+    Note($"{name} timing={timing} pid={sample.Pid} guc={sample.Guc}");
+    if (sample.Pid == expectedPid && sample.Guc == expectedGuc)
+        Pass(name, $"timing={timing} pid={sample.Pid} guc={sample.Guc}");
+    else
+        Fail(name, $"timing={timing} pid={sample.Pid} guc={sample.Guc} expected pid={expectedPid} guc={expectedGuc}");
 }
 
 async Task<string> PooledGuc(NpgsqlDataSource ds)
