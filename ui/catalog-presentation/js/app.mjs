@@ -11,6 +11,9 @@ if ("scrollRestoration" in history) history.scrollRestoration = "manual";
 
 function focusProgram(el, preventScroll) {
   if (!(el instanceof HTMLElement)) return;
+  for (const node of document.querySelectorAll(".program-focus")) {
+    if (node !== el) node.classList.remove("program-focus");
+  }
   el.classList.add("program-focus");
   el.focus({ preventScroll });
 }
@@ -77,6 +80,11 @@ function readFields() {
 }
 
 window.addEventListener("hashchange", () => show(location.hash, true));
+document.addEventListener("focusin", (event) => {
+  for (const node of document.querySelectorAll(".program-focus")) {
+    if (node !== event.target) node.classList.remove("program-focus");
+  }
+});
 
 app.addEventListener("change", (event) => {
   const target = event.target;

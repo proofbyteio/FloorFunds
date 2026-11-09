@@ -25,8 +25,8 @@
 html, body { margin: 0; }
 body { font-family: var(--font); color: var(--text); background: var(--page); font-size: 16px; line-height: 1.5; }
 a { color: #7a4d00; }
-:focus-visible,
-.program-focus:focus { outline: 3px solid var(--focus); outline-offset: 2px; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.program-focus { outline: 3px solid var(--focus); outline-offset: 2px; }
 .skip-link { position: absolute; left: 8px; top: -40px; background: #fff; padding: 8px 12px; z-index: 5; }
 .skip-link:focus { top: 8px; }
 

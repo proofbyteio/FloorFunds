@@ -531,13 +531,15 @@ test("narrow layout keeps the proof token and shows script focus", () => {
   assert.match(html, /synthetic_fixture_projection_not_the_dotnet_double_api_or_database/);
   assert.match(html, /role="alert"|role="status"|<h1 id="screen-title"/);
   const css = readFileSync(join(here, "..", "css", "catalog.css"), "utf8");
-  assert.match(css, /:focus-visible,\s*\.program-focus:focus \{ outline: 3px solid var\(--focus\); outline-offset: 2px; \}/);
+  assert.match(css, /:focus-visible \{ outline: 3px solid var\(--focus\); outline-offset: 2px; \}/);
+  assert.match(css, /\.program-focus \{ outline: 3px solid var\(--focus\); outline-offset: 2px; \}/);
   assert.match(css, /\.page-foot, \.fine \{ overflow-wrap: anywhere; \}/);
   assert.match(css, /\.actor-bar > \* \{ min-width: 0; max-width: 100%; \}/);
   assert.match(css, /td, th, caption \{ overflow-wrap: anywhere; \}/);
   const app = readFileSync(join(here, "..", "js", "app.mjs"), "utf8");
   assert.match(app, /scrollTo\(0, 0\)/);
   assert.match(app, /classList\.add\("program-focus"\)/);
+  assert.match(app, /addEventListener\("focusin"/);
   assert.equal(app.includes("localStorage"), false);
 });
 
