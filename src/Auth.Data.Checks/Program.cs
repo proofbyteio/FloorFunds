@@ -576,7 +576,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
