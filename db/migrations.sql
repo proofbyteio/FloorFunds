@@ -336,3 +336,2022 @@ BEGIN
 END $EF$;
 COMMIT;
 
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261108190000_CatalogMasterData') THEN
+    -- DEC-161 catalog foundation. Additive. No seed. No outbox writer. No cause table.
+    -- No flag definer. economic_role is not a column. Nested dollar quotes use their own tags.
+
+    CREATE SCHEMA catalog;
+    REVOKE ALL ON SCHEMA catalog FROM PUBLIC;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA catalog REVOKE ALL ON TABLES FROM PUBLIC;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA catalog REVOKE ALL ON FUNCTIONS FROM PUBLIC;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA catalog REVOKE ALL ON SEQUENCES FROM PUBLIC;
+
+    CREATE TABLE catalog.registered_entry (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      entry_class text NOT NULL,
+      owner_partner_id uuid NULL,
+      code text NOT NULL,
+      is_active boolean NOT NULL,
+      row_version bigint NOT NULL,
+      created_by uuid NOT NULL,
+      created_at timestamptz NOT NULL,
+      updated_by uuid NOT NULL,
+      updated_at timestamptz NOT NULL,
+      CONSTRAINT registered_entry_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT registered_entry_family CHECK (family IN (
+        'catalog_release','transaction_type','channel','device_category','manufacturer',
+        'device_model','hardware_capability_kind','model_hardware_claim','card_network',
+        'card_funding_class','payment_rail','check_instrument_kind','check_drawer_class',
+        'check_purpose','processor','transaction_status','reason_code','id_document_type',
+        'currency','fee_type')),
+      CONSTRAINT registered_entry_class CHECK (
+        (entry_class = 'descriptive'
+          AND family NOT IN ('model_hardware_claim', 'catalog_release')
+          AND (owner_partner_id IS NULL OR family IN (
+            'manufacturer','device_model','processor','reason_code','id_document_type','fee_type')))
+        OR (entry_class = 'provenance' AND family = 'catalog_release' AND owner_partner_id IS NULL)
+        OR (entry_class = 'model_evidence' AND family = 'model_hardware_claim')),
+      CONSTRAINT registered_entry_code_shape CHECK (code ~ '^[a-z0-9][a-z0-9_]{0,62}$'),
+      CONSTRAINT registered_entry_version CHECK (row_version >= 1)
+    );
+    -- Technical code pattern and within-owner uniqueness. Not DEC170 owner policy.
+    CREATE UNIQUE INDEX registered_entry_id_family_uq ON catalog.registered_entry (entry_id, family);
+    CREATE UNIQUE INDEX registered_entry_id_family_code_uq ON catalog.registered_entry (entry_id, family, code);
+    CREATE UNIQUE INDEX registered_entry_id_family_owner_uq ON catalog.registered_entry (entry_id, family, owner_partner_id) NULLS NOT DISTINCT;
+    CREATE UNIQUE INDEX registered_entry_global_code_uq ON catalog.registered_entry (family, code) WHERE owner_partner_id IS NULL;
+    CREATE UNIQUE INDEX centry_private_code_uq ON catalog.registered_entry (family, owner_partner_id, code) WHERE owner_partner_id IS NOT NULL;
+
+    CREATE TABLE catalog.ref_global (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      CONSTRAINT ref_global_pkey PRIMARY KEY (entry_id, family),
+      CONSTRAINT ref_global_entry_fk FOREIGN KEY (entry_id, family)
+        REFERENCES catalog.registered_entry (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+    CREATE TABLE catalog.ref_private (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      owner_partner_id uuid NOT NULL,
+      CONSTRAINT ref_private_pkey PRIMARY KEY (entry_id, family, owner_partner_id),
+      CONSTRAINT ref_private_family CHECK (family IN (
+        'manufacturer','device_model','processor','reason_code','id_document_type','fee_type')),
+      CONSTRAINT ref_private_entry_fk FOREIGN KEY (entry_id, family)
+        REFERENCES catalog.registered_entry (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+    CREATE TABLE catalog.global_device_model (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      CONSTRAINT global_device_model_pkey PRIMARY KEY (entry_id, family),
+      CONSTRAINT global_device_model_family CHECK (family = 'device_model'),
+      CONSTRAINT global_device_model_ref_fk FOREIGN KEY (entry_id, family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    -- Subtypes. display_name and description have no default. release_id is not a dependency edge.
+    CREATE TABLE catalog.catalog_release (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      release_family text NOT NULL,
+      version text NOT NULL,
+      source_url text NULL,
+      source_digest text NULL,
+      imported_at timestamptz NOT NULL,
+      licence_ref text NULL,
+      supersedes_entry_id uuid NULL,
+      supersedes_family text GENERATED ALWAYS AS (
+        CASE WHEN supersedes_entry_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      display_name text NOT NULL,
+      description text NULL,
+      CONSTRAINT catalog_release_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT catalog_release_family CHECK (family = 'catalog_release'),
+      CONSTRAINT catalog_release_text CHECK (
+        char_length(release_family) BETWEEN 1 AND 200
+        AND char_length(version) BETWEEN 1 AND 200
+        AND (source_url IS NULL OR char_length(source_url) BETWEEN 1 AND 200)
+        AND (source_digest IS NULL OR char_length(source_digest) BETWEEN 1 AND 200)
+        AND (licence_ref IS NULL OR char_length(licence_ref) BETWEEN 1 AND 200)
+        AND char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT catalog_release_noself CHECK (supersedes_entry_id IS DISTINCT FROM entry_id),
+      CONSTRAINT catalog_release_version_uq UNIQUE (release_family, version),
+      CONSTRAINT catalog_release_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT catalog_release_supersedes_fk FOREIGN KEY (supersedes_entry_id, supersedes_family)
+        REFERENCES catalog.registered_entry (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.transaction_type (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      semantic_key text NOT NULL,
+      value_effect text NOT NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT transaction_type_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT transaction_type_family CHECK (family = 'transaction_type'),
+      CONSTRAINT transaction_type_text CHECK (
+        char_length(semantic_key) BETWEEN 1 AND 64 AND char_length(value_effect) BETWEEN 1 AND 64
+        AND char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT transaction_type_semantic_uq UNIQUE (semantic_key),
+      CONSTRAINT transaction_type_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT transaction_type_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.channel (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      attendance text NOT NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT channel_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT channel_family CHECK (family = 'channel'),
+      CONSTRAINT channel_attendance CHECK (attendance IN ('staffed', 'unattended')),
+      CONSTRAINT channel_text CHECK (
+        char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT channel_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT channel_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.device_category (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      definition text NOT NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT device_category_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT device_category_family CHECK (family = 'device_category'),
+      CONSTRAINT device_category_text CHECK (
+        char_length(definition) BETWEEN 1 AND 2000
+        AND char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT device_category_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT device_category_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.manufacturer (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      owner_partner_id uuid NULL,
+      legal_name text NOT NULL,
+      public_website text NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT manufacturer_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT manufacturer_family CHECK (family = 'manufacturer'),
+      CONSTRAINT manufacturer_text CHECK (
+        char_length(legal_name) BETWEEN 1 AND 200
+        AND (public_website IS NULL OR char_length(public_website) BETWEEN 1 AND 2000)
+        AND char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT manufacturer_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT manufacturer_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.device_model (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      owner_partner_id uuid NULL,
+      model_name text NOT NULL,
+      variant text NULL,
+      region text NULL,
+      manufacturer_global_id uuid NULL,
+      manufacturer_global_family text NULL,
+      manufacturer_private_id uuid NULL,
+      manufacturer_private_family text NULL,
+      manufacturer_private_owner uuid NULL,
+      manufacturer_entry_id uuid GENERATED ALWAYS AS (COALESCE(manufacturer_global_id, manufacturer_private_id)) STORED,
+      category_entry_id uuid NOT NULL,
+      category_family text GENERATED ALWAYS AS ('device_category') STORED,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT device_model_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT device_model_family CHECK (family = 'device_model'),
+      CONSTRAINT device_model_name CHECK (char_length(model_name) BETWEEN 1 AND 200),
+      CONSTRAINT device_model_variant CHECK (variant IS NULL OR char_length(variant) BETWEEN 1 AND 200),
+      CONSTRAINT device_model_region CHECK (region IS NULL OR char_length(region) BETWEEN 1 AND 200),
+      CONSTRAINT device_model_text CHECK (
+        char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT device_model_mfr_path CHECK (
+        (manufacturer_global_id IS NOT NULL AND manufacturer_global_family = 'manufacturer'
+          AND manufacturer_private_id IS NULL AND manufacturer_private_family IS NULL AND manufacturer_private_owner IS NULL)
+        OR
+        (manufacturer_private_id IS NOT NULL AND manufacturer_private_family = 'manufacturer' AND manufacturer_private_owner IS NOT NULL
+          AND manufacturer_global_id IS NULL AND manufacturer_global_family IS NULL
+          AND owner_partner_id IS NOT NULL AND manufacturer_private_owner = owner_partner_id)),
+      CONSTRAINT device_model_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT device_model_mfr_global_fk FOREIGN KEY (manufacturer_global_id, manufacturer_global_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+      CONSTRAINT device_model_mfr_private_fk FOREIGN KEY (manufacturer_private_id, manufacturer_private_family, manufacturer_private_owner)
+        REFERENCES catalog.ref_private (entry_id, family, owner_partner_id) ON DELETE RESTRICT ON UPDATE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+      CONSTRAINT device_model_category_fk FOREIGN KEY (category_entry_id, category_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+      CONSTRAINT device_model_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+    CREATE UNIQUE INDEX device_model_global_tuple_uq ON catalog.device_model
+      (manufacturer_entry_id, model_name, variant, region) NULLS NOT DISTINCT
+      WHERE owner_partner_id IS NULL;
+    CREATE UNIQUE INDEX device_model_private_tuple_uq ON catalog.device_model
+      (owner_partner_id, manufacturer_entry_id, model_name, variant, region) NULLS NOT DISTINCT
+      WHERE owner_partner_id IS NOT NULL;
+
+    CREATE TABLE catalog.hardware_capability_kind (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      measurement_kind text NOT NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT hardware_capability_kind_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT hardware_capability_kind_family CHECK (family = 'hardware_capability_kind'),
+      CONSTRAINT hardware_capability_kind_measure CHECK (measurement_kind IN ('boolean', 'count', 'text')),
+      CONSTRAINT hardware_capability_kind_text CHECK (
+        char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT hardware_capability_kind_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT hardware_capability_kind_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.model_hardware_claim (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      derived_owner uuid NULL,
+      model_global_id uuid NULL,
+      model_global_family text NULL,
+      model_private_id uuid NULL,
+      model_private_owner uuid NULL,
+      model_private_family text NULL,
+      model_entry_id uuid GENERATED ALWAYS AS (COALESCE(model_global_id, model_private_id)) STORED,
+      capability_entry_id uuid NOT NULL,
+      capability_family text GENERATED ALWAYS AS ('hardware_capability_kind') STORED,
+      claim_value text NOT NULL,
+      availability text NOT NULL,
+      option_key text NOT NULL,
+      source_url text NULL,
+      source_version text NOT NULL,
+      checked_at timestamptz NOT NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      CONSTRAINT model_hardware_claim_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT model_hardware_claim_family CHECK (family = 'model_hardware_claim'),
+      CONSTRAINT model_hardware_claim_path CHECK (
+        (model_global_id IS NOT NULL AND model_global_family = 'device_model'
+          AND model_private_id IS NULL AND model_private_owner IS NULL AND model_private_family IS NULL)
+        OR
+        (model_private_id IS NOT NULL AND model_private_owner IS NOT NULL AND model_private_family = 'device_model'
+          AND model_global_id IS NULL AND model_global_family IS NULL)),
+      CONSTRAINT model_hardware_claim_derived CHECK (derived_owner IS NOT DISTINCT FROM model_private_owner),
+      CONSTRAINT model_hardware_claim_value CHECK (
+        char_length(claim_value) BETWEEN 1 AND 200
+        AND availability IN ('standard', 'optional', 'unknown')
+        AND char_length(option_key) BETWEEN 1 AND 64
+        AND char_length(source_version) BETWEEN 1 AND 200
+        AND (source_url IS NULL OR char_length(source_url) BETWEEN 1 AND 2000)
+        AND char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT model_hardware_claim_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT model_hardware_claim_model_global_fk FOREIGN KEY (model_global_id, model_global_family)
+        REFERENCES catalog.global_device_model (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+      CONSTRAINT model_hardware_claim_model_private_fk FOREIGN KEY (model_private_id, model_private_family, model_private_owner)
+        REFERENCES catalog.ref_private (entry_id, family, owner_partner_id) ON DELETE RESTRICT ON UPDATE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+      CONSTRAINT model_hardware_claim_capability_fk FOREIGN KEY (capability_entry_id, capability_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT DEFERRABLE INITIALLY DEFERRED
+    );
+    CREATE UNIQUE INDEX model_hardware_claim_identity_uq ON catalog.model_hardware_claim
+      (model_entry_id, capability_entry_id, option_key, source_version, derived_owner) NULLS NOT DISTINCT;
+
+    CREATE TABLE catalog.card_network (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      official_name text NOT NULL,
+      network_owner text NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT card_network_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT card_network_family CHECK (family = 'card_network'),
+      CONSTRAINT card_network_text CHECK (
+        char_length(official_name) BETWEEN 1 AND 200
+        AND (network_owner IS NULL OR char_length(network_owner) BETWEEN 1 AND 200)
+        AND char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT card_network_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT card_network_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.card_funding_class (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      is_classification_unknown boolean NOT NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT card_funding_class_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT card_funding_class_family CHECK (family = 'card_funding_class'),
+      CONSTRAINT card_funding_class_text CHECK (
+        char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT card_funding_class_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT card_funding_class_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.payment_rail (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      processor_namespace text NOT NULL,
+      rail_family text NOT NULL,
+      specification_reference text NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT payment_rail_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT payment_rail_family CHECK (family = 'payment_rail'),
+      CONSTRAINT payment_rail_text CHECK (
+        char_length(processor_namespace) BETWEEN 1 AND 64
+        AND char_length(rail_family) BETWEEN 1 AND 64
+        AND (specification_reference IS NULL OR char_length(specification_reference) BETWEEN 1 AND 200)
+        AND char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT payment_rail_ns_uq UNIQUE (processor_namespace, code),
+      CONSTRAINT payment_rail_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT payment_rail_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.check_instrument_kind (
+      entry_id uuid NOT NULL, family text NOT NULL, code text NOT NULL,
+      definition text NOT NULL, display_name text NOT NULL, description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT check_instrument_kind_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT check_instrument_kind_family CHECK (family = 'check_instrument_kind'),
+      CONSTRAINT check_instrument_kind_text CHECK (char_length(definition) BETWEEN 1 AND 2000 AND char_length(display_name) BETWEEN 1 AND 200 AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT check_instrument_kind_reg_fk FOREIGN KEY (entry_id, family, code) REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT check_instrument_kind_release_fk FOREIGN KEY (release_id, release_family) REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+    CREATE TABLE catalog.check_drawer_class (
+      entry_id uuid NOT NULL, family text NOT NULL, code text NOT NULL,
+      definition text NOT NULL, display_name text NOT NULL, description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT check_drawer_class_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT check_drawer_class_family CHECK (family = 'check_drawer_class'),
+      CONSTRAINT check_drawer_class_text CHECK (char_length(definition) BETWEEN 1 AND 2000 AND char_length(display_name) BETWEEN 1 AND 200 AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT check_drawer_class_reg_fk FOREIGN KEY (entry_id, family, code) REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT check_drawer_class_release_fk FOREIGN KEY (release_id, release_family) REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+    CREATE TABLE catalog.check_purpose (
+      entry_id uuid NOT NULL, family text NOT NULL, code text NOT NULL,
+      definition text NOT NULL, display_name text NOT NULL, description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT check_purpose_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT check_purpose_family CHECK (family = 'check_purpose'),
+      CONSTRAINT check_purpose_text CHECK (char_length(definition) BETWEEN 1 AND 2000 AND char_length(display_name) BETWEEN 1 AND 200 AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT check_purpose_reg_fk FOREIGN KEY (entry_id, family, code) REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT check_purpose_release_fk FOREIGN KEY (release_id, release_family) REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.processor (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      owner_partner_id uuid NULL,
+      provider_name text NOT NULL,
+      service_family text NULL,
+      public_url text NULL,
+      parent_global_id uuid NULL,
+      parent_global_family text NULL,
+      parent_private_id uuid NULL,
+      parent_private_family text NULL,
+      parent_private_owner uuid NULL,
+      parent_entry_id uuid GENERATED ALWAYS AS (COALESCE(parent_global_id, parent_private_id)) STORED,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT processor_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT processor_family CHECK (family = 'processor'),
+      CONSTRAINT processor_text CHECK (
+        char_length(provider_name) BETWEEN 1 AND 200
+        AND (service_family IS NULL OR char_length(service_family) BETWEEN 1 AND 200)
+        AND (public_url IS NULL OR char_length(public_url) BETWEEN 1 AND 2000)
+        AND char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT processor_parent_path CHECK (
+        (parent_global_id IS NULL AND parent_global_family IS NULL AND parent_private_id IS NULL AND parent_private_family IS NULL AND parent_private_owner IS NULL)
+        OR (parent_global_id IS NOT NULL AND parent_global_family = 'processor'
+            AND parent_private_id IS NULL AND parent_private_family IS NULL AND parent_private_owner IS NULL)
+        OR (parent_global_id IS NULL AND parent_global_family IS NULL
+            AND parent_private_id IS NOT NULL AND parent_private_family = 'processor' AND parent_private_owner IS NOT NULL
+            AND parent_private_owner IS NOT DISTINCT FROM owner_partner_id)),
+      CONSTRAINT processor_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT processor_parent_global_fk FOREIGN KEY (parent_global_id, parent_global_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+      CONSTRAINT processor_parent_private_fk FOREIGN KEY (parent_private_id, parent_private_family, parent_private_owner)
+        REFERENCES catalog.ref_private (entry_id, family, owner_partner_id) ON DELETE RESTRICT ON UPDATE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+      CONSTRAINT processor_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.transaction_status (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      state_dimension text NOT NULL,
+      is_terminal boolean NOT NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT transaction_status_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT transaction_status_family CHECK (family = 'transaction_status'),
+      CONSTRAINT transaction_status_text CHECK (
+        char_length(state_dimension) BETWEEN 1 AND 64
+        AND char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT transaction_status_dim_uq UNIQUE (state_dimension, code),
+      CONSTRAINT transaction_status_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT transaction_status_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.reason_code (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      owner_partner_id uuid NULL,
+      namespace text NOT NULL,
+      category text NOT NULL,
+      safe_operator_message text NOT NULL,
+      requires_note boolean NOT NULL,
+      customer_message_key text NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT reason_code_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT reason_code_family CHECK (family = 'reason_code'),
+      CONSTRAINT reason_code_text CHECK (
+        char_length(namespace) BETWEEN 1 AND 200 AND char_length(category) BETWEEN 1 AND 200
+        AND char_length(safe_operator_message) BETWEEN 1 AND 500
+        AND (customer_message_key IS NULL OR char_length(customer_message_key) BETWEEN 1 AND 200)
+        AND char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT reason_code_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT reason_code_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+    CREATE UNIQUE INDEX reason_code_identity_uq ON catalog.reason_code
+      (owner_partner_id, namespace, category, code) NULLS NOT DISTINCT;
+
+    CREATE TABLE catalog.id_document_type (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      owner_partner_id uuid NULL,
+      document_family text NOT NULL,
+      capture_method_key text NOT NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT id_document_type_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT id_document_type_family CHECK (family = 'id_document_type'),
+      CONSTRAINT id_document_type_text CHECK (
+        char_length(document_family) BETWEEN 1 AND 64 AND char_length(capture_method_key) BETWEEN 1 AND 64
+        AND char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT id_document_type_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT id_document_type_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.currency (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      iso_alpha3 text NOT NULL,
+      iso_numeric3 text NOT NULL,
+      minor_unit smallint NOT NULL,
+      provenance text NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT currency_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT currency_family CHECK (family = 'currency'),
+      CONSTRAINT currency_iso CHECK (iso_alpha3 ~ '^[A-Z]{3}$' AND iso_numeric3 ~ '^[0-9]{3}$' AND minor_unit BETWEEN 0 AND 4),
+      CONSTRAINT currency_text CHECK (
+        (provenance IS NULL OR char_length(provenance) BETWEEN 1 AND 200)
+        AND char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT currency_alpha_uq UNIQUE (iso_alpha3),
+      CONSTRAINT currency_num_uq UNIQUE (iso_numeric3),
+      CONSTRAINT currency_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT currency_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    -- Names only. No economic_role column, check, default, or dummy value.
+    CREATE TABLE catalog.fee_type (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      code text NOT NULL,
+      owner_partner_id uuid NULL,
+      definition text NOT NULL,
+      display_name text NOT NULL,
+      description text NULL,
+      release_id uuid NULL,
+      release_family text GENERATED ALWAYS AS (CASE WHEN release_id IS NULL THEN NULL ELSE 'catalog_release' END) STORED,
+      CONSTRAINT fee_type_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT fee_type_family CHECK (family = 'fee_type'),
+      CONSTRAINT fee_type_text CHECK (
+        char_length(definition) BETWEEN 1 AND 2000
+        AND char_length(display_name) BETWEEN 1 AND 200
+        AND (description IS NULL OR char_length(description) BETWEEN 1 AND 4000)),
+      CONSTRAINT fee_type_reg_fk FOREIGN KEY (entry_id, family, code)
+        REFERENCES catalog.registered_entry (entry_id, family, code) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT fee_type_release_fk FOREIGN KEY (release_id, release_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.partner_switch (
+      entry_id uuid NOT NULL,
+      partner_id uuid NOT NULL,
+      is_active boolean NOT NULL,
+      row_version bigint NOT NULL,
+      global_entry_id uuid NULL,
+      global_family text NULL,
+      private_entry_id uuid NULL,
+      private_family text NULL,
+      private_owner uuid NULL,
+      evidence_entry_id uuid NULL,
+      CONSTRAINT partner_switch_pkey PRIMARY KEY (entry_id, partner_id),
+      CONSTRAINT partner_switch_version CHECK (row_version >= 1),
+      CONSTRAINT partner_switch_path CHECK (
+        (global_entry_id IS NOT NULL AND global_family IS NOT NULL AND global_entry_id = entry_id
+          AND private_entry_id IS NULL AND private_family IS NULL AND private_owner IS NULL AND evidence_entry_id IS NULL)
+        OR (private_entry_id IS NOT NULL AND private_family IS NOT NULL AND private_owner IS NOT NULL
+          AND private_entry_id = entry_id AND private_owner = partner_id
+          AND global_entry_id IS NULL AND global_family IS NULL AND evidence_entry_id IS NULL)
+        OR (evidence_entry_id IS NOT NULL AND evidence_entry_id = entry_id
+          AND global_entry_id IS NULL AND global_family IS NULL
+          AND private_entry_id IS NULL AND private_family IS NULL AND private_owner IS NULL)),
+      CONSTRAINT partner_switch_global_fk FOREIGN KEY (global_entry_id, global_family)
+        REFERENCES catalog.ref_global (entry_id, family) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT partner_switch_private_fk FOREIGN KEY (private_entry_id, private_family, private_owner)
+        REFERENCES catalog.ref_private (entry_id, family, owner_partner_id) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.location_switch (
+      entry_id uuid NOT NULL,
+      location_id uuid NOT NULL,
+      is_active boolean NOT NULL,
+      row_version bigint NOT NULL,
+      CONSTRAINT location_switch_pkey PRIMARY KEY (entry_id, location_id),
+      CONSTRAINT location_switch_version CHECK (row_version >= 1),
+      CONSTRAINT location_switch_entry_fk FOREIGN KEY (entry_id)
+        REFERENCES catalog.registered_entry (entry_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+      CONSTRAINT location_switch_location_fk FOREIGN KEY (location_id)
+        REFERENCES auth.location (location_id) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.history_pending (
+      entry_id uuid NOT NULL,
+      family text NOT NULL,
+      registry_after jsonb NOT NULL,
+      subtype_after jsonb NULL,
+      actor_user_id uuid NOT NULL,
+      actor_admin_type text NOT NULL,
+      actor_partner_id uuid NULL,
+      reason text NULL,
+      correlation_id text NOT NULL,
+      at timestamptz NOT NULL,
+      CONSTRAINT history_pending_pkey PRIMARY KEY (entry_id),
+      CONSTRAINT history_pending_actor CHECK (actor_admin_type IN ('super', 'partner')),
+      CONSTRAINT history_pending_entry_fk FOREIGN KEY (entry_id)
+        REFERENCES catalog.registered_entry (entry_id) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE catalog.entry_change (
+      change_id uuid NOT NULL,
+      entry_id uuid NOT NULL,
+      scope_level text NOT NULL,
+      target_partner_id uuid NULL,
+      target_location_id uuid NULL,
+      row_version bigint NOT NULL,
+      change_kind text NOT NULL,
+      actor_user_id uuid NOT NULL,
+      actor_admin_type text NOT NULL,
+      actor_partner_id uuid NULL,
+      reason text NULL,
+      source text NOT NULL,
+      at timestamptz NOT NULL,
+      before jsonb NULL,
+      after jsonb NOT NULL,
+      CONSTRAINT entry_change_pkey PRIMARY KEY (change_id),
+      CONSTRAINT entry_change_scope CHECK (
+        (scope_level = 'entry' AND target_partner_id IS NULL AND target_location_id IS NULL)
+        OR (scope_level = 'partner' AND target_partner_id IS NOT NULL AND target_location_id IS NULL)
+        OR (scope_level = 'location' AND target_partner_id IS NOT NULL AND target_location_id IS NOT NULL)),
+      CONSTRAINT entry_change_kind CHECK (change_kind IN ('created', 'updated', 'activated', 'deactivated')),
+      CONSTRAINT entry_change_actor CHECK (
+        actor_admin_type IN ('super', 'partner')
+        AND ((actor_admin_type = 'super' AND actor_partner_id IS NULL) OR (actor_admin_type = 'partner' AND actor_partner_id IS NOT NULL))),
+      CONSTRAINT entry_change_version CHECK (row_version >= 1),
+      CONSTRAINT entry_change_reason CHECK (reason IS NULL OR (reason = btrim(reason) AND char_length(reason) BETWEEN 1 AND 500)),
+      CONSTRAINT entry_change_before CHECK ((change_kind = 'created') = (before IS NULL)),
+      CONSTRAINT entry_change_entry_fk FOREIGN KEY (entry_id)
+        REFERENCES catalog.registered_entry (entry_id) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+    CREATE UNIQUE INDEX entry_change_version_uq ON catalog.entry_change
+      (entry_id, scope_level, target_partner_id, target_location_id, row_version) NULLS NOT DISTINCT;
+
+    CREATE TABLE catalog.edit_coord (
+      entry_id uuid NOT NULL,
+      txn_id bigint NOT NULL,
+      expected_version bigint NOT NULL,
+      before jsonb NOT NULL,
+      patch jsonb NOT NULL,
+      CONSTRAINT edit_coord_pkey PRIMARY KEY (entry_id, txn_id),
+      CONSTRAINT edit_coord_version CHECK (expected_version >= 1),
+      CONSTRAINT edit_coord_entry_fk FOREIGN KEY (entry_id)
+        REFERENCES catalog.registered_entry (entry_id) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    -- Function-entry marker. Inserted only by apply_entry_create and apply_claim_edit.
+    CREATE TABLE catalog.tx_marker (
+      txn_id xid8 NOT NULL,
+      entry_id uuid NOT NULL,
+      action_kind text NOT NULL,
+      sealed boolean NOT NULL,
+      CONSTRAINT tx_marker_pkey PRIMARY KEY (txn_id),
+      CONSTRAINT tx_marker_kind CHECK (action_kind IN ('create', 'claim-edit'))
+    );
+    CREATE FUNCTION catalog._err(p_state text, p_message text) RETURNS void
+      LANGUAGE plpgsql
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      RAISE EXCEPTION USING ERRCODE = p_state, MESSAGE = p_message;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog._actor(OUT admin_type text, OUT partner_id uuid, OUT actor_user_id uuid, OUT correlation_id text, OUT reason text)
+      LANGUAGE plpgsql
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      admin_type := current_setting('app.admin_type', true);
+      IF admin_type IS NULL OR admin_type NOT IN ('super', 'partner') THEN
+        PERFORM catalog._err('P0001', 'catalog_actor_context');
+      END IF;
+      IF admin_type = 'partner' THEN
+        BEGIN
+          partner_id := nullif(current_setting('app.partner_id', true), '')::uuid;
+        EXCEPTION WHEN invalid_text_representation THEN
+          PERFORM catalog._err('P0001', 'catalog_actor_context');
+        END;
+        IF partner_id IS NULL THEN
+          PERFORM catalog._err('P0001', 'catalog_actor_context');
+        END IF;
+      END IF;
+      BEGIN
+        actor_user_id := nullif(current_setting('app.actor_user_id', true), '')::uuid;
+      EXCEPTION WHEN invalid_text_representation THEN
+        PERFORM catalog._err('P0001', 'catalog_actor_context');
+      END;
+      IF actor_user_id IS NULL THEN
+        PERFORM catalog._err('P0001', 'catalog_actor_context');
+      END IF;
+      correlation_id := nullif(current_setting('app.correlation_id', true), '');
+      IF correlation_id IS NULL THEN
+        PERFORM catalog._err('P0001', 'catalog_actor_context');
+      END IF;
+      reason := nullif(current_setting('app.reason', true), '');
+      IF reason IS NOT NULL AND (reason <> btrim(reason) OR char_length(reason) NOT BETWEEN 1 AND 500) THEN
+        PERFORM catalog._err('P0001', 'catalog_reason_required');
+      END IF;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog._keys_ok(p_patch jsonb, p_allowed text[]) RETURNS void
+      LANGUAGE plpgsql
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE k text;
+    BEGIN
+      IF p_patch IS NULL OR jsonb_typeof(p_patch) <> 'object' THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      FOR k IN SELECT jsonb_object_keys(p_patch) LOOP
+        IF NOT (k = ANY (p_allowed)) THEN
+          PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+        END IF;
+      END LOOP;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog._req_text(j jsonb, k text, lo int, hi int) RETURNS text
+      LANGUAGE plpgsql IMMUTABLE
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE v text;
+    BEGIN
+      IF j IS NULL OR NOT (j ? k) OR jsonb_typeof(j->k) = 'null' THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      v := j->>k;
+      IF v IS NULL OR char_length(v) < lo OR char_length(v) > hi THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      RETURN v;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog._opt_text(j jsonb, k text, lo int, hi int) RETURNS text
+      LANGUAGE plpgsql IMMUTABLE
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE v text;
+    BEGIN
+      IF j IS NULL OR NOT (j ? k) OR jsonb_typeof(j->k) = 'null' THEN
+        RETURN NULL;
+      END IF;
+      v := j->>k;
+      IF v IS NULL OR char_length(v) < lo OR char_length(v) > hi THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      RETURN v;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog._req_bool(j jsonb, k text) RETURNS boolean
+      LANGUAGE plpgsql IMMUTABLE
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      IF j IS NULL OR NOT (j ? k) OR jsonb_typeof(j->k) <> 'boolean' THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      RETURN (j->>k)::boolean;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog._opt_uuid(j jsonb, k text) RETURNS uuid
+      LANGUAGE plpgsql IMMUTABLE
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      IF j IS NULL OR NOT (j ? k) OR jsonb_typeof(j->k) = 'null' THEN
+        RETURN NULL;
+      END IF;
+      BEGIN
+        RETURN (j->>k)::uuid;
+      EXCEPTION WHEN invalid_text_representation THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog._req_uuid(j jsonb, k text) RETURNS uuid
+      LANGUAGE plpgsql IMMUTABLE
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE v uuid;
+    BEGIN
+      v := catalog._opt_uuid(j, k);
+      IF v IS NULL THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      RETURN v;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog._req_timestamptz(j jsonb, k text) RETURNS timestamptz
+      LANGUAGE plpgsql IMMUTABLE
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      IF j IS NULL OR NOT (j ? k) OR jsonb_typeof(j->k) = 'null' THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      BEGIN
+        RETURN (j->>k)::timestamptz;
+      EXCEPTION WHEN invalid_text_representation OR datetime_field_overflow THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog._req_smallint(j jsonb, k text, lo int, hi int) RETURNS smallint
+      LANGUAGE plpgsql IMMUTABLE
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE n int;
+    BEGIN
+      IF j IS NULL OR NOT (j ? k) OR jsonb_typeof(j->k) <> 'number' THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      n := (j->>k)::int;
+      IF n < lo OR n > hi THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      RETURN n::smallint;
+    END
+    $fn$;
+
+    -- Missing and hidden references share one public status and body. No id, detail, or hint.
+    -- p_mode global: target owner must be null. same_owner: target owner must equal p_owner.
+    -- visible: target is global or owned by p_owner. Missing, wrong family, and hidden share one body.
+    CREATE FUNCTION catalog._visible_ref(p_entry uuid, p_family text, p_owner uuid, p_mode text) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE v_owner uuid;
+    BEGIN
+      SELECT e.owner_partner_id INTO v_owner
+      FROM catalog.registered_entry e
+      WHERE e.entry_id = p_entry AND e.family = p_family;
+      IF NOT FOUND
+         OR (p_mode = 'global' AND v_owner IS NOT NULL)
+         OR (p_mode = 'same_owner' AND (v_owner IS NULL OR v_owner IS DISTINCT FROM p_owner))
+         OR (p_mode = 'visible' AND v_owner IS NOT NULL AND v_owner IS DISTINCT FROM p_owner) THEN
+        PERFORM catalog._err('23503', 'catalog_reference_not_found');
+      END IF;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog._sealed_marker() RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM catalog.tx_marker m
+        WHERE m.txn_id = pg_current_xact_id() AND m.sealed
+      ) THEN
+        PERFORM catalog._err('P0001', 'catalog_transaction_action');
+      END IF;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog._insert_marker(p_entry uuid, p_kind text) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM catalog.tx_marker m WHERE m.txn_id = pg_current_xact_id()) THEN
+        RETURN;
+      END IF;
+      INSERT INTO catalog.tx_marker (txn_id, entry_id, action_kind, sealed)
+      VALUES (pg_current_xact_id(), p_entry, p_kind, false);
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog._seal_marker() RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      UPDATE catalog.tx_marker SET sealed = true
+      WHERE txn_id = pg_current_xact_id() AND sealed = false;
+      IF NOT FOUND THEN
+        PERFORM catalog._err('P0001', 'catalog_transaction_action');
+      END IF;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog.subtype_count(p_entry uuid) RETURNS integer
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+      SELECT (
+        (SELECT count(*) FROM catalog.catalog_release WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.transaction_type WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.channel WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.device_category WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.manufacturer WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.device_model WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.hardware_capability_kind WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.model_hardware_claim WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.card_network WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.card_funding_class WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.payment_rail WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.check_instrument_kind WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.check_drawer_class WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.check_purpose WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.processor WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.transaction_status WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.reason_code WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.id_document_type WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.currency WHERE entry_id = p_entry) +
+        (SELECT count(*) FROM catalog.fee_type WHERE entry_id = p_entry)
+      )::integer
+    $fn$;
+
+    CREATE FUNCTION catalog.subtype_json(p_entry uuid) RETURNS jsonb
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+      SELECT COALESCE(
+        (SELECT to_jsonb(t) FROM catalog.catalog_release t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.transaction_type t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.channel t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.device_category t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.manufacturer t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.device_model t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.hardware_capability_kind t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.model_hardware_claim t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.card_network t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.card_funding_class t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.payment_rail t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.check_instrument_kind t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.check_drawer_class t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.check_purpose t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.processor t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.transaction_status t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.reason_code t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.id_document_type t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.currency t WHERE t.entry_id = p_entry),
+        (SELECT to_jsonb(t) FROM catalog.fee_type t WHERE t.entry_id = p_entry)
+      )
+    $fn$;
+    CREATE FUNCTION catalog._insert_subtype(p_entry uuid, p_family text, p_code text, p_owner uuid, j jsonb) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      CASE p_family
+        WHEN 'catalog_release' THEN
+          INSERT INTO catalog.catalog_release (entry_id, family, code, release_family, version, source_url, source_digest, imported_at, licence_ref, supersedes_entry_id, display_name, description)
+          VALUES (p_entry, p_family, p_code,
+            catalog._req_text(j, 'release_family', 1, 200), catalog._req_text(j, 'version', 1, 200),
+            catalog._opt_text(j, 'source_url', 1, 200), catalog._opt_text(j, 'source_digest', 1, 200),
+            catalog._req_timestamptz(j, 'imported_at'), catalog._opt_text(j, 'licence_ref', 1, 200),
+            catalog._opt_uuid(j, 'supersedes_entry_id'), catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000));
+        WHEN 'transaction_type' THEN
+          INSERT INTO catalog.transaction_type (entry_id, family, code, semantic_key, value_effect, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, catalog._req_text(j, 'semantic_key', 1, 64), catalog._req_text(j, 'value_effect', 1, 64),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'channel' THEN
+          INSERT INTO catalog.channel (entry_id, family, code, attendance, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, catalog._req_text(j, 'attendance', 1, 32),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'device_category' THEN
+          INSERT INTO catalog.device_category (entry_id, family, code, definition, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, catalog._req_text(j, 'definition', 1, 2000),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'manufacturer' THEN
+          INSERT INTO catalog.manufacturer (entry_id, family, code, owner_partner_id, legal_name, public_website, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, p_owner, catalog._req_text(j, 'legal_name', 1, 200), catalog._opt_text(j, 'public_website', 1, 2000),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'device_model' THEN
+          INSERT INTO catalog.device_model (entry_id, family, code, owner_partner_id, model_name, variant, region,
+            manufacturer_global_id, manufacturer_global_family, manufacturer_private_id, manufacturer_private_family, manufacturer_private_owner,
+            category_entry_id, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, p_owner, catalog._req_text(j, 'model_name', 1, 200),
+            catalog._opt_text(j, 'variant', 1, 200), catalog._opt_text(j, 'region', 1, 200),
+            catalog._opt_uuid(j, 'manufacturer_global_id'),
+            CASE WHEN catalog._opt_uuid(j, 'manufacturer_global_id') IS NULL THEN NULL ELSE 'manufacturer' END,
+            catalog._opt_uuid(j, 'manufacturer_private_id'),
+            CASE WHEN catalog._opt_uuid(j, 'manufacturer_private_id') IS NULL THEN NULL ELSE 'manufacturer' END,
+            catalog._opt_uuid(j, 'manufacturer_private_owner'),
+            catalog._req_uuid(j, 'category_entry_id'),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'hardware_capability_kind' THEN
+          INSERT INTO catalog.hardware_capability_kind (entry_id, family, code, measurement_kind, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, catalog._req_text(j, 'measurement_kind', 1, 16),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'model_hardware_claim' THEN
+          INSERT INTO catalog.model_hardware_claim (entry_id, family, code, derived_owner,
+            model_global_id, model_global_family, model_private_id, model_private_owner, model_private_family,
+            capability_entry_id, claim_value, availability, option_key, source_url, source_version, checked_at, display_name, description)
+          VALUES (p_entry, p_family, p_code, p_owner,
+            catalog._opt_uuid(j, 'model_global_id'),
+            CASE WHEN catalog._opt_uuid(j, 'model_global_id') IS NULL THEN NULL ELSE 'device_model' END,
+            catalog._opt_uuid(j, 'model_private_id'), catalog._opt_uuid(j, 'model_private_owner'),
+            CASE WHEN catalog._opt_uuid(j, 'model_private_id') IS NULL THEN NULL ELSE 'device_model' END,
+            catalog._req_uuid(j, 'capability_entry_id'),
+            catalog._req_text(j, 'claim_value', 1, 200), catalog._req_text(j, 'availability', 1, 16),
+            catalog._req_text(j, 'option_key', 1, 64), catalog._opt_text(j, 'source_url', 1, 2000),
+            catalog._req_text(j, 'source_version', 1, 200), catalog._req_timestamptz(j, 'checked_at'),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000));
+        WHEN 'card_network' THEN
+          INSERT INTO catalog.card_network (entry_id, family, code, official_name, network_owner, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, catalog._req_text(j, 'official_name', 1, 200), catalog._opt_text(j, 'network_owner', 1, 200),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'card_funding_class' THEN
+          INSERT INTO catalog.card_funding_class (entry_id, family, code, is_classification_unknown, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, catalog._req_bool(j, 'is_classification_unknown'),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'payment_rail' THEN
+          INSERT INTO catalog.payment_rail (entry_id, family, code, processor_namespace, rail_family, specification_reference, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, catalog._req_text(j, 'processor_namespace', 1, 64), catalog._req_text(j, 'rail_family', 1, 64),
+            catalog._opt_text(j, 'specification_reference', 1, 200), catalog._req_text(j, 'display_name', 1, 200),
+            catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'check_instrument_kind' THEN
+          INSERT INTO catalog.check_instrument_kind (entry_id, family, code, definition, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, catalog._req_text(j, 'definition', 1, 2000), catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'check_drawer_class' THEN
+          INSERT INTO catalog.check_drawer_class (entry_id, family, code, definition, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, catalog._req_text(j, 'definition', 1, 2000), catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'check_purpose' THEN
+          INSERT INTO catalog.check_purpose (entry_id, family, code, definition, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, catalog._req_text(j, 'definition', 1, 2000), catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'processor' THEN
+          INSERT INTO catalog.processor (entry_id, family, code, owner_partner_id, provider_name, service_family, public_url,
+            parent_global_id, parent_global_family, parent_private_id, parent_private_family, parent_private_owner,
+            display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, p_owner, catalog._req_text(j, 'provider_name', 1, 200),
+            catalog._opt_text(j, 'service_family', 1, 200), catalog._opt_text(j, 'public_url', 1, 2000),
+            catalog._opt_uuid(j, 'parent_global_id'),
+            CASE WHEN catalog._opt_uuid(j, 'parent_global_id') IS NULL THEN NULL ELSE 'processor' END,
+            catalog._opt_uuid(j, 'parent_private_id'),
+            CASE WHEN catalog._opt_uuid(j, 'parent_private_id') IS NULL THEN NULL ELSE 'processor' END,
+            catalog._opt_uuid(j, 'parent_private_owner'),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'transaction_status' THEN
+          INSERT INTO catalog.transaction_status (entry_id, family, code, state_dimension, is_terminal, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, catalog._req_text(j, 'state_dimension', 1, 64), catalog._req_bool(j, 'is_terminal'),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'reason_code' THEN
+          INSERT INTO catalog.reason_code (entry_id, family, code, owner_partner_id, namespace, category, safe_operator_message, requires_note, customer_message_key, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, p_owner, catalog._req_text(j, 'namespace', 1, 200), catalog._req_text(j, 'category', 1, 200),
+            catalog._req_text(j, 'safe_operator_message', 1, 500), catalog._req_bool(j, 'requires_note'), catalog._opt_text(j, 'customer_message_key', 1, 200),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'id_document_type' THEN
+          INSERT INTO catalog.id_document_type (entry_id, family, code, owner_partner_id, document_family, capture_method_key, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, p_owner, catalog._req_text(j, 'document_family', 1, 64), catalog._req_text(j, 'capture_method_key', 1, 64),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'currency' THEN
+          INSERT INTO catalog.currency (entry_id, family, code, iso_alpha3, iso_numeric3, minor_unit, provenance, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, catalog._req_text(j, 'iso_alpha3', 3, 3), catalog._req_text(j, 'iso_numeric3', 3, 3),
+            catalog._req_smallint(j, 'minor_unit', 0, 4), catalog._opt_text(j, 'provenance', 1, 200),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        WHEN 'fee_type' THEN
+          INSERT INTO catalog.fee_type (entry_id, family, code, owner_partner_id, definition, display_name, description, release_id)
+          VALUES (p_entry, p_family, p_code, p_owner, catalog._req_text(j, 'definition', 1, 2000),
+            catalog._req_text(j, 'display_name', 1, 200), catalog._opt_text(j, 'description', 1, 4000), catalog._opt_uuid(j, 'release_id'));
+        ELSE
+          PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END CASE;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog.apply_entry_create(
+      p_entry_id uuid,
+      p_family text,
+      p_entry_class text,
+      p_owner_partner_id uuid,
+      p_code text,
+      p_is_active boolean,
+      p_subtype jsonb,
+      p_registry_row_count integer DEFAULT 1
+    ) RETURNS uuid
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE
+      v_actor record;
+      v_owner uuid;
+      v_at timestamptz;
+      v_allowed text[];
+      v_release uuid;
+    BEGIN
+      PERFORM catalog._sealed_marker();
+      IF p_registry_row_count IS DISTINCT FROM 1 THEN
+        PERFORM catalog._err('P0001', 'catalog_create_row_count');
+      END IF;
+      SELECT * INTO v_actor FROM catalog._actor();
+      IF p_entry_id IS NULL OR p_code IS NULL OR p_code !~ '^[a-z0-9][a-z0-9_]{0,62}$' OR p_is_active IS NULL THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      IF p_family = 'catalog_release' AND (p_entry_class IS DISTINCT FROM 'provenance' OR p_owner_partner_id IS NOT NULL) THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      ELSIF p_family = 'model_hardware_claim' AND p_entry_class IS DISTINCT FROM 'model_evidence' THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      ELSIF p_family NOT IN ('catalog_release', 'model_hardware_claim') AND p_entry_class IS DISTINCT FROM 'descriptive' THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      ELSIF p_owner_partner_id IS NOT NULL
+        AND p_family NOT IN ('manufacturer','device_model','processor','reason_code','id_document_type','fee_type','model_hardware_claim') THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      IF v_actor.admin_type = 'super' THEN
+        NULL;
+      ELSIF v_actor.admin_type = 'partner'
+        AND p_entry_class = 'descriptive'
+        AND p_family IN ('manufacturer','device_model','processor','reason_code','id_document_type','fee_type')
+        AND p_owner_partner_id IS NOT NULL
+        AND p_owner_partner_id = v_actor.partner_id THEN
+        NULL;
+      ELSE
+        PERFORM catalog._err('P0001', 'catalog_create_actor');
+      END IF;
+
+      v_allowed := CASE p_family
+        WHEN 'catalog_release' THEN ARRAY['release_family','version','source_url','source_digest','imported_at','licence_ref','supersedes_entry_id','display_name','description']
+        WHEN 'transaction_type' THEN ARRAY['semantic_key','value_effect','display_name','description','release_id']
+        WHEN 'channel' THEN ARRAY['attendance','display_name','description','release_id']
+        WHEN 'device_category' THEN ARRAY['definition','display_name','description','release_id']
+        WHEN 'manufacturer' THEN ARRAY['legal_name','public_website','display_name','description','release_id']
+        WHEN 'device_model' THEN ARRAY['model_name','variant','region','manufacturer_global_id','manufacturer_private_id','manufacturer_private_owner','category_entry_id','display_name','description','release_id']
+        WHEN 'hardware_capability_kind' THEN ARRAY['measurement_kind','display_name','description','release_id']
+        WHEN 'model_hardware_claim' THEN ARRAY['model_global_id','model_private_id','model_private_owner','capability_entry_id','claim_value','availability','option_key','source_url','source_version','checked_at','display_name','description']
+        WHEN 'card_network' THEN ARRAY['official_name','network_owner','display_name','description','release_id']
+        WHEN 'card_funding_class' THEN ARRAY['is_classification_unknown','display_name','description','release_id']
+        WHEN 'payment_rail' THEN ARRAY['processor_namespace','rail_family','specification_reference','display_name','description','release_id']
+        WHEN 'check_instrument_kind' THEN ARRAY['definition','display_name','description','release_id']
+        WHEN 'check_drawer_class' THEN ARRAY['definition','display_name','description','release_id']
+        WHEN 'check_purpose' THEN ARRAY['definition','display_name','description','release_id']
+        WHEN 'processor' THEN ARRAY['provider_name','service_family','public_url','parent_global_id','parent_private_id','parent_private_owner','display_name','description','release_id']
+        WHEN 'transaction_status' THEN ARRAY['state_dimension','is_terminal','display_name','description','release_id']
+        WHEN 'reason_code' THEN ARRAY['namespace','category','safe_operator_message','requires_note','customer_message_key','display_name','description','release_id']
+        WHEN 'id_document_type' THEN ARRAY['document_family','capture_method_key','display_name','description','release_id']
+        WHEN 'currency' THEN ARRAY['iso_alpha3','iso_numeric3','minor_unit','provenance','display_name','description','release_id']
+        WHEN 'fee_type' THEN ARRAY['definition','display_name','description','release_id']
+        ELSE NULL
+      END;
+      IF v_allowed IS NULL THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      PERFORM catalog._keys_ok(p_subtype, v_allowed);
+
+      v_owner := p_owner_partner_id;
+      IF p_family = 'model_hardware_claim' THEN
+        IF catalog._opt_uuid(p_subtype, 'model_global_id') IS NOT NULL THEN
+          PERFORM catalog._visible_ref(catalog._req_uuid(p_subtype, 'model_global_id'), 'device_model', NULL, 'global');
+          v_owner := NULL;
+        ELSIF catalog._opt_uuid(p_subtype, 'model_private_id') IS NOT NULL THEN
+          PERFORM catalog._visible_ref(catalog._req_uuid(p_subtype, 'model_private_id'), 'device_model', catalog._req_uuid(p_subtype, 'model_private_owner'), 'same_owner');
+          v_owner := catalog._req_uuid(p_subtype, 'model_private_owner');
+        ELSE
+          PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+        END IF;
+        IF p_owner_partner_id IS DISTINCT FROM v_owner THEN
+          PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+        END IF;
+        PERFORM catalog._visible_ref(catalog._req_uuid(p_subtype, 'capability_entry_id'), 'hardware_capability_kind', NULL, 'global');
+      ELSIF p_family = 'device_model' THEN
+        IF catalog._opt_uuid(p_subtype, 'manufacturer_global_id') IS NOT NULL
+           AND catalog._opt_uuid(p_subtype, 'manufacturer_private_id') IS NOT NULL THEN
+          PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+        END IF;
+        IF catalog._opt_uuid(p_subtype, 'manufacturer_global_id') IS NOT NULL THEN
+          PERFORM catalog._visible_ref(catalog._req_uuid(p_subtype, 'manufacturer_global_id'), 'manufacturer', NULL, 'global');
+        ELSIF catalog._opt_uuid(p_subtype, 'manufacturer_private_id') IS NOT NULL THEN
+          IF catalog._opt_uuid(p_subtype, 'manufacturer_private_owner') IS DISTINCT FROM p_owner_partner_id THEN
+            PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+          END IF;
+          PERFORM catalog._visible_ref(catalog._req_uuid(p_subtype, 'manufacturer_private_id'), 'manufacturer', catalog._req_uuid(p_subtype, 'manufacturer_private_owner'), 'same_owner');
+        ELSE
+          PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+        END IF;
+        PERFORM catalog._visible_ref(catalog._req_uuid(p_subtype, 'category_entry_id'), 'device_category', NULL, 'global');
+      ELSIF p_family = 'processor' THEN
+        IF catalog._opt_uuid(p_subtype, 'parent_global_id') = p_entry_id
+           OR catalog._opt_uuid(p_subtype, 'parent_private_id') = p_entry_id THEN
+          PERFORM catalog._err('P0001', 'catalog_processor_cycle');
+        END IF;
+        IF catalog._opt_uuid(p_subtype, 'parent_global_id') IS NOT NULL
+           AND catalog._opt_uuid(p_subtype, 'parent_private_id') IS NOT NULL THEN
+          PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+        END IF;
+        IF catalog._opt_uuid(p_subtype, 'parent_private_id') IS NOT NULL
+           AND catalog._opt_uuid(p_subtype, 'parent_private_owner') IS DISTINCT FROM p_owner_partner_id THEN
+          PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+        END IF;
+        IF catalog._opt_uuid(p_subtype, 'parent_global_id') IS NOT NULL THEN
+          PERFORM catalog._visible_ref(catalog._req_uuid(p_subtype, 'parent_global_id'), 'processor', NULL, 'global');
+        ELSIF catalog._opt_uuid(p_subtype, 'parent_private_id') IS NOT NULL THEN
+          PERFORM catalog._visible_ref(catalog._req_uuid(p_subtype, 'parent_private_id'), 'processor', catalog._req_uuid(p_subtype, 'parent_private_owner'), 'same_owner');
+        END IF;
+      END IF;
+      IF p_family <> 'catalog_release' AND p_family <> 'model_hardware_claim' THEN
+        v_release := catalog._opt_uuid(p_subtype, 'release_id');
+        IF v_release IS NOT NULL THEN
+          PERFORM catalog._visible_ref(v_release, 'catalog_release', NULL, 'global');
+        END IF;
+      END IF;
+      IF p_family = 'catalog_release' AND catalog._opt_uuid(p_subtype, 'supersedes_entry_id') IS NOT NULL THEN
+        IF catalog._opt_uuid(p_subtype, 'supersedes_entry_id') = p_entry_id THEN
+          PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+        END IF;
+        PERFORM catalog._visible_ref(catalog._req_uuid(p_subtype, 'supersedes_entry_id'), 'catalog_release', NULL, 'global');
+      END IF;
+
+      v_at := clock_timestamp();
+      PERFORM catalog._insert_marker(p_entry_id, 'create');
+      INSERT INTO catalog.registered_entry (
+        entry_id, family, entry_class, owner_partner_id, code, is_active, row_version,
+        created_by, created_at, updated_by, updated_at)
+      VALUES (
+        p_entry_id, p_family, p_entry_class, v_owner, p_code, p_is_active, 1,
+        v_actor.actor_user_id, v_at, v_actor.actor_user_id, v_at);
+      PERFORM catalog._insert_subtype(p_entry_id, p_family, p_code, v_owner, p_subtype);
+      PERFORM catalog._seal_marker();
+      RETURN p_entry_id;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog.apply_claim_edit(p_entry_id uuid, p_expected_version bigint, p_patch jsonb) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE
+      v_actor record;
+      v_owner uuid;
+      v_found boolean;
+      v_version bigint;
+      v_sub catalog.model_hardware_claim%ROWTYPE;
+      v_reg jsonb;
+      v_before jsonb;
+      k text;
+      v_same boolean := true;
+    BEGIN
+      PERFORM catalog._sealed_marker();
+      SELECT * INTO v_actor FROM catalog._actor();
+      IF p_entry_id IS NULL THEN
+        PERFORM catalog._err('23503', 'catalog_reference_not_found');
+      END IF;
+      SELECT e.owner_partner_id INTO v_owner
+      FROM catalog.registered_entry e
+      WHERE e.entry_id = p_entry_id AND e.family = 'model_hardware_claim';
+      v_found := FOUND;
+      IF NOT v_found THEN
+        PERFORM catalog._err('23503', 'catalog_reference_not_found');
+      END IF;
+      IF v_actor.admin_type = 'partner' AND v_owner IS NOT NULL AND v_owner IS DISTINCT FROM v_actor.partner_id THEN
+        PERFORM catalog._err('23503', 'catalog_reference_not_found');
+      END IF;
+      IF v_actor.admin_type = 'partner' AND v_owner IS NULL THEN
+        PERFORM catalog._err('P0001', 'catalog_claim_edit_actor');
+      END IF;
+      IF v_actor.admin_type <> 'super' AND NOT (v_actor.admin_type = 'partner' AND v_owner IS NOT NULL AND v_owner = v_actor.partner_id) THEN
+        PERFORM catalog._err('P0001', 'catalog_claim_edit_actor');
+      END IF;
+
+      SELECT e.row_version INTO v_version
+      FROM catalog.registered_entry e
+      WHERE e.entry_id = p_entry_id AND e.family = 'model_hardware_claim'
+      FOR UPDATE;
+      IF p_expected_version IS NULL OR p_expected_version < 1 OR v_version IS DISTINCT FROM p_expected_version THEN
+        PERFORM catalog._err('P0001', 'catalog_version_conflict');
+      END IF;
+
+      PERFORM catalog._keys_ok(p_patch, ARRAY['claim_value','availability','source_url','checked_at','display_name','description']);
+      SELECT * INTO v_sub FROM catalog.model_hardware_claim WHERE entry_id = p_entry_id FOR UPDATE;
+      IF NOT FOUND THEN
+        PERFORM catalog._err('23503', 'catalog_reference_not_found');
+      END IF;
+      FOR k IN SELECT jsonb_object_keys(p_patch) LOOP
+        IF k = 'claim_value' AND catalog._req_text(p_patch, k, 1, 200) IS DISTINCT FROM v_sub.claim_value THEN v_same := false; END IF;
+        IF k = 'availability' AND catalog._req_text(p_patch, k, 1, 16) IS DISTINCT FROM v_sub.availability THEN v_same := false; END IF;
+        IF k = 'source_url' AND catalog._opt_text(p_patch, k, 1, 2000) IS DISTINCT FROM v_sub.source_url THEN v_same := false; END IF;
+        IF k = 'checked_at' AND catalog._req_timestamptz(p_patch, k) IS DISTINCT FROM v_sub.checked_at THEN v_same := false; END IF;
+        IF k = 'display_name' AND catalog._req_text(p_patch, k, 1, 200) IS DISTINCT FROM v_sub.display_name THEN v_same := false; END IF;
+        IF k = 'description' AND catalog._opt_text(p_patch, k, 1, 4000) IS DISTINCT FROM v_sub.description THEN v_same := false; END IF;
+      END LOOP;
+      IF v_same THEN
+        PERFORM catalog._err('P0001', 'catalog_noop');
+      END IF;
+      IF p_patch->>'availability' IS NOT NULL AND p_patch->>'availability' NOT IN ('standard', 'optional', 'unknown') THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+
+      SELECT to_jsonb(e) INTO v_reg FROM catalog.registered_entry e WHERE e.entry_id = p_entry_id;
+      v_before := jsonb_build_object('registry', v_reg, 'subtype', to_jsonb(v_sub));
+      PERFORM catalog._insert_marker(p_entry_id, 'claim-edit');
+      INSERT INTO catalog.edit_coord (entry_id, txn_id, expected_version, before, patch)
+      VALUES (p_entry_id, txid_current(), v_version, v_before, p_patch);
+      UPDATE catalog.model_hardware_claim SET
+        claim_value = CASE WHEN p_patch ? 'claim_value' THEN catalog._req_text(p_patch, 'claim_value', 1, 200) ELSE claim_value END,
+        availability = CASE WHEN p_patch ? 'availability' THEN catalog._req_text(p_patch, 'availability', 1, 16) ELSE availability END,
+        source_url = CASE WHEN p_patch ? 'source_url' THEN catalog._opt_text(p_patch, 'source_url', 1, 2000) ELSE source_url END,
+        checked_at = CASE WHEN p_patch ? 'checked_at' THEN catalog._req_timestamptz(p_patch, 'checked_at') ELSE checked_at END,
+        display_name = CASE WHEN p_patch ? 'display_name' THEN catalog._req_text(p_patch, 'display_name', 1, 200) ELSE display_name END,
+        description = CASE WHEN p_patch ? 'description' THEN catalog._opt_text(p_patch, 'description', 1, 4000) ELSE description END
+      WHERE entry_id = p_entry_id;
+      UPDATE catalog.registered_entry SET
+        row_version = row_version + 1,
+        updated_by = v_actor.actor_user_id,
+        updated_at = clock_timestamp()
+      WHERE entry_id = p_entry_id AND row_version = v_version;
+      IF NOT FOUND THEN
+        PERFORM catalog._err('P0001', 'catalog_version_conflict');
+      END IF;
+      PERFORM catalog._seal_marker();
+    END
+    $fn$;
+    -- Statement trigger. Reads the marker. Does not insert it and does not seal it.
+    -- Only a sealed row for this xid8 rejects the client statement. Unsealed allows the
+    -- create's second statement and the claim edit's internal updates.
+    CREATE FUNCTION catalog.tg_tx_marker_stmt() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM catalog.tx_marker m
+        WHERE m.txn_id = pg_current_xact_id() AND m.sealed
+      ) THEN
+        PERFORM catalog._err('P0001', 'catalog_transaction_action');
+      END IF;
+      RETURN NULL;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog.tg_no_delete() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      PERFORM catalog._err('P0001', 'catalog_no_hard_delete');
+      RETURN NULL;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog.tg_registry_before() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      IF TG_OP = 'INSERT' THEN
+        IF NEW.row_version IS DISTINCT FROM 1 THEN
+          PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+        END IF;
+        RETURN NEW;
+      END IF;
+      IF NEW IS NOT DISTINCT FROM OLD THEN
+        PERFORM catalog._err('P0001', 'catalog_noop');
+      END IF;
+      IF NEW.entry_id IS DISTINCT FROM OLD.entry_id
+         OR NEW.family IS DISTINCT FROM OLD.family
+         OR NEW.entry_class IS DISTINCT FROM OLD.entry_class
+         OR NEW.owner_partner_id IS DISTINCT FROM OLD.owner_partner_id
+         OR NEW.code IS DISTINCT FROM OLD.code
+         OR NEW.created_by IS DISTINCT FROM OLD.created_by
+         OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      IF NEW.is_active IS DISTINCT FROM OLD.is_active THEN
+        PERFORM catalog._err('P0001', 'catalog_flag_definer_absent');
+      END IF;
+      IF NEW.row_version IS DISTINCT FROM OLD.row_version
+         OR NEW.updated_by IS DISTINCT FROM OLD.updated_by
+         OR NEW.updated_at IS DISTINCT FROM OLD.updated_at THEN
+        IF NOT EXISTS (
+          SELECT 1 FROM catalog.edit_coord c
+          WHERE c.entry_id = OLD.entry_id
+            AND c.txn_id = txid_current()
+            AND c.expected_version = OLD.row_version
+        ) THEN
+          PERFORM catalog._err('P0001', 'catalog_claim_edit_uncoordinated');
+        END IF;
+        IF NEW.row_version IS DISTINCT FROM OLD.row_version + 1 THEN
+          PERFORM catalog._err('P0001', 'catalog_version_conflict');
+        END IF;
+      END IF;
+      RETURN NEW;
+    END
+    $fn$;
+
+    -- Anchors, then pending. Actor is copied here and is not reread at commit.
+    -- This function does not insert or seal catalog.tx_marker.
+    CREATE FUNCTION catalog.tg_registry_pending() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE v_actor record;
+    BEGIN
+      IF NEW.owner_partner_id IS NULL AND NEW.entry_class IN ('descriptive', 'provenance') THEN
+        INSERT INTO catalog.ref_global (entry_id, family) VALUES (NEW.entry_id, NEW.family);
+      END IF;
+      IF NEW.owner_partner_id IS NOT NULL
+         AND NEW.family IN ('manufacturer','device_model','processor','reason_code','id_document_type','fee_type') THEN
+        INSERT INTO catalog.ref_private (entry_id, family, owner_partner_id)
+        VALUES (NEW.entry_id, NEW.family, NEW.owner_partner_id);
+      END IF;
+      IF NEW.owner_partner_id IS NULL AND NEW.family = 'device_model' THEN
+        INSERT INTO catalog.global_device_model (entry_id, family) VALUES (NEW.entry_id, NEW.family);
+      END IF;
+      SELECT * INTO v_actor FROM catalog._actor();
+      INSERT INTO catalog.history_pending (
+        entry_id, family, registry_after, subtype_after,
+        actor_user_id, actor_admin_type, actor_partner_id, reason, correlation_id, at)
+      VALUES (
+        NEW.entry_id, NEW.family, to_jsonb(NEW), NULL,
+        v_actor.actor_user_id, v_actor.admin_type, v_actor.partner_id, v_actor.reason, v_actor.correlation_id,
+        clock_timestamp());
+      RETURN NULL;
+    END
+    $fn$;
+
+    -- Seals the pending subtype image once. Does not seal the transaction marker.
+    CREATE FUNCTION catalog.tg_subtype_seal() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE v_n integer;
+    BEGIN
+      UPDATE catalog.history_pending
+      SET subtype_after = catalog.subtype_json(NEW.entry_id)
+      WHERE entry_id = NEW.entry_id AND subtype_after IS NULL;
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+      IF v_n <> 1 THEN
+        PERFORM catalog._err('P0001', 'catalog_creation_snapshot');
+      END IF;
+      RETURN NULL;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog.tg_registry_commit() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE
+      v_pending catalog.history_pending%ROWTYPE;
+      v_count integer;
+      v_live jsonb;
+      v_sub_owner uuid;
+      v_global integer;
+      v_private integer;
+      v_gdm integer;
+      v_expect_gdm integer;
+    BEGIN
+      SELECT * INTO v_pending FROM catalog.history_pending WHERE entry_id = NEW.entry_id;
+      IF NOT FOUND OR v_pending.subtype_after IS NULL THEN
+        PERFORM catalog._err('P0001', 'catalog_creation_snapshot');
+      END IF;
+      v_count := catalog.subtype_count(NEW.entry_id);
+      IF v_count IS DISTINCT FROM 1 THEN
+        PERFORM catalog._err('P0001', 'catalog_subtype_count');
+      END IF;
+      v_live := catalog.subtype_json(NEW.entry_id);
+      IF v_live IS DISTINCT FROM v_pending.subtype_after THEN
+        PERFORM catalog._err('P0001', 'catalog_creation_snapshot');
+      END IF;
+      IF NEW.family = 'model_hardware_claim' THEN
+        SELECT derived_owner INTO v_sub_owner FROM catalog.model_hardware_claim WHERE entry_id = NEW.entry_id;
+        IF v_sub_owner IS DISTINCT FROM NEW.owner_partner_id THEN
+          PERFORM catalog._err('P0001', 'catalog_owner_mismatch');
+        END IF;
+      ELSIF NEW.family IN ('manufacturer','device_model','processor','reason_code','id_document_type','fee_type') THEN
+        EXECUTE format('SELECT owner_partner_id FROM catalog.%I WHERE entry_id = $1', NEW.family)
+          INTO v_sub_owner USING NEW.entry_id;
+        IF v_sub_owner IS DISTINCT FROM NEW.owner_partner_id THEN
+          PERFORM catalog._err('P0001', 'catalog_owner_mismatch');
+        END IF;
+      END IF;
+      SELECT count(*) INTO v_global FROM catalog.ref_global WHERE entry_id = NEW.entry_id AND family = NEW.family;
+      SELECT count(*) INTO v_private FROM catalog.ref_private WHERE entry_id = NEW.entry_id AND family = NEW.family;
+      SELECT count(*) INTO v_gdm FROM catalog.global_device_model WHERE entry_id = NEW.entry_id;
+      IF NEW.entry_class = 'model_evidence' THEN
+        IF v_global <> 0 OR v_private <> 0 OR v_gdm <> 0 THEN
+          PERFORM catalog._err('P0001', 'catalog_creation_snapshot');
+        END IF;
+      ELSIF NEW.owner_partner_id IS NULL THEN
+        IF v_global <> 1 OR v_private <> 0 THEN
+          PERFORM catalog._err('P0001', 'catalog_creation_snapshot');
+        END IF;
+        v_expect_gdm := CASE WHEN NEW.family = 'device_model' THEN 1 ELSE 0 END;
+        IF v_gdm <> v_expect_gdm THEN
+          PERFORM catalog._err('P0001', 'catalog_creation_snapshot');
+        END IF;
+      ELSE
+        IF v_private <> 1 OR v_global <> 0 OR v_gdm <> 0 THEN
+          PERFORM catalog._err('P0001', 'catalog_creation_snapshot');
+        END IF;
+      END IF;
+      INSERT INTO catalog.entry_change (
+        change_id, entry_id, scope_level, target_partner_id, target_location_id,
+        row_version, change_kind, actor_user_id, actor_admin_type, actor_partner_id,
+        reason, source, at, before, after)
+      VALUES (
+        gen_random_uuid(), NEW.entry_id, 'entry', NULL, NULL,
+        NEW.row_version, 'created',
+        v_pending.actor_user_id, v_pending.actor_admin_type, v_pending.actor_partner_id,
+        v_pending.reason, v_pending.correlation_id, v_pending.at,
+        NULL,
+        v_pending.registry_after || jsonb_build_object('subtype', v_pending.subtype_after));
+      DELETE FROM catalog.history_pending WHERE entry_id = NEW.entry_id;
+      RETURN NULL;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog.tg_registry_update() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE
+      v_actor record;
+      v_before jsonb;
+      v_after jsonb;
+    BEGIN
+      SELECT c.before INTO v_before
+      FROM catalog.edit_coord c
+      WHERE c.entry_id = NEW.entry_id AND c.txn_id = txid_current();
+      IF NOT FOUND THEN
+        RETURN NULL;
+      END IF;
+      SELECT * INTO v_actor FROM catalog._actor();
+      v_after := jsonb_build_object('registry', to_jsonb(NEW), 'subtype', catalog.subtype_json(NEW.entry_id));
+      INSERT INTO catalog.entry_change (
+        change_id, entry_id, scope_level, target_partner_id, target_location_id,
+        row_version, change_kind, actor_user_id, actor_admin_type, actor_partner_id,
+        reason, source, at, before, after)
+      VALUES (
+        gen_random_uuid(), NEW.entry_id, 'entry', NULL, NULL,
+        NEW.row_version, 'updated',
+        v_actor.actor_user_id, v_actor.admin_type, v_actor.partner_id,
+        v_actor.reason, v_actor.correlation_id, clock_timestamp(),
+        v_before, v_after);
+      DELETE FROM catalog.edit_coord WHERE entry_id = NEW.entry_id AND txn_id = txid_current();
+      RETURN NULL;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog.tg_claim_subtype() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      IF NEW.entry_id IS DISTINCT FROM OLD.entry_id
+         OR NEW.family IS DISTINCT FROM OLD.family
+         OR NEW.code IS DISTINCT FROM OLD.code
+         OR NEW.derived_owner IS DISTINCT FROM OLD.derived_owner
+         OR NEW.model_global_id IS DISTINCT FROM OLD.model_global_id
+         OR NEW.model_global_family IS DISTINCT FROM OLD.model_global_family
+         OR NEW.model_private_id IS DISTINCT FROM OLD.model_private_id
+         OR NEW.model_private_owner IS DISTINCT FROM OLD.model_private_owner
+         OR NEW.model_private_family IS DISTINCT FROM OLD.model_private_family
+         OR NEW.capability_entry_id IS DISTINCT FROM OLD.capability_entry_id
+         OR NEW.option_key IS DISTINCT FROM OLD.option_key
+         OR NEW.source_version IS DISTINCT FROM OLD.source_version THEN
+        PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM catalog.edit_coord c
+        JOIN catalog.registered_entry e ON e.entry_id = c.entry_id
+        WHERE c.entry_id = OLD.entry_id
+          AND c.txn_id = txid_current()
+          AND c.expected_version = e.row_version
+      ) THEN
+        PERFORM catalog._err('P0001', 'catalog_claim_edit_uncoordinated');
+      END IF;
+      RETURN NEW;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog.tg_subtype_no_update() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      RETURN NULL;
+    END
+    $fn$;
+
+    -- Scope writes are stored as tables and are not an approved success path.
+    CREATE FUNCTION catalog.tg_scope_refuse() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
+      RETURN NULL;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog.tg_processor_parent() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE v_parent uuid;
+    BEGIN
+      v_parent := COALESCE(NEW.parent_global_id, NEW.parent_private_id);
+      IF v_parent IS NOT NULL AND v_parent = NEW.entry_id THEN
+        PERFORM catalog._err('P0001', 'catalog_processor_cycle');
+      END IF;
+      IF v_parent IS NOT NULL THEN
+        PERFORM pg_advisory_xact_lock(hashtext('catalog.processor.graph')::bigint);
+      END IF;
+      RETURN NEW;
+    END
+    $fn$;
+
+    CREATE FUNCTION catalog.tg_processor_cycle_commit() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE
+      r record;
+      v_next uuid;
+      v_path uuid[];
+      v_guard integer;
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM catalog.processor WHERE parent_entry_id IS NOT NULL) THEN
+        RETURN NULL;
+      END IF;
+      PERFORM pg_advisory_xact_lock(hashtext('catalog.processor.graph')::bigint);
+      FOR r IN SELECT entry_id FROM catalog.processor WHERE parent_entry_id IS NOT NULL LOOP
+        v_path := ARRAY[r.entry_id];
+        SELECT p.parent_entry_id INTO v_next FROM catalog.processor p WHERE p.entry_id = r.entry_id;
+        v_guard := 0;
+        WHILE v_next IS NOT NULL LOOP
+          IF v_next = ANY (v_path) THEN
+            PERFORM catalog._err('P0001', 'catalog_processor_cycle');
+          END IF;
+          v_path := v_path || v_next;
+          v_guard := v_guard + 1;
+          IF v_guard > 10000 THEN
+            PERFORM catalog._err('P0001', 'catalog_processor_cycle');
+          END IF;
+          SELECT p.parent_entry_id INTO v_next FROM catalog.processor p WHERE p.entry_id = v_next;
+        END LOOP;
+      END LOOP;
+      RETURN NULL;
+    END
+    $fn$;
+
+    -- Deferred so a same-statement sibling is visible.
+    -- Quoted so the name sorts before RI_ConstraintTrigger_* (uppercase R sorts before lowercase).
+    CREATE FUNCTION catalog.tg_a_ref_guard() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    BEGIN
+      IF TG_TABLE_NAME = 'processor' THEN
+        IF NEW.parent_global_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM catalog.ref_global g
+          WHERE g.entry_id = NEW.parent_global_id AND g.family = 'processor'
+        ) THEN
+          PERFORM catalog._err('23503', 'catalog_reference_not_found');
+        END IF;
+        IF NEW.parent_private_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM catalog.ref_private p
+          WHERE p.entry_id = NEW.parent_private_id AND p.family = 'processor'
+            AND p.owner_partner_id IS NOT DISTINCT FROM NEW.parent_private_owner
+        ) THEN
+          PERFORM catalog._err('23503', 'catalog_reference_not_found');
+        END IF;
+      ELSIF TG_TABLE_NAME = 'device_model' THEN
+        IF NEW.manufacturer_global_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM catalog.ref_global g
+          WHERE g.entry_id = NEW.manufacturer_global_id AND g.family = 'manufacturer'
+        ) THEN
+          PERFORM catalog._err('23503', 'catalog_reference_not_found');
+        END IF;
+        IF NEW.manufacturer_private_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM catalog.ref_private p
+          WHERE p.entry_id = NEW.manufacturer_private_id AND p.family = 'manufacturer'
+            AND p.owner_partner_id IS NOT DISTINCT FROM NEW.manufacturer_private_owner
+        ) THEN
+          PERFORM catalog._err('23503', 'catalog_reference_not_found');
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM catalog.ref_global g
+          WHERE g.entry_id = NEW.category_entry_id AND g.family = 'device_category'
+        ) THEN
+          PERFORM catalog._err('23503', 'catalog_reference_not_found');
+        END IF;
+      ELSIF TG_TABLE_NAME = 'model_hardware_claim' THEN
+        IF NEW.model_global_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM catalog.global_device_model g
+          WHERE g.entry_id = NEW.model_global_id AND g.family = 'device_model'
+        ) THEN
+          PERFORM catalog._err('23503', 'catalog_reference_not_found');
+        END IF;
+        IF NEW.model_private_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM catalog.ref_private p
+          WHERE p.entry_id = NEW.model_private_id AND p.family = 'device_model'
+            AND p.owner_partner_id IS NOT DISTINCT FROM NEW.model_private_owner
+        ) THEN
+          PERFORM catalog._err('23503', 'catalog_reference_not_found');
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM catalog.ref_global g
+          WHERE g.entry_id = NEW.capability_entry_id AND g.family = 'hardware_capability_kind'
+        ) THEN
+          PERFORM catalog._err('23503', 'catalog_reference_not_found');
+        END IF;
+      END IF;
+      RETURN NULL;
+    END
+    $fn$;
+
+    DO $attach$
+    DECLARE t text;
+    DECLARE subtypes text[] := ARRAY[
+      'catalog_release','transaction_type','channel','device_category','manufacturer','device_model',
+      'hardware_capability_kind','model_hardware_claim','card_network','card_funding_class','payment_rail',
+      'check_instrument_kind','check_drawer_class','check_purpose','processor','transaction_status',
+      'reason_code','id_document_type','currency','fee_type'];
+    DECLARE marked text[];
+    BEGIN
+      marked := subtypes || ARRAY['registered_entry','partner_switch','location_switch'];
+      FOREACH t IN ARRAY marked LOOP
+        EXECUTE format(
+          'CREATE TRIGGER tg_tx_marker_stmt BEFORE INSERT OR UPDATE OR DELETE ON catalog.%I FOR EACH STATEMENT EXECUTE FUNCTION catalog.tg_tx_marker_stmt()',
+          t);
+      END LOOP;
+      FOREACH t IN ARRAY subtypes LOOP
+        EXECUTE format(
+          'CREATE TRIGGER tg_no_delete BEFORE DELETE ON catalog.%I FOR EACH ROW EXECUTE FUNCTION catalog.tg_no_delete()',
+          t);
+        EXECUTE format(
+          'CREATE TRIGGER tg_subtype_seal AFTER INSERT ON catalog.%I FOR EACH ROW EXECUTE FUNCTION catalog.tg_subtype_seal()',
+          t);
+      END LOOP;
+      FOREACH t IN ARRAY subtypes LOOP
+        IF t <> 'model_hardware_claim' THEN
+          EXECUTE format(
+            'CREATE TRIGGER tg_subtype_no_update BEFORE UPDATE ON catalog.%I FOR EACH ROW EXECUTE FUNCTION catalog.tg_subtype_no_update()',
+            t);
+        END IF;
+      END LOOP;
+    END
+    $attach$;
+
+    CREATE TRIGGER tg_no_delete BEFORE DELETE ON catalog.registered_entry
+      FOR EACH ROW EXECUTE FUNCTION catalog.tg_no_delete();
+    CREATE TRIGGER tg_registry_before BEFORE INSERT OR UPDATE ON catalog.registered_entry
+      FOR EACH ROW EXECUTE FUNCTION catalog.tg_registry_before();
+    CREATE TRIGGER tg_registry_pending AFTER INSERT ON catalog.registered_entry
+      FOR EACH ROW EXECUTE FUNCTION catalog.tg_registry_pending();
+    CREATE CONSTRAINT TRIGGER tg_registry_commit AFTER INSERT ON catalog.registered_entry
+      DEFERRABLE INITIALLY DEFERRED
+      FOR EACH ROW EXECUTE FUNCTION catalog.tg_registry_commit();
+    CREATE TRIGGER tg_registry_update AFTER UPDATE ON catalog.registered_entry
+      FOR EACH ROW EXECUTE FUNCTION catalog.tg_registry_update();
+
+    CREATE TRIGGER tg_claim_subtype BEFORE UPDATE ON catalog.model_hardware_claim
+      FOR EACH ROW EXECUTE FUNCTION catalog.tg_claim_subtype();
+    CREATE TRIGGER tg_processor_parent BEFORE INSERT OR UPDATE ON catalog.processor
+      FOR EACH ROW EXECUTE FUNCTION catalog.tg_processor_parent();
+    CREATE CONSTRAINT TRIGGER tg_processor_cycle_commit AFTER INSERT OR UPDATE ON catalog.processor
+      DEFERRABLE INITIALLY DEFERRED
+      FOR EACH ROW EXECUTE FUNCTION catalog.tg_processor_cycle_commit();
+
+    CREATE CONSTRAINT TRIGGER "A_ref_guard" AFTER INSERT OR UPDATE ON catalog.processor
+      DEFERRABLE INITIALLY DEFERRED
+      FOR EACH ROW EXECUTE FUNCTION catalog.tg_a_ref_guard();
+    CREATE CONSTRAINT TRIGGER "A_ref_guard" AFTER INSERT OR UPDATE ON catalog.device_model
+      DEFERRABLE INITIALLY DEFERRED
+      FOR EACH ROW EXECUTE FUNCTION catalog.tg_a_ref_guard();
+    CREATE CONSTRAINT TRIGGER "A_ref_guard" AFTER INSERT OR UPDATE ON catalog.model_hardware_claim
+      DEFERRABLE INITIALLY DEFERRED
+      FOR EACH ROW EXECUTE FUNCTION catalog.tg_a_ref_guard();
+
+    CREATE TRIGGER tg_scope_refuse BEFORE INSERT OR UPDATE OR DELETE ON catalog.partner_switch
+      FOR EACH ROW EXECUTE FUNCTION catalog.tg_scope_refuse();
+    CREATE TRIGGER tg_scope_refuse BEFORE INSERT OR UPDATE OR DELETE ON catalog.location_switch
+      FOR EACH ROW EXECUTE FUNCTION catalog.tg_scope_refuse();
+    -- SELECT policies inline the session mask. No catalog function is granted to admin_api or login.
+    -- Owner policies are TO the migration role, not PUBLIC. Protected tables are FORCE RLS.
+    DO $pol$
+    DECLARE
+      t text;
+      owner_name text := current_user;
+      api text := current_database() || '_admin_api';
+      read_expr text := $e$CASE
+        WHEN current_setting('app.admin_type', true) = 'super' THEN true
+        WHEN current_setting('app.admin_type', true) = 'partner'
+          AND nullif(current_setting('app.partner_id', true), '') ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+          AND (%s IS NULL OR %s = nullif(current_setting('app.partner_id', true), '')::uuid)
+        THEN true
+        ELSE false
+      END$e$;
+      partner_ok text := $e$(current_setting('app.admin_type', true) = 'partner'
+          AND nullif(current_setting('app.partner_id', true), '') ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+          AND nullif(current_setting('app.partner_id', true), '')::uuid IS NOT NULL)$e$;
+      all_tables text[] := ARRAY[
+        'registered_entry','ref_global','ref_private','global_device_model',
+        'catalog_release','transaction_type','channel','device_category','manufacturer','device_model',
+        'hardware_capability_kind','model_hardware_claim','card_network','card_funding_class','payment_rail',
+        'check_instrument_kind','check_drawer_class','check_purpose','processor','transaction_status',
+        'reason_code','id_document_type','currency','fee_type',
+        'partner_switch','location_switch','history_pending','entry_change','edit_coord','tx_marker'];
+      owned text[] := ARRAY['manufacturer','device_model','processor','reason_code','id_document_type','fee_type'];
+      global_only text[] := ARRAY[
+        'catalog_release','transaction_type','channel','device_category','hardware_capability_kind',
+        'card_network','card_funding_class','payment_rail','check_instrument_kind','check_drawer_class',
+        'check_purpose','transaction_status','currency','ref_global','global_device_model'];
+    BEGIN
+      FOREACH t IN ARRAY all_tables LOOP
+        EXECUTE format('ALTER TABLE catalog.%I ENABLE ROW LEVEL SECURITY', t);
+        EXECUTE format(
+          'CREATE POLICY %I ON catalog.%I FOR ALL TO %I USING (true) WITH CHECK (true)',
+          t || '_owner', t, owner_name);
+      END LOOP;
+      EXECUTE 'ALTER TABLE catalog.history_pending FORCE ROW LEVEL SECURITY';
+      EXECUTE 'ALTER TABLE catalog.edit_coord FORCE ROW LEVEL SECURITY';
+      EXECUTE 'ALTER TABLE catalog.tx_marker FORCE ROW LEVEL SECURITY';
+
+      EXECUTE format(
+        'CREATE POLICY registered_entry_read ON catalog.registered_entry FOR SELECT TO %I USING (%s)',
+        api, format(read_expr, 'owner_partner_id', 'owner_partner_id'));
+      EXECUTE format(
+        'CREATE POLICY ref_private_read ON catalog.ref_private FOR SELECT TO %I USING (%s)',
+        api, format(read_expr, 'owner_partner_id', 'owner_partner_id'));
+      EXECUTE format(
+        'CREATE POLICY model_hardware_claim_read ON catalog.model_hardware_claim FOR SELECT TO %I USING (%s)',
+        api, format(read_expr, 'derived_owner', 'derived_owner'));
+      FOREACH t IN ARRAY owned LOOP
+        EXECUTE format(
+          'CREATE POLICY %I ON catalog.%I FOR SELECT TO %I USING (%s)',
+          t || '_read', t, api, format(read_expr, 'owner_partner_id', 'owner_partner_id'));
+      END LOOP;
+      FOREACH t IN ARRAY global_only LOOP
+        EXECUTE format(
+          'CREATE POLICY %I ON catalog.%I FOR SELECT TO %I USING (%s)',
+          t || '_read', t, api, format(read_expr, 'NULL', 'NULL'));
+      END LOOP;
+
+      EXECUTE format(
+        'CREATE POLICY partner_switch_read ON catalog.partner_switch FOR SELECT TO %I USING (%s)',
+        api,
+        format($p$current_setting('app.admin_type', true) = 'super'
+          OR (%s
+            AND partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
+            AND EXISTS (
+              SELECT 1 FROM catalog.registered_entry e
+              WHERE e.entry_id = partner_switch.entry_id
+                AND (%s)
+            ))$p$, partner_ok, format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id')));
+
+      EXECUTE format(
+        'CREATE POLICY location_switch_read ON catalog.location_switch FOR SELECT TO %I USING (%s)',
+        api,
+        format($p$current_setting('app.admin_type', true) = 'super'
+          OR (%s
+            AND EXISTS (
+              SELECT 1 FROM auth.location l
+              WHERE l.location_id = location_switch.location_id
+                AND l.partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
+            )
+            AND EXISTS (
+              SELECT 1 FROM catalog.registered_entry e
+              WHERE e.entry_id = location_switch.entry_id
+                AND (%s)
+            ))$p$, partner_ok, format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id')));
+
+      EXECUTE format(
+        'CREATE POLICY entry_change_read ON catalog.entry_change FOR SELECT TO %I USING (%s)',
+        api,
+        format($p$current_setting('app.admin_type', true) = 'super'
+          OR (%s
+            AND EXISTS (
+              SELECT 1 FROM catalog.registered_entry e
+              WHERE e.entry_id = entry_change.entry_id
+                AND (e.owner_partner_id IS NULL OR e.owner_partner_id = nullif(current_setting('app.partner_id', true), '')::uuid)
+            )
+            AND (
+              (entry_change.scope_level = 'entry'
+                AND entry_change.target_partner_id IS NULL
+                AND entry_change.target_location_id IS NULL)
+              OR (entry_change.scope_level = 'partner'
+                AND entry_change.target_partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
+                AND entry_change.target_location_id IS NULL)
+              OR (entry_change.scope_level = 'location'
+                AND entry_change.target_partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
+                AND EXISTS (
+                  SELECT 1 FROM auth.location l
+                  WHERE l.location_id = entry_change.target_location_id
+                    AND l.partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
+                ))
+            ))$p$, partner_ok));
+    END
+    $pol$;
+
+    -- Production admin_api is SELECT on the readable tables only. No EXECUTE. No DML.
+    -- history_pending, edit_coord, and tx_marker get no SELECT. Login gets nothing here.
+    -- Scratch EXECUTE and any scratch grant are harness-only and are not in this migration.
+    DO $grant$
+    DECLARE
+      api text := current_database() || '_admin_api';
+      t text;
+      readable text[] := ARRAY[
+        'registered_entry','ref_global','ref_private','global_device_model',
+        'catalog_release','transaction_type','channel','device_category','manufacturer','device_model',
+        'hardware_capability_kind','model_hardware_claim','card_network','card_funding_class','payment_rail',
+        'check_instrument_kind','check_drawer_class','check_purpose','processor','transaction_status',
+        'reason_code','id_document_type','currency','fee_type',
+        'partner_switch','location_switch','entry_change'];
+      protected text[] := ARRAY['history_pending','edit_coord','tx_marker'];
+      fn record;
+    BEGIN
+      EXECUTE format('GRANT USAGE ON SCHEMA catalog TO %I', api);
+      FOREACH t IN ARRAY readable LOOP
+        EXECUTE format('GRANT SELECT ON catalog.%I TO %I', t, api);
+        EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON catalog.%I FROM %I, PUBLIC', t, api);
+      END LOOP;
+      FOREACH t IN ARRAY protected LOOP
+        EXECUTE format('REVOKE ALL ON catalog.%I FROM %I, PUBLIC', t, api);
+      END LOOP;
+      FOR fn IN
+        SELECT p.oid::regprocedure AS sig
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'catalog'
+      LOOP
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', fn.sig);
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I', fn.sig, api);
+      END LOOP;
+    END
+    $grant$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261108190000_CatalogMasterData') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261108190000_CatalogMasterData', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
