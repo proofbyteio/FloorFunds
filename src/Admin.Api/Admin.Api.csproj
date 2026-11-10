@@ -18,6 +18,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Auth.Data/Auth.Data.csproj" />
+    <ProjectReference Include="../Catalog.Contracts/Catalog.Contracts.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="../../contract/audit-events.schema.json" Link="contract/audit-events.schema.json" CopyToOutputDirectory="PreserveNewest" />

@@ -115,6 +115,7 @@ var domainBlob = GitHash(Path.Combine(repo, "src", "Catalog.Contracts", "Doubles
 var principalBlob = GitHash(Path.Combine(repo, "src", "Catalog.Contracts", "CatalogPrincipal.cs"));
 var readerBlob = GitHash(Path.Combine(repo, "src", "Catalog.Read", "NpgsqlCatalogReader.cs"));
 var grantsBlob = GitHash(Path.Combine(repo, "src", "Auth.Data", "Migrations", "CatalogMasterData.Grants.sql"));
+var grantsText = File.ReadAllText(Path.Combine(repo, "src", "Auth.Data", "Migrations", "CatalogMasterData.Grants.sql"));
 if (domainBlob == "2cdc73c82e89996fdc538156d4aeca5f9d9979b8")
     Pass("imported-visible-source", domainBlob);
 else
@@ -123,21 +124,23 @@ if (principalBlob == "5bb556ebf38c4d93e2535fdbafddfb6f5277f790")
     Pass("imported-principal-source", principalBlob);
 else
     Fail("imported-principal-source", principalBlob);
-if (readerBlob == "e51071fe66c8c01a044b4066632b5ba67f149f2a")
-    Pass("raw-reader-unchanged", readerBlob);
-else
-    Fail("raw-reader-unchanged", readerBlob);
-if (grantsBlob == "56f771ed6cc6813bb2fb17e03947c6f9078bd377")
-    Pass("grants-unchanged", grantsBlob);
-else
-    Fail("grants-unchanged", grantsBlob);
-
-var grantsText = File.ReadAllText(Path.Combine(repo, "src", "Auth.Data", "Migrations", "CatalogMasterData.Grants.sql"));
-if (grantsText.Contains("WHEN current_setting('app.admin_type', true) = 'super' THEN true", StringComparison.Ordinal))
-    Pass("super-storage-branch-still-present", "Grants.sql super THEN true");
-else
-    Fail("super-storage-branch-still-present", "missing");
 var readerText = File.ReadAllText(Path.Combine(repo, "src", "Catalog.Read", "NpgsqlCatalogReader.cs"));
+if (readerText.Contains("CatalogSessionSql.SetScope", StringComparison.Ordinal)
+    && !readerText.Contains("set_config('app.admin_type'", StringComparison.Ordinal))
+    Pass("raw-reader-uses-resolved-scope", readerBlob);
+else
+    Fail("raw-reader-uses-resolved-scope", readerBlob);
+if (grantsText.Contains("app.resolved_global_admin", StringComparison.Ordinal)
+    && !grantsText.Contains("app.admin_type", StringComparison.Ordinal))
+    Pass("grants-use-resolved-scope", grantsBlob);
+else
+    Fail("grants-use-resolved-scope", grantsBlob);
+
+if (!grantsText.Contains("WHEN current_setting('app.admin_type', true) = 'super' THEN true", StringComparison.Ordinal)
+    && grantsText.Contains("current_setting('app.resolved_global_admin', true) = 'on'", StringComparison.Ordinal))
+    Pass("super-storage-branch-replaced", "resolved_global_admin");
+else
+    Fail("super-storage-branch-replaced", "admin_type branch still present");
 if (!readerText.Contains("model_hardware_claim", StringComparison.Ordinal)
     && !readerText.Contains("INSERT ", StringComparison.Ordinal)
     && !readerText.Contains("apply_entry_create", StringComparison.Ordinal))
@@ -659,7 +662,9 @@ async Task LoadFixture(NpgsqlDataSource ds)
     await using var conn = await ds.OpenConnectionAsync();
     await using var tx = await conn.BeginTransactionAsync();
     await using (var guc = new NpgsqlCommand("""
-        SELECT set_config('app.admin_type', 'super', true),
+        SELECT set_config('app.resolved_global_admin', 'on', true),
+               set_config('app.resolved_partner_ids', '', true),
+               set_config('app.admin_type', '', true),
                set_config('app.partner_id', '', true),
                set_config('app.actor_user_id', $1, true),
                set_config('app.correlation_id', 'dec192-query-nonproduct-fixture', true),
@@ -864,7 +869,7 @@ async Task Sql(NpgsqlConnection conn, NpgsqlTransaction tx, string sql, params o
 async Task SessionCleanupProof(Guid feeId)
 {
     Note("SECTION session-cleanup-before-driver-reset");
-    Note("The one-row GUC is app.admin_type|app.partner_id|count of registered_entry for the global fee. super||1 means the session GUC is set and RLS returns that row.");
+    Note("The one-row GUC is resolved_global|resolved_partners|admin_type|partner_id|count of registered_entry for the global fee. on|||1 means the resolved flag is set and RLS returns that row.");
 
     await using (var masked = ProbeSource(noResetOnClose: false))
     {
@@ -874,12 +879,12 @@ async Task SessionCleanupProof(Guid feeId)
             await PlantSessionSuper(conn);
             var before = await ReadSession(conn, feeId);
             pid = before.Pid;
-            ExpectSample("default-reset-before-close", before, pid, "super||1", "before-close");
+            ExpectSample("default-reset-before-close", before, pid, "on|||1", "before-close");
         }
         await using (var conn = await masked.OpenConnectionAsync())
         {
             var after = await ReadSession(conn, feeId);
-            ExpectSample("default-reset-after-return", after, pid, "||0", "after-return-default-reset");
+            ExpectSample("default-reset-after-return", after, pid, "||||0", "after-return-default-reset");
         }
     }
 
@@ -891,12 +896,12 @@ async Task SessionCleanupProof(Guid feeId)
             await PlantSessionSuper(conn);
             var before = await ReadSession(conn, feeId);
             pid = before.Pid;
-            ExpectSample("reset-disabled-before-close", before, pid, "super||1", "before-close");
+            ExpectSample("reset-disabled-before-close", before, pid, "on|||1", "before-close");
         }
         await using (var conn = await retained.OpenConnectionAsync())
         {
             var after = await ReadSession(conn, feeId);
-            ExpectSample("reset-disabled-after-return", after, pid, "super||1", "after-return-reset-disabled");
+            ExpectSample("reset-disabled-after-return", after, pid, "on|||1", "after-return-reset-disabled");
         }
         var history = await new CatalogQuery(new NpgsqlCatalogStorage(retained)).HistoryAsync(
             actors[0].Principal, CatalogFamily.FeeType, feeId, null, CancellationToken.None);
@@ -904,7 +909,7 @@ async Task SessionCleanupProof(Guid feeId)
         await using (var conn = await retained.OpenConnectionAsync())
         {
             var cleared = await ReadSession(conn, feeId);
-            ExpectSample("history-clears-session-guc-with-reset-disabled", cleared, pid, "||0", "after-history-return-reset-disabled");
+            ExpectSample("history-clears-session-guc-with-reset-disabled", cleared, pid, "||||0", "after-history-return-reset-disabled");
         }
         var shape = history.Status == 200
             && history.History?.Count == 1
@@ -934,7 +939,7 @@ async Task ErrorRollbackReuse(Guid feeId)
     await using (var conn = await source.OpenConnectionAsync())
     {
         var held = await ReadSession(conn, feeId);
-        ExpectSample("error-path-reset-disabled-still-holds-session-guc", held, plantedPid, "super||1", "after-return-before-error");
+        ExpectSample("error-path-reset-disabled-still-holds-session-guc", held, plantedPid, "on|||1", "after-return-before-error");
     }
 
     await using var lockConn = await ownerDs!.OpenConnectionAsync();
@@ -976,7 +981,7 @@ async Task ErrorRollbackReuse(Guid feeId)
     await using var reused = await source.OpenConnectionAsync();
     var after = await ReadSession(reused, feeId);
     Note($"error-rollback reuse timing=after-rollback-reset-disabled waiting-pid={waitingPid.Value} reuse-pid={after.Pid} guc={after.Guc}");
-    if (after.Pid == waitingPid.Value && after.Guc == "||0")
+    if (after.Pid == waitingPid.Value && after.Guc == "||||0")
         Pass("error-rollback-reuse-is-clear", $"pid={after.Pid} guc={after.Guc}");
     else
         Fail("error-rollback-reuse-is-clear", $"waiting-pid={waitingPid.Value} reuse-pid={after.Pid} guc={after.Guc}");
@@ -1053,7 +1058,7 @@ async Task PlantSessionSuper(NpgsqlConnection conn)
 {
     await using var tx = await conn.BeginTransactionAsync();
     await using var cmd = new NpgsqlCommand(
-        "SELECT set_config('app.admin_type', 'super', false), set_config('app.partner_id', '', false)", conn, tx);
+        "SELECT set_config('app.resolved_global_admin', 'on', false), set_config('app.resolved_partner_ids', '', false), set_config('app.admin_type', '', false), set_config('app.partner_id', '', false)", conn, tx);
     await cmd.ExecuteNonQueryAsync();
     await tx.CommitAsync();
 }
@@ -1062,6 +1067,8 @@ async Task<(int Pid, string Guc)> ReadSession(NpgsqlConnection conn, Guid entryI
 {
     await using var cmd = new NpgsqlCommand("""
         SELECT pg_backend_pid(),
+               coalesce(current_setting('app.resolved_global_admin', true), '') || '|' ||
+               coalesce(current_setting('app.resolved_partner_ids', true), '') || '|' ||
                coalesce(current_setting('app.admin_type', true), '') || '|' ||
                coalesce(current_setting('app.partner_id', true), '') || '|' ||
                (SELECT count(*)::text FROM catalog.registered_entry WHERE entry_id = $1)
@@ -1093,7 +1100,10 @@ async Task<string> PooledGuc(NpgsqlDataSource ds)
         foreach (var conn in connections)
         {
             await using var cmd = new NpgsqlCommand("""
-                SELECT coalesce(current_setting('app.admin_type', true), '') || '|' ||
+                SELECT coalesce(current_setting('app.resolved_global_admin', true), '') || '|' ||
+                       coalesce(current_setting('app.resolved_partner_ids', true), '') || '|' ||
+                       coalesce(current_setting('app.resolved_location_ids', true), '') || '|' ||
+                       coalesce(current_setting('app.admin_type', true), '') || '|' ||
                        coalesce(current_setting('app.partner_id', true), '') || '|' ||
                        (SELECT count(*)::text FROM catalog.registered_entry)
                 """, conn);
@@ -1109,7 +1119,7 @@ async Task<string> PooledGuc(NpgsqlDataSource ds)
     }
 }
 
-static bool PoolClear(string guc) => guc.Split(',').All(part => part == "||0");
+static bool PoolClear(string guc) => guc.Split(',').All(part => part == "|||||0");
 
 static bool Expected(CheckActor actor, FixtureRow row)
 {

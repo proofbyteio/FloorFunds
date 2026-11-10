@@ -12,8 +12,7 @@ namespace Catalog.Read;
 /// </summary>
 public sealed class NpgsqlCatalogReader
 {
-    private const string ClearSessionSql =
-        "SELECT set_config('app.admin_type', '', false), set_config('app.partner_id', '', false)";
+    private const string ClearSessionSql = CatalogSessionSql.Clear;
 
     private const string RoleSql = """
         SELECT current_user = current_database() || '_admin_api'
@@ -35,8 +34,7 @@ public sealed class NpgsqlCatalogReader
          WHERE r.rolname = current_user
         """;
 
-    private const string SetScopeSql =
-        "SELECT set_config('app.admin_type', $1, true), set_config('app.partner_id', $2, true)";
+    private const string SetScopeSql = CatalogSessionSql.SetScope;
 
     private const string ListEntriesSql = """
         SELECT entry_id, family, entry_class, owner_partner_id, code, is_active, row_version
@@ -142,8 +140,8 @@ public sealed class NpgsqlCatalogReader
                 await readOnly.ExecuteNonQueryAsync(ct);
             await using (var guc = new NpgsqlCommand(SetScopeSql, conn, tx))
             {
-                guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = scope.AdminType });
-                guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = scope.PartnerId?.ToString("D") ?? "" });
+                guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = scope.ResolvedGlobal });
+                guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = scope.ResolvedPartnerCsv });
                 await guc.ExecuteNonQueryAsync(ct);
             }
             await using var cmd = new NpgsqlCommand(sql, conn, tx);

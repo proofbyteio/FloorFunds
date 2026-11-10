@@ -35,6 +35,8 @@ if (!(dbName == "ff_sse" || System.Text.RegularExpressions.Regex.IsMatch(dbName,
 { Console.Error.WriteLine("refuse: AUTH_CHECKS_DB must be ff_sse or ff_kit_<name> (never ff_sse2, postgres or a template)"); return 2; }
 var ownerCs = Env("CONNECTION_STRING");
 var adminCs = Env("ADMIN_API_CONNECTION_STRING");
+if (args is ["--req064"])
+    return await Req064Suite.RunAsync(ownerCs, adminCs);
 var loginCs = Env("LOGIN_CONNECTION_STRING"); // <db>_login, read-only: the login readers (TLD 10:02 Q1 restart check)
 if (new[] { ownerCs, adminCs, loginCs }.Any(cs => new NpgsqlConnectionStringBuilder(cs).Database != dbName))
 { Console.Error.WriteLine("refuse: every connection string's Database must equal AUTH_CHECKS_DB"); return 2; }
@@ -954,9 +956,15 @@ try
         {
             var c = await ds.OpenConnectionAsync();
             conns.Add(c);
-            await using var cmd = new NpgsqlCommand("SELECT coalesce(current_setting('app.admin_type', true), '') || '|' || coalesce(current_setting('app.partner_id', true), '')", c);
+            await using var cmd = new NpgsqlCommand("""
+                SELECT coalesce(current_setting('app.resolved_global_admin', true), '') || '|' ||
+                       coalesce(current_setting('app.resolved_partner_ids', true), '') || '|' ||
+                       coalesce(current_setting('app.resolved_location_ids', true), '') || '|' ||
+                       coalesce(current_setting('app.admin_type', true), '') || '|' ||
+                       coalesce(current_setting('app.partner_id', true), '')
+                """, c);
             var v = (string)(await cmd.ExecuteScalarAsync())!;
-            if (v != "|") leaked.Add(v);
+            if (v != "||||") leaked.Add(v);
         }
         foreach (var c in conns) await c.DisposeAsync();
         Ok("K4: no app.* GUC left on any pooled API connection after the run", leaked.Count == 0, string.Join(",", leaked));
@@ -966,14 +974,17 @@ try
             await using var tx = await c.BeginTransactionAsync();
             await using var q0 = new NpgsqlCommand("SELECT count(*) FROM auth.location_login_config", c, tx);
             var none = (long)(await q0.ExecuteScalarAsync())!;
-            await using var s = new NpgsqlCommand("SELECT set_config('app.admin_type','partner',true), set_config('app.partner_id',$1,true)", c, tx);
+            await using var s = new NpgsqlCommand("SELECT set_config('app.resolved_partner_ids',$1,true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)", c, tx);
             s.Parameters.Add(new() { Value = P_A.ToString() });
             await s.ExecuteNonQueryAsync();
             await using var q1 = new NpgsqlCommand("SELECT count(*) FROM auth.location_login_config WHERE location_id = $1", c, tx);
             q1.Parameters.Add(new() { Value = B1 });
             var b = (long)(await q1.ExecuteScalarAsync())!;
+            await using var qA = new NpgsqlCommand("SELECT count(*) FROM auth.location_login_config WHERE location_id = $1", c, tx);
+            qA.Parameters.Add(new() { Value = A1 });
+            var a = (long)(await qA.ExecuteScalarAsync())!;
             await tx.RollbackAsync();
-            Ok("K4: RLS backstop (no GUC -> 0 rows; partner A GUC -> partner B row invisible)", none == 0 && b == 0, $"{none} {b}");
+            Ok("K4: RLS backstop (no GUC -> 0 rows; resolved partner A -> A visible, B invisible)", none == 0 && b == 0 && a == 1, $"{none} {a} {b}");
         }
     }
 
@@ -2562,17 +2573,29 @@ static string Base64Url(string s) => Base64UrlEncoder.Encode(s);
 
 sealed record R(int Status, string Body, string? ETag, string? Location, string? WwwAuth, string? CacheControl, string? Server, string? Corr = null);
 
-/// <summary>Interim token roles for admins; injected non-admin callers (org:V reader, no role, custom role) for §6 rows 4-5.</summary>
+/// <summary>
+/// Injected directory for the existing checks. It copies the token's sign-in kind onto the grant so those
+/// checks keep their fixtures. It is not the production directory. Production is <see cref="DbAdminDirectory"/>.
+/// </summary>
 sealed class TestDirectory(HashSet<Guid> readerLocations, Guid reader, Guid nobody, Guid custom) : IAdminDirectory
 {
-    readonly TokenAdminDirectory _interim = new();
-    public Task<AdminGrant> ResolveAsync(AdminIdentity id, CancellationToken ct) =>
-        id.UserId == reader ? Task.FromResult(AdminGrant.Nothing with { OrgViewLocations = readerLocations })
-        : id.UserId == nobody ? Task.FromResult(AdminGrant.Nothing)
-        // A custom role carrying org:location_login_method:write is ignored: only built-in roles count [LD L172].
-        // Slice A: it does not carry PartnerReasonBoundsWrite either; Run's normalisation would clear it anyway (non-built-in role).
-        : id.UserId == custom ? Task.FromResult(AdminGrant.Nothing with { LoginMethodWrite = true, OrgCreateEdit = true })
-        : _interim.ResolveAsync(id, ct);
+    public Task<AdminGrant> ResolveAsync(AdminIdentity id, Npgsql.NpgsqlConnection connection, Npgsql.NpgsqlTransaction transaction, CancellationToken ct)
+    {
+        _ = connection;
+        _ = transaction;
+        _ = ct;
+        if (id.UserId == reader) return Task.FromResult(AdminGrant.Nothing with { OrgViewLocations = readerLocations });
+        if (id.UserId == nobody) return Task.FromResult(AdminGrant.Nothing);
+        if (id.UserId == custom) return Task.FromResult(AdminGrant.Nothing with { LoginMethodWrite = true, OrgCreateEdit = true });
+        var partners = id.AdminType == "partner" && id.PartnerId is { } p && p != Guid.Empty ? new HashSet<Guid> { p } : new HashSet<Guid>();
+        AdminGrant grant = id.AdminType switch
+        {
+            "super" => new AdminGrant(BuiltInRole.SuperAdmin, true, true, new HashSet<Guid>(), true),
+            "partner" when partners.Count == 1 => new AdminGrant(BuiltInRole.PartnerAdmin, true, true, new HashSet<Guid>(), true, partners),
+            _ => AdminGrant.Nothing,
+        };
+        return Task.FromResult(grant);
+    }
 }
 
 /// <summary>Captures the API's own log lines (formatted), so the checks can read the 500 error line [TLD 9:20].

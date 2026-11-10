@@ -233,7 +233,7 @@ BEGIN
     DECLARE
       a text := current_database() || '_admin_api';
       l text := current_database() || '_login';
-      scope text := $p$(current_setting('app.admin_type', true) = 'super' OR (current_setting('app.admin_type', true) = 'partner' AND partner_id = nullif(current_setting('app.partner_id', true), '')::uuid))$p$;
+      scope text := $p$(current_setting('app.resolved_global_admin', true) = 'on' OR partner_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) OR location_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')))$p$;
       via_location text := $p$(EXISTS (SELECT 1 FROM auth.location l WHERE l.location_id = %I.location_id))$p$;
     BEGIN
       EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I, %I', current_database(), a, l);
@@ -318,7 +318,7 @@ BEGIN
     DO $s2a_prb$
     DECLARE
       a text := current_database() || '_admin_api';
-      any_admin text := $p$(current_setting('app.admin_type', true) = 'super' OR (current_setting('app.admin_type', true) = 'partner' AND nullif(current_setting('app.partner_id', true), '') IS NOT NULL))$p$;
+      any_admin text := $p$(current_setting('app.resolved_global_admin', true) = 'on' OR EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) p(id) WHERE p.id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') OR EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')) loc(id) WHERE loc.id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'))$p$;
     BEGIN
       EXECUTE format('CREATE POLICY prb_admin ON auth.partner_reason_bounds FOR ALL TO %I USING %s WITH CHECK %s', a, any_admin, any_admin);
       EXECUTE format('GRANT SELECT, INSERT ON auth.partner_reason_bounds TO %I', a);
@@ -1053,24 +1053,43 @@ BEGIN
     END
     $fn$;
 
-    CREATE FUNCTION catalog._actor(OUT admin_type text, OUT partner_id uuid, OUT actor_user_id uuid, OUT correlation_id text, OUT reason text)
+    -- admin_type / partner_id here are the labels stored on history_pending. They are derived from the
+    -- resolver GUCs. This function does not read app.admin_type or app.partner_id.
+    CREATE FUNCTION catalog._actor(
+      OUT admin_type text,
+      OUT partner_id uuid,
+      OUT actor_user_id uuid,
+      OUT correlation_id text,
+      OUT reason text,
+      OUT resolved_global boolean,
+      OUT resolved_partner_ids uuid[])
       LANGUAGE plpgsql
       SET search_path = pg_catalog
     AS $fn$
+    DECLARE
+      raw text;
+      token text;
     BEGIN
-      admin_type := current_setting('app.admin_type', true);
-      IF admin_type IS NULL OR admin_type NOT IN ('super', 'partner') THEN
-        PERFORM catalog._err('P0001', 'catalog_actor_context');
+      resolved_global := current_setting('app.resolved_global_admin', true) = 'on';
+      resolved_partner_ids := ARRAY[]::uuid[];
+      raw := coalesce(current_setting('app.resolved_partner_ids', true), '');
+      IF raw <> '' THEN
+        FOREACH token IN ARRAY string_to_array(raw, ',') LOOP
+          IF token ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN
+            resolved_partner_ids := resolved_partner_ids || token::uuid;
+          ELSE
+            PERFORM catalog._err('P0001', 'catalog_actor_context');
+          END IF;
+        END LOOP;
       END IF;
-      IF admin_type = 'partner' THEN
-        BEGIN
-          partner_id := nullif(current_setting('app.partner_id', true), '')::uuid;
-        EXCEPTION WHEN invalid_text_representation THEN
-          PERFORM catalog._err('P0001', 'catalog_actor_context');
-        END;
-        IF partner_id IS NULL THEN
-          PERFORM catalog._err('P0001', 'catalog_actor_context');
-        END IF;
+      IF resolved_global THEN
+        admin_type := 'super';
+        partner_id := NULL;
+      ELSIF coalesce(array_length(resolved_partner_ids, 1), 0) >= 1 THEN
+        admin_type := 'partner';
+        partner_id := resolved_partner_ids[1];
+      ELSE
+        PERFORM catalog._err('P0001', 'catalog_actor_context');
       END IF;
       BEGIN
         actor_user_id := nullif(current_setting('app.actor_user_id', true), '')::uuid;
@@ -1503,13 +1522,13 @@ BEGIN
         AND p_family NOT IN ('manufacturer','device_model','processor','reason_code','id_document_type','fee_type','model_hardware_claim') THEN
         PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
       END IF;
-      IF v_actor.admin_type = 'super' THEN
+      IF v_actor.resolved_global THEN
         NULL;
-      ELSIF v_actor.admin_type = 'partner'
+      ELSIF NOT v_actor.resolved_global
         AND p_entry_class = 'descriptive'
         AND p_family IN ('manufacturer','device_model','processor','reason_code','id_document_type','fee_type')
         AND p_owner_partner_id IS NOT NULL
-        AND p_owner_partner_id = v_actor.partner_id THEN
+        AND p_owner_partner_id = ANY (v_actor.resolved_partner_ids) THEN
         NULL;
       ELSE
         PERFORM catalog._err('P0001', 'catalog_create_actor');
@@ -1648,13 +1667,13 @@ BEGIN
       IF NOT v_found THEN
         PERFORM catalog._err('23503', 'catalog_reference_not_found');
       END IF;
-      IF v_actor.admin_type = 'partner' AND v_owner IS NOT NULL AND v_owner IS DISTINCT FROM v_actor.partner_id THEN
+      IF NOT v_actor.resolved_global AND v_owner IS NOT NULL AND NOT (v_owner = ANY (v_actor.resolved_partner_ids)) THEN
         PERFORM catalog._err('23503', 'catalog_reference_not_found');
       END IF;
-      IF v_actor.admin_type = 'partner' AND v_owner IS NULL THEN
+      IF NOT v_actor.resolved_global AND v_owner IS NULL THEN
         PERFORM catalog._err('P0001', 'catalog_claim_edit_actor');
       END IF;
-      IF v_actor.admin_type <> 'super' AND NOT (v_actor.admin_type = 'partner' AND v_owner IS NOT NULL AND v_owner = v_actor.partner_id) THEN
+      IF NOT v_actor.resolved_global AND NOT (v_owner IS NOT NULL AND v_owner = ANY (v_actor.resolved_partner_ids)) THEN
         PERFORM catalog._err('P0001', 'catalog_claim_edit_actor');
       END IF;
 
@@ -2189,24 +2208,38 @@ BEGIN
       FOR EACH ROW EXECUTE FUNCTION catalog.tg_scope_refuse();
     CREATE TRIGGER tg_scope_refuse BEFORE INSERT OR UPDATE OR DELETE ON catalog.location_switch
       FOR EACH ROW EXECUTE FUNCTION catalog.tg_scope_refuse();
-    -- SELECT policies inline the session mask. No catalog function is granted to admin_api or login.
-    -- Owner policies are TO the migration role, not PUBLIC. Protected tables are FORCE RLS.
+    -- Catalog read policies. Authorization reads app.resolved_global_admin and the resolved
+    -- partner and location id lists set by the resolver. A value that is not a uuid is ignored,
+    -- so a bad setting returns zero rows rather than an error.
     DO $pol$
     DECLARE
-      t text;
-      owner_name text := current_user;
       api text := current_database() || '_admin_api';
+      owner_name text := current_user;
+      uuid_re text := '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
       read_expr text := $e$CASE
-        WHEN current_setting('app.admin_type', true) = 'super' THEN true
-        WHEN current_setting('app.admin_type', true) = 'partner'
-          AND nullif(current_setting('app.partner_id', true), '') ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
-          AND (%s IS NULL OR %s = nullif(current_setting('app.partner_id', true), '')::uuid)
-        THEN true
+        WHEN current_setting('app.resolved_global_admin', true) = 'on' THEN true
+        WHEN EXISTS (
+          SELECT 1
+            FROM unnest(string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) AS p(id)
+           WHERE p.id ~ '%s'
+             AND (%s IS NULL OR %s::text = p.id)
+        ) THEN true
+        WHEN EXISTS (
+          SELECT 1
+            FROM unnest(string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')) AS loc(id)
+            JOIN auth.location l ON l.location_id::text = loc.id
+           WHERE loc.id ~ '%s'
+             AND (%s IS NULL OR l.partner_id::text = %s::text)
+        ) THEN true
         ELSE false
       END$e$;
-      partner_ok text := $e$(current_setting('app.admin_type', true) = 'partner'
-          AND nullif(current_setting('app.partner_id', true), '') ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
-          AND nullif(current_setting('app.partner_id', true), '')::uuid IS NOT NULL)$e$;
+      t text;
+      owned text[] := ARRAY[
+        'manufacturer','device_model','processor','reason_code','id_document_type','fee_type'];
+      global_only text[] := ARRAY[
+        'catalog_release','transaction_type','channel','device_category','hardware_capability_kind',
+        'card_network','card_funding_class','payment_rail','check_instrument_kind','check_drawer_class',
+        'check_purpose','transaction_status','currency','ref_global','global_device_model'];
       all_tables text[] := ARRAY[
         'registered_entry','ref_global','ref_private','global_device_model',
         'catalog_release','transaction_type','channel','device_category','manufacturer','device_model',
@@ -2214,14 +2247,10 @@ BEGIN
         'check_instrument_kind','check_drawer_class','check_purpose','processor','transaction_status',
         'reason_code','id_document_type','currency','fee_type',
         'partner_switch','location_switch','history_pending','entry_change','edit_coord','tx_marker'];
-      owned text[] := ARRAY['manufacturer','device_model','processor','reason_code','id_document_type','fee_type'];
-      global_only text[] := ARRAY[
-        'catalog_release','transaction_type','channel','device_category','hardware_capability_kind',
-        'card_network','card_funding_class','payment_rail','check_instrument_kind','check_drawer_class',
-        'check_purpose','transaction_status','currency','ref_global','global_device_model'];
     BEGIN
       FOREACH t IN ARRAY all_tables LOOP
         EXECUTE format('ALTER TABLE catalog.%I ENABLE ROW LEVEL SECURITY', t);
+        EXECUTE format('DROP POLICY IF EXISTS %I ON catalog.%I', t || '_owner', t);
         EXECUTE format(
           'CREATE POLICY %I ON catalog.%I FOR ALL TO %I USING (true) WITH CHECK (true)',
           t || '_owner', t, owner_name);
@@ -2229,80 +2258,145 @@ BEGIN
       EXECUTE 'ALTER TABLE catalog.history_pending FORCE ROW LEVEL SECURITY';
       EXECUTE 'ALTER TABLE catalog.edit_coord FORCE ROW LEVEL SECURITY';
       EXECUTE 'ALTER TABLE catalog.tx_marker FORCE ROW LEVEL SECURITY';
+      -- The uuid pattern is inserted with %L so a literal percent cannot reach format().
+      read_expr := format(read_expr, uuid_re, '%s', '%s', uuid_re, '%s', '%s');
+
+      EXECUTE format('DROP POLICY IF EXISTS registered_entry_read ON catalog.registered_entry');
+      EXECUTE format('DROP POLICY IF EXISTS ref_global_read ON catalog.ref_global');
+      EXECUTE format('DROP POLICY IF EXISTS ref_private_read ON catalog.ref_private');
+      EXECUTE format('DROP POLICY IF EXISTS model_hardware_claim_read ON catalog.model_hardware_claim');
+      EXECUTE format('DROP POLICY IF EXISTS claim_read ON catalog.model_hardware_claim');
+      EXECUTE format('DROP POLICY IF EXISTS partner_switch_read ON catalog.partner_switch');
+      EXECUTE format('DROP POLICY IF EXISTS location_switch_read ON catalog.location_switch');
+      EXECUTE format('DROP POLICY IF EXISTS entry_change_read ON catalog.entry_change');
+      FOREACH t IN ARRAY owned LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON catalog.%I', t || '_read', t);
+      END LOOP;
 
       EXECUTE format(
         'CREATE POLICY registered_entry_read ON catalog.registered_entry FOR SELECT TO %I USING (%s)',
-        api, format(read_expr, 'owner_partner_id', 'owner_partner_id'));
+        api, format(read_expr, 'owner_partner_id', 'owner_partner_id', 'owner_partner_id', 'owner_partner_id'));
+      FOREACH t IN ARRAY global_only LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON catalog.%I', t || '_read', t);
+        EXECUTE format(
+          'CREATE POLICY %I ON catalog.%I FOR SELECT TO %I USING (%s)',
+          t || '_read', t, api, format(read_expr, 'NULL', 'NULL', 'NULL', 'NULL'));
+      END LOOP;
       EXECUTE format(
         'CREATE POLICY ref_private_read ON catalog.ref_private FOR SELECT TO %I USING (%s)',
-        api, format(read_expr, 'owner_partner_id', 'owner_partner_id'));
-      EXECUTE format(
-        'CREATE POLICY model_hardware_claim_read ON catalog.model_hardware_claim FOR SELECT TO %I USING (%s)',
-        api, format(read_expr, 'derived_owner', 'derived_owner'));
+        api, format(read_expr, 'owner_partner_id', 'owner_partner_id', 'owner_partner_id', 'owner_partner_id'));
       FOREACH t IN ARRAY owned LOOP
         EXECUTE format(
           'CREATE POLICY %I ON catalog.%I FOR SELECT TO %I USING (%s)',
-          t || '_read', t, api, format(read_expr, 'owner_partner_id', 'owner_partner_id'));
+          t || '_read', t, api,
+          format(read_expr, 'owner_partner_id', 'owner_partner_id', 'owner_partner_id', 'owner_partner_id'));
       END LOOP;
-      FOREACH t IN ARRAY global_only LOOP
-        EXECUTE format(
-          'CREATE POLICY %I ON catalog.%I FOR SELECT TO %I USING (%s)',
-          t || '_read', t, api, format(read_expr, 'NULL', 'NULL'));
-      END LOOP;
-
       EXECUTE format(
-        'CREATE POLICY partner_switch_read ON catalog.partner_switch FOR SELECT TO %I USING (%s)',
-        api,
-        format($p$current_setting('app.admin_type', true) = 'super'
-          OR (%s
-            AND partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
+        'CREATE POLICY model_hardware_claim_read ON catalog.model_hardware_claim FOR SELECT TO %I USING (%s)',
+        api, format(read_expr, 'derived_owner', 'derived_owner', 'derived_owner', 'derived_owner'));
+
+      EXECUTE format($f$
+        CREATE POLICY partner_switch_read ON catalog.partner_switch FOR SELECT TO %I USING (
+          current_setting('app.resolved_global_admin', true) = 'on'
+          OR (
+            partner_switch.partner_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ','))
+            AND partner_switch.partner_id::text ~ %L
             AND EXISTS (
               SELECT 1 FROM catalog.registered_entry e
-              WHERE e.entry_id = partner_switch.entry_id
-                AND (%s)
-            ))$p$, partner_ok, format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id')));
-
-      EXECUTE format(
-        'CREATE POLICY location_switch_read ON catalog.location_switch FOR SELECT TO %I USING (%s)',
-        api,
-        format($p$current_setting('app.admin_type', true) = 'super'
-          OR (%s
+               WHERE e.entry_id = partner_switch.entry_id
+                 AND (%s)
+            )
+          )
+          OR (
+            EXISTS (
+              SELECT 1
+                FROM unnest(string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')) AS loc(id)
+                JOIN auth.location l ON l.location_id::text = loc.id
+               WHERE loc.id ~ %L
+                 AND l.partner_id = partner_switch.partner_id
+            )
             AND EXISTS (
+              SELECT 1 FROM catalog.registered_entry e
+               WHERE e.entry_id = partner_switch.entry_id
+                 AND (%s)
+            )
+          )
+        )
+      $f$, api, uuid_re,
+        format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id'),
+        uuid_re,
+        format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id'));
+
+      EXECUTE format($f$
+        CREATE POLICY location_switch_read ON catalog.location_switch FOR SELECT TO %I USING (
+          current_setting('app.resolved_global_admin', true) = 'on'
+          OR (
+            EXISTS (
               SELECT 1 FROM auth.location l
-              WHERE l.location_id = location_switch.location_id
-                AND l.partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
+               WHERE l.location_id = location_switch.location_id
+                 AND l.partner_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ','))
+                 AND l.partner_id::text ~ %L
             )
             AND EXISTS (
               SELECT 1 FROM catalog.registered_entry e
-              WHERE e.entry_id = location_switch.entry_id
-                AND (%s)
-            ))$p$, partner_ok, format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id')));
+               WHERE e.entry_id = location_switch.entry_id
+                 AND (%s)
+            )
+          )
+          OR (
+            location_switch.location_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ','))
+            AND location_switch.location_id::text ~ %L
+            AND EXISTS (
+              SELECT 1 FROM catalog.registered_entry e
+               WHERE e.entry_id = location_switch.entry_id
+                 AND (%s)
+            )
+          )
+        )
+      $f$, api, uuid_re,
+        format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id'),
+        uuid_re,
+        format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id'));
 
-      EXECUTE format(
-        'CREATE POLICY entry_change_read ON catalog.entry_change FOR SELECT TO %I USING (%s)',
-        api,
-        format($p$current_setting('app.admin_type', true) = 'super'
-          OR (%s
-            AND EXISTS (
-              SELECT 1 FROM catalog.registered_entry e
-              WHERE e.entry_id = entry_change.entry_id
-                AND (e.owner_partner_id IS NULL OR e.owner_partner_id = nullif(current_setting('app.partner_id', true), '')::uuid)
-            )
-            AND (
-              (entry_change.scope_level = 'entry'
-                AND entry_change.target_partner_id IS NULL
-                AND entry_change.target_location_id IS NULL)
-              OR (entry_change.scope_level = 'partner'
-                AND entry_change.target_partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
-                AND entry_change.target_location_id IS NULL)
-              OR (entry_change.scope_level = 'location'
-                AND entry_change.target_partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
-                AND EXISTS (
-                  SELECT 1 FROM auth.location l
-                  WHERE l.location_id = entry_change.target_location_id
-                    AND l.partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
-                ))
-            ))$p$, partner_ok));
+      EXECUTE format($f$
+        CREATE POLICY entry_change_read ON catalog.entry_change FOR SELECT TO %I USING (
+          current_setting('app.resolved_global_admin', true) = 'on'
+          OR EXISTS (
+            SELECT 1
+              FROM unnest(string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) AS p(id)
+             WHERE p.id ~ %L
+               AND EXISTS (
+                 SELECT 1 FROM catalog.registered_entry e
+                  WHERE e.entry_id = entry_change.entry_id
+                    AND (e.owner_partner_id IS NULL OR e.owner_partner_id::text = p.id)
+               )
+               AND (
+                 (entry_change.scope_level = 'entry' AND entry_change.target_partner_id IS NULL AND entry_change.target_location_id IS NULL)
+                 OR (entry_change.scope_level = 'partner' AND entry_change.target_partner_id::text = p.id AND entry_change.target_location_id IS NULL)
+                 OR (entry_change.scope_level = 'location' AND entry_change.target_partner_id::text = p.id AND EXISTS (
+                      SELECT 1 FROM auth.location l
+                       WHERE l.location_id = entry_change.target_location_id AND l.partner_id::text = p.id
+                    ))
+               )
+          )
+          OR EXISTS (
+            SELECT 1
+              FROM unnest(string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')) AS loc(id)
+              JOIN auth.location mine ON mine.location_id::text = loc.id
+             WHERE loc.id ~ %L
+               AND EXISTS (
+                 SELECT 1 FROM catalog.registered_entry e
+                  WHERE e.entry_id = entry_change.entry_id
+                    AND (e.owner_partner_id IS NULL OR e.owner_partner_id = mine.partner_id)
+               )
+               AND (
+                 (entry_change.scope_level = 'entry' AND entry_change.target_partner_id IS NULL AND entry_change.target_location_id IS NULL)
+                 OR (entry_change.scope_level = 'partner' AND entry_change.target_partner_id = mine.partner_id AND entry_change.target_location_id IS NULL)
+                 OR (entry_change.scope_level = 'location' AND entry_change.target_location_id = mine.location_id AND entry_change.target_partner_id = mine.partner_id)
+               )
+          )
+        )
+      $f$, api, uuid_re, uuid_re);
     END
     $pol$;
 
@@ -2351,6 +2445,341 @@ BEGIN
     IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261108190000_CatalogMasterData') THEN
     INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
     VALUES ('20261108190000_CatalogMasterData', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110160000_Req064AssignmentResolver') THEN
+    -- REQ-064 assignment store, resolver, and the last-active global Super Admin guard.
+    -- SQLSTATE P0001, MESSAGE last_active_super_admin: the statement would remove the last
+    -- effective global Super Admin. Effective means role_id super_admin, scope_kind global,
+    -- both scope ids null, status active, revoked_at null, and the app_user is active and
+    -- not locked. The guard takes pg_advisory_xact_lock(814064204) inside the trigger and
+    -- then counts the other effective Super Admins, so two concurrent removals cannot both commit.
+    -- Covered statements: revoked_at, assignment status, app_user status, app_user lock,
+    -- role_id or scope_kind leaving global super_admin, DELETE, and TRUNCATE.
+    -- TRUNCATE of auth.app_user without CASCADE is already refused by foreign keys.
+    -- There is no revoke or assign API here.
+
+    CREATE TABLE auth.admin_assignment (
+      assignment_id uuid        NOT NULL,
+      user_id       uuid        NOT NULL,
+      role_id       text        NOT NULL,
+      scope_kind    text        NOT NULL,
+      partner_id    uuid        NULL,
+      location_id   uuid        NULL,
+      status        text        NOT NULL,
+      version       bigint      NOT NULL DEFAULT 1,
+      granted_by    uuid        NOT NULL,
+      granted_at    timestamptz NOT NULL,
+      revoked_at    timestamptz NULL,
+      CONSTRAINT admin_assignment_pkey PRIMARY KEY (assignment_id),
+      CONSTRAINT admin_assignment_user_fk FOREIGN KEY (user_id) REFERENCES auth.app_user (user_id),
+      CONSTRAINT admin_assignment_location_fk FOREIGN KEY (location_id) REFERENCES auth.location (location_id),
+      CONSTRAINT admin_assignment_granted_by_fk FOREIGN KEY (granted_by) REFERENCES auth.app_user (user_id),
+      CONSTRAINT admin_assignment_role CHECK (role_id IN (
+        'super_admin', 'partner_admin', 'client_admin', 'supervisor', 'cashier', 'auditor', 'accounting', 'support')),
+      CONSTRAINT admin_assignment_scope_kind CHECK (scope_kind IN ('global', 'partner', 'location')),
+      CONSTRAINT admin_assignment_status CHECK (status IN ('active', 'disabled', 'revoked')),
+      CONSTRAINT admin_assignment_version CHECK (version >= 1),
+      CONSTRAINT admin_assignment_super CHECK (
+        role_id <> 'super_admin' OR (scope_kind = 'global' AND partner_id IS NULL AND location_id IS NULL)),
+      CONSTRAINT admin_assignment_partner_admin CHECK (
+        role_id <> 'partner_admin' OR (scope_kind = 'partner' AND partner_id IS NOT NULL AND location_id IS NULL)),
+      CONSTRAINT admin_assignment_scope_shape CHECK (
+        (scope_kind = 'global' AND partner_id IS NULL AND location_id IS NULL)
+        OR (scope_kind = 'partner' AND partner_id IS NOT NULL AND location_id IS NULL)
+        OR (scope_kind = 'location' AND location_id IS NOT NULL AND partner_id IS NULL))
+    );
+
+    CREATE INDEX admin_assignment_user_ix ON auth.admin_assignment (user_id);
+
+    ALTER TABLE auth.admin_assignment ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.admin_assignment FORCE ROW LEVEL SECURITY;
+    CREATE POLICY admin_assignment_owner ON auth.admin_assignment FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+
+    CREATE SEQUENCE auth.resolver_read_seq AS bigint;
+
+    -- P0001 / last_active_super_admin. See the file header.
+    CREATE FUNCTION auth._last_sa_guard() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      old_effective boolean := false;
+      new_effective boolean := false;
+      remaining bigint;
+    BEGIN
+      IF TG_TABLE_NAME = 'admin_assignment' THEN
+        old_effective := OLD.role_id = 'super_admin'
+          AND OLD.scope_kind = 'global'
+          AND OLD.partner_id IS NULL
+          AND OLD.location_id IS NULL
+          AND OLD.status = 'active'
+          AND OLD.revoked_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM auth.app_user u
+             WHERE u.user_id = OLD.user_id
+               AND u.status = 'active'
+               AND (u.locked_until IS NULL OR u.locked_until <= now()));
+        IF TG_OP = 'UPDATE' THEN
+          new_effective := NEW.role_id = 'super_admin'
+            AND NEW.scope_kind = 'global'
+            AND NEW.partner_id IS NULL
+            AND NEW.location_id IS NULL
+            AND NEW.status = 'active'
+            AND NEW.revoked_at IS NULL
+            AND EXISTS (
+              SELECT 1 FROM auth.app_user u
+               WHERE u.user_id = NEW.user_id
+                 AND u.status = 'active'
+                 AND (u.locked_until IS NULL OR u.locked_until <= now()));
+        END IF;
+        IF NOT old_effective OR new_effective THEN
+          RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+        END IF;
+      ELSE
+        old_effective := OLD.status = 'active'
+          AND (OLD.locked_until IS NULL OR OLD.locked_until <= now())
+          AND EXISTS (
+            SELECT 1 FROM auth.admin_assignment a
+             WHERE a.user_id = OLD.user_id
+               AND a.role_id = 'super_admin'
+               AND a.scope_kind = 'global'
+               AND a.partner_id IS NULL
+               AND a.location_id IS NULL
+               AND a.status = 'active'
+               AND a.revoked_at IS NULL);
+        IF TG_OP = 'UPDATE' THEN
+          new_effective := NEW.status = 'active'
+            AND (NEW.locked_until IS NULL OR NEW.locked_until <= now())
+            AND EXISTS (
+              SELECT 1 FROM auth.admin_assignment a
+               WHERE a.user_id = NEW.user_id
+                 AND a.role_id = 'super_admin'
+                 AND a.scope_kind = 'global'
+                 AND a.partner_id IS NULL
+                 AND a.location_id IS NULL
+                 AND a.status = 'active'
+                 AND a.revoked_at IS NULL);
+        END IF;
+        IF NOT old_effective OR (TG_OP = 'UPDATE' AND new_effective) THEN
+          RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+        END IF;
+      END IF;
+
+      -- The lock is held until this transaction ends. The count is its own statement, so in
+      -- READ COMMITTED it sees a removal the other session already committed.
+      -- The row this statement is changing is excluded: it has not been updated yet.
+      PERFORM pg_advisory_xact_lock(814064204);
+      IF TG_TABLE_NAME = 'admin_assignment' THEN
+        SELECT count(DISTINCT a.user_id) INTO remaining
+          FROM auth.admin_assignment a
+          JOIN auth.app_user u ON u.user_id = a.user_id
+         WHERE a.assignment_id IS DISTINCT FROM OLD.assignment_id
+           AND a.role_id = 'super_admin'
+           AND a.scope_kind = 'global'
+           AND a.partner_id IS NULL
+           AND a.location_id IS NULL
+           AND a.status = 'active'
+           AND a.revoked_at IS NULL
+           AND u.status = 'active'
+           AND (u.locked_until IS NULL OR u.locked_until <= now());
+      ELSE
+        SELECT count(DISTINCT a.user_id) INTO remaining
+          FROM auth.admin_assignment a
+          JOIN auth.app_user u ON u.user_id = a.user_id
+         WHERE a.user_id IS DISTINCT FROM OLD.user_id
+           AND a.role_id = 'super_admin'
+           AND a.scope_kind = 'global'
+           AND a.partner_id IS NULL
+           AND a.location_id IS NULL
+           AND a.status = 'active'
+           AND a.revoked_at IS NULL
+           AND u.status = 'active'
+           AND (u.locked_until IS NULL OR u.locked_until <= now());
+      END IF;
+      IF remaining < 1 THEN
+        RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'last_active_super_admin';
+      END IF;
+      RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+    END
+    $fn$;
+
+    CREATE TRIGGER admin_assignment_last_sa
+      BEFORE UPDATE OR DELETE ON auth.admin_assignment
+      FOR EACH ROW EXECUTE FUNCTION auth._last_sa_guard();
+
+    CREATE TRIGGER app_user_last_sa
+      BEFORE UPDATE OR DELETE ON auth.app_user
+      FOR EACH ROW EXECUTE FUNCTION auth._last_sa_guard();
+
+    -- TRUNCATE does not fire the row trigger. It would remove every active global Super Admin.
+    CREATE FUNCTION auth._last_sa_truncate_guard() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      remaining bigint;
+    BEGIN
+      PERFORM pg_advisory_xact_lock(814064204);
+      SELECT count(DISTINCT a.user_id) INTO remaining
+        FROM auth.admin_assignment a
+        JOIN auth.app_user u ON u.user_id = a.user_id
+       WHERE a.role_id = 'super_admin'
+         AND a.scope_kind = 'global'
+         AND a.partner_id IS NULL
+         AND a.location_id IS NULL
+         AND a.status = 'active'
+         AND a.revoked_at IS NULL
+         AND u.status = 'active'
+         AND (u.locked_until IS NULL OR u.locked_until <= now());
+      IF remaining >= 1 THEN
+        RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'last_active_super_admin';
+      END IF;
+      RETURN NULL;
+    END
+    $fn$;
+
+    CREATE TRIGGER admin_assignment_last_sa_truncate
+      BEFORE TRUNCATE ON auth.admin_assignment
+      FOR EACH STATEMENT EXECUTE FUNCTION auth._last_sa_truncate_guard();
+
+    CREATE TRIGGER app_user_last_sa_truncate
+      BEFORE TRUNCATE ON auth.app_user
+      FOR EACH STATEMENT EXECUTE FUNCTION auth._last_sa_truncate_guard();
+
+    REVOKE ALL ON FUNCTION auth._last_sa_guard() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth._last_sa_truncate_guard() FROM PUBLIC;
+    REVOKE ALL ON SEQUENCE auth.resolver_read_seq FROM PUBLIC;
+
+    -- Inputs are the verified issuer and subject only. Exactly one active, unlocked user
+    -- or the outcome is deny. A stand-in subject that is the app user id matches user_id
+    -- because a stand-in issuer cannot be stored in external_login. An Entra subject
+    -- matches external_login. The same user from both paths is one user. Two users is deny.
+    -- nextval is the proof the store was read. It is not rolled back.
+    CREATE FUNCTION auth.resolve_grant(p_issuer text, p_subject uuid)
+      RETURNS TABLE (
+        outcome text,
+        user_id uuid,
+        role_wire text,
+        global_admin boolean,
+        partner_ids uuid[],
+        location_ids uuid[],
+        perm_version bigint)
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_user uuid;
+      v_count int;
+      v_global boolean;
+      v_partners uuid[];
+      v_locations uuid[];
+      v_version bigint;
+      v_role text;
+    BEGIN
+      PERFORM nextval('auth.resolver_read_seq');
+      SELECT count(DISTINCT c.user_id), min(c.user_id::text)::uuid
+        INTO v_count, v_user
+        FROM (
+          SELECT u.user_id
+            FROM auth.app_user u
+           WHERE u.user_id = p_subject
+             AND u.status = 'active'
+             AND (u.locked_until IS NULL OR u.locked_until <= now())
+          UNION
+          SELECT u.user_id
+            FROM auth.external_login e
+            JOIN auth.app_user u ON u.user_id = e.user_id
+           WHERE e.issuer = p_issuer
+             AND e.subject = p_subject
+             AND u.status = 'active'
+             AND (u.locked_until IS NULL OR u.locked_until <= now())
+        ) c;
+      IF v_count IS DISTINCT FROM 1 THEN
+        outcome := 'deny'; user_id := NULL; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+
+      SELECT coalesce(bool_or(a.role_id = 'super_admin' AND a.scope_kind = 'global'), false),
+             coalesce(array_agg(DISTINCT a.partner_id) FILTER (WHERE a.scope_kind = 'partner' AND a.partner_id IS NOT NULL), ARRAY[]::uuid[]),
+             coalesce(array_agg(DISTINCT a.location_id) FILTER (WHERE a.scope_kind = 'location' AND a.location_id IS NOT NULL), ARRAY[]::uuid[]),
+             coalesce(max(a.version), 0)
+        INTO v_global, v_partners, v_locations, v_version
+        FROM auth.admin_assignment a
+       WHERE a.user_id = v_user
+         AND a.status = 'active'
+         AND a.revoked_at IS NULL;
+
+      IF v_version = 0 AND NOT v_global AND v_partners = ARRAY[]::uuid[] AND v_locations = ARRAY[]::uuid[] THEN
+        outcome := 'deny'; user_id := v_user; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+
+      IF v_global THEN
+        v_role := 'super_admin';
+      ELSIF EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL AND a.role_id = 'partner_admin'
+      ) THEN
+        v_role := 'partner_admin';
+      ELSE
+        SELECT a.role_id INTO v_role
+          FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+         ORDER BY a.role_id
+         LIMIT 1;
+        v_role := coalesce(v_role, 'none');
+      END IF;
+
+      outcome := 'grant';
+      user_id := v_user;
+      role_wire := v_role;
+      global_admin := v_global;
+      partner_ids := v_partners;
+      location_ids := v_locations;
+      perm_version := v_version;
+      RETURN NEXT;
+    END
+    $fn$;
+
+    REVOKE ALL ON FUNCTION auth.resolve_grant(text, uuid) FROM PUBLIC;
+
+    DO $req064$
+    DECLARE
+      a text := current_database() || '_admin_api';
+      scope text := $p$(current_setting('app.resolved_global_admin', true) = 'on' OR partner_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) OR location_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')))$p$;
+      any_admin text := $p$(current_setting('app.resolved_global_admin', true) = 'on' OR EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) p(id) WHERE p.id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') OR EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')) loc(id) WHERE loc.id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'))$p$;
+    BEGIN
+      EXECUTE format('REVOKE ALL ON auth.admin_assignment FROM PUBLIC, %I', a);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid) TO %I', a);
+      EXECUTE 'DROP POLICY IF EXISTS location_admin ON auth.location';
+      EXECUTE format('CREATE POLICY location_admin ON auth.location FOR ALL TO %I USING %s WITH CHECK %s', a, scope, scope);
+      EXECUTE 'DROP POLICY IF EXISTS prb_admin ON auth.partner_reason_bounds';
+      EXECUTE format('CREATE POLICY prb_admin ON auth.partner_reason_bounds FOR ALL TO %I USING %s WITH CHECK %s', a, any_admin, any_admin);
+    END
+    $req064$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110160000_Req064AssignmentResolver') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110160000_Req064AssignmentResolver', '10.0.14');
     END IF;
 END $EF$;
 COMMIT;

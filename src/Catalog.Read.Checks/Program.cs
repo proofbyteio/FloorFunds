@@ -183,11 +183,17 @@ try
     var bare = await Scalar(adminProbe, "SELECT count(*) FROM catalog.registered_entry");
     if (bare == "0") Pass("rls-missing-context-zero-rows", bare);
     else Fail("rls-missing-context-zero-rows", bare);
-    await Exec(adminProbe, "SELECT set_config('app.admin_type','partner', false), set_config('app.partner_id','not-a-uuid', false)");
+    await Exec(adminProbe, "SELECT set_config('app.resolved_partner_ids','not-a-uuid', false), set_config('app.admin_type','partner', false), set_config('app.partner_id','not-a-uuid', false)");
     var invalid = await Scalar(adminProbe, "SELECT count(*) FROM catalog.registered_entry");
-    await Exec(adminProbe, "SELECT set_config('app.admin_type','', false), set_config('app.partner_id','', false)");
+    await Exec(adminProbe, "SELECT set_config('app.resolved_partner_ids','', false), set_config('app.admin_type','', false), set_config('app.partner_id','', false)");
     if (invalid == "0") Pass("rls-invalid-partner-zero-rows", invalid);
     else Fail("rls-invalid-partner-zero-rows", invalid);
+    await Exec(adminProbe, "SELECT set_config('app.admin_type','super', false), set_config('app.resolved_global_admin','', false)");
+    var forgedRows = await Scalar(adminProbe, "SELECT count(*) FROM catalog.registered_entry");
+    var forgedHist = await Scalar(adminProbe, "SELECT count(*) FROM catalog.entry_change");
+    await Exec(adminProbe, "SELECT set_config('app.admin_type','', false)");
+    if (forgedRows == "0" && forgedHist == "0") Pass("admin-type-super-sees-no-private-rows", $"{forgedRows},{forgedHist}");
+    else Fail("admin-type-super-sees-no-private-rows", $"{forgedRows},{forgedHist}");
     await using var loginProbe = NpgsqlDataSource.Create(Cs(LoginRole, DbName, false));
     var loginState = await SqlState(loginProbe, "SELECT 1 FROM catalog.registered_entry");
     if (loginState == "42501") Pass("login-catalog-select", loginState);
@@ -248,7 +254,7 @@ try
 
     await using (var leak = await pooled.OpenConnectionAsync())
     {
-        await using var cmd = new NpgsqlCommand("SELECT set_config('app.admin_type','partner', false), set_config('app.partner_id', $1, false)", leak);
+        await using var cmd = new NpgsqlCommand("SELECT set_config('app.resolved_partner_ids', $1, false), set_config('app.admin_type','partner', false), set_config('app.partner_id', $1, false)", leak);
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = partnerA.ToString("D") });
         await cmd.ExecuteNonQueryAsync();
         var seen = await new NpgsqlCommand("SELECT count(*) FROM catalog.registered_entry", leak).ExecuteScalarAsync();
@@ -259,7 +265,7 @@ try
     if (missingContext) Pass("missing-context-throws", "CatalogReadContextException");
     else Fail("missing-context-throws", "no throw");
     var afterMissing = await PooledGuc(pooled);
-    if (afterMissing == "||0") Pass("missing-context-resets-pool", afterMissing);
+    if (afterMissing == "||||0") Pass("missing-context-resets-pool", afterMissing);
     else Fail("missing-context-resets-pool", afterMissing);
 
     try
@@ -301,14 +307,14 @@ try
 
     await using (var leak = await pooled.OpenConnectionAsync())
     {
-        await using var cmd = new NpgsqlCommand("SELECT set_config('app.admin_type','partner', false), set_config('app.partner_id', $1, false)", leak);
+        await using var cmd = new NpgsqlCommand("SELECT set_config('app.resolved_partner_ids', $1, false), set_config('app.admin_type','partner', false), set_config('app.partner_id', $1, false)", leak);
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = partnerB.ToString("D") });
         await cmd.ExecuteNonQueryAsync();
     }
     var forced = await reader.ListEntriesAsync(super, CancellationToken.None);
     ExpectCodes("argument-scope-ignores-leftover-session", forced.Select(r => r.Code), "afee", "bfee", "surcharge");
     var afterSuper = await PooledGuc(pooled);
-    if (afterSuper == "||0") Pass("successful-read-resets-pool", afterSuper);
+    if (afterSuper == "||||0") Pass("successful-read-resets-pool", afterSuper);
     else Fail("successful-read-resets-pool", afterSuper);
 
     await using var ownerReaderDs = NpgsqlDataSource.Create(Cs(OwnerRole, DbName, false));
@@ -404,7 +410,9 @@ async Task<string> PooledGuc(NpgsqlDataSource ds)
 {
     await using var conn = await ds.OpenConnectionAsync();
     await using var cmd = new NpgsqlCommand("""
-        SELECT coalesce(current_setting('app.admin_type', true), '') || '|' ||
+        SELECT coalesce(current_setting('app.resolved_global_admin', true), '') || '|' ||
+               coalesce(current_setting('app.resolved_partner_ids', true), '') || '|' ||
+               coalesce(current_setting('app.admin_type', true), '') || '|' ||
                coalesce(current_setting('app.partner_id', true), '') || '|' ||
                (SELECT count(*)::text FROM catalog.registered_entry)
         """, conn);
@@ -417,8 +425,10 @@ async Task LoadFee(NpgsqlDataSource ds, Guid id, Guid? ownerId, string code, str
     await using var conn = await ds.OpenConnectionAsync();
     await using var tx = await conn.BeginTransactionAsync();
     await using (var guc = new NpgsqlCommand("""
-        SELECT set_config('app.admin_type', $1, true),
-               set_config('app.partner_id', $2, true),
+        SELECT set_config('app.resolved_global_admin', CASE WHEN $1 = 'super' THEN 'on' ELSE '' END, true),
+               set_config('app.resolved_partner_ids', CASE WHEN $1 = 'partner' THEN $2 ELSE '' END, true),
+               set_config('app.admin_type', '', true),
+               set_config('app.partner_id', '', true),
                set_config('app.actor_user_id', $3, true),
                set_config('app.correlation_id', $4, true),
                set_config('app.reason', 'read fixture', true)

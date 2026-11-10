@@ -15,8 +15,11 @@ public sealed class CatalogReadScope
         _partnerId = partnerId;
     }
 
+    /// <summary>Scope-kind label for logs. It is not written to app.admin_type.</summary>
     public string AdminType => _adminType;
     public Guid? PartnerId => _partnerId;
+    public string ResolvedGlobal => _adminType == "super" ? "on" : "";
+    public string ResolvedPartnerCsv => _partnerId is Guid id ? id.ToString("D") : "";
 
     public bool IsValid =>
         (_adminType == "super" && _partnerId is null)

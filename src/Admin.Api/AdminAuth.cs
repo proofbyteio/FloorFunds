@@ -1,43 +1,45 @@
+using System.Text.Json;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 
 namespace Admin.Api;
 
-/// <summary>The server-side authenticated identity: taken ONLY from a validated access_token_admin (claims.schema.json).</summary>
-public sealed record AdminIdentity(Guid UserId, string AdminType, Guid? PartnerId);
+/// <summary>
+/// Authenticated token identity. AdminType and PartnerId are the sign-in claims.
+/// They are not authority. Issuer is the verified iss. The resolver maps (iss, sub) to a user.
+/// </summary>
+public sealed record AdminIdentity(Guid UserId, string AdminType, Guid? PartnerId, string Issuer = "");
 
 public enum BuiltInRole { None, SuperAdmin, PartnerAdmin }
 
 /// <summary>
-/// What the caller holds (spec §4 step 2). Permissions count only through a built-in Super Admin or Partner Admin role
-/// [SRC: LD L172]; OrgViewLocations is org:V on specific locations (a reader with no admin role). PartnerReasonBoundsWrite is
-/// org:partner_reason_bounds:write (Slice A, LD 12b1d9cd): Super Admin and ANY Partner Admin, for ANY partner; the only cross-partner
-/// Partner Admin permission [Confirmed DEC-111]. No other Partner Admin check is widened by it.
+/// What the caller holds after the assignment lookup. PartnerIds and LocationIds are the union of active
+/// assignments (DEC-199). OrgViewLocations is the injected org:V reader set used by the existing checks.
+/// PartnerReasonBoundsWrite is org:partner_reason_bounds:write: Super Admin and ANY Partner Admin, for ANY partner.
 /// </summary>
-public sealed record AdminGrant(BuiltInRole Role, bool LoginMethodWrite, bool OrgCreateEdit, IReadOnlySet<Guid> OrgViewLocations, bool PartnerReasonBoundsWrite = false)
+public sealed record AdminGrant(
+    BuiltInRole Role,
+    bool LoginMethodWrite,
+    bool OrgCreateEdit,
+    IReadOnlySet<Guid> OrgViewLocations,
+    bool PartnerReasonBoundsWrite = false,
+    IReadOnlySet<Guid>? PartnerIds = null,
+    IReadOnlySet<Guid>? LocationIds = null,
+    long PermVersion = 0)
 {
     public static readonly AdminGrant Nothing = new(BuiltInRole.None, false, false, new HashSet<Guid>());
-}
-
-/// <summary>Server-side role lookup. It sees only the authenticated identity, never request data.</summary>
-public interface IAdminDirectory
-{
-    Task<AdminGrant> ResolveAsync(AdminIdentity id, CancellationToken ct);
+    public IReadOnlySet<Guid> AssignedPartners => PartnerIds ?? Empty;
+    public IReadOnlySet<Guid> AssignedLocations => LocationIds ?? Empty;
+    static readonly HashSet<Guid> Empty = [];
 }
 
 /// <summary>
-/// INTERIM (OQ-S2a-1 open; S2a has no role store): an /admin sign-in (admin_type super|partner) IS the built-in Super Admin /
-/// Partner Admin role, which holds org:V, org:location_login_method:write and org create/edit. org:V-only readers and custom-role
-/// callers cannot reach backoffice-api yet; the checks inject a directory to exercise those paths.
+/// Server-side role lookup inside the request transaction. It sees the authenticated identity and the
+/// open transaction, never request data. A failure denies.
 /// </summary>
-public sealed class TokenAdminDirectory : IAdminDirectory
+public interface IAdminDirectory
 {
-    public Task<AdminGrant> ResolveAsync(AdminIdentity id, CancellationToken ct) => Task.FromResult(id.AdminType switch
-    {
-        "super" => new AdminGrant(BuiltInRole.SuperAdmin, true, true, new HashSet<Guid>(), PartnerReasonBoundsWrite: true),
-        "partner" => new AdminGrant(BuiltInRole.PartnerAdmin, true, true, new HashSet<Guid>(), PartnerReasonBoundsWrite: true),
-        _ => AdminGrant.Nothing,
-    });
+    Task<AdminGrant> ResolveAsync(AdminIdentity id, Npgsql.NpgsqlConnection connection, Npgsql.NpgsqlTransaction transaction, CancellationToken ct);
 }
 
 public sealed class AdminTokenValidator(AdminApiOptions o)
@@ -49,8 +51,14 @@ public sealed class AdminTokenValidator(AdminApiOptions o)
         ValidAlgorithms = [SecurityAlgorithms.RsaSha256], ValidTypes = ["at+jwt"], RequireExpirationTime = true,
         RequireSignedTokens = true, ValidateLifetime = true, ValidateIssuerSigningKey = true, ClockSkew = TimeSpan.FromSeconds(30),
     };
+    readonly HashSet<string> _kids = o.SigningKeys.Select(k => k.KeyId).Where(id => !string.IsNullOrEmpty(id)).ToHashSet(StringComparer.Ordinal)!;
 
-    /// <summary>Step 1 (authn). Null = 401. Exactly one "Authorization: Bearer" header; access_token_admin claim rules.</summary>
+    /// <summary>
+    /// Step 1 (authn). Null = 401. Exactly one "Authorization: Bearer" header; access_token_admin claim rules.
+    /// Unknown kid and duplicate JSON members are rejected. The duplicate-member and kid checks follow
+    /// Catalog.ScratchAuth/FrozenAdminTokenGate.cs:19 (AllowDuplicateProperties = false), :90-91 (header and
+    /// payload parse), and :123-131 (kid must equal a configured key id).
+    /// </summary>
     public async Task<AdminIdentity?> AuthenticateAsync(HttpRequest req)
     {
         var hs = req.Headers.Authorization;
@@ -60,6 +68,7 @@ public sealed class AdminTokenValidator(AdminApiOptions o)
         TokenValidationResult r;
         try { r = await _h.ValidateTokenAsync(token, _p); } catch (Exception) { return null; }
         if (!r.IsValid || r.SecurityToken is not JsonWebToken t) return null;
+        if (!HeaderAccepted(t)) return null;
         // aud: one string (access_token_base); no location_id on an /admin token; not a recovery re-enrol session.
         if (t.Audiences.Count() != 1 || t.TryGetPayloadValue<object>("location_id", out _)) return null;
         if (t.TryGetPayloadValue<object>("aud", out var audRaw) && audRaw is not string) return null;
@@ -74,6 +83,22 @@ public sealed class AdminTokenValidator(AdminApiOptions o)
             partner = pid;
         }
         else if (hasPartner) return null;
-        return new AdminIdentity(userId, at, partner);
+        var issuer = t.Issuer ?? "";
+        return new AdminIdentity(userId, at, partner, issuer);
+    }
+
+    bool HeaderAccepted(JsonWebToken t)
+    {
+        try
+        {
+            var headerJson = Base64UrlEncoder.Decode(t.EncodedHeader);
+            using var header = JsonDocument.Parse(headerJson, new JsonDocumentOptions { AllowDuplicateProperties = false, MaxDepth = 8 });
+            if (!header.RootElement.TryGetProperty("kid", out var kid) || kid.ValueKind != JsonValueKind.String) return false;
+            if (!_kids.Contains(kid.GetString() ?? "")) return false;
+            using var payload = JsonDocument.Parse(Base64UrlEncoder.Decode(t.EncodedPayload), new JsonDocumentOptions { AllowDuplicateProperties = false, MaxDepth = 16 });
+            return payload.RootElement.ValueKind == JsonValueKind.Object;
+        }
+        catch (JsonException) { return false; }
+        catch (Exception) { return false; }
     }
 }

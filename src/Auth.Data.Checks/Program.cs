@@ -527,6 +527,15 @@ Guid ACTOR = Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c0a");
 string Iss(Guid t) => $"https://login.microsoftonline.com/{t}/v2.0";
 const string FakeArn = "arn:aws:secretsmanager:us-west-2:000000000000:secret:FAKE-test-only/pci-main-AbCdEf"; // SSE2-FAKE-TEST-ONLY
 
+async Task BindResolved(NpgsqlConnection c, NpgsqlTransaction? tx, string adminType, Guid? partner)
+{
+    if (adminType == "super")
+        await Exec(c, tx, "SELECT set_config('app.resolved_global_admin','on',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)");
+    else if (adminType == "partner")
+        await Exec(c, tx, "SELECT set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids',$1,true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)", partner?.ToString() ?? "");
+    else
+        await Exec(c, tx, "SELECT set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type',$1,true), set_config('app.partner_id','',true)", adminType);
+}
 async Task Exec(NpgsqlConnection c, NpgsqlTransaction? tx, string sql, params object?[] ps)
 {
     await using var cmd = new NpgsqlCommand(sql, c, tx);
@@ -546,7 +555,7 @@ async Task<string> Try(NpgsqlDataSource ds, string sql, string? adminType = null
     await using var tx = await c.BeginTransactionAsync();
     try
     {
-        if (adminType is not null) await Exec(c, tx, "SELECT set_config('app.admin_type', $1, true), set_config('app.partner_id', $2, true)", adminType, partner?.ToString() ?? "");
+        if (adminType is not null) await BindResolved(c, tx, adminType, partner);
         await Exec(c, tx, sql);
         return "ok";
     }
@@ -557,7 +566,7 @@ async Task<long> CountAs(NpgsqlDataSource ds, string sql, string? adminType, Gui
 {
     await using var c = await ds.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
-    if (adminType is not null) await Exec(c, tx, "SELECT set_config('app.admin_type', $1, true), set_config('app.partner_id', $2, true)", adminType, partner?.ToString() ?? "");
+    if (adminType is not null) await BindResolved(c, tx, adminType, partner);
     var n = await Scalar<long>(c, tx, sql);
     await tx.CommitAsync();
     return n;
@@ -576,7 +585,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
@@ -723,7 +732,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
         want.Add($"{u.GetProperty("user_id").GetGuid()}|{partner}|{u.GetProperty("status").GetString()}");
     }
     var got = new SortedSet<string>();
-    await using (var cmd = new NpgsqlCommand("SELECT user_id, partner_id, status FROM auth.app_user WHERE user_id::text NOT LIKE '%-000000000c7_'", c))
+    await using (var cmd = new NpgsqlCommand("SELECT user_id, partner_id, status FROM auth.app_user WHERE user_id::text NOT LIKE '%-000000000c7_' AND user_id::text NOT LIKE '5f0c3e1a-0064-%'", c))
     await using (var r = await cmd.ExecuteReaderAsync())
         while (await r.ReadAsync()) got.Add($"{r.GetGuid(0)}|{(r.IsDBNull(1) ? null : r.GetGuid(1))}|{r.GetString(2)}");
     Ok($"seed: auth.app_user == fixtures.json users ({want.Count}: id, derived partner_id, status)", want.SetEquals(got), $"want {want.Count} got {got.Count}");
@@ -812,7 +821,15 @@ await using (var tx = await c.BeginTransactionAsync())
 const string cntLoc = "SELECT count(*) FROM auth.location", cntCfg = "SELECT count(*) FROM auth.location_login_config", cntChg = "SELECT count(*) FROM auth.location_login_config_change";
 await Check("RLS admin_api: no app.admin_type -> 0 locations, 0 configs, 0 changes (fail closed)", async () =>
     await CountAs(adminDs, cntLoc, null, null) == 0 && await CountAs(adminDs, cntCfg, null, null) == 0 && await CountAs(adminDs, cntChg, null, null) == 0);
-await Check("RLS admin_api: admin_type=bogus -> 0 rows", async () => await CountAs(adminDs, cntLoc, "bogus", P_PCI) == 0);
+await Check("RLS admin_api: admin_type=bogus -> 0 rows", async () =>
+    await CountAs(adminDs, cntLoc, "bogus", P_PCI) == 0 && await AdminTypeSuperAlone(cntLoc) == 0);
+async Task<long> AdminTypeSuperAlone(string sql)
+{
+    await using var c = await adminDs.OpenConnectionAsync();
+    await using var tx = await c.BeginTransactionAsync();
+    await Exec(c, tx, "SELECT set_config('app.admin_type','super',true), set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true)");
+    return await Scalar<long>(c, tx, sql);
+}
 await Check("RLS admin_api: partner without app.partner_id -> 0 rows", async () => await CountAs(adminDs, cntLoc, "partner", null) == 0);
 await Check("RLS admin_api: super -> all 2 locations / 2 configs / 2 changes", async () =>
     await CountAs(adminDs, cntLoc, "super", null) == 2 && await CountAs(adminDs, cntCfg, "super", null) == 2 && await CountAs(adminDs, cntChg, "super", null) == 2);
@@ -825,7 +842,7 @@ await Check("RLS admin_api: settings are transaction-local (next tx on same conn
     await using var c = await adminDs.OpenConnectionAsync();
     await using (var tx = await c.BeginTransactionAsync())
     {
-        await Exec(c, tx, "SELECT set_config('app.admin_type','super',true)");
+        await BindResolved(c, tx, "super", null);
         if (await Scalar<long>(c, tx, cntLoc) != 2) return false;
         await tx.CommitAsync();
     }
@@ -837,7 +854,7 @@ await Check("RLS admin_api: partner pci UPDATE of nevada config touches 0 rows; 
 {
     await using var c = await adminDs.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
-    await Exec(c, tx, "SELECT set_config('app.admin_type','partner',true), set_config('app.partner_id',$1,true)", P_PCI.ToString());
+    await BindResolved(c, tx, "partner", P_PCI);
     await using var u1 = new NpgsqlCommand($"UPDATE auth.location_login_config SET mfa_required = mfa_required WHERE location_id = '{L_NV}'", c, tx);
     await using var u2 = new NpgsqlCommand($"UPDATE auth.location_login_config SET mfa_required = mfa_required WHERE location_id = '{L_PCI}'", c, tx);
     var a = await u1.ExecuteNonQueryAsync(); var b = await u2.ExecuteNonQueryAsync();
@@ -869,7 +886,7 @@ await Check("definer fn: partner pci admin attributes nevada location to its par
 {
     await using var c = await adminDs.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
-    await Exec(c, tx, "SELECT set_config('app.admin_type','partner',true), set_config('app.partner_id',$1,true)", P_PCI.ToString());
+    await BindResolved(c, tx, "partner", P_PCI);
     var p = await Scalar<Guid>(c, tx, "SELECT auth.location_partner($1)", L_NV);
     var none = await Scalar<object>(c, tx, "SELECT auth.location_partner(gen_random_uuid())");
     return p == P_NV && none is DBNull;
@@ -908,7 +925,7 @@ async Task<int> PrbUpdateRows(Guid asPartner)
 {
     await using var c = await adminDs.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
-    await Exec(c, tx, "SELECT set_config('app.admin_type','partner',true), set_config('app.partner_id',$1,true)", asPartner.ToString());
+    await BindResolved(c, tx, "partner", asPartner);
     await using var u = new NpgsqlCommand($"UPDATE auth.partner_reason_bounds SET reason_min_length = 11, reason_max_length = 499, updated_by = '{ACTOR}', updated_at = now(), row_version = row_version + 1 WHERE partner_id = '{P_PCI}'", c, tx);
     var n = await u.ExecuteNonQueryAsync();
     await tx.RollbackAsync();
@@ -1018,7 +1035,7 @@ await Check("concurrency: two EF contexts (admin_api, super) on row_version 1 ->
         var c = await adminDs.OpenConnectionAsync();
         var db = new AuthDbContext(new DbContextOptionsBuilder<AuthDbContext>().UseNpgsql(c).Options);
         var tx = await db.Database.BeginTransactionAsync();
-        await db.Database.ExecuteSqlRawAsync("SELECT set_config('app.admin_type','super',true)");
+        await db.Database.ExecuteSqlRawAsync("SELECT set_config('app.resolved_global_admin','on',true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)");
         return (db, c, tx);
     }
     var (db1, c1, t1) = await Open();
@@ -1044,7 +1061,7 @@ await Check("concurrency: raw §8.5 UPDATE ... WHERE row_version = stale -> 0 ro
 {
     await using var c = await adminDs.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
-    await Exec(c, tx, "SELECT set_config('app.admin_type','super',true)");
+    await BindResolved(c, tx, "super", null);
     await using var s = new NpgsqlCommand($"UPDATE auth.location_login_config SET row_version = row_version + 1 WHERE location_id = '{L_NV}' AND row_version = 1", c, tx);
     await using var k = new NpgsqlCommand($"UPDATE auth.location_login_config SET row_version = row_version + 1 WHERE location_id = '{L_NV}' AND row_version = 2", c, tx);
     var a = await s.ExecuteNonQueryAsync(); var b = await k.ExecuteNonQueryAsync();

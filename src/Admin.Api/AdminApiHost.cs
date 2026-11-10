@@ -8,7 +8,7 @@ public static class AdminApiHost
 {
     /// <summary>
     /// Builds the API (fail closed): options validated, audit schema loaded (unknown keyword = throw), DB role guard (§8.3).
-    /// <paramref name="directory"/> defaults to the INTERIM token directory; only the in-process checks pass another one
+    /// <paramref name="directory"/> defaults to the assignment resolver; only the in-process checks pass another one
     /// (and <paramref name="extraLogger"/>, to read the error log line).
     /// </summary>
     public static async Task<WebApplication> BuildAsync(AdminApiOptions options, IAdminDirectory? directory = null, TimeProvider? clock = null,
@@ -31,7 +31,7 @@ public static class AdminApiHost
         b.Services.AddSingleton(ds);
         b.Services.AddSingleton(new AuditOutbox(schema));
         b.Services.AddSingleton(new AdminTokenValidator(opt));
-        b.Services.AddSingleton(directory ?? new TokenAdminDirectory());
+        b.Services.AddSingleton(directory ?? new DbAdminDirectory());
         b.Services.AddSingleton(clock ?? TimeProvider.System);
         b.Services.AddSingleton<LoginConfigApi>();
         var app = b.Build();
@@ -45,6 +45,9 @@ public static class AdminApiHost
         // Slice A (TLD 06:59 route, LD 12b1d9cd): per-partner reason-length bounds.
         app.MapGet("/api/orgs/partners/{partner_id}/login-config/reason-bounds", (HttpContext ctx, string partner_id) => api.GetReasonBoundsAsync(ctx, partner_id));
         app.MapPut("/api/orgs/partners/{partner_id}/login-config/reason-bounds", (HttpContext ctx, string partner_id) => api.PutReasonBoundsAsync(ctx, partner_id));
+        app.MapGet("/api/nav", (Func<HttpContext, Task<IResult>>)(ctx => api.NavAsync(ctx)));
+        app.MapGet("/api/screens/create-client", (Func<HttpContext, Task<IResult>>)(ctx => api.CreateClientAsync(ctx)));
+        app.MapPost("/api/screens/create-client", (Func<HttpContext, Task<IResult>>)(ctx => api.CreateClientWriteAsync(ctx)));
         return app;
     }
 
