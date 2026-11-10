@@ -3516,3 +3516,99 @@ BEGIN
 END $EF$;
 COMMIT;
 
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110240000_Req064ReasonRead') THEN
+    -- REQ-064 M-B. A SELECT sees the partner the actor holds: global, that partner's
+    -- Partner Admin assignment, or a location assignment at that partner.
+    -- A location id or partner id in a session setting does not open every partner.
+    -- INSERT and UPDATE stay open to any Partner Admin (DEC-111). The write path
+    -- reads through auth.read_partner_bounds, which is the same write rule, so a
+    -- Partner Admin can still update a row the SELECT policy hides.
+
+    CREATE OR REPLACE FUNCTION auth.read_partner_bounds(p_partner uuid)
+      RETURNS TABLE (
+        reason_min_length integer,
+        reason_max_length integer,
+        updated_by uuid,
+        updated_at timestamptz,
+        row_version bigint)
+      LANGUAGE plpgsql
+      VOLATILE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    BEGIN
+      IF NOT auth.actor_is_any_admin() THEN
+        RETURN;
+      END IF;
+      RETURN QUERY
+        SELECT b.reason_min_length, b.reason_max_length, b.updated_by, b.updated_at, b.row_version
+          FROM auth.partner_reason_bounds b
+         WHERE b.partner_id = p_partner
+         FOR UPDATE;
+    END
+    $fn$;
+    REVOKE ALL ON FUNCTION auth.read_partner_bounds(uuid) FROM PUBLIC;
+
+    CREATE OR REPLACE FUNCTION auth.save_partner_bounds(
+      p_partner uuid, p_expected bigint, p_min integer, p_max integer, p_by uuid, p_at timestamptz)
+      RETURNS bigint
+      LANGUAGE plpgsql
+      VOLATILE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v bigint;
+    BEGIN
+      IF NOT auth.actor_is_any_admin() THEN
+        RAISE EXCEPTION 'partner_reason_bounds' USING ERRCODE = '42501';
+      END IF;
+      IF p_expected = 0 THEN
+        INSERT INTO auth.partner_reason_bounds
+          (partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version)
+        VALUES (p_partner, p_min, p_max, p_by, p_at, 1);
+        RETURN 1;
+      END IF;
+      UPDATE auth.partner_reason_bounds
+         SET reason_min_length = p_min, reason_max_length = p_max, updated_by = p_by, updated_at = p_at,
+             row_version = row_version + 1
+       WHERE partner_id = p_partner AND row_version = p_expected
+       RETURNING row_version INTO v;
+      RETURN v;
+    END
+    $fn$;
+    REVOKE ALL ON FUNCTION auth.save_partner_bounds(uuid, bigint, integer, integer, uuid, timestamptz) FROM PUBLIC;
+
+    DO $pol$
+    DECLARE
+      a text := current_database() || '_admin_api';
+      see text := $s$(auth.actor_is_global() OR auth.actor_can_partner(partner_id) OR auth.actor_location_sees_partner(partner_id))$s$;
+    BEGIN
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.read_partner_bounds(uuid) TO %I', a);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.save_partner_bounds(uuid, bigint, integer, integer, uuid, timestamptz) TO %I', a);
+      EXECUTE 'DROP POLICY IF EXISTS prb_admin ON auth.partner_reason_bounds';
+      EXECUTE 'DROP POLICY IF EXISTS prb_select ON auth.partner_reason_bounds';
+      EXECUTE 'DROP POLICY IF EXISTS prb_insert ON auth.partner_reason_bounds';
+      EXECUTE 'DROP POLICY IF EXISTS prb_update ON auth.partner_reason_bounds';
+      EXECUTE format('CREATE POLICY prb_select ON auth.partner_reason_bounds FOR SELECT TO %I USING %s', a, see);
+      EXECUTE format('CREATE POLICY prb_insert ON auth.partner_reason_bounds FOR INSERT TO %I WITH CHECK (auth.actor_is_any_admin())', a);
+      EXECUTE format('CREATE POLICY prb_update ON auth.partner_reason_bounds FOR UPDATE TO %I USING (auth.actor_is_any_admin()) WITH CHECK (auth.actor_is_any_admin())', a);
+    END
+    $pol$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110240000_Req064ReasonRead') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110240000_Req064ReasonRead', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+

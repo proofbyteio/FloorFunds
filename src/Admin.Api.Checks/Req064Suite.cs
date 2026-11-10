@@ -170,6 +170,7 @@ static class Req064Suite
                 """, "SELECT count(*) FROM auth.location");
             Check("flags-without-a-principal-see-nothing", bareRows == 0 && forgedFlags == 0 && noAssignment == 0,
                 $"bare {bareRows} flags {forgedFlags} none {noAssignment}");
+            Check("reason-bounds-read-stays-inside-the-actor-partner", await BoundsRead(admin, owner));
 
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", paTok);
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config", saTok);
@@ -556,6 +557,51 @@ static class Req064Suite
         await tx.CommitAsync();
     }
 
+    static async Task<bool> BoundsRead(NpgsqlDataSource admin, NpgsqlDataSource owner)
+    {
+        var view = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000aa");
+        try
+        {
+            await Exec(owner, """
+                INSERT INTO auth.partner_reason_bounds (partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version)
+                VALUES ($1, 10, 20, $3, now(), 1), ($2, 30, 40, $3, now(), 1)
+                """, Pa, Pb, Sa);
+            await Exec(owner, """
+                INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, location_id, status, version, granted_by, granted_at)
+                VALUES ($1, $2, 'cashier', 'location', $3, 'active', 1, $4, now())
+                """, view, Cash, La, Sa);
+            async Task<long> See(string setup, Guid partner)
+            {
+                return await ScalarInTx(admin, setup, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1", partner);
+            }
+            var cashA = await See($"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{Cash:D}', true)", Pa);
+            var cashB = await See($"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{Cash:D}', true)", Pb);
+            var paA = await See($"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{Upa:D}', true)", Pa);
+            var paB = await See($"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{Upa:D}', true)", Pb);
+            var saA = await See($"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{Sa:D}', true)", Pa);
+            var saB = await See($"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{Sa:D}', true)", Pb);
+            var flagA = await See("""
+                SELECT set_config('app.request_iss', '', true), set_config('app.request_sub', '', true),
+                       set_config('app.resolved_global_admin', 'on', true),
+                       set_config('app.resolved_partner_ids', '5f0c3e1a-0064-4000-8000-000000000011', true),
+                       set_config('app.resolved_location_ids', '5f0c3e1a-0064-4000-8000-000000000022', true)
+                """, Pa);
+            var ok = cashA == 1 && cashB == 0 && paA == 1 && paB == 0 && saA == 1 && saB == 1 && flagA == 0;
+            if (!ok) Console.WriteLine($"FAIL bounds-read: cash {cashA}/{cashB} pa {paA}/{paB} sa {saA}/{saB} flag {flagA}");
+            return ok;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("FAIL bounds-read: " + ex.GetType().Name + " " + ex.Message);
+            return false;
+        }
+        finally
+        {
+            await ExecQuiet(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
+            await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", view);
+        }
+    }
+
     static async Task<bool> LoginWritePrincipal(NpgsqlDataSource admin, NpgsqlDataSource owner)
     {
         async Task Record(Guid user, Guid target)
@@ -631,6 +677,8 @@ static class Req064Suite
         await ExecQuiet(owner, "ALTER TABLE catalog.registered_entry ENABLE TRIGGER USER");
         await ExecQuiet(owner, "ALTER TABLE catalog.entry_change ENABLE TRIGGER USER");
         await ExecQuiet(owner, "ALTER TABLE catalog.history_pending ENABLE TRIGGER USER");
+        await ExecQuiet(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
+        await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000aa"));
         await ExecQuiet(owner, "DELETE FROM auth.login_write_principal");
         await ExecQuiet(owner, "DELETE FROM auth.location_login_config_change WHERE location_id = ANY($1)", new[] { La, Lb });
         await ExecQuiet(owner, "DELETE FROM auth.location_login_config WHERE location_id = ANY($1)", new[] { La, Lb });

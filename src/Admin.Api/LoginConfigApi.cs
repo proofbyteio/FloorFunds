@@ -390,9 +390,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
     /// <summary>Needs app.* scope super, or partner with app.partner_id set (RLS prb_admin): every caller of the resolver has it.</summary>
     static async Task<PrbRow?> LoadBoundsAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid partner, bool forUpdate)
     {
-        await using var cmd = new NpgsqlCommand(
-            "SELECT reason_min_length, reason_max_length, updated_by, updated_at, row_version FROM auth.partner_reason_bounds WHERE partner_id = $1"
-            + (forUpdate ? " FOR UPDATE" : ""), c, tx);
+        await using var cmd = new NpgsqlCommand(forUpdate
+            ? "SELECT reason_min_length, reason_max_length, updated_by, updated_at, row_version FROM auth.read_partner_bounds($1)"
+            : "SELECT reason_min_length, reason_max_length, updated_by, updated_at, row_version FROM auth.partner_reason_bounds WHERE partner_id = $1", c, tx);
         cmd.Parameters.Add(new() { Value = partner });
         await using var r = await cmd.ExecuteReaderAsync();
         if (!await r.ReadAsync()) return null;
@@ -511,17 +511,15 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         var next = created ? ReasonBoundsCreateVersion : expected + 1;
         try
         {
-            await using var w = new NpgsqlCommand(created
-                ? "INSERT INTO auth.partner_reason_bounds (partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version) VALUES ($1, $3, $4, $5, $6, 1)"
-                : "UPDATE auth.partner_reason_bounds SET reason_min_length = $3, reason_max_length = $4, updated_by = $5, updated_at = $6, row_version = row_version + 1 WHERE partner_id = $1 AND row_version = $2",
-                c, tx);
+            await using var w = new NpgsqlCommand(
+                "SELECT auth.save_partner_bounds($1, $2, $3, $4, $5, $6)", c, tx);
             w.Parameters.Add(new() { Value = partner });
             w.Parameters.Add(new() { Value = expected });
             w.Parameters.Add(new() { Value = n.Min });
             w.Parameters.Add(new() { Value = n.Max });
             w.Parameters.Add(new() { Value = who.Id.UserId });
             w.Parameters.Add(new() { Value = now.UtcDateTime, NpgsqlDbType = NpgsqlDbType.TimestampTz });
-            if (await w.ExecuteNonQueryAsync() != 1) throw Err(409, "concurrency_conflict", b => b["current_row_version"] = current);
+            if (await w.ExecuteScalarAsync() is not long) throw Err(409, "concurrency_conflict", b => b["current_row_version"] = current);
         }
         catch (PostgresException x) when (created && x.SqlState == PostgresErrorCodes.UniqueViolation)
         {
@@ -532,7 +530,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             // Same function as Run, still set_config(..., true), still the verified token identity.
             await SetPrincipalAsync(c, tx2, who.Id.Issuer, who.Id.UserId);
             await SetScopeAsync(c, tx2, who.Grant, who.Id.UserId);
-            var won = await LoadBoundsAsync(c, tx2, partner, false) ?? throw new InvalidOperationException("unique violation without a row");
+            var won = await LoadBoundsAsync(c, tx2, partner, true) ?? throw new InvalidOperationException("unique violation without a row");
             await tx2.CommitAsync();
             throw Err(409, "concurrency_conflict", b => b["current_row_version"] = won.RowVersion);
         }
@@ -543,7 +541,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         }
         await outbox.InsertAsync(c, tx, AuditOutbox.PartnerReasonBoundsChanged(Guid.CreateVersion7(), now, who.Id, who.RequestId, partner, created, next,
             old.Min, old.Max, n.Min, n.Max), CancellationToken.None);
-        var saved = await LoadBoundsAsync(c, tx, partner, false) ?? throw new InvalidOperationException("row vanished");
+        var saved = await LoadBoundsAsync(c, tx, partner, true) ?? throw new InvalidOperationException("row vanished");
         await tx.CommitAsync();
         return BoundsResult(ctx, who, partner, saved);
     });

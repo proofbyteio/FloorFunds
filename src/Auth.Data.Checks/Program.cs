@@ -591,7 +591,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver, Req064RoleScope, Req064HistoryPartner, Req064Issuer, Req064Principal]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver", "20261110200000_Req064RoleScope", "20261110210000_Req064HistoryPartner", "20261110220000_Req064Issuer", "20261110230000_Req064Principal"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver, Req064RoleScope, Req064HistoryPartner, Req064Issuer, Req064Principal, Req064ReasonRead]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver", "20261110200000_Req064RoleScope", "20261110210000_Req064HistoryPartner", "20261110220000_Req064Issuer", "20261110230000_Req064Principal", "20261110240000_Req064ReasonRead"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
@@ -720,7 +720,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
            $"location:location_admin:ALL:{adminRole} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbOwner} " +
            $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbOwner} " +
            $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbOwner} " +
-           $"partner_reason_bounds:prb_admin:ALL:{adminRole} partner_reason_bounds:prb_owner:ALL:{dbOwner}");
+           $"partner_reason_bounds:prb_insert:INSERT:{adminRole} partner_reason_bounds:prb_owner:ALL:{dbOwner} partner_reason_bounds:prb_select:SELECT:{adminRole} partner_reason_bounds:prb_update:UPDATE:{adminRole}");
 }
 
 // ================= 3. seed == SI1 fixtures =================
@@ -947,12 +947,12 @@ await Check("admin_api: cannot read app_user/external_login/user_location/sessio
 const string cntPrb = "SELECT count(*) FROM auth.partner_reason_bounds";
 await Check("Slice A RLS prb: no app.admin_type / bogus / partner without app.partner_id -> 0 rows (fail closed)", async () =>
     await CountAs(adminDs, cntPrb, null, null) == 0 && await CountAs(adminDs, cntPrb, "bogus", P_PCI) == 0 && await CountAs(adminDs, cntPrb, "partner", null) == 0);
-await Check("Slice A RLS prb: super -> 1 row; partner nevada sees the pci row (cross-partner read, TO CONFIRM LS-OQ-61)", async () =>
-    await CountAs(adminDs, cntPrb, "super", null) == 1 && await CountAs(adminDs, cntPrb, "partner", P_NV) == 1);
-await Check("Slice A RLS prb: no scope -> INSERT denied (42501); partner nevada CAN insert/update another partner's row (DEC-111, rolled back)", async () =>
+await Check("Slice A RLS prb: super -> 1 row; partner nevada does not see the pci row", async () =>
+    await CountAs(adminDs, cntPrb, "super", null) == 1 && await CountAs(adminDs, cntPrb, "partner", P_NV) == 0);
+await Check("Slice A RLS prb: no scope -> INSERT denied (42501); partner nevada CAN insert another partner's row (DEC-111) and cannot update a row it cannot see", async () =>
     await Try(adminDs, $"INSERT INTO auth.partner_reason_bounds VALUES ('{P_NV}', 10, 500, '{ACTOR}', now(), 1)") == "42501"
     && await Try(adminDs, $"INSERT INTO auth.partner_reason_bounds VALUES (gen_random_uuid(), 10, 500, '{ACTOR}', now(), 1)", "partner", P_NV) == "ok"
-    && await PrbUpdateRows(P_NV) == 1);
+    && await PrbUpdateRows(P_NV) == 0);
 async Task<int> PrbUpdateRows(Guid asPartner)
 {
     await using var c = await adminDs.OpenConnectionAsync();

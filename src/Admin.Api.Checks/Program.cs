@@ -2294,9 +2294,8 @@ try
             && (bool)ev[0]["details"]!["cross_partner"]! && !ev[0]["details"]!.AsObject().ContainsKey("reason") && IsCorr((string?)ev[0]["correlation_id"])
             && (string?)ev[0]["correlation_id"] == r.Corr, ev.Count > 0 ? ev[0].ToJsonString() : "none");
         g = await Get(Prb(P_C), PB);
-        Ok("Slice A GET set partner (PB reads P_C): 200, ETag \"1\" = row_version, source partner, 20/300, updated_at, NO updated_by (PA cross-partner read, TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"1\"" && (string?)Obj(g.Body)["source"] == "partner"
-            && (long?)Obj(g.Body)["row_version"] == 1 && (int?)Obj(g.Body)["reason_min_length"] == 20 && HasBy(g, null) && (bool?)Obj(g.Body)["bounds_editor"] == false && Obj(g.Body).ContainsKey("updated_at"), Tg(g));
-        if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
+        Ok("Slice A GET set partner (PB reads P_C): 200 default, no ETag (another partner's row is not visible)", g.Status == 200 && g.ETag is null && (string?)Obj(g.Body)["source"] == "default"
+            && (int?)Obj(g.Body)["reason_min_length"] == Mn && (int?)Obj(g.Body)["reason_max_length"] == Mx && !Obj(g.Body).ContainsKey("row_version") && HasBy(g, null), Tg(g));
         g = await Get(Prb(P_C), SA);
         Ok("Slice A GET set partner (SA reads P_C, actor partner null): updated_by U_PA kept (every Super Admin read keeps identity, TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"1\"" && HasBy(g, U_PA) && (bool?)Obj(g.Body)["bounds_editor"] == true, Tg(g));
         if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
@@ -2362,17 +2361,16 @@ try
                 && await PrbSnap(P_A) == "40/120/v3" && (await NewEvents()).Count == 0, $"{Tg(gc)} || {Tg(pc)}");
         }
         g = await Get(Prb(P_A), PB);
-        Ok("Slice A GET (PB reads P_A): bounds 40/120, ETag \"3\", row_version 3, updated_at kept, NO updated_by (TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"3\"" && HasBy(g, null)
-            && (bool?)Obj(g.Body)["bounds_editor"] == false
-            && (long?)Obj(g.Body)["row_version"] == 3 && (int?)Obj(g.Body)["reason_min_length"] == 40 && (int?)Obj(g.Body)["reason_max_length"] == 120 && Obj(g.Body).ContainsKey("updated_at"), Tg(g));
-        if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
+        Ok("Slice A GET (PB reads P_A): default bounds, no ETag (another partner's row is not visible)", g.Status == 200 && g.ETag is null && (string?)Obj(g.Body)["source"] == "default"
+            && (bool?)Obj(g.Body)["bounds_editor"] == false && !Obj(g.Body).ContainsKey("row_version")
+            && (int?)Obj(g.Body)["reason_min_length"] == Mn && (int?)Obj(g.Body)["reason_max_length"] == Mx, Tg(g));
 
         // ---- the resolver everywhere [TLD 08:00 Q3]: limits, location GET, location PUT reason, POST reason ----
         Ok("Slice A limits: PA (own P_A, no param) -> 40/120 (row)", Lim(await Get(LimitsP, PA), 40, 120));
         Ok($"Slice A limits: PB (own P_B, no row, no param) -> config {Mn}/{Mx}", Lim(await Get(LimitsP, PB), Mn, Mx));
         Ok($"Slice A limits: SA and org:V reader without partner_id -> config {Mn}/{Mx}", Lim(await Get(LimitsP, SA), Mn, Mx) && Lim(await Get(LimitsP, RD), Mn, Mx));
-        Ok("Slice A limits: SA ?partner_id=P_C -> 25/250; PB ?partner_id=P_A -> 40/120 (cross-partner read, LS-OQ-61)", Lim(await Get($"{LimitsP}?partner_id={P_C:D}", SA), 25, 250)
-            && Lim(await Get($"{LimitsP}?partner_id={P_A:D}", PB), 40, 120));
+        Ok($"Slice A limits: SA ?partner_id=P_C -> 25/250; PB ?partner_id=P_A -> config {Mn}/{Mx} (the other partner's row is hidden)", Lim(await Get($"{LimitsP}?partner_id={P_C:D}", SA), 25, 250)
+            && Lim(await Get($"{LimitsP}?partner_id={P_A:D}", PB), Mn, Mx));
         Ok($"Slice A limits: SA ?partner_id=<unset P_F> -> config {Mn}/{Mx}", Lim(await Get($"{LimitsP}?partner_id={P_F:D}", SA), Mn, Mx));
         Ok("Slice A limits: org:V reader ?partner_id=P_A -> 404 not_found (the read check point)", Err(await Get($"{LimitsP}?partner_id={P_A:D}", RD), 404, "not_found"));
         foreach (var q in new[] { "partner_id=nope", "partner_id=", $"partner_id={Guid.Empty:D}", $"partner_id={P_A:D}&partner_id={P_C:D}" })

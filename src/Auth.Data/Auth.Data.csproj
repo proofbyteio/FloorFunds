@@ -39,5 +39,6 @@
     <EmbeddedResource Include="Migrations\Req064HistoryPartner.sql" />
     <EmbeddedResource Include="Migrations\Req064Issuer.sql" />
     <EmbeddedResource Include="Migrations\Req064Principal.sql" />
+    <EmbeddedResource Include="Migrations\Req064ReasonRead.sql" />
   </ItemGroup>
 </Project>
