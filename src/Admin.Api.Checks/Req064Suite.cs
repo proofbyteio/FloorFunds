@@ -26,12 +26,15 @@ static class Req064Suite
     static readonly Guid Both = Guid.Parse("5f0c3e1a-0064-4000-8000-000000000034");
     static readonly Guid None = Guid.Parse("5f0c3e1a-0064-4000-8000-000000000035");
     static readonly Guid Cash = Guid.Parse("5f0c3e1a-0064-4000-8000-000000000036");
+    static readonly Guid Mix = Guid.Parse("5f0c3e1a-0064-4000-8000-000000000038");
     static readonly Guid Asa = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000a1");
     static readonly Guid Asa2 = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000a2");
     static readonly Guid Apa = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000a3");
     static readonly Guid AbothA = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000a4");
     static readonly Guid AbothB = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000a5");
     static readonly Guid Acash = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000a6");
+    static readonly Guid AmixA = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000a8");
+    static readonly Guid AmixB = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000a9");
     static readonly Guid Fee = Guid.Parse("5f0c3e1a-0064-4000-8000-000000000041");
 
     static int _pass, _fail;
@@ -81,6 +84,7 @@ static class Req064Suite
             var bothTok = Mint(sign, Both, "partner", Pa);
             var noneTok = Mint(sign, None, "super", null);
             var cashTok = Mint(sign, Cash, "partner", Pa);
+            var mixTok = Mint(sign, Mix, "super", null);
 
             var navNone = await Send(http, HttpMethod.Get, "/api/nav", noneTok);
             var locNone = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", noneTok);
@@ -122,6 +126,21 @@ static class Req064Suite
             var forgedRes = await Read(await http.SendAsync(forged));
             var own = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config?partner_id={Pb}", paTok);
             Check("T10 forged-partner-id-ignored", forgedRes.Status == 404 && own.Status == 200);
+
+            var mixA = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", mixTok);
+            var mixB = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config", mixTok);
+            var mixNav = await Send(http, HttpMethod.Get, "/api/nav", mixTok);
+            var mixClient = await Send(http, HttpMethod.Get, "/api/screens/create-client", mixTok);
+            var mixGrant = await ScalarBool(owner, """
+                SELECT outcome = 'grant' AND role_wire = 'partner_admin' AND NOT global_admin
+                   AND partner_ids = ARRAY[$3]::uuid[] AND NOT ($4 = ANY (partner_ids))
+                  FROM auth.resolve_grant($1, $2)
+                """, Issuer, Mix, Pa, Pb);
+            var mixScreens = mixNav.Status == 200 ? Screens(mixNav.Body) : new List<string>();
+            Check("pa-at-a-cashier-at-b-keeps-each-role",
+                mixGrant && mixA.Status == 200 && mixB.Status == 404 && mixClient.Status == 403
+                && mixScreens.Contains("create_location") && mixScreens.Contains("config") && !mixScreens.Contains("create_client"),
+                $"grant {mixGrant} A {mixA.Status} B {mixB.Status} nav {mixNav.Status} {Clip(mixNav.Body)} client {mixClient.Status}");
 
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", paTok);
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config", saTok);
@@ -341,8 +360,9 @@ static class Req064Suite
         await Exec(owner, """
             INSERT INTO auth.app_user (user_id, partner_id, status) VALUES
               ($1, NULL, 'active'), ($2, NULL, 'active'), ($3, NULL, 'active'),
-              ($4, NULL, 'active'), ($5, NULL, 'active'), ($6, NULL, 'active')
-            """, Sa, Sa2, Upa, Both, None, Cash);
+              ($4, NULL, 'active'), ($5, NULL, 'active'), ($6, NULL, 'active'),
+              ($7, NULL, 'active')
+            """, Sa, Sa2, Upa, Both, None, Cash, Mix);
         await Exec(owner, """
             INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
               ($1, $2, 'super_admin', 'global', NULL, 'active', 1, $2, now()),
@@ -350,8 +370,10 @@ static class Req064Suite
               ($5, $6, 'partner_admin', 'partner', $7, 'active', 1, $2, now()),
               ($8, $9, 'partner_admin', 'partner', $7, 'active', 1, $2, now()),
               ($10, $9, 'partner_admin', 'partner', $11, 'active', 1, $2, now()),
-              ($12, $13, 'cashier', 'partner', $7, 'active', 1, $2, now())
-            """, Asa, Sa, Asa2, Sa2, Apa, Upa, Pa, AbothA, Both, AbothB, Pb, Acash, Cash);
+              ($12, $13, 'cashier', 'partner', $7, 'active', 1, $2, now()),
+              ($14, $15, 'partner_admin', 'partner', $7, 'active', 1, $2, now()),
+              ($16, $15, 'cashier', 'partner', $11, 'active', 1, $2, now())
+            """, Asa, Sa, Asa2, Sa2, Apa, Upa, Pa, AbothA, Both, AbothB, Pb, Acash, Cash, AmixA, Mix, AmixB);
         await Exec(owner, "INSERT INTO auth.location VALUES ($1,$2,'req064-a','Req064 A'),($3,$4,'req064-b','Req064 B')", La, Pa, Lb, Pb);
         await Exec(owner, """
             INSERT INTO auth.location_login_config (location_id, provider_kind, display_name, entra_allowed_tenant_ids, allow_db_fallback, mfa_required, created_by, created_at, updated_by, updated_at)
@@ -420,10 +442,10 @@ static class Req064Suite
         await ExecQuiet(owner, "DELETE FROM auth.location_login_config WHERE location_id = ANY($1)", new[] { La, Lb });
         await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = ANY($1)", new[] { La, Lb });
         await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE user_id = ANY($1) OR assignment_id = ANY($2)",
-            new[] { Sa, Sa2, Upa, Both, None, Cash, Guid.Parse("5f0c3e1a-0064-4000-8000-000000000037") },
-            new[] { Asa, Asa2, Apa, AbothA, AbothB, Acash, Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000a7") });
+            new[] { Sa, Sa2, Upa, Both, None, Cash, Mix, Guid.Parse("5f0c3e1a-0064-4000-8000-000000000037") },
+            new[] { Asa, Asa2, Apa, AbothA, AbothB, Acash, AmixA, AmixB, Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000a7") });
         await ExecQuiet(owner, "DELETE FROM auth.app_user WHERE user_id = ANY($1)",
-            new[] { Sa, Sa2, Upa, Both, None, Cash, Guid.Parse("5f0c3e1a-0064-4000-8000-000000000037") });
+            new[] { Sa, Sa2, Upa, Both, None, Cash, Mix, Guid.Parse("5f0c3e1a-0064-4000-8000-000000000037") });
         await ExecQuiet(owner, "ALTER TABLE auth.admin_assignment ENABLE TRIGGER USER");
         await ExecQuiet(owner, "ALTER TABLE auth.app_user ENABLE TRIGGER USER");
     }
@@ -558,6 +580,15 @@ static class Req064Suite
         var value = await cmd.ExecuteScalarAsync();
         await tx.RollbackAsync();
         return value is long n ? n : Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    static async Task<bool> ScalarBool(NpgsqlDataSource ds, string sql, params object?[] ps)
+    {
+        await using var c = await ds.OpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand(sql, c);
+        foreach (var p in ps) cmd.Parameters.Add(new() { Value = p ?? DBNull.Value });
+        var value = await cmd.ExecuteScalarAsync();
+        return value is true;
     }
 
     static async Task<long> ScalarLong(NpgsqlDataSource ds, string sql, params object?[] ps)
