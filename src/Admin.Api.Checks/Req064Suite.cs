@@ -71,6 +71,7 @@ static class Req064Suite
         try
         {
             await Seed(owner);
+            Check("location-rls-partner-predicate-hides-other-partner", await PartnerPredicate(admin));
             var port = FreePort();
             await using var app = await Admin.Api.AdminApiHost.BuildAsync(opt with { Urls = $"http://127.0.0.1:{port}" });
             await app.StartAsync();
@@ -198,6 +199,7 @@ static class Req064Suite
         Check("last-active-sa-user-delete", await FailsLast(owner, "DELETE FROM auth.app_user WHERE user_id = $1", Sa));
         Check("last-active-sa-truncate", await FailsStatement(owner, "TRUNCATE auth.admin_assignment"));
         Check("last-active-sa-user-truncate", await FailsStatement(owner, "TRUNCATE auth.app_user CASCADE"));
+        Check("last-active-sa-truncate-guard", await TruncateGuard(owner));
         var disabledOne = await ExecOk(owner, "UPDATE auth.admin_assignment SET status = 'disabled' WHERE assignment_id = $1", Asa2);
         if (disabledOne)
             await Exec(owner, "UPDATE auth.admin_assignment SET status = 'active' WHERE assignment_id = $1", Asa2);
@@ -209,6 +211,53 @@ static class Req064Suite
                 VALUES ($1, $2, 'partner_admin', 'partner', $3, 'active', 1, $4, now())
                 """, Apa, Upa, Pa, Sa);
         Check("delete-partner-admin-while-sa-remains", paDelete);
+    }
+
+    static async Task<bool> PartnerPredicate(NpgsqlDataSource admin)
+    {
+        await using var c = await admin.OpenConnectionAsync();
+        await using var tx = await c.BeginTransactionAsync();
+        await using (var set = new NpgsqlCommand("""
+            SELECT set_config('app.resolved_global_admin', '', true),
+                   set_config('app.resolved_partner_ids', $1, true),
+                   set_config('app.resolved_location_ids', '', true),
+                   set_config('app.admin_type', '', true),
+                   set_config('app.partner_id', '', true)
+            """, c, tx))
+        {
+            set.Parameters.Add(new() { Value = Pa.ToString("D") });
+            await set.ExecuteNonQueryAsync();
+        }
+        async Task<long> Count(Guid id)
+        {
+            await using var q = new NpgsqlCommand("SELECT count(*) FROM auth.location WHERE location_id = $1", c, tx);
+            q.Parameters.Add(new() { Value = id });
+            return (long)(await q.ExecuteScalarAsync())!;
+        }
+        var own = await Count(La);
+        var other = await Count(Lb);
+        await tx.RollbackAsync();
+        return own == 1 && other == 0;
+    }
+
+    static async Task<bool> TruncateGuard(NpgsqlDataSource owner)
+    {
+        // BEFORE TRUNCATE is tgtype bit 5 (32). The row guard does not fire for TRUNCATE.
+        var triggers = await ScalarLong(owner, """
+            SELECT count(*)
+              FROM pg_trigger t
+              JOIN pg_proc p ON p.oid = t.tgfoid
+              JOIN pg_class c ON c.oid = t.tgrelid
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'auth'
+               AND p.proname = '_last_sa_truncate_guard'
+               AND NOT t.tgisinternal
+               AND (t.tgtype & 32) <> 0
+               AND c.relname IN ('admin_assignment', 'app_user')
+            """);
+        return triggers == 2
+            && await FailsStatement(owner, "TRUNCATE auth.admin_assignment")
+            && await FailsStatement(owner, "TRUNCATE auth.app_user CASCADE");
     }
 
     static async Task<bool> FailsStatement(NpgsqlDataSource owner, string sql)
