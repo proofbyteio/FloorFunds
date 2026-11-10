@@ -187,6 +187,9 @@ if [[ "$MIGRATE" -eq 1 ]]; then
   # client_min_messages=warning hides the expected "__EFMigrationsHistory already exists" NOTICE on re-runs.
   PGOPTIONS='-c client_min_messages=warning' owner_psql -f "$MIGRATIONS" || { echo "Migrations failed (see the psql error above)" >&2; exit 4; }
   echo "Applied migrations: $(owner_psql -tA -c 'SELECT string_agg("MigrationId", '"', '"' ORDER BY "MigrationId") FROM public."__EFMigrationsHistory"')"
+  echo "Definer owner: NOLOGIN role (superuser step, after migrate)..."
+  { printf '\\c %s\n' "$DB"; cat "$KIT/definer-owner.sql"; } | run_psql -f - \
+    || { echo "Definer owner step failed (see the psql error above)" >&2; exit 4; }
 fi
 if [[ "$SEED" -eq 1 ]]; then
   for f in "$HERE"/seed/*.sql; do

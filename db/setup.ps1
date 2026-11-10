@@ -192,6 +192,8 @@ if (-not $NoMigrate) {
   [void](Invoke-OwnerPsql @('-f', $Migrations))
   $applied = Invoke-OwnerPsql @('-tA','-c','SELECT string_agg("MigrationId", '', '' ORDER BY "MigrationId") FROM public."__EFMigrationsHistory"')
   Write-Host "Applied migrations: $($applied.Trim())"
+  Write-Host "Definer owner: NOLOGIN role (superuser step, after migrate)..."
+  [void](Invoke-Psql ("\c $Db`n" + (Get-KitSql 'definer-owner.sql')) -FailCode 4)
 }
 if ($Seed) {
   foreach ($f in Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'seed') -Filter '*.sql' | Sort-Object Name) {

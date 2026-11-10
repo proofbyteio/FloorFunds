@@ -1,8 +1,9 @@
 -- REQ-064 H-B. Row security does not trust app.resolved_* or app.admin_type.
 -- Those settings are writable by admin_api. Access is derived from the active
 -- assignment rows of the request principal (app.request_iss, app.request_sub).
--- The functions are SECURITY DEFINER, owned by the database owner (not admin_api),
--- with a pinned search_path. admin_api is not a member of the owner and cannot SET ROLE to it.
+-- The functions are STABLE SECURITY DEFINER. A later migration grants the NOLOGIN
+-- role <db>_auth_definer, and the kit superuser step makes that role the owner.
+-- admin_api is not a member of that role and cannot SET ROLE to it.
 
 CREATE OR REPLACE FUNCTION auth._request_user() RETURNS uuid
   LANGUAGE sql

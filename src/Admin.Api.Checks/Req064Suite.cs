@@ -132,7 +132,7 @@ static class Req064Suite
             var mixB = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config", mixTok);
             var mixNav = await Send(http, HttpMethod.Get, "/api/nav", mixTok);
             var mixClient = await Send(http, HttpMethod.Get, "/api/screens/create-client", mixTok);
-            var mixGrant = await ScalarBool(owner, """
+            var mixGrant = await ScalarBool(admin, """
                 SELECT outcome = 'grant' AND role_wire = 'partner_admin' AND NOT global_admin
                    AND partner_ids = ARRAY[$3]::uuid[] AND NOT ($4 = ANY (partner_ids))
                   FROM auth.resolve_grant($1, $2)
@@ -142,15 +142,16 @@ static class Req064Suite
                 mixGrant && mixA.Status == 200 && mixB.Status == 404 && mixClient.Status == 403
                 && mixScreens.Contains("create_location") && mixScreens.Contains("config") && !mixScreens.Contains("create_client"),
                 $"grant {mixGrant} A {mixA.Status} B {mixB.Status} nav {mixNav.Status} {Clip(mixNav.Body)} client {mixClient.Status}");
-            Check("history-label-uses-the-record-partner", await HistoryLabel(owner));
-            var wrongIssuer = await ScalarBool(owner,
+            Check("history-label-uses-the-record-partner", await HistoryLabel(owner, admin));
+            var wrongIssuer = await ScalarBool(admin,
                 "SELECT outcome = 'deny' AND role_wire = 'none' FROM auth.resolve_grant($1, $2)",
                 "https://not-the-issuer.example", Mix);
-            var rightIssuer = await ScalarBool(owner,
+            var rightIssuer = await ScalarBool(admin,
                 "SELECT outcome = 'grant' AND role_wire = 'partner_admin' AND partner_ids = ARRAY[$3]::uuid[] FROM auth.resolve_grant($1, $2)",
                 Issuer, Mix, Pa);
             Check("wrong-issuer-does-not-resolve", wrongIssuer && rightIssuer, $"wrong {wrongIssuer} right {rightIssuer}");
             Check("login-write-records-the-request-principal", await LoginWritePrincipal(admin, owner));
+            Check("token-admin-type-does-not-choose-the-principal", await TokenPrincipalRowCount(http, admin, owner, paTok));
             var bareRows = await ScalarLong(admin, """
                 SELECT count(*) FROM auth.location
                 """);
@@ -178,6 +179,7 @@ static class Req064Suite
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config", saTok);
             var leaked = await PoolSample(app);
             Check("T11 pooled-connection-does-not-inherit-guc", leaked.Count == 0, string.Join(",", leaked));
+            Check("reused-connection-does-not-keep-a-principal", await PoolResetsPrincipal(app));
 
             var forgedCount = await ScalarInTx(admin,
                 "SELECT set_config('app.admin_type','super', true), set_config('app.resolved_global_admin','', true), set_config('app.resolved_partner_ids','', true)",
@@ -428,7 +430,7 @@ static class Req064Suite
         await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = NULL WHERE assignment_id = ANY($1)", new[] { Asa, Asa2 });
     }
 
-    static async Task<bool> HistoryLabel(NpgsqlDataSource owner)
+    static async Task<bool> HistoryLabel(NpgsqlDataSource owner, NpgsqlDataSource admin)
     {
         // Both is Partner Admin at Pa and at Pb. The actor list is ordered Pa then Pb,
         // so the old label (the first partner) would store Pa on a row owned by Pb.
@@ -437,12 +439,13 @@ static class Req064Suite
         var hist = Guid.Parse("5f0c3e1a-0064-4000-8000-000000000042");
         try
         {
+            await using var grantConn = await admin.OpenConnectionAsync();
             await using (var grant = new NpgsqlCommand("""
                 SELECT (SELECT count(*) FROM unnest(partner_ids) x WHERE x = $3) = 1
                    AND (SELECT count(*) FROM unnest(partner_ids) x WHERE x = $4) = 1
                    AND role_wire = 'partner_admin' AND NOT global_admin
                   FROM auth.resolve_grant($1, $2)
-                """, c, tx))
+                """, grantConn))
             {
                 grant.Parameters.Add(new() { Value = Issuer });
                 grant.Parameters.Add(new() { Value = Both });
@@ -669,6 +672,100 @@ static class Req064Suite
         }
     }
 
+    static async Task<bool> TokenPrincipalRowCount(HttpClient http, NpgsqlDataSource admin, NpgsqlDataSource owner, string paTok)
+    {
+        Guid? created = null;
+        try
+        {
+            await Exec(owner, """
+                INSERT INTO auth.partner_reason_bounds
+                  (partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version)
+                VALUES ($1, 11, 22, $2, now(), 1)
+                """, Pb, Sa);
+            var put = new HttpRequestMessage(HttpMethod.Put, $"/api/orgs/partners/{Pa:D}/login-config/reason-bounds");
+            put.Headers.TryAddWithoutValidation("Authorization", "Bearer " + paTok);
+            put.Headers.TryAddWithoutValidation("If-Match", "\"0\"");
+            put.Content = new StringContent("""{"reason_min_length":10,"reason_max_length":20}""", Encoding.UTF8, "application/json");
+            var wrote = await Read(await http.SendAsync(put));
+            var post = new HttpRequestMessage(HttpMethod.Post, "/api/orgs/locations");
+            post.Headers.TryAddWithoutValidation("Authorization", "Bearer " + paTok);
+            post.Content = new StringContent(
+                "{\"partner_id\":\"" + Pa.ToString("D") + "\",\"name\":\"Req064 Token Proof\",\"login_config\":{" +
+                "\"provider_kind\":\"database\",\"display_name\":\"Req064 Token Proof\",\"entra_allowed_tenant_ids\":[]," +
+                "\"allow_db_fallback\":false,\"mfa_required\":true}}",
+                Encoding.UTF8, "application/json");
+            var made = await Read(await http.SendAsync(post));
+            if (made.Status == 201)
+            {
+                using var doc = JsonDocument.Parse(made.Body);
+                created = doc.RootElement.GetProperty("location_id").GetGuid();
+            }
+            var boundsSubject = await ScalarText(owner, """
+                SELECT subject::text FROM auth.login_write_principal
+                 WHERE kind = 'partner_reason_bounds' AND target_id = $1
+                 ORDER BY recorded_at DESC LIMIT 1
+                """, Pa);
+            var locationSubject = created is null ? "" : await ScalarText(owner, """
+                SELECT subject::text FROM auth.login_write_principal
+                 WHERE kind = 'location_login_config' AND target_id = $1
+                 ORDER BY recorded_at DESC LIMIT 1
+                """, created);
+            long other = -1;
+            if (boundsSubject.Length > 0)
+            {
+                await using var c = await admin.OpenConnectionAsync();
+                await using var tx = await c.BeginTransactionAsync();
+                await using (var set = new NpgsqlCommand("""
+                    SELECT set_config('app.request_iss', 'https://req064.test.invalid', true),
+                           set_config('app.request_sub', $1, true)
+                    """, c, tx))
+                {
+                    set.Parameters.Add(new() { Value = boundsSubject });
+                    await set.ExecuteNonQueryAsync();
+                }
+                await using var count = new NpgsqlCommand("""
+                    SELECT (SELECT count(*) FROM auth.location WHERE location_id = $1)
+                         + (SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $2)
+                    """, c, tx);
+                count.Parameters.Add(new() { Value = Lb });
+                count.Parameters.Add(new() { Value = Pb });
+                other = Convert.ToInt64(await count.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+                await tx.RollbackAsync();
+            }
+            var ok = wrote.Status == 200 && made.Status == 201
+                && boundsSubject == Upa.ToString("D") && locationSubject == Upa.ToString("D") && other == 0;
+            if (!ok)
+                Console.WriteLine($"FAIL token-principal: put {wrote.Status} {Clip(wrote.Body)} post {made.Status} {Clip(made.Body)} bounds {boundsSubject} location {locationSubject} other {other}");
+            return ok;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("FAIL token-principal: " + ex.GetType().Name + " " + ex.Message);
+            return false;
+        }
+        finally
+        {
+            if (created is { } id)
+            {
+                await ExecQuiet(owner, "ALTER TABLE auth.location_login_config_change DISABLE TRIGGER USER");
+                await ExecQuiet(owner, "ALTER TABLE auth.location DISABLE TRIGGER USER");
+                await ExecQuiet(owner, "DELETE FROM auth.location_login_config_change WHERE location_id = $1", id);
+                await ExecQuiet(owner, "DELETE FROM auth.location_login_config WHERE location_id = $1", id);
+                await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = $1", id);
+                await ExecQuiet(owner, "ALTER TABLE auth.location ENABLE TRIGGER USER");
+                await ExecQuiet(owner, "ALTER TABLE auth.location_login_config_change ENABLE TRIGGER USER");
+                await ExecQuiet(owner, "DELETE FROM auth.audit_outbox WHERE envelope::text LIKE '%' || $1 || '%'", id.ToString("D"));
+            }
+            await ExecQuiet(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
+            await ExecQuiet(owner, "DELETE FROM auth.login_write_principal WHERE target_id = ANY($1)", new[] { Pa, Pb });
+            await ExecQuiet(owner, """
+                DELETE FROM auth.audit_outbox
+                 WHERE event_type = 'auth.partner_reason_bounds.changed'
+                   AND envelope::text LIKE '%' || $1 || '%'
+                """, Pa.ToString("D"));
+        }
+    }
+
     static async Task<bool> LoginWritePrincipal(NpgsqlDataSource admin, NpgsqlDataSource owner)
     {
         async Task Record(Guid user, Guid target)
@@ -797,13 +894,43 @@ static class Req064Suite
                        coalesce(current_setting('app.resolved_partner_ids', true), '') || '|' ||
                        coalesce(current_setting('app.resolved_location_ids', true), '') || '|' ||
                        coalesce(current_setting('app.admin_type', true), '') || '|' ||
-                       coalesce(current_setting('app.partner_id', true), '')
+                       coalesce(current_setting('app.partner_id', true), '') || '|' ||
+                       coalesce(current_setting('app.request_iss', true), '') || '|' ||
+                       coalesce(current_setting('app.request_sub', true), '')
                 """, c);
             var v = (string)(await cmd.ExecuteScalarAsync())!;
-            if (v != "||||") leaked.Add(v);
+            if (v != "||||||") leaked.Add(v);
         }
         foreach (var c in conns) await c.DisposeAsync();
         return leaked;
+    }
+
+    static async Task<bool> PoolResetsPrincipal(WebApplication app)
+    {
+        var ds = app.Services.GetRequiredService<NpgsqlDataSource>();
+        int pid;
+        await using (var c = await ds.OpenConnectionAsync())
+        {
+            pid = Convert.ToInt32(await new NpgsqlCommand("SELECT pg_backend_pid()", c).ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+            await using var set = new NpgsqlCommand("""
+                SELECT set_config('app.request_iss', 'https://req064.test.invalid', false),
+                       set_config('app.request_sub', '5f0c3e1a-0064-4000-8000-000000000031', false)
+                """, c);
+            await set.ExecuteNonQueryAsync();
+        }
+        for (var i = 0; i < 8; i++)
+        {
+            await using var c = await ds.OpenConnectionAsync();
+            var now = Convert.ToInt32(await new NpgsqlCommand("SELECT pg_backend_pid()", c).ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+            if (now != pid) continue;
+            var v = (string)(await new NpgsqlCommand("""
+                SELECT coalesce(current_setting('app.request_iss', true), '') || '|' ||
+                       coalesce(current_setting('app.request_sub', true), '')
+                """, c).ExecuteScalarAsync())!;
+            return v == "|";
+        }
+        Console.WriteLine("FAIL pool reset: planted backend was not reused");
+        return false;
     }
 
     static string Mint(RsaSecurityKey key, Guid user, string adminType, Guid? partner) =>
@@ -902,6 +1029,15 @@ static class Req064Suite
         foreach (var p in ps) cmd.Parameters.Add(new() { Value = p ?? DBNull.Value });
         var value = await cmd.ExecuteScalarAsync();
         return value is true;
+    }
+
+    static async Task<string> ScalarText(NpgsqlDataSource ds, string sql, params object?[] ps)
+    {
+        await using var c = await ds.OpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand(sql, c);
+        foreach (var p in ps) cmd.Parameters.Add(new() { Value = p ?? DBNull.Value });
+        var value = await cmd.ExecuteScalarAsync();
+        return value is null or DBNull ? "" : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "";
     }
 
     static async Task<long> ScalarLong(NpgsqlDataSource ds, string sql, params object?[] ps)

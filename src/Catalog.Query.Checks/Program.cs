@@ -219,6 +219,7 @@ try
     await Exec(bootstrap, $"COMMENT ON DATABASE {DbName} IS 'floorfunds-scratch-dec192-query-nonproduct'");
     await Exec(bootstrap, $"CREATE ROLE {AdminRole} LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE ROLE {LoginRole} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
+    await Exec(bootstrap, $"CREATE ROLE {DbName}_auth_definer NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     Note($"scratch-created {DbName} owner {OwnerRole}");
 
     var migrateInfo = new ProcessStartInfo
@@ -237,6 +238,8 @@ try
     if (migrate.ExitCode != 0 || !migOut.Contains("update: ok", StringComparison.Ordinal))
         throw new InvalidOperationException($"migrate failed ({migrate.ExitCode}) {migErr}");
     Note("migrate update: ok");
+    await using (var bootDb = NpgsqlDataSource.Create(Cs(BootstrapRole, DbName, false)))
+        await Exec(bootDb, await File.ReadAllTextAsync(Path.Combine(repo, "db", "kit", "definer-owner.sql")));
 
     ownerDs = NpgsqlDataSource.Create(Cs(OwnerRole, DbName, false));
     await Exec(ownerDs, CatalogPrincipalSeed);
@@ -328,7 +331,7 @@ finally
             if (ownerOk is "true" or "True" or "t")
                 await Exec(drop, $"DROP DATABASE {DbName}");
         }
-        foreach (var role in new[] { AdminRole, LoginRole, OwnerRole })
+        foreach (var role in new[] { AdminRole, LoginRole, OwnerRole, DbName + "_auth_definer" })
         {
             var present = await Scalar(drop, $"SELECT count(*) FROM pg_roles WHERE rolname = '{role}'");
             if (present == "1")

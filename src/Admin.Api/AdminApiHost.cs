@@ -16,7 +16,8 @@ public static class AdminApiHost
     {
         var opt = options.Validated();
         var schema = JsonSchemaLite.Load(await File.ReadAllTextAsync(opt.AuditSchemaPath));
-        var ds = NpgsqlDataSource.Create(opt.ConnectionString);
+        var built = new NpgsqlConnectionStringBuilder(opt.ConnectionString) { NoResetOnClose = false };
+        var ds = NpgsqlDataSource.Create(built.ConnectionString);
         await GuardRoleAsync(ds);
 
         var b = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [] });

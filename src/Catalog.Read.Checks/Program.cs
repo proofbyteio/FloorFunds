@@ -121,6 +121,7 @@ try
     await Exec(bootstrap, $"COMMENT ON DATABASE {DbName} IS 'floorfunds-scratch-dec192-read'");
     await Exec(bootstrap, $"CREATE ROLE {AdminRole} LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE ROLE {LoginRole} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
+    await Exec(bootstrap, $"CREATE ROLE {DbName}_auth_definer NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     var ownerName = await Scalar(bootstrap, $"SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_database WHERE datname = '{DbName}'");
     if (ownerName != OwnerRole)
         throw new InvalidOperationException($"scratch owner is {ownerName}");
@@ -144,6 +145,8 @@ try
         throw new InvalidOperationException($"migrate failed ({migrate.ExitCode}) {migErr}");
     log.Add("migrate update: ok");
     Console.WriteLine("migrate update: ok");
+    await using (var bootDb = NpgsqlDataSource.Create(Cs(BootstrapRole, DbName, false)))
+        await Exec(bootDb, await File.ReadAllTextAsync(Path.Combine(repo, "db", "kit", "definer-owner.sql")));
 
     await using var owner = NpgsqlDataSource.Create(Cs(OwnerRole, DbName, false));
     await Exec(owner, CatalogPrincipalSeed);
@@ -341,6 +344,30 @@ try
     if (afterSuper == "||||0") Pass("successful-read-resets-pool", afterSuper);
     else Fail("successful-read-resets-pool", afterSuper);
 
+    var noResetBuilder = new NpgsqlConnectionStringBuilder(Cs(AdminRole, DbName, true))
+    {
+        NoResetOnClose = true,
+        MaxPoolSize = 1,
+    };
+    await using var noReset = NpgsqlDataSource.Create(noResetBuilder.ConnectionString);
+    var noResetReader = new NpgsqlCatalogReader(noReset);
+    await using (var leak = await noReset.OpenConnectionAsync())
+    {
+        await using var cmd = new NpgsqlCommand("""
+            SELECT set_config('app.request_iss', 'https://catalog.invalid/scope', false),
+                   set_config('app.request_sub', $1, false)
+            """, leak);
+        cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = partnerA.ToString("D") });
+        await cmd.ExecuteNonQueryAsync();
+        var seen = await new NpgsqlCommand("SELECT count(*) FROM catalog.registered_entry", leak).ExecuteScalarAsync();
+        if (Convert.ToString(seen, System.Globalization.CultureInfo.InvariantCulture) != "2")
+            throw new InvalidOperationException($"no-reset plant count {seen}");
+    }
+    var clearedRead = await noResetReader.ListEntriesAsync(super, CancellationToken.None);
+    var afterClear = await PooledGuc(noReset);
+    if (clearedRead.Count == 3 && afterClear == "||||0") Pass("clear-wipes-principal-when-reset-disabled", afterClear);
+    else Fail("clear-wipes-principal-when-reset-disabled", $"rows {clearedRead.Count} guc {afterClear}");
+
     await using var ownerReaderDs = NpgsqlDataSource.Create(Cs(OwnerRole, DbName, false));
     var ownerThrew = await ThrowsRole(() => new NpgsqlCatalogReader(ownerReaderDs).ListEntriesAsync(super, CancellationToken.None));
     if (ownerThrew) Pass("owner-role-refused", "CatalogReadRoleException");
@@ -378,7 +405,7 @@ finally
         if (ownerOk is "true" or "True" or "t")
             await Exec(drop, $"DROP DATABASE {DbName}");
     }
-    foreach (var role in new[] { AdminRole, LoginRole, OwnerRole })
+    foreach (var role in new[] { AdminRole, LoginRole, OwnerRole, DbName + "_auth_definer" })
     {
         var present = await Scalar(drop, $"SELECT count(*) FROM pg_roles WHERE rolname = '{role}'");
             if (present == "1")

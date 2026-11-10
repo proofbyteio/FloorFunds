@@ -52,3 +52,7 @@ BEGIN
 END
 $kit$;
 COMMIT;
+-- The authorization functions are owned by this role, not by the login database owner.
+-- It is not a kit role: no marker, no membership, no password. Preflight does not list it.
+SELECT format('CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION', :'db' || '_auth_definer')
+ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'db' || '_auth_definer') \gexec

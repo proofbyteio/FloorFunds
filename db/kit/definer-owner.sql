@@ -1,0 +1,34 @@
+-- Runs as a superuser, connected to the kit database. The migration user is NOCREATEROLE
+-- and is not a member of this role, so it cannot ALTER FUNCTION OWNER. No membership is granted.
+DO $own$
+DECLARE
+  r text := current_database() || '_auth_definer';
+  fn text;
+  names text[] := ARRAY[
+    'auth._request_user()',
+    'auth.actor_is_global()',
+    'auth.actor_is_any_admin()',
+    'auth.actor_has_any_location()',
+    'auth.actor_can_partner(uuid)',
+    'auth.actor_location_sees_partner(uuid)',
+    'auth.actor_has_location(uuid)',
+    'auth.actor_can_location(uuid, uuid)',
+    'auth.actor_sees_change(uuid, text, uuid, uuid)',
+    'auth.list_existing_partners()',
+    'auth.resolve_grant(text, uuid)',
+    'auth.read_partner_bounds(uuid)',
+    'auth.save_partner_bounds(uuid, bigint, integer, integer, uuid, timestamptz)',
+    'auth.record_login_write(text, uuid)'
+  ];
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_roles
+     WHERE rolname = r AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls AND NOT rolinherit
+  ) THEN
+    RAISE EXCEPTION 'auth definer role % must exist, NOLOGIN, NOINHERIT, and not a superuser', r;
+  END IF;
+  FOREACH fn IN ARRAY names LOOP
+    EXECUTE format('ALTER FUNCTION %s OWNER TO %I', fn, r);
+  END LOOP;
+END
+$own$;
