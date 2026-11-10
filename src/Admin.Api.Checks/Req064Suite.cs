@@ -371,20 +371,43 @@ static class Req064Suite
 
     static async Task Concurrency(NpgsqlDataSource owner)
     {
-        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var started = 0;
-        async Task<string> Revoke(Guid id)
+        // Session 1 stays inside the guarded transaction after its revoke has passed the
+        // check. Session 2 then revokes the other Super Admin. The advisory lock makes
+        // session 2 wait, so it sees the committed revoke and refuses. Without the lock
+        // both revokes pass.
+        var holding = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task<string> First()
         {
             await using var c = await owner.OpenConnectionAsync();
             await using var tx = await c.BeginTransactionAsync();
-            if (Interlocked.Increment(ref started) == 2) ready.TrySetResult();
-            await ready.Task.WaitAsync(TimeSpan.FromSeconds(10));
             try
             {
                 await using var cmd = new NpgsqlCommand("UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = $1 AND revoked_at IS NULL", c, tx);
-                cmd.Parameters.Add(new() { Value = id });
+                cmd.Parameters.Add(new() { Value = Asa });
                 var n = await cmd.ExecuteNonQueryAsync();
+                holding.TrySetResult();
+                await Task.Delay(TimeSpan.FromMilliseconds(400));
                 await tx.CommitAsync();
+                return n == 1 ? "ok" : "miss";
+            }
+            catch (PostgresException ex)
+            {
+                holding.TrySetResult();
+                return ex.SqlState + ":" + ex.MessageText;
+            }
+        }
+        async Task<string> Second()
+        {
+            await holding.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await using var c = await owner.OpenConnectionAsync();
+            await using var tx = await c.BeginTransactionAsync();
+            try
+            {
+                await using var cmd = new NpgsqlCommand("UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = $1 AND revoked_at IS NULL", c, tx);
+                cmd.Parameters.Add(new() { Value = Asa2 });
+                using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var n = await cmd.ExecuteNonQueryAsync(cancel.Token);
+                await tx.CommitAsync(cancel.Token);
                 return n == 1 ? "ok" : "miss";
             }
             catch (PostgresException ex)
@@ -392,10 +415,16 @@ static class Req064Suite
                 return ex.SqlState + ":" + ex.MessageText;
             }
         }
-        var results = await Task.WhenAll(Revoke(Asa), Revoke(Asa2));
+        var results = await Task.WhenAll(First(), Second());
+        var left = await ScalarLong(owner, """
+            SELECT count(*) FROM auth.admin_assignment a
+            JOIN auth.app_user u ON u.user_id = a.user_id
+            WHERE a.role_id = 'super_admin' AND a.scope_kind = 'global' AND a.status = 'active' AND a.revoked_at IS NULL
+              AND u.status = 'active'
+            """);
         var oks = results.Count(r => r == "ok");
         var fails = results.Count(r => r == "P0001:last_active_super_admin");
-        Check("last-active-sa-concurrency", oks == 1 && fails == 1, string.Join(" | ", results));
+        Check("last-active-sa-concurrency", oks == 1 && fails == 1 && left >= 1, string.Join(" | ", results) + $" left {left}");
         await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = NULL WHERE assignment_id = ANY($1)", new[] { Asa, Asa2 });
     }
 
