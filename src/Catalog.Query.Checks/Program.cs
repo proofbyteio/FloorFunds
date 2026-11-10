@@ -869,7 +869,7 @@ async Task Sql(NpgsqlConnection conn, NpgsqlTransaction tx, string sql, params o
 async Task SessionCleanupProof(Guid feeId)
 {
     Note("SECTION session-cleanup-before-driver-reset");
-    Note("The one-row GUC is resolved_global|resolved_partners|admin_type|partner_id|count of registered_entry for the global fee. on|||1 means the resolved flag is set and RLS returns that row.");
+    Note("The one-row GUC is resolved_global|resolved_partners|admin_type|partner_id|count of registered_entry for the global fee. on||||1 means the resolved flag is set, admin_type and partner_id are cleared, and RLS returns that row.");
 
     await using (var masked = ProbeSource(noResetOnClose: false))
     {
@@ -879,7 +879,7 @@ async Task SessionCleanupProof(Guid feeId)
             await PlantSessionSuper(conn);
             var before = await ReadSession(conn, feeId);
             pid = before.Pid;
-            ExpectSample("default-reset-before-close", before, pid, "on|||1", "before-close");
+            ExpectSample("default-reset-before-close", before, pid, "on||||1", "before-close");
         }
         await using (var conn = await masked.OpenConnectionAsync())
         {
@@ -896,12 +896,12 @@ async Task SessionCleanupProof(Guid feeId)
             await PlantSessionSuper(conn);
             var before = await ReadSession(conn, feeId);
             pid = before.Pid;
-            ExpectSample("reset-disabled-before-close", before, pid, "on|||1", "before-close");
+            ExpectSample("reset-disabled-before-close", before, pid, "on||||1", "before-close");
         }
         await using (var conn = await retained.OpenConnectionAsync())
         {
             var after = await ReadSession(conn, feeId);
-            ExpectSample("reset-disabled-after-return", after, pid, "on|||1", "after-return-reset-disabled");
+            ExpectSample("reset-disabled-after-return", after, pid, "on||||1", "after-return-reset-disabled");
         }
         var history = await new CatalogQuery(new NpgsqlCatalogStorage(retained)).HistoryAsync(
             actors[0].Principal, CatalogFamily.FeeType, feeId, null, CancellationToken.None);
@@ -939,7 +939,7 @@ async Task ErrorRollbackReuse(Guid feeId)
     await using (var conn = await source.OpenConnectionAsync())
     {
         var held = await ReadSession(conn, feeId);
-        ExpectSample("error-path-reset-disabled-still-holds-session-guc", held, plantedPid, "on|||1", "after-return-before-error");
+        ExpectSample("error-path-reset-disabled-still-holds-session-guc", held, plantedPid, "on||||1", "after-return-before-error");
     }
 
     await using var lockConn = await ownerDs!.OpenConnectionAsync();

@@ -114,8 +114,15 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     static async Task SafeRollback(NpgsqlConnection? c, NpgsqlTransaction? tx)
     {
-        if (tx?.Connection is null) return;
-        try { await tx.RollbackAsync(); }
+        if (tx is null) return;
+        try
+        {
+            // RollbackAsync disposes the transaction. The race handler rolls back before it throws Fail,
+            // so this second rollback must tolerate an already-disposed transaction.
+            if (tx.Connection is null) return;
+            await tx.RollbackAsync();
+        }
+        catch (ObjectDisposedException) { }
         catch { if (c is not null) { try { NpgsqlConnection.ClearPool(c); } catch { } } }
     }
 
