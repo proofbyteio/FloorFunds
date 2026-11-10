@@ -36,5 +36,6 @@
     <EmbeddedResource Include="Migrations\CatalogMasterData.Down.sql" />
     <EmbeddedResource Include="Migrations\Req064Assignment.sql" />
     <EmbeddedResource Include="Migrations\Req064RoleScope.sql" />
+    <EmbeddedResource Include="Migrations\Req064HistoryPartner.sql" />
   </ItemGroup>
 </Project>

@@ -141,6 +141,7 @@ static class Req064Suite
                 mixGrant && mixA.Status == 200 && mixB.Status == 404 && mixClient.Status == 403
                 && mixScreens.Contains("create_location") && mixScreens.Contains("config") && !mixScreens.Contains("create_client"),
                 $"grant {mixGrant} A {mixA.Status} B {mixB.Status} nav {mixNav.Status} {Clip(mixNav.Body)} client {mixClient.Status}");
+            Check("history-label-uses-the-record-partner", await HistoryLabel(owner));
 
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", paTok);
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config", saTok);
@@ -353,6 +354,98 @@ static class Req064Suite
         var fails = results.Count(r => r == "P0001:last_active_super_admin");
         Check("last-active-sa-concurrency", oks == 1 && fails == 1, string.Join(" | ", results));
         await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = NULL WHERE assignment_id = ANY($1)", new[] { Asa, Asa2 });
+    }
+
+    static async Task<bool> HistoryLabel(NpgsqlDataSource owner)
+    {
+        // Both is Partner Admin at Pa and at Pb. The actor list is ordered Pa then Pb,
+        // so the old label (the first partner) would store Pa on a row owned by Pb.
+        await using var c = await owner.OpenConnectionAsync();
+        await using var tx = await c.BeginTransactionAsync();
+        var hist = Guid.Parse("5f0c3e1a-0064-4000-8000-000000000042");
+        try
+        {
+            await using (var grant = new NpgsqlCommand("""
+                SELECT (SELECT count(*) FROM unnest(partner_ids) x WHERE x = $3) = 1
+                   AND (SELECT count(*) FROM unnest(partner_ids) x WHERE x = $4) = 1
+                   AND role_wire = 'partner_admin' AND NOT global_admin
+                  FROM auth.resolve_grant($1, $2)
+                """, c, tx))
+            {
+                grant.Parameters.Add(new() { Value = Issuer });
+                grant.Parameters.Add(new() { Value = Both });
+                grant.Parameters.Add(new() { Value = Pa });
+                grant.Parameters.Add(new() { Value = Pb });
+                if (await grant.ExecuteScalarAsync() is not true)
+                {
+                    Console.WriteLine("FAIL history-label: Both is not Partner Admin at both partners");
+                    return false;
+                }
+            }
+            await using (var guc = new NpgsqlCommand("""
+                SELECT set_config('app.resolved_global_admin', '', true),
+                       set_config('app.resolved_partner_ids', $1 || ',' || $2, true),
+                       set_config('app.resolved_location_ids', '', true),
+                       set_config('app.actor_user_id', $3, true),
+                       set_config('app.correlation_id', 'req064-history-label', true),
+                       set_config('app.reason', 'history label', true),
+                       set_config('app.admin_type', '', true),
+                       set_config('app.partner_id', '', true)
+                """, c, tx))
+            {
+                guc.Parameters.Add(new() { Value = Pa.ToString("D") });
+                guc.Parameters.Add(new() { Value = Pb.ToString("D") });
+                guc.Parameters.Add(new() { Value = Both.ToString("D") });
+                await guc.ExecuteNonQueryAsync();
+            }
+            await using (var fn = new NpgsqlCommand("""
+                SELECT catalog.history_partner($1, ARRAY[$2, $3]::uuid[], false) = $1
+                   AND catalog.history_partner($2, ARRAY[$3, $2]::uuid[], false) = $2
+                   AND catalog.history_partner(NULL, ARRAY[$2]::uuid[], false) = $2
+                   AND catalog.history_partner(NULL, ARRAY[$2, $3]::uuid[], true) IS NULL
+                """, c, tx))
+            {
+                fn.Parameters.Add(new() { Value = Pb });
+                fn.Parameters.Add(new() { Value = Pa });
+                fn.Parameters.Add(new() { Value = Pb });
+                if (await fn.ExecuteScalarAsync() is not true)
+                {
+                    Console.WriteLine("FAIL history-label: history_partner did not follow the record");
+                    return false;
+                }
+            }
+            await using (var entry = new NpgsqlCommand("""
+                INSERT INTO catalog.registered_entry (
+                  entry_id, family, entry_class, owner_partner_id, code, is_active, row_version,
+                  created_by, created_at, updated_by, updated_at)
+                VALUES ($1, 'fee_type', 'descriptive', $2, 'req064hist', true, 1, $3, clock_timestamp(), $3, clock_timestamp())
+                """, c, tx))
+            {
+                entry.Parameters.Add(new() { Value = hist });
+                entry.Parameters.Add(new() { Value = Pb });
+                entry.Parameters.Add(new() { Value = Both });
+                await entry.ExecuteNonQueryAsync();
+            }
+            await using var label = new NpgsqlCommand(
+                "SELECT actor_partner_id FROM catalog.history_pending WHERE entry_id = $1", c, tx);
+            label.Parameters.Add(new() { Value = hist });
+            var stored = await label.ExecuteScalarAsync();
+            if (stored is not Guid partner || partner != Pb)
+            {
+                Console.WriteLine($"FAIL history-label: stored {stored}");
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("FAIL history-label :: " + ex.GetType().Name + " " + ex.Message);
+            return false;
+        }
+        finally
+        {
+            try { await tx.RollbackAsync(); } catch (ObjectDisposedException) { }
+        }
     }
 
     static async Task Seed(NpgsqlDataSource owner)
