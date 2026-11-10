@@ -142,6 +142,13 @@ static class Req064Suite
                 && mixScreens.Contains("create_location") && mixScreens.Contains("config") && !mixScreens.Contains("create_client"),
                 $"grant {mixGrant} A {mixA.Status} B {mixB.Status} nav {mixNav.Status} {Clip(mixNav.Body)} client {mixClient.Status}");
             Check("history-label-uses-the-record-partner", await HistoryLabel(owner));
+            var wrongIssuer = await ScalarBool(owner,
+                "SELECT outcome = 'deny' AND role_wire = 'none' FROM auth.resolve_grant($1, $2)",
+                "https://not-the-issuer.example", Mix);
+            var rightIssuer = await ScalarBool(owner,
+                "SELECT outcome = 'grant' AND role_wire = 'partner_admin' AND partner_ids = ARRAY[$3]::uuid[] FROM auth.resolve_grant($1, $2)",
+                Issuer, Mix, Pa);
+            Check("wrong-issuer-does-not-resolve", wrongIssuer && rightIssuer, $"wrong {wrongIssuer} right {rightIssuer}");
 
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", paTok);
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config", saTok);
@@ -457,6 +464,11 @@ static class Req064Suite
               ($7, NULL, 'active')
             """, Sa, Sa2, Upa, Both, None, Cash, Mix);
         await Exec(owner, """
+            INSERT INTO auth.user_issuer (user_id, issuer)
+            SELECT x, $1 FROM unnest($2::uuid[]) AS x
+            ON CONFLICT (user_id) DO UPDATE SET issuer = EXCLUDED.issuer
+            """, Issuer, new[] { Sa, Sa2, Upa, Both, None, Cash, Mix });
+        await Exec(owner, """
             INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
               ($1, $2, 'super_admin', 'global', NULL, 'active', 1, $2, now()),
               ($3, $4, 'super_admin', 'global', NULL, 'active', 1, $2, now()),
@@ -534,6 +546,8 @@ static class Req064Suite
         await ExecQuiet(owner, "DELETE FROM auth.location_login_config_change WHERE location_id = ANY($1)", new[] { La, Lb });
         await ExecQuiet(owner, "DELETE FROM auth.location_login_config WHERE location_id = ANY($1)", new[] { La, Lb });
         await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = ANY($1)", new[] { La, Lb });
+        await ExecQuiet(owner, "DELETE FROM auth.user_issuer WHERE user_id = ANY($1)",
+            new[] { Sa, Sa2, Upa, Both, None, Cash, Mix, Guid.Parse("5f0c3e1a-0064-4000-8000-000000000037") });
         await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE user_id = ANY($1) OR assignment_id = ANY($2)",
             new[] { Sa, Sa2, Upa, Both, None, Cash, Mix, Guid.Parse("5f0c3e1a-0064-4000-8000-000000000037") },
             new[] { Asa, Asa2, Apa, AbothA, AbothB, Acash, AmixA, AmixB, Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000a7") });

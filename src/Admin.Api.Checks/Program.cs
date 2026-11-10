@@ -81,6 +81,17 @@ const string Issuer = "https://admin-login.test.invalid";
 string Arn(string name, string region = "us-west-2", string acct = "000000000000") => $"arn:aws:secretsmanager:{region}:{acct}:secret:FAKE-test-only/{name}-AbCdEf";
 // The deployment's one app-registration secret reference, Entra:SecretRef [TLD 2026-11-04 9:49, D-51]. Fake account 000000000000.
 string DeployArn = Arn("deploy/app-reg");
+// M-A: resolve_grant matches issuer and subject. Stand-in issuers cannot live in external_login.
+await using (var issuerBind = await ownerDs.OpenConnectionAsync())
+await using (var issuerCmd = new NpgsqlCommand("""
+    INSERT INTO auth.user_issuer (user_id, issuer)
+    SELECT u.user_id, $1 FROM auth.app_user u
+    WHERE NOT EXISTS (SELECT 1 FROM auth.user_issuer i WHERE i.user_id = u.user_id)
+    """, issuerBind))
+{
+    issuerCmd.Parameters.Add(new NpgsqlParameter { Value = Issuer });
+    await issuerCmd.ExecuteNonQueryAsync();
+}
 
 // ---------- keys, options ----------
 using var rsa = RSA.Create(2048);
