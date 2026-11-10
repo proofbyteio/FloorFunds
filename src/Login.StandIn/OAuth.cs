@@ -85,6 +85,19 @@ public static class OAuth
                 if (hlRaw is not null && st.Auth.HubLaunches.TryGetValue(AuthStore.H(hlRaw), out hl)) { hlFresh = !hl.Used; hl.Used = true; }
                 if (!isHandoffClient) { hlRaw = null; hl = null; hlFresh = false; }
 
+                // Dev shell only. Every other client still refuses an admin session below.
+                if (client.ClientId == Clients.DevShellClientId)
+                {
+                    var ret = QueryHelpers.AddQueryString(issuerPath + "/connect/authorize", keep);
+                    if (s is null || s.Kind == "recovery_reenroll" || s.AdminType is not ("super" or "partner"))
+                    {
+                        if (prompt == "none") return Back(redirectUri, issuer, state, ("error", "login_required"));
+                        return Results.Redirect(issuerPath + "/admin?ret=" + Uri.EscapeDataString(ret));
+                    }
+                    if (!st.Users.Values.Any(u => u.UserId == s.UserId)) return Back(redirectUri, issuer, state, ("error", "access_denied"));
+                    return IssueDevShell(c, client, s, redirectUri, state, challenge, Q("nonce"), scopes, now);
+                }
+
                 if (s is not null && (s.Kind == "recovery_reenroll" || s.AdminType is not null))
                 {
                     // 5.13 then 5.12 [ASSUMPTION A34 order], before rules 1-6; [ASSUMPTION A35] applied to every client, not only the hand-off.
@@ -169,6 +182,21 @@ public static class OAuth
             if (!SignIn.TryEmit(st, ev)) return Back(redirectUri, issuer, state, ("error", "temporarily_unavailable"));
             if (method == "hub_handoff") { s.HandoffUsed = true; s.CageConsumed = true; } // rules 3 and 6
             if (method == "interactive" && client.Handoff) s.InteractiveUsed = true;
+            var code = TokenIssuer.NewHandle();
+            st.Auth.Codes[AuthStore.H(code)] = new CodeGrant(client.ClientId, redirectUri, challenge, nonce, string.Join(' ', scopes), s.Sid, now);
+            s.CodeIssued = true;
+            return Back(redirectUri, issuer, state, ("code", code));
+        }
+
+        IResult IssueDevShell(HttpContext c, OAuthClient client, LoginSession s, string redirectUri, string? state, string challenge,
+            string? nonce, IEnumerable<string> scopes, DateTimeOffset now)
+        {
+            s.LastSeen = now;
+            var details = new JsonObject { ["method"] = "interactive", ["auth_time"] = s.AuthTime.ToUnixTimeSeconds(), ["amr"] = new JsonArray(s.Amr.Select(a => (JsonNode)a!).ToArray()) };
+            var ev = Audit.Build(now, "auth.app.signed_in", "success", s.UserId, details, Handoff.SessionScope(st, s), Ip(c), null, s.Sid);
+            ev["action"] = "login"; ev["target"] = new JsonObject { ["type"] = "app", ["id"] = client.ClientId }; ev["session_kind"] = s.Kind;
+            if (s.AdminType is not null) ev["admin_type"] = s.AdminType;
+            if (!SignIn.TryEmit(st, ev)) return Back(redirectUri, issuer, state, ("error", "temporarily_unavailable"));
             var code = TokenIssuer.NewHandle();
             st.Auth.Codes[AuthStore.H(code)] = new CodeGrant(client.ClientId, redirectUri, challenge, nonce, string.Join(' ', scopes), s.Sid, now);
             s.CodeIssued = true;
@@ -286,7 +314,17 @@ public static class OAuth
                 else return TokenError(c, "unsupported_grant_type");
 
                 var u2 = st.Users.Values.First(u => u.UserId == s.UserId);
-                var l2 = SignIn.Location(st.Fixtures, s.Slug)!;
+                JsonLookup org;
+                if (client.ClientId == Clients.DevShellClientId)
+                {
+                    if (s.AdminType is not ("super" or "partner")) return TokenError(c, "invalid_grant");
+                    org = new JsonLookup(s.PartnerId ?? "", null);
+                }
+                else
+                {
+                    var l2 = SignIn.Location(st.Fixtures, s.Slug)!;
+                    org = new JsonLookup(l2.PartnerId, l2.CachdClientId);
+                }
                 var idt = tokens.Id(s, client, now, nonce);
                 st.Auth.IdTokenSid[AuthStore.H(idt)] = s.Sid;
                 JsonObject body;
@@ -294,9 +332,9 @@ public static class OAuth
                 if (client.Aud is null) body = new JsonObject { ["id_token"] = idt, ["scope"] = scope };
                 else
                 {
-                    var (at, jti, _) = tokens.Access(s, client, scope, now, u2, new JsonLookup(l2.PartnerId, l2.CachdClientId));
+                    var (at, jti, exp) = tokens.Access(s, client, scope, now, u2, org);
                     st.Auth.Access[jti] = new AccessRec(jti, client.ClientId, s.Sid, fam.Id);
-                    body = new JsonObject { ["access_token"] = at, ["token_type"] = "Bearer", ["expires_in"] = TokenIssuer.AccessLifetime, ["id_token"] = idt, ["scope"] = scope };
+                    body = new JsonObject { ["access_token"] = at, ["token_type"] = "Bearer", ["expires_in"] = exp - now.ToUnixTimeSeconds(), ["id_token"] = idt, ["scope"] = scope };
                 }
                 if (scope.Split(' ').Contains("offline_access"))
                 {

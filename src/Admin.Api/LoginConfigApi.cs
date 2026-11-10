@@ -734,6 +734,38 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         return new string(s);
     }
 
+    /// <summary>Locations the resolved grant can already read. An empty list is 200, not an error.</summary>
+    public Task<IResult> LocationsAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (!who.IsAdmin) throw Err(403, "forbidden");
+        await using var cmd = new NpgsqlCommand("SELECT location_id, partner_id, name, slug FROM auth.location ORDER BY name", c, tx);
+        var rows = new JsonArray();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+            rows.Add(new JsonObject
+            {
+                ["location_id"] = r.GetGuid(0).ToString(),
+                ["partner_id"] = r.GetGuid(1).ToString(),
+                ["name"] = r.GetString(2),
+                ["slug"] = r.GetString(3),
+            });
+        return Json(200, new JsonObject { ["locations"] = rows });
+    });
+
+    /// <summary>
+    /// Partners that already exist, filtered by the resolved grant. PQ-284 reversible default:
+    /// the shell offers this list and does not accept a typed partner id.
+    /// </summary>
+    public Task<IResult> PartnersAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (!who.IsAdmin) throw Err(403, "forbidden");
+        await using var cmd = new NpgsqlCommand("SELECT partner_id FROM auth.list_existing_partners()", c, tx);
+        var ids = new JsonArray();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync()) ids.Add(r.GetGuid(0).ToString());
+        return Json(200, new JsonObject { ["partners"] = ids });
+    });
+
     public Task<IResult> NavAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         if (c.State != System.Data.ConnectionState.Open || tx.Connection is null) throw Err(403, "forbidden");
@@ -750,6 +782,14 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             screens.Add("config");
         }
         return Json(200, new JsonObject { ["screens"] = screens });
+    });
+
+    /// <summary>Catalog stays read-only in this shell. The screen is granted to an admin; the write is not performed.</summary>
+    public Task<IResult> CatalogScreenAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (c.State != System.Data.ConnectionState.Open || tx.Connection is null) throw Err(403, "forbidden");
+        if (!who.IsAdmin) throw Err(403, "forbidden");
+        return Json(200, new JsonObject { ["screen"] = "catalog", ["write"] = "held" });
     });
 
     /// <summary>Create Client stays held. A Super Admin may see the screen. The write is not performed.</summary>

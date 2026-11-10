@@ -301,6 +301,31 @@ $fn$;
 
 REVOKE ALL ON FUNCTION auth.resolve_grant(text, uuid) FROM PUBLIC;
 
+-- Existing partners for the location-create picker. The caller sees a partner only
+-- through the resolved grant: global Super Admin, or a partner id on that grant.
+-- PQ-284: this list is the reversible default. The shell does not accept a typed partner id.
+CREATE FUNCTION auth.list_existing_partners()
+  RETURNS TABLE (partner_id uuid)
+  LANGUAGE sql
+  STABLE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, auth
+AS $partners$
+  SELECT DISTINCT p.partner_id
+    FROM (
+      SELECT u.partner_id FROM auth.app_user u WHERE u.partner_id IS NOT NULL
+      UNION
+      SELECT l.partner_id FROM auth.location l
+      UNION
+      SELECT a.partner_id FROM auth.admin_assignment a WHERE a.partner_id IS NOT NULL
+    ) p
+   WHERE current_setting('app.resolved_global_admin', true) = 'on'
+      OR p.partner_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ','))
+   ORDER BY 1;
+$partners$;
+
+REVOKE ALL ON FUNCTION auth.list_existing_partners() FROM PUBLIC;
+
 DO $req064$
 DECLARE
   a text := current_database() || '_admin_api';
@@ -309,6 +334,7 @@ DECLARE
 BEGIN
   EXECUTE format('REVOKE ALL ON auth.admin_assignment FROM PUBLIC, %I', a);
   EXECUTE format('GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid) TO %I', a);
+  EXECUTE format('GRANT EXECUTE ON FUNCTION auth.list_existing_partners() TO %I', a);
   EXECUTE 'DROP POLICY IF EXISTS location_admin ON auth.location';
   EXECUTE format('CREATE POLICY location_admin ON auth.location FOR ALL TO %I USING %s WITH CHECK %s', a, scope, scope);
   EXECUTE 'DROP POLICY IF EXISTS prb_admin ON auth.partner_reason_bounds';

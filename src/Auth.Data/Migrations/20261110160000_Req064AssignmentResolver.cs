@@ -19,6 +19,7 @@ namespace Auth.Data.Migrations
             DROP TRIGGER IF EXISTS app_user_last_sa ON auth.app_user;
             DROP TRIGGER IF EXISTS admin_assignment_last_sa ON auth.admin_assignment;
             DROP FUNCTION IF EXISTS auth.resolve_grant(text, uuid);
+            DROP FUNCTION IF EXISTS auth.list_existing_partners();
             DROP FUNCTION IF EXISTS auth._last_sa_truncate_guard();
             DROP FUNCTION IF EXISTS auth._last_sa_guard();
             DROP SEQUENCE IF EXISTS auth.resolver_read_seq;

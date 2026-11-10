@@ -45,7 +45,10 @@ public static class AdminApiHost
         // Slice A (TLD 06:59 route, LD 12b1d9cd): per-partner reason-length bounds.
         app.MapGet("/api/orgs/partners/{partner_id}/login-config/reason-bounds", (HttpContext ctx, string partner_id) => api.GetReasonBoundsAsync(ctx, partner_id));
         app.MapPut("/api/orgs/partners/{partner_id}/login-config/reason-bounds", (HttpContext ctx, string partner_id) => api.PutReasonBoundsAsync(ctx, partner_id));
+        app.MapGet("/api/orgs/locations", (Func<HttpContext, Task<IResult>>)(ctx => api.LocationsAsync(ctx)));
+        app.MapGet("/api/screens/location-partners", (Func<HttpContext, Task<IResult>>)(ctx => api.PartnersAsync(ctx)));
         app.MapGet("/api/nav", (Func<HttpContext, Task<IResult>>)(ctx => api.NavAsync(ctx)));
+        app.MapGet("/api/screens/catalog", (Func<HttpContext, Task<IResult>>)(ctx => api.CatalogScreenAsync(ctx)));
         app.MapGet("/api/screens/create-client", (Func<HttpContext, Task<IResult>>)(ctx => api.CreateClientAsync(ctx)));
         app.MapPost("/api/screens/create-client", (Func<HttpContext, Task<IResult>>)(ctx => api.CreateClientWriteAsync(ctx)));
         return app;

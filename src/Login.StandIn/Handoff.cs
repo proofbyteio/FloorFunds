@@ -107,10 +107,20 @@ public static class Handoff
 
         // Minimal /admin sign-in (UX 05 ids): password, then TOTP or a recovery code. [ASSUMPTION A33] no lockout, attestation or
         // re-enrolment flow; a recovery code makes a recovery_reenroll session with amr [pwd] (5.13). Not a full /admin build.
-        string Page(string? err, int step, string t) => $"""
+        // Only the dev-shell authorize URL may be resumed after admin MFA. Anything else is dropped.
+        string? AdminRet(string? ret)
+        {
+            if (string.IsNullOrEmpty(ret) || ret.Length > 2000) return null;
+            if (!ret.StartsWith(issuerPath + "/connect/authorize?", StringComparison.Ordinal)) return null;
+            if (!ret.Contains("client_id=" + Clients.DevShellClientId, StringComparison.Ordinal)) return null;
+            return ret;
+        }
+        string RetField(string? ret) => ret is null ? "" : $"""<input type="hidden" name="ret" value="{E(ret)}">""";
+        string Page(string? err, int step, string t, string? ret = null) => $"""
 <div data-testid="error-area" role="alert"><div data-testid="error-admin-sign-in">{(err is null ? "" : E(err))}</div></div>
 """ + (step == 1 ? $"""
 <form method="post" action="{issuerPath}/admin"><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
+{RetField(ret)}
 <label>Username <input data-testid="field-admin-username" name="username"></label>
 <label>Password <input data-testid="field-admin-password" name="password" type="password"></label>
 <button data-testid="admin-signin-submit" type="submit">Sign in</button></form>
@@ -122,15 +132,16 @@ public static class Handoff
 <label>Recovery code <input data-testid="field-admin-recovery-code" name="recovery_code"></label>
 <button data-testid="admin-recovery-submit" type="submit">Use recovery code</button></form>
 """);
-        IResult Admin(HttpContext c, string? err, int step) => SignIn.Html("page-admin-sign-in", Page(err, step, af.GetAndStoreTokens(c).RequestToken!));
+        IResult Admin(HttpContext c, string? err, int step, string? ret = null) => SignIn.Html("page-admin-sign-in", Page(err, step, af.GetAndStoreTokens(c).RequestToken!, ret));
         void Cookie(HttpContext c, string n, string v) => c.Response.Cookies.Append(n, v, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Lax, Path = issuerPath, Secure = c.Request.IsHttps });
 
-        app.MapGet(issuerPath + "/admin", (HttpContext c) => { SignIn.Headers(c, ports.Control); lock (st.Gate) return Admin(c, null, 1); });
+        app.MapGet(issuerPath + "/admin", (HttpContext c) => { SignIn.Headers(c, ports.Control); var ret = AdminRet(c.Request.Query["ret"].ToString()); lock (st.Gate) return Admin(c, null, 1, ret); });
         app.MapPost(issuerPath + "/admin", async (HttpContext c) =>
         {
             SignIn.Headers(c, ports.Control);
             if (!await Af(af, c)) return Results.BadRequest();
             var f = await c.Request.ReadFormAsync();
+            var ret = AdminRet(f["ret"].ToString());
             lock (st.Gate)
             {
                 var key = f["username"].ToString().Trim().ToLowerInvariant();
@@ -138,14 +149,14 @@ public static class Handoff
                 var now = st.Clock.Now;
                 bool hashOk = SignIn.PasswordMatches(u, f["password"].ToString()); // OQ-11 dummy hash for unknown users
                 // SEC77 (TL 9:42, F12): /admin gets the lockout too.
-                if (u is not null && SignIn.Locked(u, now)) return Admin(c, SignIn.Generic, 1);
+                if (u is not null && SignIn.Locked(u, now)) return Admin(c, SignIn.Generic, 1, ret);
                 bool ok = hashOk && u!.Status == "active";
                 if (!ok)
                 {
                     if (u is not null) SignIn.CountFailure(st, u, SignIn.Limit(st, u, null), now, AdminScope(u), c.Connection.RemoteIpAddress?.ToString(), null);
-                    return Admin(c, SignIn.Generic, 1);
+                    return Admin(c, SignIn.Generic, 1, ret);
                 }
-                var tx = new SignInTx { Id = TokenIssuer.NewHandle(), Slug = "", Purpose = "admin", Stage = "mfa", Username = u!.Username, NonceAt = st.Clock.Now, PreMfaAt = now };
+                var tx = new SignInTx { Id = TokenIssuer.NewHandle(), Slug = "", Purpose = "admin", Stage = "mfa", Username = u!.Username, NonceAt = st.Clock.Now, PreMfaAt = now, ReturnTo = ret };
                 st.Auth.Tx[tx.Id] = tx; Cookie(c, SignIn.TxCookie, tx.Id);
                 return Admin(c, null, 2);
             }
@@ -184,7 +195,8 @@ public static class Handoff
                 st.Auth.Sessions[s.Sid] = s;
                 c.Response.Cookies.Delete(SignIn.TxCookie, new CookieOptions { Path = issuerPath });
                 Cookie(c, SignIn.SessionCookie, s.Sid);
-                return SignIn.Hub(st, s);
+                var back = AdminRet(tx.ReturnTo);
+                return back is null ? SignIn.Hub(st, s) : Results.Redirect(back);
             }
         });
     }
