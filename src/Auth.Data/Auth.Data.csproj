@@ -38,5 +38,6 @@
     <EmbeddedResource Include="Migrations\Req064RoleScope.sql" />
     <EmbeddedResource Include="Migrations\Req064HistoryPartner.sql" />
     <EmbeddedResource Include="Migrations\Req064Issuer.sql" />
+    <EmbeddedResource Include="Migrations\Req064Principal.sql" />
   </ItemGroup>
 </Project>

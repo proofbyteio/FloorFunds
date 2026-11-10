@@ -35,7 +35,7 @@ BEGIN
     INTO a FROM pg_roles WHERE rolname = r;
   IF NOT FOUND THEN
     BEGIN  -- KF-A: replace the original error (its text/context would contain the statement) by step + SQLSTATE
-      EXECUTE format('CREATE ROLE %I LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD %L', r, p);
+      EXECUTE format('CREATE ROLE %I LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD %L', r, p);
     EXCEPTION WHEN OTHERS THEN
       RAISE EXCEPTION 'floorfunds-kit: % failed (%)', 'CREATE ROLE ' || quote_ident(r), SQLSTATE;
     END;
@@ -71,7 +71,7 @@ BEGIN
     RAISE EXCEPTION 'floorfunds-kit: refusing to alter role %: it has role memberships (the kit uses none): %', r, bad;
   END IF;
   BEGIN  -- KF-A: as above
-    EXECUTE format('ALTER ROLE %I LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD %L', r, p);
+    EXECUTE format('ALTER ROLE %I LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD %L', r, p);
   EXCEPTION WHEN OTHERS THEN
     RAISE EXCEPTION 'floorfunds-kit: % failed (%)', 'ALTER ROLE ' || quote_ident(r), SQLSTATE;
   END;

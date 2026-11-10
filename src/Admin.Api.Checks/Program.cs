@@ -92,6 +92,31 @@ await using (var issuerCmd = new NpgsqlCommand("""
     issuerCmd.Parameters.Add(new NpgsqlParameter { Value = Issuer });
     await issuerCmd.ExecuteNonQueryAsync();
 }
+// The 788 checks resolve authority in TestDirectory. Row security reads assignments, so these
+// token subjects need a matching row. They are removed in the cleanup below.
+async Task BindAdminGrant(string sql, params object[] ps)
+{
+    await using var c = await ownerDs.OpenConnectionAsync();
+    await using var cmd = new NpgsqlCommand(sql, c);
+    foreach (var p in ps) cmd.Parameters.Add(new NpgsqlParameter { Value = p });
+    await cmd.ExecuteNonQueryAsync();
+}
+await BindAdminGrant("""
+    INSERT INTO auth.app_user (user_id, partner_id, status) VALUES
+      ($1, NULL, 'active'), ($2, NULL, 'active'), ($3, NULL, 'active'), ($4, NULL, 'active')
+    ON CONFLICT (user_id) DO NOTHING
+    """, U_SA, U_PA, U_PB, U_RD);
+await BindAdminGrant("""
+    INSERT INTO auth.user_issuer (user_id, issuer) VALUES ($1, $5), ($2, $5), ($3, $5), ($4, $5)
+    ON CONFLICT (user_id) DO UPDATE SET issuer = EXCLUDED.issuer
+    """, U_SA, U_PA, U_PB, U_RD, Issuer);
+await BindAdminGrant("""
+    INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
+      ($1, $1, 'super_admin', 'global', NULL, 'active', 1, $1, now()),
+      ($2, $2, 'partner_admin', 'partner', $4, 'active', 1, $1, now()),
+      ($3, $3, 'partner_admin', 'partner', $5, 'active', 1, $1, now())
+    ON CONFLICT (assignment_id) DO NOTHING
+    """, U_SA, U_PA, U_PB, P_A, P_B);
 
 // ---------- keys, options ----------
 using var rsa = RSA.Create(2048);
@@ -469,7 +494,7 @@ try
         try
         {
             await c50.StartAsync();
-            exitCode = await UiHost.RunAsync(uiDir, port, FreePort(port), personas, readerLocations, P_A, P_B, [T1, T2, T3], ownerDs, c50Port);
+            exitCode = await UiHost.RunAsync(uiDir, port, FreePort(port), personas, readerLocations, U_RD, P_A, P_B, [T1, T2, T3], ownerDs, c50Port);
             await c50.StopAsync();
         }
         finally { await c50.DisposeAsync(); }
@@ -655,7 +680,7 @@ try
     }
 
     // ================= 3. GET =================
-    readerLocations.Add(A1);
+    await UiHost.AllowReader(ownerDs, readerLocations, U_RD, U_SA, A1, true);
     {
         var r = await Get(Cfg(A1), PA);
         Ok("get: PA own -> 200 restricted view, ETag", r.Status == 200 && r.ETag == "\"1\"" && !Obj(r.Body).ContainsKey("oidc_authority"));
@@ -983,19 +1008,27 @@ try
         await using (var c = await ds.OpenConnectionAsync())
         {
             await using var tx = await c.BeginTransactionAsync();
+            async Task<long> CfgCount(Guid id)
+            {
+                await using var q = new NpgsqlCommand("SELECT count(*) FROM auth.location_login_config WHERE location_id = $1", c, tx);
+                q.Parameters.Add(new() { Value = id });
+                return (long)(await q.ExecuteScalarAsync())!;
+            }
             await using var q0 = new NpgsqlCommand("SELECT count(*) FROM auth.location_login_config", c, tx);
             var none = (long)(await q0.ExecuteScalarAsync())!;
-            await using var s = new NpgsqlCommand("SELECT set_config('app.resolved_partner_ids',$1,true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)", c, tx);
+            await using var s = new NpgsqlCommand("SELECT set_config('app.resolved_partner_ids',$1,true), set_config('app.resolved_global_admin','on',true), set_config('app.admin_type','super',true)", c, tx);
             s.Parameters.Add(new() { Value = P_A.ToString() });
             await s.ExecuteNonQueryAsync();
-            await using var q1 = new NpgsqlCommand("SELECT count(*) FROM auth.location_login_config WHERE location_id = $1", c, tx);
-            q1.Parameters.Add(new() { Value = B1 });
-            var b = (long)(await q1.ExecuteScalarAsync())!;
-            await using var qA = new NpgsqlCommand("SELECT count(*) FROM auth.location_login_config WHERE location_id = $1", c, tx);
-            qA.Parameters.Add(new() { Value = A1 });
-            var a = (long)(await qA.ExecuteScalarAsync())!;
+            var flagA = await CfgCount(A1);
+            var flagB = await CfgCount(B1);
+            await using var who = new NpgsqlCommand("SELECT set_config('app.request_iss',$1,true), set_config('app.request_sub',$2,true)", c, tx);
+            who.Parameters.Add(new() { Value = Issuer });
+            who.Parameters.Add(new() { Value = U_PA.ToString("D") });
+            await who.ExecuteNonQueryAsync();
+            var a = await CfgCount(A1);
+            var b = await CfgCount(B1);
             await tx.RollbackAsync();
-            Ok("K4: RLS backstop (no GUC -> 0 rows; resolved partner A -> A visible, B invisible)", none == 0 && b == 0 && a == 1, $"{none} {a} {b}");
+            Ok("K4: RLS backstop (no principal -> 0; forged flags stay 0; partner A principal sees A and not B)", none == 0 && flagA == 0 && flagB == 0 && a == 1 && b == 0, $"{none} {flagA} {flagB} {a} {b}");
         }
     }
 
@@ -2354,10 +2387,10 @@ try
         g = await Get(Cfg(LA), PA);
         Ok("Slice A location GET (P_A location, PA) -> reason_min_length 40, reason_max_length 120 (the partner's row)", g.Status == 200 && (int?)Obj(g.Body)["reason_min_length"] == 40 && (int?)Obj(g.Body)["reason_max_length"] == 120, Tg(g));
         if (g.Status == 200) ForSchema("login_config_get_restricted", g);
-        readerLocations.Add(LA);
+        await UiHost.AllowReader(ownerDs, readerLocations, U_RD, U_SA, LA, true);
         g = await Get(Cfg(LA), RD);
         Ok("Slice A location GET (org:V reader of the P_A location) -> 40/120", g.Status == 200 && (int?)Obj(g.Body)["reason_min_length"] == 40 && (int?)Obj(g.Body)["reason_max_length"] == 120, Tg(g));
-        readerLocations.Remove(LA);
+        await UiHost.AllowReader(ownerDs, readerLocations, U_RD, U_SA, LA, false);
         g = await Get(Cfg(A1), SA);
         Ok("Slice A location GET (SA) of the P_A location A1 -> 40/120 too (resolver keys on the location's partner)", g.Status == 200 && (int?)Obj(g.Body)["reason_min_length"] == 40, Tg(g));
         r = await Put(LA, PA, With(DbCfg(display: "Slice A 1"), "reason", new string('x', 39)), $"\"{Rv(LA)}\"");
@@ -2570,8 +2603,23 @@ finally
     await app.StopAsync();
     await app.DisposeAsync();
     // Cleanup as the owner, children first (the checks started on empty tables).
+    // Location assignments reference auth.location, so they go before the location delete.
     await using var c = await ownerDs.OpenConnectionAsync();
+    async Task DropGrant(string sql)
+    {
+        await using var drop = new NpgsqlCommand(sql, c);
+        drop.Parameters.Add(new NpgsqlParameter { Value = new[] { U_SA, U_PA, U_PB, U_RD } });
+        await drop.ExecuteNonQueryAsync();
+    }
+    await using (var off = new NpgsqlCommand("ALTER TABLE auth.admin_assignment DISABLE TRIGGER USER", c)) await off.ExecuteNonQueryAsync();
+    await using (var off = new NpgsqlCommand("ALTER TABLE auth.app_user DISABLE TRIGGER USER", c)) await off.ExecuteNonQueryAsync();
+    await DropGrant("DELETE FROM auth.admin_assignment WHERE user_id = ANY($1)");
+    await using (var writes = new NpgsqlCommand("DELETE FROM auth.login_write_principal", c)) await writes.ExecuteNonQueryAsync();
     foreach (var t in Tables) { await using var d = new NpgsqlCommand($"DELETE FROM auth.{t}", c); await d.ExecuteNonQueryAsync(); }
+    await DropGrant("DELETE FROM auth.user_issuer WHERE user_id = ANY($1)");
+    await DropGrant("DELETE FROM auth.app_user WHERE user_id = ANY($1)");
+    await using (var on = new NpgsqlCommand("ALTER TABLE auth.app_user ENABLE TRIGGER USER", c)) await on.ExecuteNonQueryAsync();
+    await using (var on = new NpgsqlCommand("ALTER TABLE auth.admin_assignment ENABLE TRIGGER USER", c)) await on.ExecuteNonQueryAsync();
     var left = 0L;
     foreach (var t in Tables) left += await Count(t);
     Ok("cleanup: auth.audit_outbox, change, llc, location, partner_reason_bounds empty again", left == 0);

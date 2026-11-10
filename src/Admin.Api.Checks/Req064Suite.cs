@@ -149,6 +149,27 @@ static class Req064Suite
                 "SELECT outcome = 'grant' AND role_wire = 'partner_admin' AND partner_ids = ARRAY[$3]::uuid[] FROM auth.resolve_grant($1, $2)",
                 Issuer, Mix, Pa);
             Check("wrong-issuer-does-not-resolve", wrongIssuer && rightIssuer, $"wrong {wrongIssuer} right {rightIssuer}");
+            Check("login-write-records-the-request-principal", await LoginWritePrincipal(admin, owner));
+            var bareRows = await ScalarLong(admin, """
+                SELECT count(*) FROM auth.location
+                """);
+            // The count above is outside a transaction, so it has no principal.
+            var forgedFlags = await ScalarInTx(admin, """
+                SELECT set_config('app.request_iss', '', true),
+                       set_config('app.request_sub', '', true),
+                       set_config('app.resolved_global_admin', 'on', true),
+                       set_config('app.resolved_partner_ids', '5f0c3e1a-0064-4000-8000-000000000011,5f0c3e1a-0064-4000-8000-000000000012', true),
+                       set_config('app.resolved_location_ids', '5f0c3e1a-0064-4000-8000-000000000021,5f0c3e1a-0064-4000-8000-000000000022', true),
+                       set_config('app.admin_type', 'super', true)
+                """, "SELECT count(*) FROM auth.location");
+            var noAssignment = await ScalarInTx(admin, """
+                SELECT set_config('app.request_iss', 'https://req064.test.invalid', true),
+                       set_config('app.request_sub', '5f0c3e1a-0064-4000-8000-000000000035', true),
+                       set_config('app.resolved_global_admin', 'on', true),
+                       set_config('app.admin_type', 'super', true)
+                """, "SELECT count(*) FROM auth.location");
+            Check("flags-without-a-principal-see-nothing", bareRows == 0 && forgedFlags == 0 && noAssignment == 0,
+                $"bare {bareRows} flags {forgedFlags} none {noAssignment}");
 
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", paTok);
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config", saTok);
@@ -162,7 +183,14 @@ static class Req064Suite
             var resolvedCount = await ScalarInTx(admin,
                 "SELECT set_config('app.resolved_global_admin','on', true)",
                 "SELECT count(*) FROM catalog.registered_entry WHERE entry_id = $1", Fee);
-            Check("T12 admin-type-super-without-resolved-flag-sees-nothing", forgedCount == 0 && resolvedCount == 1, $"{forgedCount},{resolvedCount}");
+            var principalCount = await ScalarInTx(admin, """
+                SELECT set_config('app.request_iss', 'https://req064.test.invalid', true),
+                       set_config('app.request_sub', '5f0c3e1a-0064-4000-8000-000000000031', true),
+                       set_config('app.resolved_global_admin', '', true),
+                       set_config('app.admin_type', '', true)
+                """, "SELECT count(*) FROM catalog.registered_entry WHERE entry_id = $1", Fee);
+            Check("T12 flag-does-not-grant-and-principal-does", forgedCount == 0 && resolvedCount == 0 && principalCount == 1,
+                $"{forgedCount},{resolvedCount},{principalCount}");
 
             var cross = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config", paTok);
             Check("cross-partner-deny", cross.Status == 404);
@@ -245,14 +273,19 @@ static class Req064Suite
         await using var c = await admin.OpenConnectionAsync();
         await using var tx = await c.BeginTransactionAsync();
         await using (var set = new NpgsqlCommand("""
-            SELECT set_config('app.resolved_global_admin', '', true),
-                   set_config('app.resolved_partner_ids', $1, true),
-                   set_config('app.resolved_location_ids', '', true),
-                   set_config('app.admin_type', '', true),
-                   set_config('app.partner_id', '', true)
+            SELECT set_config('app.request_iss', $1, true),
+                   set_config('app.request_sub', $2, true),
+                   set_config('app.resolved_global_admin', 'on', true),
+                   set_config('app.resolved_partner_ids', $3, true),
+                   set_config('app.resolved_location_ids', $4, true),
+                   set_config('app.admin_type', 'super', true),
+                   set_config('app.partner_id', $3, true)
             """, c, tx))
         {
-            set.Parameters.Add(new() { Value = Pa.ToString("D") });
+            set.Parameters.Add(new() { Value = Issuer });
+            set.Parameters.Add(new() { Value = Upa.ToString("D") });
+            set.Parameters.Add(new() { Value = Pb.ToString("D") });
+            set.Parameters.Add(new() { Value = Lb.ToString("D") });
             await set.ExecuteNonQueryAsync();
         }
         async Task<long> Count(Guid id)
@@ -523,6 +556,61 @@ static class Req064Suite
         await tx.CommitAsync();
     }
 
+    static async Task<bool> LoginWritePrincipal(NpgsqlDataSource admin, NpgsqlDataSource owner)
+    {
+        async Task Record(Guid user, Guid target)
+        {
+            await using var c = await admin.OpenConnectionAsync();
+            await using var tx = await c.BeginTransactionAsync();
+            await using (var set = new NpgsqlCommand(
+                "SELECT set_config('app.request_iss', $1, true), set_config('app.request_sub', $2, true)", c, tx))
+            {
+                set.Parameters.Add(new() { Value = Issuer });
+                set.Parameters.Add(new() { Value = user.ToString("D") });
+                await set.ExecuteNonQueryAsync();
+            }
+            await using var call = new NpgsqlCommand("SELECT auth.record_login_write('location_login_config', $1)", c, tx);
+            call.Parameters.Add(new() { Value = target });
+            await call.ExecuteNonQueryAsync();
+            await tx.CommitAsync();
+        }
+        try
+        {
+            await Record(Upa, La);
+            await Record(Sa, Lb);
+            var denied = false;
+            try
+            {
+                await Exec(admin, """
+                    INSERT INTO auth.login_write_principal (write_id, kind, target_id, issuer, subject)
+                    VALUES (gen_random_uuid(), 'location_login_config', $1, $2, $3)
+                    """, La, Issuer, Sa);
+            }
+            catch (PostgresException ex) when (ex.SqlState == "42501") { denied = true; }
+            var upa = await ScalarBool(owner, """
+                SELECT issuer = $1 AND subject = $2 FROM auth.login_write_principal
+                 WHERE kind = 'location_login_config' AND target_id = $3
+                 ORDER BY recorded_at DESC LIMIT 1
+                """, Issuer, Upa, La);
+            var sa = await ScalarBool(owner, """
+                SELECT issuer = $1 AND subject = $2 FROM auth.login_write_principal
+                 WHERE kind = 'location_login_config' AND target_id = $3
+                 ORDER BY recorded_at DESC LIMIT 1
+                """, Issuer, Sa, Lb);
+            if (!denied || !upa || !sa)
+            {
+                Console.WriteLine($"FAIL login-write: denied {denied} upa {upa} sa {sa}");
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("FAIL login-write: " + ex.GetType().Name + " " + ex.Message);
+            return false;
+        }
+    }
+
     static async Task Cleanup(NpgsqlDataSource owner)
     {
         await ExecQuiet(owner, "ALTER TABLE auth.admin_assignment DISABLE TRIGGER USER");
@@ -543,6 +631,7 @@ static class Req064Suite
         await ExecQuiet(owner, "ALTER TABLE catalog.registered_entry ENABLE TRIGGER USER");
         await ExecQuiet(owner, "ALTER TABLE catalog.entry_change ENABLE TRIGGER USER");
         await ExecQuiet(owner, "ALTER TABLE catalog.history_pending ENABLE TRIGGER USER");
+        await ExecQuiet(owner, "DELETE FROM auth.login_write_principal");
         await ExecQuiet(owner, "DELETE FROM auth.location_login_config_change WHERE location_id = ANY($1)", new[] { La, Lb });
         await ExecQuiet(owner, "DELETE FROM auth.location_login_config WHERE location_id = ANY($1)", new[] { La, Lb });
         await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = ANY($1)", new[] { La, Lb });

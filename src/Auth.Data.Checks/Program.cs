@@ -529,12 +529,18 @@ const string FakeArn = "arn:aws:secretsmanager:us-west-2:000000000000:secret:FAK
 
 async Task BindResolved(NpgsqlConnection c, NpgsqlTransaction? tx, string adminType, Guid? partner)
 {
-    if (adminType == "super")
-        await Exec(c, tx, "SELECT set_config('app.resolved_global_admin','on',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)");
-    else if (adminType == "partner")
-        await Exec(c, tx, "SELECT set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids',$1,true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)", partner?.ToString() ?? "");
+    // The flags are cleared. The principal is the only authorization input.
+    Guid? who = adminType switch
+    {
+        "super" => Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"),
+        "partner" when partner == P_PCI => Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"),
+        "partner" when partner == P_NV => Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75"),
+        _ => null,
+    };
+    if (who is Guid id)
+        await Exec(c, tx, "SELECT set_config('app.request_iss','https://auth-data.test.invalid',true), set_config('app.request_sub',$1,true), set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)", id.ToString("D"));
     else
-        await Exec(c, tx, "SELECT set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type',$1,true), set_config('app.partner_id','',true)", adminType);
+        await Exec(c, tx, "SELECT set_config('app.request_iss','',true), set_config('app.request_sub','',true), set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type',$1,true), set_config('app.partner_id','',true)", adminType);
 }
 async Task Exec(NpgsqlConnection c, NpgsqlTransaction? tx, string sql, params object?[] ps)
 {
@@ -585,7 +591,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver, Req064RoleScope, Req064HistoryPartner, Req064Issuer]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver", "20261110200000_Req064RoleScope", "20261110210000_Req064HistoryPartner", "20261110220000_Req064Issuer"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver, Req064RoleScope, Req064HistoryPartner, Req064Issuer, Req064Principal]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver", "20261110200000_Req064RoleScope", "20261110210000_Req064HistoryPartner", "20261110220000_Req064Issuer", "20261110230000_Req064Principal"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
@@ -613,7 +619,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
         bad.AddRange(dbCols.Keys.Select(k => $"{table}.{k} not in EF model"));
     }
     Ok($"schema: {designModel.GetEntityTypes().Count()} EF tables / {cols} columns == pg_catalog (name, type, nullability)", bad.Count == 0, string.Join("; ", bad));
-    Ok("schema: exactly 12 tables in auth (Slice A: + partner_reason_bounds; REQ-064: + admin_assignment, user_issuer)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='auth'") == 12);
+    Ok("schema: exactly 13 tables in auth (Slice A: + partner_reason_bounds; REQ-064: + admin_assignment, user_issuer, login_write_principal)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='auth'") == 13);
     Ok("schema: exactly one sequence auth.resolver_read_seq (REQ-064)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_sequences WHERE schemaname='auth'") == 1
         && await Scalar<string>(c, null, "SELECT string_agg(sequencename, ',' ORDER BY sequencename) FROM pg_sequences WHERE schemaname='auth'") == "resolver_read_seq");
     Ok("schema: history table in public, not auth", await Scalar<bool>(c, null, "SELECT to_regclass('public.\"__EFMigrationsHistory\"') IS NOT NULL AND to_regclass('auth.\"__EFMigrationsHistory\"') IS NULL"));
@@ -767,7 +773,13 @@ async Task CleanupCheckData()
     var locs = new[] { L_PCI, L_NV, Guid.Parse("5f0c3e1a-00ee-4000-8000-0000000000e1") }; // = LX
     await Exec(c, tx, "DELETE FROM auth.user_location WHERE location_id = ANY($1)", locs);
     await Exec(c, tx, "DELETE FROM auth.external_login WHERE subject = ANY($1)", new[] { S1, S2, S3, S9 });
-    await Exec(c, tx, "DELETE FROM auth.app_user WHERE user_id = ANY($1)", new[] { U_DIS, U_LCK });
+    await Exec(c, tx, "ALTER TABLE auth.admin_assignment DISABLE TRIGGER USER");
+    await Exec(c, tx, "ALTER TABLE auth.app_user DISABLE TRIGGER USER");
+    await Exec(c, tx, "DELETE FROM auth.user_issuer WHERE user_id = ANY($1)", new[] { Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75") });
+    await Exec(c, tx, "DELETE FROM auth.admin_assignment WHERE user_id = ANY($1)", new[] { Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75") });
+    await Exec(c, tx, "DELETE FROM auth.app_user WHERE user_id = ANY($1)", new[] { U_DIS, U_LCK, Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75") });
+    await Exec(c, tx, "ALTER TABLE auth.app_user ENABLE TRIGGER USER");
+    await Exec(c, tx, "ALTER TABLE auth.admin_assignment ENABLE TRIGGER USER");
     await Exec(c, tx, "DELETE FROM auth.location_login_config_change WHERE location_id = ANY($1)", locs);
     await Exec(c, tx, "DELETE FROM auth.location_login_config WHERE location_id = ANY($1)", locs);
     await Exec(c, tx, "DELETE FROM auth.location WHERE location_id = ANY($1)", locs);
@@ -816,6 +828,24 @@ await using (var tx = await c.BeginTransactionAsync())
         Iss(T1), T1, S1, U_C01, S2, U_DIS, S3, U_LCK);
     await Exec(c, tx, "INSERT INTO auth.user_location (user_id, location_id) VALUES ($1,$2)", U_C01, L_PCI);
     await Exec(c, tx, "INSERT INTO auth.partner_reason_bounds VALUES ($1, 20, 300, $2, now(), 1)", P_PCI, ACTOR); // Slice A
+    await Exec(c, tx, """
+        INSERT INTO auth.app_user (user_id, partner_id, status) VALUES
+          ('5f0c3e1a-0003-4000-8000-000000000c73', NULL, 'active'),
+          ('5f0c3e1a-0003-4000-8000-000000000c74', NULL, 'active'),
+          ('5f0c3e1a-0003-4000-8000-000000000c75', NULL, 'active')
+        """);
+    await Exec(c, tx, """
+        INSERT INTO auth.user_issuer (user_id, issuer) VALUES
+          ('5f0c3e1a-0003-4000-8000-000000000c73', 'https://auth-data.test.invalid'),
+          ('5f0c3e1a-0003-4000-8000-000000000c74', 'https://auth-data.test.invalid'),
+          ('5f0c3e1a-0003-4000-8000-000000000c75', 'https://auth-data.test.invalid')
+        """);
+    await Exec(c, tx, """
+        INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
+          ('5f0c3e1a-0003-4000-8000-000000000c73', '5f0c3e1a-0003-4000-8000-000000000c73', 'super_admin', 'global', NULL, 'active', 1, '5f0c3e1a-0003-4000-8000-000000000c73', now()),
+          ('5f0c3e1a-0003-4000-8000-000000000c74', '5f0c3e1a-0003-4000-8000-000000000c74', 'partner_admin', 'partner', $1, 'active', 1, '5f0c3e1a-0003-4000-8000-000000000c73', now()),
+          ('5f0c3e1a-0003-4000-8000-000000000c75', '5f0c3e1a-0003-4000-8000-000000000c75', 'partner_admin', 'partner', $2, 'active', 1, '5f0c3e1a-0003-4000-8000-000000000c73', now())
+        """, P_PCI, P_NV);
     await tx.CommitAsync();
 }
 
@@ -1037,7 +1067,7 @@ await Check("concurrency: two EF contexts (admin_api, super) on row_version 1 ->
         var c = await adminDs.OpenConnectionAsync();
         var db = new AuthDbContext(new DbContextOptionsBuilder<AuthDbContext>().UseNpgsql(c).Options);
         var tx = await db.Database.BeginTransactionAsync();
-        await db.Database.ExecuteSqlRawAsync("SELECT set_config('app.resolved_global_admin','on',true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)");
+        await db.Database.ExecuteSqlRawAsync("SELECT set_config('app.request_iss','https://auth-data.test.invalid',true), set_config('app.request_sub','5f0c3e1a-0003-4000-8000-000000000c73',true), set_config('app.resolved_global_admin','',true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)");
         return (db, c, tx);
     }
     var (db1, c1, t1) = await Open();

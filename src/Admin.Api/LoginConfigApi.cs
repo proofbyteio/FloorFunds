@@ -73,6 +73,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             if (id is null) { ctx.Response.Headers.WWWAuthenticate = "Bearer"; return Results.StatusCode(401); }
             c = await db.OpenConnectionAsync(ctx.RequestAborted);
             tx = await c.BeginTransactionAsync(ctx.RequestAborted);
+            await SetPrincipalAsync(c, tx, id.Issuer, id.UserId);
             AdminGrant g;
             try { g = await directory.ResolveAsync(id, c, tx, ctx.RequestAborted); }
             catch (PostgresException)
@@ -134,7 +135,22 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     static Guid? ParseId(string s) => Guid.TryParseExact(s, "D", out var g) ? g : null;
 
-    /// <summary>The only place the resolved app.* settings are written. Transaction-local. Token admin_type is cleared.</summary>
+    /// <summary>
+    /// The only admin-api writer of the request principal. Transaction-local.
+    /// Called from Run after the token is accepted, and again on the reason-bounds retry
+    /// because that retry opens a new transaction. Catalog reads set the same settings
+    /// on their own connection from an already-resolved CatalogReadScope.
+    /// </summary>
+    static async Task SetPrincipalAsync(NpgsqlConnection c, NpgsqlTransaction tx, string issuer, Guid subject)
+    {
+        await using var cmd = new NpgsqlCommand(
+            "SELECT set_config('app.request_iss', $1, true), set_config('app.request_sub', $2, true)", c, tx);
+        cmd.Parameters.Add(new() { Value = issuer });
+        cmd.Parameters.Add(new() { Value = subject.ToString("D") });
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>Clears token admin_type. The resolved flags are not an authorization source.</summary>
     static async Task SetScopeAsync(NpgsqlConnection c, NpgsqlTransaction tx, AdminGrant g, Guid actor)
     {
         var partners = g.Role == BuiltInRole.SuperAdmin ? "" : string.Join(',', g.AssignedPartners.Select(id => id.ToString("D")));
@@ -354,6 +370,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         cmd.Parameters.Add(new() { Value = after.ToJsonString(), NpgsqlDbType = NpgsqlDbType.Jsonb });
         cmd.Parameters.Add(new() { Value = rowVersion });
         await cmd.ExecuteNonQueryAsync();
+        await using var recorded = new NpgsqlCommand("SELECT auth.record_login_write('location_login_config', $1)", c, tx);
+        recorded.Parameters.Add(new() { Value = location });
+        await recorded.ExecuteNonQueryAsync();
     }
 
     // ---------- Slice A: per-partner reason-length bounds ----------
@@ -509,10 +528,18 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             // TLD 08:00b(1): a racing first PUT committed the row first. Report the winner's version.
             await tx.RollbackAsync();
             await using var tx2 = await c.BeginTransactionAsync();
+            // The principal is transaction-local, so the rolled-back transaction dropped it.
+            // Same function as Run, still set_config(..., true), still the verified token identity.
+            await SetPrincipalAsync(c, tx2, who.Id.Issuer, who.Id.UserId);
             await SetScopeAsync(c, tx2, who.Grant, who.Id.UserId);
             var won = await LoadBoundsAsync(c, tx2, partner, false) ?? throw new InvalidOperationException("unique violation without a row");
             await tx2.CommitAsync();
             throw Err(409, "concurrency_conflict", b => b["current_row_version"] = won.RowVersion);
+        }
+        await using (var recorded = new NpgsqlCommand("SELECT auth.record_login_write('partner_reason_bounds', $1)", c, tx))
+        {
+            recorded.Parameters.Add(new() { Value = partner });
+            await recorded.ExecuteNonQueryAsync();
         }
         await outbox.InsertAsync(c, tx, AuditOutbox.PartnerReasonBoundsChanged(Guid.CreateVersion7(), now, who.Id, who.RequestId, partner, created, next,
             old.Min, old.Max, n.Min, n.Max), CancellationToken.None);

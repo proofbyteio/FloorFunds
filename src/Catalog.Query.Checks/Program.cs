@@ -14,6 +14,23 @@ const string Host = "127.0.0.1";
 const int Port = 5433;
 const string FixtureLabel = "NONPRODUCT synthetic fixture. Owner direct INSERT. Not a product seed, not a candidate function, not a grant change.";
 
+const string CatalogPrincipalSeed = """
+    INSERT INTO auth.app_user (user_id, partner_id, status) VALUES
+      ('5f0c3e1a-00ca-4000-8000-0000000000a1', NULL, 'active'),
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', NULL, 'active'),
+      ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', NULL, 'active')
+    ON CONFLICT (user_id) DO NOTHING;
+    INSERT INTO auth.user_issuer (user_id, issuer) VALUES
+      ('5f0c3e1a-00ca-4000-8000-0000000000a1', 'https://catalog.invalid/scope'),
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'https://catalog.invalid/scope'),
+      ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'https://catalog.invalid/scope')
+    ON CONFLICT (user_id) DO UPDATE SET issuer = EXCLUDED.issuer;
+    INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
+      ('5f0c3e1a-00ca-4000-8000-0000000000a1', '5f0c3e1a-00ca-4000-8000-0000000000a1', 'super_admin', 'global', NULL, 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now()),
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'partner_admin', 'partner', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now()),
+      ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'partner_admin', 'partner', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now())
+    ON CONFLICT (assignment_id) DO NOTHING;
+    """;
 var partnerA = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
 var partnerB = Guid.Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
 var fixtureActor = Guid.Parse("44444444-4444-4444-8444-444444444444");
@@ -200,7 +217,7 @@ try
     await Exec(bootstrap, $"CREATE ROLE {OwnerRole} LOGIN NOSUPERUSER NOBYPASSRLS CREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE DATABASE {DbName} OWNER {OwnerRole}");
     await Exec(bootstrap, $"COMMENT ON DATABASE {DbName} IS 'floorfunds-scratch-dec192-query-nonproduct'");
-    await Exec(bootstrap, $"CREATE ROLE {AdminRole} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
+    await Exec(bootstrap, $"CREATE ROLE {AdminRole} LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE ROLE {LoginRole} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     Note($"scratch-created {DbName} owner {OwnerRole}");
 
@@ -222,6 +239,7 @@ try
     Note("migrate update: ok");
 
     ownerDs = NpgsqlDataSource.Create(Cs(OwnerRole, DbName, false));
+    await Exec(ownerDs, CatalogPrincipalSeed);
     await LoadFixture(ownerDs);
     var loaded = await Scalar(ownerDs, "SELECT count(*) FROM catalog.registered_entry");
     if (loaded != fixtures.Count.ToString())
@@ -870,7 +888,7 @@ async Task Sql(NpgsqlConnection conn, NpgsqlTransaction tx, string sql, params o
 async Task SessionCleanupProof(Guid feeId)
 {
     Note("SECTION session-cleanup-before-driver-reset");
-    Note("The one-row GUC is resolved_global|resolved_partners|admin_type|partner_id|count of registered_entry for the global fee. on||||1 means the resolved flag is set, admin_type and partner_id are cleared, and RLS returns that row.");
+    Note("The one-row GUC is resolved_global|resolved_partners|admin_type|partner_id|count of registered_entry for the global fee. on||||0 means the resolved flag is set and RLS still returns nothing: the flag is not an authorization source.");
 
     await using (var masked = ProbeSource(noResetOnClose: false))
     {
@@ -880,7 +898,7 @@ async Task SessionCleanupProof(Guid feeId)
             await PlantSessionSuper(conn);
             var before = await ReadSession(conn, feeId);
             pid = before.Pid;
-            ExpectSample("default-reset-before-close", before, pid, "on||||1", "before-close");
+            ExpectSample("default-reset-before-close", before, pid, "on||||0", "before-close");
         }
         await using (var conn = await masked.OpenConnectionAsync())
         {
@@ -897,12 +915,12 @@ async Task SessionCleanupProof(Guid feeId)
             await PlantSessionSuper(conn);
             var before = await ReadSession(conn, feeId);
             pid = before.Pid;
-            ExpectSample("reset-disabled-before-close", before, pid, "on||||1", "before-close");
+            ExpectSample("reset-disabled-before-close", before, pid, "on||||0", "before-close");
         }
         await using (var conn = await retained.OpenConnectionAsync())
         {
             var after = await ReadSession(conn, feeId);
-            ExpectSample("reset-disabled-after-return", after, pid, "on||||1", "after-return-reset-disabled");
+            ExpectSample("reset-disabled-after-return", after, pid, "on||||0", "after-return-reset-disabled");
         }
         var history = await new CatalogQuery(new NpgsqlCatalogStorage(retained)).HistoryAsync(
             actors[0].Principal, CatalogFamily.FeeType, feeId, null, CancellationToken.None);
@@ -940,7 +958,7 @@ async Task ErrorRollbackReuse(Guid feeId)
     await using (var conn = await source.OpenConnectionAsync())
     {
         var held = await ReadSession(conn, feeId);
-        ExpectSample("error-path-reset-disabled-still-holds-session-guc", held, plantedPid, "on||||1", "after-return-before-error");
+        ExpectSample("error-path-reset-disabled-still-holds-session-guc", held, plantedPid, "on||||0", "after-return-before-error");
     }
 
     await using var lockConn = await ownerDs!.OpenConnectionAsync();

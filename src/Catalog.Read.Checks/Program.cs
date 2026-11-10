@@ -9,6 +9,23 @@ const string LoginRole = "ff_kit_dec192_read1_login";
 const string BootstrapRole = "dec161boot";
 const string Host = "127.0.0.1";
 const int Port = 5433;
+const string CatalogPrincipalSeed = """
+    INSERT INTO auth.app_user (user_id, partner_id, status) VALUES
+      ('5f0c3e1a-00ca-4000-8000-0000000000a1', NULL, 'active'),
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', NULL, 'active'),
+      ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', NULL, 'active')
+    ON CONFLICT (user_id) DO NOTHING;
+    INSERT INTO auth.user_issuer (user_id, issuer) VALUES
+      ('5f0c3e1a-00ca-4000-8000-0000000000a1', 'https://catalog.invalid/scope'),
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'https://catalog.invalid/scope'),
+      ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'https://catalog.invalid/scope')
+    ON CONFLICT (user_id) DO UPDATE SET issuer = EXCLUDED.issuer;
+    INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
+      ('5f0c3e1a-00ca-4000-8000-0000000000a1', '5f0c3e1a-00ca-4000-8000-0000000000a1', 'super_admin', 'global', NULL, 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now()),
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'partner_admin', 'partner', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now()),
+      ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'partner_admin', 'partner', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now())
+    ON CONFLICT (assignment_id) DO NOTHING;
+    """;
 var partnerA = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
 var partnerB = Guid.Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
 var globalId = Guid.Parse("10000000-0000-4000-8000-0000000000a1");
@@ -102,7 +119,7 @@ try
     await Exec(bootstrap, $"CREATE ROLE {OwnerRole} LOGIN NOSUPERUSER NOBYPASSRLS CREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE DATABASE {DbName} OWNER {OwnerRole}");
     await Exec(bootstrap, $"COMMENT ON DATABASE {DbName} IS 'floorfunds-scratch-dec192-read'");
-    await Exec(bootstrap, $"CREATE ROLE {AdminRole} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
+    await Exec(bootstrap, $"CREATE ROLE {AdminRole} LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE ROLE {LoginRole} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     var ownerName = await Scalar(bootstrap, $"SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_database WHERE datname = '{DbName}'");
     if (ownerName != OwnerRole)
@@ -129,6 +146,7 @@ try
     Console.WriteLine("migrate update: ok");
 
     await using var owner = NpgsqlDataSource.Create(Cs(OwnerRole, DbName, false));
+    await Exec(owner, CatalogPrincipalSeed);
     await LoadFee(owner, globalId, null, "surcharge", "super", "");
     await LoadFee(owner, feeA, partnerA, "afee", "partner", partnerA.ToString("D"));
     await LoadFee(owner, feeB, partnerB, "bfee", "partner", partnerB.ToString("D"));
@@ -254,7 +272,13 @@ try
 
     await using (var leak = await pooled.OpenConnectionAsync())
     {
-        await using var cmd = new NpgsqlCommand("SELECT set_config('app.resolved_partner_ids', $1, false), set_config('app.admin_type','partner', false), set_config('app.partner_id', $1, false)", leak);
+        await using var cmd = new NpgsqlCommand("""
+            SELECT set_config('app.request_iss', 'https://catalog.invalid/scope', false),
+                   set_config('app.request_sub', $1, false),
+                   set_config('app.resolved_partner_ids', $1, false),
+                   set_config('app.admin_type', 'partner', false),
+                   set_config('app.partner_id', $1, false)
+            """, leak);
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = partnerA.ToString("D") });
         await cmd.ExecuteNonQueryAsync();
         var seen = await new NpgsqlCommand("SELECT count(*) FROM catalog.registered_entry", leak).ExecuteScalarAsync();
