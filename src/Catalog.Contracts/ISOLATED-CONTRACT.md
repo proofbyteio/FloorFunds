@@ -29,7 +29,7 @@ Passing checks show the in-memory double only. They do not show row-level securi
 - PQ-272 claim reactivation. The task names this id. The Tech Lead note requires the policy decision and does not itself number it.
 - PQ-263.1 directed graph, fan-out, and cycles. No cause engine and no guessed edges.
 - PQ-271 private-master location Off preservation.
-- PQ-252.SA2 SA private metadata visibility and edit, fail-closed here for non-claim private rows.
+- PQ-252.SA2 SA private metadata edit stays fail-closed. DEC-195 lets a resolved Super Admin read partner-private non-claim rows.
 - PQ-252.SA3 private partner-switch representation.
 - PQ-252.SA6 cross-partner private code reuse. Global and one private row may share a code. Further collisions write nothing.
 - PQ-252.SA1 claim six-field list. The double enforces that proposed allowlist and does not record owner approval.

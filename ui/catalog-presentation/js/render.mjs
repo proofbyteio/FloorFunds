@@ -391,9 +391,11 @@ function sameCode(state) {
   state.scope = previous.scope;
   const actor = ACTORS[state.role];
   const entries = listed.status === 200 ? listed.list.entries.filter((entry) => entry.code === "EXAMPLE-5-A") : [];
-  const ownsPrivate = state.role === "partner_admin" && listed.status === 200;
-  const note = ownsPrivate
-    ? `The table is ${actor.label}'s manufacturer list. Both identities are here because this principal is the owning Partner Admin. This screen does not give the private row to any other principal.`
+  const seesPrivate = (state.role === "partner_admin" || state.role === "super_admin") && listed.status === 200;
+  const note = seesPrivate
+    ? state.role === "super_admin"
+      ? `The table is ${actor.label}'s manufacturer list. Both identities are here because this principal's resolved global Super Admin assignment includes partner-private non-claim rows. This screen does not show a hidden count.`
+      : `The table is ${actor.label}'s manufacturer list. Both identities are here because this principal is the owning Partner Admin. This screen does not give the private row to any other Partner Admin.`
     : listed.status === 200
       ? `The table is ${actor.label}'s manufacturer list. This principal does not receive the private non-claim row. A direct read of that private row is the same as a missing row. This screen does not show a hidden count. Choose Partner Admin (own test partner) in the synthetic principal selector to see both identities.`
       : `${actor.label} has no manufacturer table on this screen. The list status is ${listed.status} ${listed.code || listed.detail || ""}. That refusal is not a missing row.`;
