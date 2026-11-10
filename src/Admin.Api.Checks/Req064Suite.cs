@@ -172,6 +172,7 @@ static class Req064Suite
             Check("flags-without-a-principal-see-nothing", bareRows == 0 && forgedFlags == 0 && noAssignment == 0,
                 $"bare {bareRows} flags {forgedFlags} none {noAssignment}");
             Check("reason-bounds-read-stays-inside-the-actor-partner", await BoundsRead(admin, owner));
+            Check("location-only-assignment-sees-that-location", await LocationOnly(admin, owner));
 
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", paTok);
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config", saTok);
@@ -558,6 +559,42 @@ static class Req064Suite
         await tx.CommitAsync();
     }
 
+    static async Task<bool> LocationOnly(NpgsqlDataSource admin, NpgsqlDataSource owner)
+    {
+        var sibling = Guid.Parse("5f0c3e1a-0064-4000-8000-000000000023");
+        var grant = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000ab");
+        try
+        {
+            await Exec(owner, "INSERT INTO auth.location VALUES ($1,$2,'req064-a2','Req064 A2')", sibling, Pa);
+            await Exec(owner, """
+                INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, location_id, status, version, granted_by, granted_at)
+                VALUES ($1, $2, 'cashier', 'location', $3, 'active', 1, $4, now())
+                """, grant, None, La, Sa);
+            var own = await ScalarInTx(admin,
+                $"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{None:D}', true)",
+                "SELECT count(*) FROM auth.location WHERE location_id = $1", La);
+            var sib = await ScalarInTx(admin,
+                $"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{None:D}', true)",
+                "SELECT count(*) FROM auth.location WHERE location_id = $1", sibling);
+            var other = await ScalarInTx(admin,
+                $"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{None:D}', true)",
+                "SELECT count(*) FROM auth.location WHERE location_id = $1", Lb);
+            var ok = own == 1 && sib == 0 && other == 0;
+            if (!ok) Console.WriteLine($"FAIL location-only: own {own} sibling {sib} other {other}");
+            return ok;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("FAIL location-only: " + ex.GetType().Name + " " + ex.Message);
+            return false;
+        }
+        finally
+        {
+            await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", grant);
+            await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = $1", sibling);
+        }
+    }
+
     static async Task<bool> BoundsRead(NpgsqlDataSource admin, NpgsqlDataSource owner)
     {
         var view = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000aa");
@@ -683,6 +720,8 @@ static class Req064Suite
         await ExecQuiet(owner, "DELETE FROM auth.login_write_principal");
         await ExecQuiet(owner, "DELETE FROM auth.location_login_config_change WHERE location_id = ANY($1)", new[] { La, Lb });
         await ExecQuiet(owner, "DELETE FROM auth.location_login_config WHERE location_id = ANY($1)", new[] { La, Lb });
+        await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000ab"));
+        await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = $1", Guid.Parse("5f0c3e1a-0064-4000-8000-000000000023"));
         await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = ANY($1)", new[] { La, Lb });
         await ExecQuiet(owner, "DELETE FROM auth.user_issuer WHERE user_id = ANY($1)",
             new[] { Sa, Sa2, Upa, Both, None, Cash, Mix, Guid.Parse("5f0c3e1a-0064-4000-8000-000000000037") });
