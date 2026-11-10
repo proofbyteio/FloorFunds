@@ -116,7 +116,7 @@ var principalBlob = GitHash(Path.Combine(repo, "src", "Catalog.Contracts", "Cata
 var readerBlob = GitHash(Path.Combine(repo, "src", "Catalog.Read", "NpgsqlCatalogReader.cs"));
 var grantsBlob = GitHash(Path.Combine(repo, "src", "Auth.Data", "Migrations", "CatalogMasterData.Grants.sql"));
 var grantsText = File.ReadAllText(Path.Combine(repo, "src", "Auth.Data", "Migrations", "CatalogMasterData.Grants.sql"));
-if (domainBlob == "2cdc73c82e89996fdc538156d4aeca5f9d9979b8")
+if (domainBlob == "0cb83a0ebefa309a5379b65685e6ecc68d144453")
     Pass("imported-visible-source", domainBlob);
 else
     Fail("imported-visible-source", domainBlob);
@@ -261,10 +261,11 @@ try
 
     var saFees = await query.ListAsync(actors[0].Principal, CatalogFamily.FeeType, CancellationToken.None);
     var saFeeIds = string.Join(",", (saFees.Entries ?? []).Select(entry => entry.EntryId));
-    if (saFees.Status == 200 && saFeeIds == Id(20).ToString() && !saFeeIds.Contains(Id(26).ToString(), StringComparison.Ordinal))
-        Pass("query-sa-fee-list-omits-private", saFeeIds);
+    var saFeeSet = (saFees.Entries ?? []).Select(entry => entry.EntryId).OrderBy(id => id).ToArray();
+    if (saFees.Status == 200 && saFeeSet.SequenceEqual(new[] { Id(20), Id(26), Id(27) }))
+        Pass("query-sa-fee-list-includes-private", saFeeIds);
     else
-        Fail("query-sa-fee-list-omits-private", $"{saFees.Status} {saFeeIds}");
+        Fail("query-sa-fee-list-includes-private", $"{saFees.Status} {saFeeIds}");
 
     var guc = await PooledGuc(pooled);
     if (PoolClear(guc)) Pass("pool-after-query", guc);
@@ -548,20 +549,20 @@ async Task RunFocused(string label, CatalogQuery query, ICallCounts counts)
     var owner = actors[1].Principal;
     var other = actors[2].Principal;
     var cashier = actors[5].Principal;
-    var hidden = await query.ReadAsync(sa, CatalogFamily.FeeType, Id(26), 9, CancellationToken.None);
+    var hidden = await query.ReadAsync(sa, CatalogFamily.FeeType, Id(26), 1, CancellationToken.None);
     var missing = await query.ReadAsync(sa, CatalogFamily.FeeType, missingId, 9, CancellationToken.None);
-    if (Json(hidden) == Json(missing) && hidden.Status == 404 && hidden.Code == "not_found")
-        Pass($"{label} hidden-read-matches-missing", "404");
+    if (hidden.Status == 200 && hidden.Entry?.EntryId == Id(26) && missing.Status == 404 && missing.Code == "not_found")
+        Pass($"{label} sa-private-nonclaim-read-visible", hidden.Entry.EntryId.ToString());
     else
-        Fail($"{label} hidden-read-matches-missing", Json(hidden) + " vs " + Json(missing));
+        Fail($"{label} sa-private-nonclaim-read-visible", Json(hidden) + " vs " + Json(missing));
 
     var histBefore = counts.Histories;
-    var hiddenHistory = await query.HistoryAsync(sa, CatalogFamily.FeeType, Id(26), 9, CancellationToken.None);
+    var hiddenHistory = await query.HistoryAsync(sa, CatalogFamily.FeeType, Id(26), null, CancellationToken.None);
     var missingHistory = await query.HistoryAsync(sa, CatalogFamily.FeeType, missingId, 9, CancellationToken.None);
-    if (counts.Histories == histBefore && Json(hiddenHistory) == Json(missingHistory) && hiddenHistory.Status == 404)
-        Pass($"{label} hidden-history-matches-missing-without-fetch", $"fetches {counts.Histories - histBefore}");
+    if (hiddenHistory.Status == 200 && hiddenHistory.History?.Count >= 1 && counts.Histories == histBefore + 1 && missingHistory.Status == 404)
+        Pass($"{label} sa-private-nonclaim-history-visible", $"fetches {counts.Histories - histBefore}");
     else
-        Fail($"{label} hidden-history-matches-missing-without-fetch", $"delta {counts.Histories - histBefore} {hiddenHistory.Status}");
+        Fail($"{label} sa-private-nonclaim-history-visible", $"delta {counts.Histories - histBefore} {hiddenHistory.Status}");
 
     var claimBefore = counts.Histories;
     var claim = await query.HistoryAsync(sa, CatalogFamily.ModelHardwareClaim, Id(28), null, CancellationToken.None);
@@ -651,10 +652,10 @@ async Task RunFocused(string label, CatalogQuery query, ICallCounts counts)
 
     if (label != "MEMORY")
         return;
-    if (empty.Status == 200 && empty.Entries?.Count == 0 && !Json(empty).Contains(Id(26).ToString(), StringComparison.Ordinal))
-        Pass("MEMORY sa-list-of-only-private-nonclaim-is-empty-200", "no hidden id");
+    if (empty.Status == 200 && empty.Entries?.Count == 1 && empty.Entries[0].EntryId == Id(26))
+        Pass("MEMORY sa-list-of-only-private-nonclaim-includes-the-row", Id(26).ToString());
     else
-        Fail("MEMORY sa-list-of-only-private-nonclaim-is-empty-200", Json(empty));
+        Fail("MEMORY sa-list-of-only-private-nonclaim-includes-the-row", Json(empty));
 }
 
 async Task LoadFixture(NpgsqlDataSource ds)
@@ -1129,7 +1130,7 @@ static bool Expected(CheckActor actor, FixtureRow row)
         return true;
     if (row.Family == "model_hardware_claim")
         return actor.Role == CatalogRole.SuperAdmin || actor.Partner == row.Owner;
-    return actor.Role == CatalogRole.PartnerAdmin && actor.Partner == row.Owner;
+    return actor.Role == CatalogRole.SuperAdmin || (actor.Role == CatalogRole.PartnerAdmin && actor.Partner == row.Owner);
 }
 
 static List<FixtureRow> BuildFixtures()

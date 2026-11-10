@@ -205,7 +205,7 @@ try {
   await evaluate("window.scrollTo(0,0)");
   let sameText = await evaluate("document.body.innerText");
   let sameActor = await evaluate(`document.getElementById("actor-role").value`);
-  check("same code follows super admin", sameActor === "super_admin" && sameText.includes("Selected principal: Super Admin") && sameText.includes("11000000-0000-4000-8005-100000000001") && !sameText.includes("11000000-0000-4000-8005-200000000001") && sameText.includes("same as a missing row"));
+  check("same code follows super admin", sameActor === "super_admin" && sameText.includes("Selected principal: Super Admin") && sameText.includes("11000000-0000-4000-8005-100000000001") && sameText.includes("11000000-0000-4000-8005-200000000001") && sameText.includes("resolved global Super Admin assignment") && !sameText.includes("same as a missing row"));
   report.shots.push(await shot("same-code-super-admin-1600"));
   check("same code selects owning partner admin", await setActor("partner_admin") === "partner_admin");
   await evaluate("window.scrollTo(0,0)");
