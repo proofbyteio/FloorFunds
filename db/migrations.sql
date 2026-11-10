@@ -3525,9 +3525,13 @@ BEGIN
     -- REQ-064 M-B. A SELECT sees the partner the actor holds: global, that partner's
     -- Partner Admin assignment, or a location assignment at that partner.
     -- A location id or partner id in a session setting does not open every partner.
-    -- INSERT and UPDATE stay open to any Partner Admin (DEC-111). The write path
-    -- reads through auth.read_partner_bounds, which is the same write rule, so a
-    -- Partner Admin can still update a row the SELECT policy hides.
+    -- The write is DEC-111, project-plan L163 (Mohanraj 2026-11-05 6:51 AM: "No,
+    -- Partner Admin can change any partner"). Do not narrow save_partner_bounds.
+    -- PQ-240 is open: whether a Partner Admin may SEE another partner's setting,
+    -- and whether that partner's admins are told. read_partner_bounds and the
+    -- prb_select policy stay as they are while PQ-240(a) is open. The write path
+    -- reads through auth.read_partner_bounds, so a Partner Admin can still update
+    -- a row the SELECT policy hides.
 
     CREATE OR REPLACE FUNCTION auth.read_partner_bounds(p_partner uuid)
       RETURNS TABLE (
@@ -3542,6 +3546,9 @@ BEGIN
       SET search_path = pg_catalog, auth
     AS $fn$
     BEGIN
+      -- PQ-240 is open: whether a Partner Admin may SEE another partner's setting,
+      -- and whether that partner's admins are told, is not decided here. This
+      -- write-path read stays any-admin. prb_select is the SELECT policy and is unchanged.
       IF NOT auth.actor_is_any_admin() THEN
         RETURN;
       END IF;
@@ -3565,6 +3572,10 @@ BEGIN
     DECLARE
       v bigint;
     BEGIN
+      -- DEC-111, project-plan L163 (Mohanraj 2026-11-05 6:51 AM: "No, Partner Admin
+      -- can change any partner"). Do not restrict this function to the actor's
+      -- partner. A location-only user and a principal with no assignment are not
+      -- actor_is_any_admin(), so they still cannot write. PQ-240 does not decide the write.
       IF NOT auth.actor_is_any_admin() THEN
         RAISE EXCEPTION 'partner_reason_bounds' USING ERRCODE = '42501';
       END IF;

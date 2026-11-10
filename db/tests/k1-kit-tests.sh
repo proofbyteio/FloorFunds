@@ -6,6 +6,12 @@
 #  B. live runs on scratch $P* (default ff_kit_kf*) DBs/roles created here (unmarked ones by hand, for the purpose) and all
 #     dropped at the end. Asserts refusals change nothing (oid, attributes, password hash, comment).
 # usage: db/tests/k1-kit-tests.sh   (needs sudo -u postgres, pwsh 7, and for the DB checks a built src/Auth.Data.Checks)
+# FF_PG_LOG: server log of the cluster under test. The KF-A checks read it from a byte
+# offset (sudo -u postgres tail); they never write it. Default is the Debian PostgreSQL 17
+# main log. Set FF_PG_LOG when the cluster under test is not that file, or the four KF-A
+# log checks read the wrong log and fail. Auth.Data inside checks() also needs
+# SCRATCH_ADMIN_CONNECTION_STRING (and SCRATCH_PG_PORT when the scratch cluster is not 5432);
+# without them the scratch probes fail and the summary is 169 passed, 5 failed.
 set -uo pipefail
 # Every scratch DB/role name below is built from P, and cleanup matches PL (P with _ escaped for LIKE), so a renamed
 # copy only needs P changed and still cleans up everything it made (SSE2 KF5 suggestion).
@@ -113,6 +119,14 @@ pwhash() { q "SELECT md5(coalesce(rolpassword,'')) FROM pg_authid WHERE rolname=
 SH() { bash "$DBDIR/setup.sh" "$@" >"$T/out" 2>&1; echo $?; }
 PS() { sudo -u postgres --preserve-env=FF_DB_PASSWORD,FF_ADMIN_API_PASSWORD,FF_LOGIN_PASSWORD pwsh -NoProfile -NonInteractive -File "$DBDIR/setup.ps1" -AdminHost '' "$@" >"$T/out" 2>&1; echo $?; }
 checks() { # checks DB OWNER -> last line of the DB checks (passwords from the current env)
+  # Auth.Data's scratch probes read SCRATCH_ADMIN_CONNECTION_STRING from the process environment.
+  # A shell assignment that was not exported never reaches dotnet, and the run then reports
+  # 169 passed, 5 failed (N3 twice, N1 twice, Q2) at Auth.Data.Checks/Program.cs scratch setup.
+  if [[ -z "${SCRATCH_ADMIN_CONNECTION_STRING:-}" ]]; then
+    echo "scratch env missing: export SCRATCH_ADMIN_CONNECTION_STRING before k1 (else N3 x2, N1 x2, Q2 fail: 169 passed, 5 failed)"
+    return 1
+  fi
+  export SCRATCH_ADMIN_CONNECTION_STRING
   ( cd "$SRC" && export PATH=/home/box/.dotnet:$PATH DOTNET_ROOT=/home/box/.dotnet DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 \
       CONNECTION_STRING="Host=127.0.0.1;Port=5432;Database=$1;Username=$2;Password=$FF_DB_PASSWORD" \
       ADMIN_API_CONNECTION_STRING="Host=127.0.0.1;Port=5432;Database=$1;Username=$1_admin_api;Password=$FF_ADMIN_API_PASSWORD" \
@@ -247,7 +261,7 @@ ok "kit/database.sql DO block (drop=0) directly on unmarked ${P}u -> error, not 
 
 
 # ---------- KF-A / KF-B / KF-C (commit after 81affe1) ----------
-LOG=/var/log/postgresql/postgresql-17-main.log  # read only (sudo -u postgres tail from a byte offset); never edited
+LOG="${FF_PG_LOG:-/var/log/postgresql/postgresql-17-main.log}"  # read only (sudo -u postgres tail from a byte offset); never edited
 logfrom() { sudo -u postgres tail -c +$(( $1 + 1 )) "$LOG"; }
 # KF-A 1: the stored password is a SCRAM verifier made client-side, and the kit's passwords log in.
 for r in ${P}a_owner ${P}a_admin_api ${P}a_login ${P}b ${P}b_admin_api ${P}b_login; do

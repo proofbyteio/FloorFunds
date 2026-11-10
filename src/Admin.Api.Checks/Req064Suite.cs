@@ -173,6 +173,7 @@ static class Req064Suite
             Check("flags-without-a-principal-see-nothing", bareRows == 0 && forgedFlags == 0 && noAssignment == 0,
                 $"bare {bareRows} flags {forgedFlags} none {noAssignment}");
             Check("reason-bounds-read-stays-inside-the-actor-partner", await BoundsRead(admin, owner));
+            await Dec111BoundsWrite(http, admin, owner, paTok);
             Check("location-only-assignment-sees-that-location", await LocationOnly(admin, owner));
 
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", paTok);
@@ -624,6 +625,101 @@ static class Req064Suite
         {
             await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", grant);
             await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = $1", sibling);
+        }
+    }
+
+    static async Task Dec111BoundsWrite(HttpClient http, NpgsqlDataSource admin, NpgsqlDataSource owner, string paTok)
+    {
+        var locGrant = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000ac");
+        try
+        {
+            await Exec(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
+            var none = await TrySaveBounds(admin, None, Pa);
+            var noneRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1", Pa);
+            Check("dec-111-no-assignment-cannot-write-bounds", none.Denied && none.Version is null && noneRows == 0,
+                $"denied {none.Denied} version {none.Version} rows {noneRows} {none.Detail}");
+            await Exec(owner, """
+                INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, location_id, status, version, granted_by, granted_at)
+                VALUES ($1, $2, 'cashier', 'location', $3, 'active', 1, $4, now())
+                """, locGrant, None, La, Sa);
+            var loc = await TrySaveBounds(admin, None, Pa);
+            var locB = await TrySaveBounds(admin, None, Pb);
+            var locRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
+            Check("dec-111-location-only-cannot-write-bounds", loc.Denied && locB.Denied && locRows == 0,
+                $"a {loc.Denied} {loc.Detail} b {locB.Denied} {locB.Detail} rows {locRows}");
+            await Exec(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", locGrant);
+            var flags = await TrySaveBounds(admin, null, Pa, flags: true);
+            var flagRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1", Pa);
+            Check("dec-111-flags-without-principal-cannot-write-bounds", flags.Denied && flagRows == 0,
+                $"denied {flags.Denied} version {flags.Version} rows {flagRows} {flags.Detail}");
+            var put = new HttpRequestMessage(HttpMethod.Put, $"/api/orgs/partners/{Pb:D}/login-config/reason-bounds");
+            put.Headers.TryAddWithoutValidation("Authorization", "Bearer " + paTok);
+            put.Headers.TryAddWithoutValidation("If-Match", "\"0\"");
+            put.Content = new StringContent("""{"reason_min_length":12,"reason_max_length":24}""", Encoding.UTF8, "application/json");
+            var wrote = await Read(await http.SendAsync(put));
+            var stored = await ScalarLong(owner, """
+                SELECT count(*) FROM auth.partner_reason_bounds
+                 WHERE partner_id = $1 AND reason_min_length = 12 AND reason_max_length = 24
+                """, Pb);
+            Check("dec-111-pa-of-a-writes-partner-b", wrote.Status == 200 && stored == 1,
+                $"put {wrote.Status} {Clip(wrote.Body)} stored {stored}");
+        }
+        catch (Exception ex)
+        {
+            Check("dec-111-pa-of-a-writes-partner-b", false, ex.GetType().Name + " " + ex.Message);
+        }
+        finally
+        {
+            await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", locGrant);
+            await ExecQuiet(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
+            await ExecQuiet(owner, "DELETE FROM auth.login_write_principal WHERE target_id = ANY($1)", new[] { Pa, Pb });
+            await ExecQuiet(owner, """
+                DELETE FROM auth.audit_outbox
+                 WHERE event_type = 'auth.partner_reason_bounds.changed'
+                   AND envelope::text LIKE '%' || $1 || '%'
+                """, Pb.ToString("D"));
+        }
+    }
+
+    readonly record struct SaveAttempt(bool Denied, long? Version, string Detail);
+
+    static async Task<SaveAttempt> TrySaveBounds(NpgsqlDataSource admin, Guid? user, Guid partner, bool flags = false)
+    {
+        await using var c = await admin.OpenConnectionAsync();
+        await using var tx = await c.BeginTransactionAsync();
+        var setup = flags
+            ? """
+              SELECT set_config('app.request_iss', '', true),
+                     set_config('app.request_sub', '', true),
+                     set_config('app.resolved_global_admin', 'on', true),
+                     set_config('app.resolved_partner_ids', '5f0c3e1a-0064-4000-8000-000000000011,5f0c3e1a-0064-4000-8000-000000000012', true),
+                     set_config('app.resolved_location_ids', '5f0c3e1a-0064-4000-8000-000000000021', true),
+                     set_config('app.admin_type', 'super', true)
+              """
+            : "SELECT set_config('app.request_iss', $1, true), set_config('app.request_sub', $2, true)";
+        await using (var set = new NpgsqlCommand(setup, c, tx))
+        {
+            if (!flags)
+            {
+                set.Parameters.Add(new() { Value = Issuer });
+                set.Parameters.Add(new() { Value = user!.Value.ToString("D") });
+            }
+            await set.ExecuteNonQueryAsync();
+        }
+        try
+        {
+            await using var call = new NpgsqlCommand("SELECT auth.save_partner_bounds($1, 0, 10, 20, $2, now())", c, tx);
+            call.Parameters.Add(new() { Value = partner });
+            call.Parameters.Add(new() { Value = Sa });
+            var raw = await call.ExecuteScalarAsync();
+            long? version = raw is long n ? n : null;
+            await tx.RollbackAsync();
+            return new SaveAttempt(false, version, raw is null ? "null" : raw.GetType().Name);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42501")
+        {
+            try { await tx.RollbackAsync(); } catch (ObjectDisposedException) { }
+            return new SaveAttempt(true, null, ex.SqlState);
         }
     }
 
