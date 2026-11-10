@@ -825,10 +825,14 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         return Json(200, new JsonObject { ["screen"] = "create_client", ["write"] = "held" });
     });
 
+    /// <summary>
+    /// Create Client is not implemented. PQ-278 is still open, so a resolved Super Admin
+    /// gets the same refusal as everyone else. This is a placeholder, not a grant.
+    /// </summary>
     public Task<IResult> CreateClientWriteAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         if (c.State != System.Data.ConnectionState.Open || tx.Connection is null || who.Id.UserId == Guid.Empty) throw Err(403, "forbidden");
-        throw Err(403, "forbidden");
+        throw Err(403, "client_create_pending_pq278");
     });
 
     public Task<IResult> PostAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>

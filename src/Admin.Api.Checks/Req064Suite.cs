@@ -100,7 +100,7 @@ static class Req064Suite
             Check("T5 explicit-global-sa-sees-private-and-create-client-nav",
                 navSa.Status == 200 && screens.Contains("create_client") && screens.Contains("create_location") && screens.Contains("config")
                 && held.Status == 200 && held.Body.Contains("\"write\":\"held\"", StringComparison.Ordinal)
-                && write.Status == 403 && seeB.Status == 200,
+                && write.Status == 403 && write.Body.Contains("\"error\":\"client_create_pending_pq278\"", StringComparison.Ordinal) && seeB.Status == 200,
                 $"nav {navSa.Status} {Clip(navSa.Body)} held {held.Status} write {write.Status} seeB {seeB.Status} {Clip(seeB.Body)}");
 
             var before = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", paTok);
@@ -118,7 +118,8 @@ static class Req064Suite
 
             var hidden = await Send(http, HttpMethod.Get, "/api/screens/create-client", paTok);
             var hiddenPost = await Send(http, HttpMethod.Post, "/api/screens/create-client", paTok);
-            Check("T9 hidden-create-client-direct-403", hidden.Status == 403 && hiddenPost.Status == 403);
+            Check("T9 hidden-create-client-direct-403", hidden.Status == 403 && hiddenPost.Status == 403
+                && hiddenPost.Body.Contains("\"error\":\"client_create_pending_pq278\"", StringComparison.Ordinal));
 
             var forged = new HttpRequestMessage(HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config?partner_id={Pb}&admin_type=super");
             forged.Headers.TryAddWithoutValidation("Authorization", "Bearer " + paTok);
