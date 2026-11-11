@@ -212,7 +212,9 @@ async Task<Accepted?> TryAccept(string raw)
     }
     else if (hasPartner) return null;
     if (t.IssuedAt == DateTime.MinValue) return null;
-    return new Accepted(t, user, jti, DateTime.SpecifyKind(t.ValidTo, DateTimeKind.Utc), DateTime.SpecifyKind(t.IssuedAt, DateTimeKind.Utc), adminType, partner);
+    var issuedAt = DateTime.SpecifyKind(t.IssuedAt, DateTimeKind.Utc);
+    if (issuedAt > DateTime.UtcNow.AddSeconds(60)) return null;
+    return new Accepted(t, user, jti, DateTime.SpecifyKind(t.ValidTo, DateTimeKind.Utc), issuedAt, adminType, partner);
 }
 
 bool HeaderAccepted(JsonWebToken t)

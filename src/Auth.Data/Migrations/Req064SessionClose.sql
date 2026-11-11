@@ -4,10 +4,31 @@
 -- CREATE OR REPLACE. The old migration text is left as history.
 
 CREATE TABLE IF NOT EXISTS auth.login_cutoff (
-  user_id uuid PRIMARY KEY REFERENCES auth.app_user (user_id) ON DELETE CASCADE,
+  user_id uuid PRIMARY KEY,
   revoked_before timestamptz NOT NULL
 );
+-- No foreign key. A KEY SHARE check on delete of app_user would require the
+-- migration user to hold UPDATE on this table. The definer trigger removes the row.
+ALTER TABLE auth.login_cutoff DROP CONSTRAINT IF EXISTS login_cutoff_user_id_fkey;
 REVOKE ALL ON TABLE auth.login_cutoff FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION auth._login_cutoff_user_delete() RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, auth
+AS $fn$
+BEGIN
+  DELETE FROM auth.login_cutoff WHERE user_id = OLD.user_id;
+  RETURN OLD;
+END
+$fn$;
+
+REVOKE ALL ON FUNCTION auth._login_cutoff_user_delete() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS app_user_login_cutoff_delete ON auth.app_user;
+CREATE TRIGGER app_user_login_cutoff_delete
+  BEFORE DELETE ON auth.app_user
+  FOR EACH ROW EXECUTE FUNCTION auth._login_cutoff_user_delete();
 
 ALTER TABLE auth.login_cutoff ENABLE ROW LEVEL SECURITY;
 ALTER TABLE auth.login_cutoff FORCE ROW LEVEL SECURITY;
@@ -56,23 +77,36 @@ BEGIN
   SELECT u.user_id INTO v_user
     FROM auth.app_user u
     JOIN auth.user_issuer i ON i.user_id = u.user_id AND i.issuer = p_iss
-   WHERE u.user_id::text = p_sub
-     AND u.status = 'active'
-     AND (u.locked_until IS NULL OR u.locked_until <= v_created);
+   WHERE u.user_id::text = p_sub;
   IF v_user IS NULL THEN
     SELECT u.user_id INTO v_user
       FROM auth.external_login e
       JOIN auth.app_user u ON u.user_id = e.user_id
       JOIN auth.user_issuer i ON i.user_id = u.user_id AND i.issuer = e.issuer
      WHERE e.issuer = p_iss
-       AND e.subject::text = p_sub
-       AND u.status = 'active'
-       AND (u.locked_until IS NULL OR u.locked_until <= v_created);
+       AND e.subject::text = p_sub;
   END IF;
   IF v_user IS NULL THEN
     RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
   END IF;
   PERFORM auth._lock_login(v_user);
+  -- Status is read again after the lock. A lock or disable that commits while
+  -- this open waits must not insert a live row.
+  IF NOT EXISTS (SELECT 1 FROM auth.app_user u WHERE u.user_id = v_user AND u.status = 'active' AND (u.locked_until IS NULL OR u.locked_until <= clock_timestamp())) THEN
+    RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
+  END IF;
+  IF p_iat > clock_timestamp() + interval '60 seconds' THEN
+    RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
+  END IF;
+  -- A future iat is not proof the token was issued after logout.
+  IF EXISTS (
+    SELECT 1 FROM auth.login_cutoff c
+     WHERE c.user_id = v_user
+       AND p_iat > clock_timestamp()
+       AND p_iat > c.revoked_before
+  ) THEN
+    RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
+  END IF;
   IF EXISTS (
     SELECT 1 FROM auth.login_cutoff c
      WHERE c.user_id = v_user
@@ -223,7 +257,7 @@ BEGIN
      WHERE rolname = r AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls
   ) THEN
     EXECUTE format('GRANT EXECUTE ON FUNCTION auth._lock_login(uuid) TO %I', r);
-    EXECUTE format('GRANT SELECT, INSERT, UPDATE ON auth.login_cutoff TO %I', r);
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON auth.login_cutoff TO %I', r);
     EXECUTE 'DROP POLICY IF EXISTS login_cutoff_definer ON auth.login_cutoff';
     EXECUTE format('CREATE POLICY login_cutoff_definer ON auth.login_cutoff FOR ALL TO %I USING (true) WITH CHECK (true)', r);
   END IF;
