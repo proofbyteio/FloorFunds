@@ -220,6 +220,7 @@ try
     await Exec(bootstrap, $"CREATE ROLE {AdminRole} LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE ROLE {LoginRole} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE ROLE {DbName}_auth_definer NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
+    await Exec(bootstrap, $"CREATE ROLE {DbName}_issuer LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     Note($"scratch-created {DbName} owner {OwnerRole}");
 
     var migrateInfo = new ProcessStartInfo
@@ -247,9 +248,10 @@ try
     var loaded = await Scalar(ownerDs, "SELECT count(*) FROM catalog.registered_entry");
     if (loaded != fixtures.Count.ToString())
         throw new InvalidOperationException($"BLOCKER fixture row count {loaded}, expected {fixtures.Count}");
+    await using var issuerDs = NpgsqlDataSource.Create(Cs(DbName + "_issuer", DbName, false));
     async Task<string> OpenCatalogSession(Guid user)
     {
-        await using var c = await ownerDs.OpenConnectionAsync();
+        await using var c = await issuerDs.OpenConnectionAsync();
         await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4)", c);
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = CatalogSessionSql.CatalogIssuer });
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = user.ToString("D") });
@@ -350,7 +352,7 @@ finally
             if (ownerOk is "true" or "True" or "t")
                 await Exec(drop, $"DROP DATABASE {DbName}");
         }
-        foreach (var role in new[] { AdminRole, LoginRole, OwnerRole, DbName + "_auth_definer" })
+        foreach (var role in new[] { AdminRole, LoginRole, OwnerRole, DbName + "_auth_definer", DbName + "_issuer" })
         {
             var present = await Scalar(drop, $"SELECT count(*) FROM pg_roles WHERE rolname = '{role}'");
             if (present == "1")

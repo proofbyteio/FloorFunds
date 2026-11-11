@@ -319,6 +319,7 @@ static class Req064Suite
         Check("expiry-is-min-of-now-plus-15m-and-jwt-exp", capped == "capped", capped);
         var token = minted ?? await Mint(Upa);
         Check("admin-api-cannot-open-session", await Denied(admin, "SELECT auth.open_session($1, $2, $3, $4)", Issuer, Upa.ToString("D"), Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(5)));
+        Check("owner-cannot-open-session", await Denied(owner, "SELECT auth.open_session($1, $2, $3, $4)", Issuer, Upa.ToString("D"), Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(5)));
         Check("ttl-over-15-minutes-rejected", await TtlRejected(owner));
         Check("thirty-third-live-session-rejected", await LiveCap(owner));
         Check("six-hundred-first-open-rejected", await OpenRate(owner));

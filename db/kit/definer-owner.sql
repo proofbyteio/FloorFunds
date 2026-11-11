@@ -38,12 +38,12 @@ BEGIN
   FOREACH fn IN ARRAY names LOOP
     EXECUTE format('ALTER FUNCTION %s OWNER TO %I', fn, r);
   END LOOP;
-  -- ALTER OWNER drops the migration user's implicit execute right. Catalog scratch
-  -- has no issuer role, so its database owner mints sessions. The same grant keeps
-  -- the kit owner able to open and revoke a session. admin_api is not in this list.
+  -- ALTER OWNER drops the migration user's implicit execute right. open_session stays
+  -- with the issuer role only. The owner keeps the read and revoke functions.
   SELECT pg_get_userbyid(datdba)::text INTO owner_name
     FROM pg_database WHERE datname = current_database();
-  EXECUTE format('GRANT EXECUTE ON FUNCTION auth.open_session(text, text, uuid, timestamptz), auth.begin_request(text), auth.current_principal(), auth.session_issuer(), auth.revoke_session(text) TO %I', owner_name);
+  EXECUTE format('GRANT EXECUTE ON FUNCTION auth.begin_request(text), auth.current_principal(), auth.session_issuer(), auth.revoke_session(text) TO %I', owner_name);
+  EXECUTE format('REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz) FROM %I', owner_name);
   -- The login-config UPDATE reads the kept columns. The definer needs SELECT as well as UPDATE.
   -- RLS also needs a SELECT policy: an UPDATE policy alone matches zero rows.
   EXECUTE format('GRANT SELECT, UPDATE ON auth.location_login_config TO %I', r);

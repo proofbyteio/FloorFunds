@@ -122,6 +122,7 @@ try
     await Exec(bootstrap, $"CREATE ROLE {AdminRole} LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE ROLE {LoginRole} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE ROLE {DbName}_auth_definer NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
+    await Exec(bootstrap, $"CREATE ROLE {DbName}_issuer LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     var ownerName = await Scalar(bootstrap, $"SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_database WHERE datname = '{DbName}'");
     if (ownerName != OwnerRole)
         throw new InvalidOperationException($"scratch owner is {ownerName}");
@@ -156,9 +157,10 @@ try
     var loaded = await Scalar(owner, "SELECT count(*) FROM catalog.registered_entry");
     if (loaded != "3")
         throw new InvalidOperationException($"fixture row count {loaded}");
+    await using var issuer = NpgsqlDataSource.Create(Cs(DbName + "_issuer", DbName, false));
     async Task<string> OpenCatalogSession(Guid user)
     {
-        await using var c = await owner.OpenConnectionAsync();
+        await using var c = await issuer.OpenConnectionAsync();
         await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4)", c);
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = CatalogSessionSql.CatalogIssuer });
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = user.ToString("D") });
@@ -426,7 +428,7 @@ finally
         if (ownerOk is "true" or "True" or "t")
             await Exec(drop, $"DROP DATABASE {DbName}");
     }
-    foreach (var role in new[] { AdminRole, LoginRole, OwnerRole, DbName + "_auth_definer" })
+    foreach (var role in new[] { AdminRole, LoginRole, OwnerRole, DbName + "_auth_definer", DbName + "_issuer" })
     {
         var present = await Scalar(drop, $"SELECT count(*) FROM pg_roles WHERE rolname = '{role}'");
             if (present == "1")

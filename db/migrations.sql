@@ -3860,8 +3860,8 @@ BEGIN
     -- DEC-213. The request principal is a session bound to this backend and this
     -- transaction. app.request_iss and app.request_sub are not read. The raw token
     -- is never stored. admin_api cannot call open_session. The issuer role can,
-    -- when the kit created it. A scratch database with no issuer role leaves that
-    -- grant out; its migration user still owns the function.
+    -- when the kit created it. A scratch database creates that issuer role before
+    -- this migration so the owner is not granted open_session.
 
     CREATE TABLE auth.request_session (
       token_hash bytea PRIMARY KEY,
@@ -4213,10 +4213,10 @@ BEGIN
       i text := current_database() || '_issuer';
       r text := current_database() || '_auth_definer';
     BEGIN
-      -- The database owner keeps EXECUTE after the kit moves function ownership to the
-      -- NOLOGIN definer. Catalog scratch has no issuer role, so its owner mints sessions.
+      -- open_session is not granted to the database owner. Catalog scratch creates
+      -- <db>_issuer before this migration, and the block below grants that role.
       -- admin_api is not granted open_session.
-      EXECUTE 'GRANT EXECUTE ON FUNCTION auth.open_session(text, text, uuid, timestamptz), auth.begin_request(text), auth.current_principal(), auth.session_issuer(), auth.revoke_session(text) TO CURRENT_USER';
+      EXECUTE 'GRANT EXECUTE ON FUNCTION auth.begin_request(text), auth.current_principal(), auth.session_issuer(), auth.revoke_session(text) TO CURRENT_USER';
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
         EXECUTE format('REVOKE ALL ON TABLE auth.request_session, auth.request_binding FROM %I', a);
         EXECUTE format('REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz) FROM %I', a);

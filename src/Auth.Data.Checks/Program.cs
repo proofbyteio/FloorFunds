@@ -691,10 +691,11 @@ await using (var c = await ownerDs.OpenConnectionAsync())
               JOIN pg_roles role ON role.oid = m.roleid
              WHERE mem.rolname = $1 AND role.rolname = ANY($2)
             """, adminRole, new[] { issuerRole, definerRole }) == 0);
-    Ok("open_session EXECUTE is granted to the issuer role and not to admin_api or PUBLIC",
+    Ok("open_session EXECUTE is granted to the issuer role and not to admin_api, the database owner, or PUBLIC",
         await Scalar<bool>(c, null, """
             SELECT has_function_privilege($1, 'auth.open_session(text,text,uuid,timestamptz)', 'EXECUTE')
                AND NOT has_function_privilege($2, 'auth.open_session(text,text,uuid,timestamptz)', 'EXECUTE')
+               AND NOT has_function_privilege((SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()), 'auth.open_session(text,text,uuid,timestamptz)', 'EXECUTE')
                AND NOT EXISTS (
                  SELECT 1 FROM pg_proc p, aclexplode(p.proacl) x
                   WHERE p.oid = 'auth.open_session(text,text,uuid,timestamptz)'::regprocedure AND x.grantee = 0)
