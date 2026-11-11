@@ -794,7 +794,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
         await Scalar<string>(c, null, "SELECT string_agg(tablename || ':' || policyname || ':' || cmd || ':' || array_to_string(roles, '+'), ' ' ORDER BY tablename, policyname) FROM pg_policies WHERE schemaname='auth'")
         == $"admin_assignment:admin_assignment_definer:SELECT:{definer} admin_assignment:admin_assignment_owner:ALL:{dbOwner} " +
            $"location:location_admin:ALL:{adminRole} location:location_definer:SELECT:{definer} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbOwner} " +
-           $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_definer:UPDATE:{definer} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbOwner} " +
+           $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_definer:UPDATE:{definer} location_login_config:llc_definer_read:SELECT:{definer} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbOwner} " +
            $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbOwner} " +
            $"login_write_principal:login_write_principal_definer:ALL:{definer} login_write_principal:login_write_principal_owner:ALL:{dbOwner} " +
            $"partner_reason_bounds:prb_definer:ALL:{definer} partner_reason_bounds:prb_insert:INSERT:{adminRole} partner_reason_bounds:prb_owner:ALL:{dbOwner} partner_reason_bounds:prb_select:SELECT:{adminRole} partner_reason_bounds:prb_update:UPDATE:{adminRole} " +

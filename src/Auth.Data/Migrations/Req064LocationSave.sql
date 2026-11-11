@@ -65,10 +65,16 @@ BEGIN
     SELECT 1 FROM pg_roles
      WHERE rolname = r AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls
   ) THEN
-    EXECUTE format('GRANT UPDATE ON auth.location_login_config TO %I', r);
+    -- SELECT is required: the UPDATE reads oidc_* and secret_ref for the keep-copy CASE.
+    EXECUTE format('GRANT SELECT, UPDATE ON auth.location_login_config TO %I', r);
     EXECUTE 'DROP POLICY IF EXISTS llc_definer ON auth.location_login_config';
+    EXECUTE 'DROP POLICY IF EXISTS llc_definer_read ON auth.location_login_config';
     EXECUTE format(
       'CREATE POLICY llc_definer ON auth.location_login_config FOR UPDATE TO %I USING (true) WITH CHECK (true)',
+      r);
+    -- RLS hides rows with no SELECT policy, so an UPDATE policy alone changes zero rows.
+    EXECUTE format(
+      'CREATE POLICY llc_definer_read ON auth.location_login_config FOR SELECT TO %I USING (true)',
       r);
   END IF;
 END

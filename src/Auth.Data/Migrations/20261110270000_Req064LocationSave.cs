@@ -17,6 +17,7 @@ namespace Auth.Data.Migrations
             """
             DROP FUNCTION IF EXISTS auth.save_location_login_config(uuid, bigint, text, text, uuid[], text, text, boolean, text, boolean, boolean, uuid, timestamptz);
             DROP POLICY IF EXISTS llc_definer ON auth.location_login_config;
+            DROP POLICY IF EXISTS llc_definer_read ON auth.location_login_config;
             """);
 
         static string Read(string name)
