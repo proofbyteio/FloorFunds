@@ -37,6 +37,10 @@ var ownerCs = Env("CONNECTION_STRING");
 var adminCs = Env("ADMIN_API_CONNECTION_STRING");
 if (args is ["--req064"])
     return await Req064Suite.RunAsync(ownerCs, adminCs);
+if (args is ["--issuer"])
+    return await Req064Suite.RunAsync(ownerCs, adminCs, "issuer");
+if (args is ["--probe"])
+    return await Req064Suite.RunAsync(ownerCs, adminCs, "probe");
 var loginCs = Env("LOGIN_CONNECTION_STRING"); // <db>_login, read-only: the login readers (TLD 10:02 Q1 restart check)
 if (new[] { ownerCs, adminCs, loginCs }.Any(cs => new NpgsqlConnectionStringBuilder(cs).Database != dbName))
 { Console.Error.WriteLine("refuse: every connection string's Database must equal AUTH_CHECKS_DB"); return 2; }
@@ -268,6 +272,9 @@ async Task<(int code, string err)> RunAdminApi(Action<IDictionary<string, string
         psi.Environment.Remove("BackofficeAuth__JwksPath");
         psi.Environment.Remove("ISSUER_CONNECTION_STRING");
         psi.Environment.Remove("FF_ISSUER_PASSWORD");
+        psi.Environment.Remove("ISSUER_CALLER_SECRET");
+        psi.Environment.Remove("STANDIN_CALLER_SECRET");
+        psi.Environment.Remove("STANDIN_ISSUER_URL");
         psi.Environment["Urls"] = "http://127.0.0.1:1"; // never reached
         edit(psi.Environment);
         using var p = Process.Start(psi)!;

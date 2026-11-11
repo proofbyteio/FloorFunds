@@ -46,5 +46,6 @@
     <EmbeddedResource Include="Migrations\Req064RevokeTemp.sql" />
     <EmbeddedResource Include="Migrations\Req064Session.sql" />
     <EmbeddedResource Include="Migrations\Req064RevokeLogin.sql" />
+    <EmbeddedResource Include="Migrations\Req064Actor.sql" />
   </ItemGroup>
 </Project>

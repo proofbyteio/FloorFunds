@@ -45,6 +45,8 @@ BEGIN
     FROM pg_database WHERE datname = current_database();
   EXECUTE format('GRANT EXECUTE ON FUNCTION auth.begin_request(text), auth.current_principal(), auth.session_issuer(), auth.revoke_session(text) TO %I', owner_name);
   EXECUTE format('REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz) FROM %I', owner_name);
+  -- catalog._actor calls resolve_grant while the registry trigger runs as the owner.
+  EXECUTE format('GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid) TO %I', owner_name);
   -- The login-config UPDATE reads the kept columns. The definer needs SELECT as well as UPDATE.
   -- RLS also needs a SELECT policy: an UPDATE policy alone matches zero rows.
   EXECUTE format('GRANT SELECT, UPDATE ON auth.location_login_config TO %I', r);

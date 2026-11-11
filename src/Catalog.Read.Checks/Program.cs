@@ -151,12 +151,6 @@ try
 
     await using var owner = NpgsqlDataSource.Create(Cs(OwnerRole, DbName, false));
     await Exec(owner, CatalogPrincipalSeed);
-    await LoadFee(owner, globalId, null, "surcharge", "super", "");
-    await LoadFee(owner, feeA, partnerA, "afee", "partner", partnerA.ToString("D"));
-    await LoadFee(owner, feeB, partnerB, "bfee", "partner", partnerB.ToString("D"));
-    var loaded = await Scalar(owner, "SELECT count(*) FROM catalog.registered_entry");
-    if (loaded != "3")
-        throw new InvalidOperationException($"fixture row count {loaded}");
     await using var issuer = NpgsqlDataSource.Create(Cs(DbName + "_issuer", DbName, false));
     async Task<string> OpenCatalogSession(Guid user)
     {
@@ -168,6 +162,13 @@ try
         cmd.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.UtcNow.AddMinutes(5) });
         return (string)(await cmd.ExecuteScalarAsync())!;
     }
+    var fixtureToken = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser));
+    await LoadFee(owner, globalId, null, "surcharge", "super", "", fixtureToken);
+    await LoadFee(owner, feeA, partnerA, "afee", "partner", partnerA.ToString("D"), fixtureToken);
+    await LoadFee(owner, feeB, partnerB, "bfee", "partner", partnerB.ToString("D"), fixtureToken);
+    var loaded = await Scalar(owner, "SELECT count(*) FROM catalog.registered_entry");
+    if (loaded != "3")
+        throw new InvalidOperationException($"fixture row count {loaded}");
     var catalogTokens = new Dictionary<string, string>
     {
         ["super"] = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser)),
@@ -494,10 +495,15 @@ async Task<string> PooledGuc(NpgsqlDataSource ds)
     return Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "";
 }
 
-async Task LoadFee(NpgsqlDataSource ds, Guid id, Guid? ownerId, string code, string adminType, string partner)
+async Task LoadFee(NpgsqlDataSource ds, Guid id, Guid? ownerId, string code, string adminType, string partner, string sessionToken)
 {
     await using var conn = await ds.OpenConnectionAsync();
     await using var tx = await conn.BeginTransactionAsync();
+    await using (var bind = new NpgsqlCommand("SELECT auth.begin_request($1)", conn, tx))
+    {
+        bind.Parameters.Add(new NpgsqlParameter<string> { TypedValue = sessionToken });
+        await bind.ExecuteNonQueryAsync();
+    }
     await using (var guc = new NpgsqlCommand("""
         SELECT set_config('app.resolved_global_admin', CASE WHEN $1 = 'super' THEN 'on' ELSE '' END, true),
                set_config('app.resolved_partner_ids', CASE WHEN $1 = 'partner' THEN $2 ELSE '' END, true),

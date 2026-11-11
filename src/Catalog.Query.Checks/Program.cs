@@ -25,10 +25,17 @@ const string CatalogPrincipalSeed = """
       ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'https://catalog.invalid/scope'),
       ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'https://catalog.invalid/scope')
     ON CONFLICT (user_id) DO UPDATE SET issuer = EXCLUDED.issuer;
+    INSERT INTO auth.app_user (user_id, partner_id, status) VALUES
+      ('44444444-4444-4444-8444-444444444444', NULL, 'active')
+    ON CONFLICT (user_id) DO NOTHING;
+    INSERT INTO auth.user_issuer (user_id, issuer) VALUES
+      ('44444444-4444-4444-8444-444444444444', 'https://catalog.invalid/scope')
+    ON CONFLICT (user_id) DO UPDATE SET issuer = EXCLUDED.issuer;
     INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
       ('5f0c3e1a-00ca-4000-8000-0000000000a1', '5f0c3e1a-00ca-4000-8000-0000000000a1', 'super_admin', 'global', NULL, 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now()),
       ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'partner_admin', 'partner', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now()),
-      ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'partner_admin', 'partner', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now())
+      ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'partner_admin', 'partner', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now()),
+      ('44444444-4444-4444-8444-444444444444', '44444444-4444-4444-8444-444444444444', 'super_admin', 'global', NULL, 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now())
     ON CONFLICT (assignment_id) DO NOTHING;
     """;
 var partnerA = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
@@ -244,10 +251,6 @@ try
 
     ownerDs = NpgsqlDataSource.Create(Cs(OwnerRole, DbName, false));
     await Exec(ownerDs, CatalogPrincipalSeed);
-    await LoadFixture(ownerDs);
-    var loaded = await Scalar(ownerDs, "SELECT count(*) FROM catalog.registered_entry");
-    if (loaded != fixtures.Count.ToString())
-        throw new InvalidOperationException($"BLOCKER fixture row count {loaded}, expected {fixtures.Count}");
     await using var issuerDs = NpgsqlDataSource.Create(Cs(DbName + "_issuer", DbName, false));
     async Task<string> OpenCatalogSession(Guid user)
     {
@@ -259,6 +262,11 @@ try
         cmd.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.UtcNow.AddMinutes(5) });
         return (string)(await cmd.ExecuteScalarAsync())!;
     }
+    var fixtureToken = await OpenCatalogSession(fixtureActor);
+    await LoadFixture(ownerDs, fixtureToken);
+    var loaded = await Scalar(ownerDs, "SELECT count(*) FROM catalog.registered_entry");
+    if (loaded != fixtures.Count.ToString())
+        throw new InvalidOperationException($"BLOCKER fixture row count {loaded}, expected {fixtures.Count}");
     var catalogTokens = new Dictionary<string, string>
     {
         ["super"] = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser)),
@@ -700,10 +708,15 @@ async Task RunFocused(string label, CatalogQuery query, ICallCounts counts)
         Fail("MEMORY sa-list-of-only-private-nonclaim-includes-the-row", Json(empty));
 }
 
-async Task LoadFixture(NpgsqlDataSource ds)
+async Task LoadFixture(NpgsqlDataSource ds, string sessionToken)
 {
     await using var conn = await ds.OpenConnectionAsync();
     await using var tx = await conn.BeginTransactionAsync();
+    await using (var bind = new NpgsqlCommand("SELECT auth.begin_request($1)", conn, tx))
+    {
+        bind.Parameters.Add(new NpgsqlParameter<string> { TypedValue = sessionToken });
+        await bind.ExecuteNonQueryAsync();
+    }
     await using (var guc = new NpgsqlCommand("""
         SELECT set_config('app.resolved_global_admin', 'on', true),
                set_config('app.resolved_partner_ids', '', true),

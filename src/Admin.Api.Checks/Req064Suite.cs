@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -39,7 +40,9 @@ static class Req064Suite
 
     static int _pass, _fail;
 
-    public static async Task<int> RunAsync(string ownerCs, string adminCs)
+    public static Task<int> RunAsync(string ownerCs, string adminCs) => RunAsync(ownerCs, adminCs, "all");
+
+    public static async Task<int> RunAsync(string ownerCs, string adminCs, string mode)
     {
         await using var owner = NpgsqlDataSource.Create(ownerCs);
         await using var admin = NpgsqlDataSource.Create(adminCs);
@@ -82,6 +85,12 @@ static class Req064Suite
             var port = FreePort();
             await using var app = await Admin.Api.AdminApiHost.BuildAsync(opt with { Urls = $"http://127.0.0.1:{port}" });
             await app.StartAsync();
+            if (mode is "all" or "probe")
+                await CrossSubjectJti(issuerProc, sign, mode == "probe");
+            if (mode is "all" or "issuer")
+                await IssuerSecurity(issuerProc, sign, owner, admin, opt, issuerCs);
+            if (mode == "all")
+            {
             using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
             var saTok = Mint(sign, Sa, "super", null);
             var paTok = Mint(sign, Upa, "super", null);
@@ -276,9 +285,14 @@ static class Req064Suite
                 && !options.Contains("ISSUER_CONNECTION_STRING", StringComparison.Ordinal)
                 && !auth.Contains("ISSUER_CONNECTION_STRING", StringComparison.Ordinal)
                 && !api.Contains("ISSUER_CONNECTION_STRING", StringComparison.Ordinal)
+                && !host.Contains("ISSUER_CALLER_SECRET", StringComparison.Ordinal)
+                && !options.Contains("ISSUER_CALLER_SECRET", StringComparison.Ordinal)
+                && !auth.Contains("ISSUER_CALLER_SECRET", StringComparison.Ordinal)
+                && !api.Contains("ISSUER_CALLER_SECRET", StringComparison.Ordinal)
                 && !api.Contains("FF_ISSUER_PASSWORD", StringComparison.Ordinal)
                 && !api.Contains("set_config('app.request_iss'", StringComparison.Ordinal));
 
+            }
             await app.StopAsync();
         }
         finally
@@ -857,6 +871,7 @@ static class Req064Suite
                     return false;
                 }
             }
+            await Begin(c, tx, Both);
             await using (var entry = new NpgsqlCommand("""
                 INSERT INTO catalog.registered_entry (
                   entry_id, family, entry_class, owner_partner_id, code, is_active, row_version,
@@ -935,6 +950,7 @@ static class Req064Suite
             guc.Parameters.Add(new() { Value = Sa.ToString("D") });
             await guc.ExecuteNonQueryAsync();
         }
+        await Begin(c, tx, Sa);
         await using (var entry = new NpgsqlCommand("""
             INSERT INTO catalog.registered_entry (
               entry_id, family, entry_class, owner_partner_id, code, is_active, row_version,
@@ -1590,5 +1606,187 @@ static class Req064Suite
         var port = ((IPEndPoint)l.LocalEndpoint).Port;
         l.Stop();
         return port;
+    }
+
+    static async Task CrossSubjectJti(Admin.Api.Checks.IssuerHarness issuer, RsaSecurityKey sign, bool alsoRetry)
+    {
+        string Signed(Dictionary<string, object> claims) => new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
+        {
+            Claims = claims,
+            SigningCredentials = new SigningCredentials(sign, SecurityAlgorithms.RsaSha256),
+            TokenType = "at+jwt",
+        });
+        var firstClaims = Claims(Upa, "partner", Pa);
+        var first = Signed(firstClaims);
+        var session = await IssuerSession(issuer.Url, first);
+        if (alsoRetry)
+        {
+            var again = await IssuerSession(issuer.Url, first);
+            Check("reused-jwt-returns-the-same-session", session.Length == 64 && again == session);
+        }
+        var other = Claims(Sa, "super", null);
+        other["jti"] = firstClaims["jti"];
+        var status = await IssuerStatus(issuer.Url, Signed(other));
+        Check("reused-jti-rejected-for-a-different-subject", session.Length == 64 && status == 401);
+    }
+
+    static async Task IssuerSecurity(Admin.Api.Checks.IssuerHarness issuer, RsaSecurityKey sign, NpgsqlDataSource owner, NpgsqlDataSource admin, Admin.Api.AdminApiOptions opt, string issuerCs)
+    {
+        string Signed(Dictionary<string, object> claims) => new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
+        {
+            Claims = claims,
+            SigningCredentials = new SigningCredentials(sign, SecurityAlgorithms.RsaSha256),
+            TokenType = "at+jwt",
+        });
+        var first = await IssuerSession(issuer.Url, Signed(Claims(Sa, "super", null)));
+        var second = await IssuerSession(issuer.Url, Signed(Claims(Sa, "super", null)));
+        var other = await IssuerSession(issuer.Url, Signed(Claims(Upa, "super", null)));
+        var revoked = await PostRevoke(issuer.Url, issuer.CallerSecret, Issuer, Sa.ToString("D"));
+        Check("logout-revokes-every-live-session",
+            revoked == 200 && first.Length == 64 && second.Length == 64 && first != second
+            && await Denied(admin, "SELECT auth.begin_request($1)", first)
+            && await Denied(admin, "SELECT auth.begin_request($1)", second)
+            && await BeginOk(admin, other),
+            $"revoke {revoked}");
+        var live = await IssuerSession(issuer.Url, Signed(Claims(Sa2, "super", null)));
+        Check("unauthenticated-revoke-rejected",
+            await PostRevoke(issuer.Url, null, Issuer, Sa2.ToString("D")) == 401 && await BeginOk(admin, live));
+        Check("wrong-caller-secret-rejected",
+            await PostRevoke(issuer.Url, "not-the-secret", Issuer, Sa2.ToString("D")) == 401 && await BeginOk(admin, live));
+        Check("admin-api-cannot-revoke-login", await Denied(admin, "SELECT auth.revoke_login($1, $2)", Issuer, Sa.ToString("D")));
+        var oauth = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Login.StandIn", "OAuth.cs"));
+        Check("sign-out-notifies-the-issuer", oauth.Contains("RequestSessionRevoker.NotifyAsync(", StringComparison.Ordinal));
+        Check("non-loopback-listen-refused", await ListenRefusal("http://192.0.2.1:9", allow: false));
+        Check("non-loopback-listen-allowed-when-opted-in", await ListenRefusal("http://192.0.2.1:9", allow: true));
+        await using var issuerDs = NpgsqlDataSource.Create(issuerCs);
+        var guard = false;
+        try { await Admin.Api.AdminApiHost.GuardRoleAsync(issuerDs); }
+        catch (InvalidOperationException ex)
+        {
+            guard = ex.Message.Contains("issuer role", StringComparison.Ordinal) || ex.Message.Contains("open or revoke", StringComparison.Ordinal);
+        }
+        Check("guard-refuses-the-issuer-role", guard);
+        Check("admin-api-cannot-set-log-statement", await Denied(admin, "SET log_statement = 'all'"));
+        Check("host-refuses-log-statement-all", await LoggingRefusal(opt, admin, "log_statement", "all"));
+        Check("host-refuses-duration-zero-with-parameter-logging", await LoggingRefusal(opt, admin, "log_min_duration_statement", "0"));
+        var actorTok = await Mint(Sa);
+        await using (var c = await owner.OpenConnectionAsync())
+        {
+            await using var tx = await c.BeginTransactionAsync();
+            await using (var b = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx))
+            {
+                b.Parameters.Add(new() { Value = actorTok });
+                await b.ExecuteNonQueryAsync();
+            }
+            await using (var guc = new NpgsqlCommand("""
+                SELECT set_config('app.resolved_global_admin', '', true),
+                       set_config('app.resolved_partner_ids', 'ffffffff-ffff-4fff-8fff-ffffffffffff', true),
+                       set_config('app.actor_user_id', 'ffffffff-ffff-4fff-8fff-ffffffffffff', true),
+                       set_config('app.correlation_id', 'req064-actor', true)
+                """, c, tx))
+                await guc.ExecuteNonQueryAsync();
+            var got = await ScalarOnText(c, tx, "SELECT admin_type || '|' || actor_user_id::text FROM catalog._actor()");
+            Check("forged-resolved-guc-does-not-change-catalog-actor", got == "super|" + Sa.ToString("D"), got);
+            await tx.RollbackAsync();
+        }
+        foreach (var user in new[] { Sa, Sa2, Upa })
+        {
+            await Exec(owner, "DELETE FROM auth.request_binding WHERE user_id = $1", user);
+            await Exec(owner, "DELETE FROM auth.request_session WHERE user_id = $1", user);
+        }
+    }
+
+    static async Task<string> ScalarOnText(NpgsqlConnection c, NpgsqlTransaction tx, string sql)
+    {
+        await using var cmd = new NpgsqlCommand(sql, c, tx);
+        var value = await cmd.ExecuteScalarAsync();
+        return value is string s ? s : "";
+    }
+
+    static async Task<bool> BeginOk(NpgsqlDataSource ds, string token)
+    {
+        try
+        {
+            await using var c = await ds.OpenConnectionAsync();
+            await using var tx = await c.BeginTransactionAsync();
+            await using var cmd = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx);
+            cmd.Parameters.Add(new() { Value = token });
+            await cmd.ExecuteNonQueryAsync();
+            await tx.RollbackAsync();
+            return true;
+        }
+        catch (PostgresException) { return false; }
+    }
+
+    static async Task<int> PostRevoke(string url, string? secret, string iss, string sub)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        using var msg = new HttpRequestMessage(HttpMethod.Post, url.TrimEnd('/') + "/v1/revoke");
+        if (secret is not null) msg.Headers.TryAddWithoutValidation("X-Caller-Secret", secret);
+        msg.Content = new StringContent(JsonSerializer.Serialize(new Dictionary<string, string> { ["iss"] = iss, ["sub"] = sub }), System.Text.Encoding.UTF8, "application/json");
+        var res = await http.SendAsync(msg);
+        return (int)res.StatusCode;
+    }
+
+    static async Task<bool> ListenRefusal(string prefix, bool allow)
+    {
+        var dll = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "Auth.Issuer", "bin", "Debug", "net10.0", "Auth.Issuer.dll"));
+        var psi = new ProcessStartInfo("dotnet", [dll, prefix])
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        if (allow) psi.Environment["ISSUER_ALLOW_NON_LOOPBACK"] = "1";
+        psi.Environment.Remove("ISSUER_CONNECTION_STRING");
+        psi.Environment.Remove("ISSUER_CALLER_SECRET");
+        using var p = Process.Start(psi)!;
+        var err = await p.StandardError.ReadToEndAsync();
+        await p.WaitForExitAsync();
+        var refused = p.ExitCode == 2 && err.Contains("refusing non-loopback", StringComparison.Ordinal);
+        return allow ? p.ExitCode == 2 && err.Contains("ISSUER_CONNECTION_STRING", StringComparison.Ordinal) && !refused : refused;
+    }
+
+    static async Task<bool> LoggingRefusal(Admin.Api.AdminApiOptions opt, NpgsqlDataSource admin, string guc, string value)
+    {
+        if (guc is not ("log_statement" or "log_min_duration_statement") || value is not ("all" or "0")) return false;
+        string role;
+        string database;
+        await using (var c = await admin.OpenConnectionAsync())
+        {
+            role = (string)(await new NpgsqlCommand("SELECT current_user", c).ExecuteScalarAsync())!;
+            database = (string)(await new NpgsqlCommand("SELECT current_database()", c).ExecuteScalarAsync())!;
+        }
+        if (!System.Text.RegularExpressions.Regex.IsMatch(role, "^[a-z0-9_]+\\z") || !System.Text.RegularExpressions.Regex.IsMatch(database, "^[a-z0-9_]+\\z"))
+            return false;
+        void Super(string sql)
+        {
+            var p = Process.Start(new ProcessStartInfo("sudo", ["-u", "postgres", "psql", "-d", database, "-v", "ON_ERROR_STOP=1", "-c", sql])
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            }) ?? throw new InvalidOperationException("psql did not start");
+            p.StandardOutput.ReadToEnd();
+            p.StandardError.ReadToEnd();
+            p.WaitForExit();
+            if (p.ExitCode != 0) throw new InvalidOperationException("superuser sql failed");
+        }
+        try
+        {
+            Super($"ALTER ROLE {role} SET {guc} = '{value}'");
+            try
+            {
+                await using var app = await Admin.Api.AdminApiHost.BuildAsync(opt);
+                return false;
+            }
+            catch (InvalidOperationException ex)
+            {
+                return ex.Message.Contains("startup guard:", StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            Super($"ALTER ROLE {role} RESET {guc}");
+        }
     }
 }
