@@ -48,6 +48,9 @@ BEGIN
   END IF;
   IF new THEN EXECUTE format('COMMENT ON DATABASE %I IS %L', db, 'floorfunds-kit'); END IF;
   EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', db);
+  -- SA L3. Nothing in this repo creates a temporary table. TEMP stays revoked
+  -- from PUBLIC. The owner, admin_api, and login are not granted it back.
+  EXECUTE format('REVOKE TEMP ON DATABASE %I FROM PUBLIC', db);
   EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', db, ro);
 END
 $kit$;

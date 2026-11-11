@@ -3821,3 +3821,28 @@ BEGIN
 END $EF$;
 COMMIT;
 
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110280000_Req064RevokeTemp') THEN
+    -- SA L3. A database created outside db/kit/database.sql still loses PUBLIC TEMP.
+    -- No statement in this repo creates a temporary table, so the privilege is not granted back.
+    DO $temp$
+    BEGIN
+      EXECUTE format('REVOKE TEMP ON DATABASE %I FROM PUBLIC', current_database());
+    END
+    $temp$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110280000_Req064RevokeTemp') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110280000_Req064RevokeTemp', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
