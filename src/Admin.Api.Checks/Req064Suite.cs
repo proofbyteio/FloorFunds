@@ -299,15 +299,25 @@ static class Req064Suite
         var expiredOpen = await OpenDeniedExp();
         Check("expired-token-rejected-at-open", expiredOpen);
 
-        var token = await Mint(Upa, exp: DateTimeOffset.UtcNow.AddHours(2));
-        var capped = await ScalarText(owner, """
-            SELECT CASE WHEN expires_at <= created_at + interval '15 minutes'
-                         AND expires_at > created_at + interval '14 minutes'
-                        THEN 'capped' ELSE 'open' END
-              FROM auth.request_session
-             WHERE token_hash = sha256(convert_to($1, 'UTF8'))
-            """, token);
-        Check("expiry-is-min-of-now-plus-15m-and-jwt-exp", capped == "capped");
+        string? minted = null;
+        var capped = "threw";
+        try
+        {
+            minted = await Mint(Upa, exp: DateTimeOffset.UtcNow.AddHours(2));
+            capped = await ScalarText(owner, """
+                SELECT CASE WHEN expires_at <= created_at + interval '15 minutes'
+                             AND expires_at > created_at + interval '14 minutes'
+                            THEN 'capped' ELSE 'open' END
+                  FROM auth.request_session
+                 WHERE token_hash = sha256(convert_to($1, 'UTF8'))
+                """, minted);
+        }
+        catch (PostgresException ex)
+        {
+            capped = ex.SqlState + " " + ex.MessageText;
+        }
+        Check("expiry-is-min-of-now-plus-15m-and-jwt-exp", capped == "capped", capped);
+        var token = minted ?? await Mint(Upa);
         Check("admin-api-cannot-open-session", await Denied(admin, "SELECT auth.open_session($1, $2, $3, $4)", Issuer, Upa.ToString("D"), Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(5)));
         Check("ttl-over-15-minutes-rejected", await TtlRejected(owner));
         Check("thirty-third-live-session-rejected", await LiveCap(owner));
