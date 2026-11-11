@@ -454,13 +454,14 @@ if (args is ["--scratch-selftest", var crashedOld, var crashedYoung, var crashed
         await Throws<InvalidOperationException>("maint-guard: CREATE DATABASE on a protected / non-scratch name refused", () => m.ExecAsync("CREATE DATABASE \"ff_sse3\" TEMPLATE template0 ENCODING 'UTF8'"), e => e.Message.Contains("maint-guard"));
     }
     // o3: the snapshot check catches a created cluster-level role (mutation), and is identical once it is dropped again.
-    var snap0 = await ScratchDb.ClusterSnapshotAsync(acs);
     var mutRole = "ff_scratch_mut" + Guid.NewGuid().ToString("N")[..8] + "_login";
+    var mutPrefix = mutRole[..^"_login".Length];
+    var snap0 = await ScratchDb.ClusterSnapshotAsync(acs, mutPrefix);
     await ScratchDb.CreateMarkedRoleAsync(acs, mutRole);
-    var snap1 = await ScratchDb.ClusterSnapshotAsync(acs);
+    var snap1 = await ScratchDb.ClusterSnapshotAsync(acs, mutPrefix);
     Ok($"o3 mutation: CREATE ROLE {mutRole} -> snapshot differs (caught)", snap1 != snap0 && ScratchDb.Diff(snap0, snap1).Contains(mutRole), ScratchDb.Diff(snap0, snap1));
     await ScratchDb.DropAsync(acs, mutRole[..^"_login".Length]); // no DB of that name; drops the marked role
-    Ok("o3: after DROP ROLE the snapshot is identical again", await ScratchDb.ClusterSnapshotAsync(acs) == snap0);
+    Ok("o3: after DROP ROLE the snapshot is identical again", await ScratchDb.ClusterSnapshotAsync(acs, mutPrefix) == snap0);
     // Cleanup: own via the marked path, young / live via the marked path (the hold has ended or is ignored by DropAsync? no FORCE:
     // the verify script waits for the hold to end first), decoy by exact name.
     await ScratchDb.DropAsync(acs, own);
@@ -816,7 +817,7 @@ try
     if (sweep.UnmarkedRoles.Count > 0) throw new InvalidOperationException($"unmarked ff_scratch_* look-alike role(s) present, not dropped: {string.Join(", ", sweep.UnmarkedRoles)} [TLD 12:33]");
     if (await ScratchDb.AdminRoleViolationsAsync(scratchAdminCs) is { Count: > 0 } adminViol)
         throw new InvalidOperationException($"ff_scratchadm differs from the documented kit role: {string.Join("; ", adminViol)} [TLD 12:33]");
-    scratchSnap = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs);
+    scratchSnap = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs, runName);
     scratchName = await ScratchDb.CreateMarkedAsync(scratchAdminCs, runName); // set only once CREATE + mark succeeded
 }
 catch (Exception e) { scratchErr = $"{e.GetType().Name}: {e.Message}"; Console.WriteLine($"FATAL scratch: setup failed ({scratchErr}); the N3/N1 probes and Q2 will FAIL"); }
@@ -1271,11 +1272,31 @@ finally
 await Check("Q2: this run's scratch DB dropped in the finally; no MARKED ff_scratch_* DB left [TLD 11:21]; cluster snapshot (roles, members, tablespaces, DBs) identical before CREATE and after DROP [TLD 11:57 o3]; ff_scratchadm as documented [TLD 12:33]", async () =>
 {
     if (scratchAdminCs is null || scratchName is null || scratchSnap is null) return false;
-    var after = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs);
+    var after = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs, scratchName);
     if (after != scratchSnap) Console.WriteLine($"Q2: cluster snapshot changed: {ScratchDb.Diff(scratchSnap, after)}");
     var adminV = await ScratchDb.AdminRoleViolationsAsync(scratchAdminCs);
     if (adminV.Count > 0) Console.WriteLine($"Q2: ff_scratchadm: {string.Join("; ", adminV)}");
     return after == scratchSnap && adminV.Count == 0 && !(await ScratchDb.StateAsync(scratchAdminCs, scratchName)).exists && (await ScratchDb.ListAsync(scratchAdminCs, markedOnly: true)).Count == 0;
+});
+await Check("Q2: another run's ff_scratch_* database and role do not change this run's scoped snapshot", async () =>
+{
+    if (scratchAdminCs is null || scratchName is null) return false;
+    var before = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs, scratchName);
+    var decoy = ScratchDb.NewName();
+    await ScratchDb.CreateUnmarkedAsync(scratchAdminCs, decoy, role: false);
+    await ScratchDb.CreateUnmarkedAsync(scratchAdminCs, decoy + "_login", role: true);
+    try
+    {
+        await using var m = await ScratchDb.OpenMaint(scratchAdminCs);
+        await m.ExecAsync($"COMMENT ON DATABASE \"{decoy}\" IS 'floorfunds-scratch'");
+        await m.ExecAsync($"COMMENT ON ROLE \"{decoy}_login\" IS 'floorfunds-scratch'");
+        return await ScratchDb.ClusterSnapshotAsync(scratchAdminCs, scratchName) == before;
+    }
+    finally
+    {
+        try { await ScratchDb.DropAsync(scratchAdminCs, decoy); }
+        catch (Exception e) { Console.WriteLine($"Q2 decoy cleanup: {e.GetType().Name}"); }
+    }
 });
 await Check("K3: cleanup -> DB back in the post-seed state (re-runnable)", async () =>
 {
