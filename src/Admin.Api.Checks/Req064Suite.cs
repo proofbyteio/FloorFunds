@@ -393,6 +393,16 @@ static class Req064Suite
             await tx.RollbackAsync();
         }
 
+        var stale = await Mint(Sa2);
+        await Exec(owner, """
+            UPDATE auth.request_session
+               SET expires_at = clock_timestamp() - interval '1 second'
+             WHERE token_hash = sha256(convert_to($1, 'UTF8'))
+            """, stale);
+        Check("expired-session-rejected-by-begin-request", await Denied(admin, "SELECT auth.begin_request($1)", stale));
+        await Exec(owner, "DELETE FROM auth.request_binding WHERE token_hash = sha256(convert_to($1, 'UTF8'))", stale);
+        await Exec(owner, "DELETE FROM auth.request_session WHERE token_hash = sha256(convert_to($1, 'UTF8'))", stale);
+
         var live = await Mint(Upa);
         await Exec(owner, "UPDATE auth.admin_assignment SET status = 'disabled' WHERE user_id = $1 AND role_id = 'partner_admin'", Upa);
         var nextDenied = await Denied(admin, "SELECT auth.begin_request($1)", live);
