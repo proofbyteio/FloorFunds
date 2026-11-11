@@ -723,7 +723,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             up.Parameters.Add(new() { Value = n.MfaRequired });
             up.Parameters.Add(new() { Value = who.Id.UserId });
             up.Parameters.Add(new() { Value = now.UtcDateTime, NpgsqlDbType = NpgsqlDbType.TimestampTz });
-            if (await up.ExecuteScalarAsync() is not (int or long) wrote || Convert.ToInt64(wrote, System.Globalization.CultureInfo.InvariantCulture) != 1)
+            var wrote = await up.ExecuteScalarAsync();
+            var savedRows = wrote switch { int i => (long)i, long l => l, _ => 0L };
+            if (savedRows != 1)
                 throw Err(409, "concurrency_conflict", b => b["current_row_version"] = row.RowVersion);
         }
         var changeId = Guid.CreateVersion7();
