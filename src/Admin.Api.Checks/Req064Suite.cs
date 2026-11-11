@@ -374,6 +374,25 @@ static class Req064Suite
         await Exec(owner, "SELECT auth.revoke_session($1)", revoked);
         Check("revoked-session-denied-on-next-action", await Denied(admin, "SELECT auth.begin_request($1)", revoked));
 
+        var bound = await Mint(Sa);
+        await using (var c = await owner.OpenConnectionAsync())
+        {
+            await using var tx = await c.BeginTransactionAsync();
+            await using (var b = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx))
+            {
+                b.Parameters.Add(new() { Value = bound });
+                await b.ExecuteNonQueryAsync();
+            }
+            await using (var rev = new NpgsqlCommand("SELECT auth.revoke_session($1)", c, tx))
+            {
+                rev.Parameters.Add(new() { Value = bound });
+                await rev.ExecuteNonQueryAsync();
+            }
+            var cleared = await ScalarOn(c, tx, "SELECT auth.current_principal() IS NULL");
+            Check("revoked-binding-clears-current-principal", cleared);
+            await tx.RollbackAsync();
+        }
+
         var live = await Mint(Upa);
         await Exec(owner, "UPDATE auth.admin_assignment SET status = 'disabled' WHERE user_id = $1 AND role_id = 'partner_admin'", Upa);
         var nextDenied = await Denied(admin, "SELECT auth.begin_request($1)", live);
