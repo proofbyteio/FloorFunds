@@ -1971,6 +1971,10 @@ static class Req064Suite
             && await Denied(admin, "SELECT auth.begin_request($1)", second)
             && await BeginOk(admin, other),
             $"revoke {revoked}");
+        // iat is a whole second and revoked_before is clock_timestamp(). A JWT minted
+        // later in the logout second is still at or before the cutoff. The next sign-in
+        // in this suite waits for the following second.
+        await Task.Delay(1100 - DateTimeOffset.UtcNow.Millisecond);
         var live = await IssuerSession(issuer.Url, Signed(Claims(Sa2, "super", null)));
         Check("unauthenticated-revoke-rejected",
             await PostRevoke(issuer.Url, null, Issuer, Sa2.ToString("D")) == 401 && await BeginOk(admin, live));
