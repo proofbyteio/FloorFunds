@@ -665,7 +665,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     }
     Ok("schema auth: no PUBLIC privileges", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_namespace n, aclexplode(n.nspacl) x WHERE n.nspname='auth' AND x.grantee=0)"));
     Ok("database: no PUBLIC CONNECT (ff-db.sh REVOKE)", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_database d, aclexplode(d.datacl) x WHERE d.datname=current_database() AND x.grantee=0 AND x.privilege_type='CONNECT')"));
-    Ok("database: no PUBLIC TEMP (SA L3; this repo creates no temporary table)", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_database d, aclexplode(d.datacl) x WHERE d.datname=current_database() AND x.grantee=0 AND x.privilege_type='TEMP')"));
+    Ok("database: no PUBLIC TEMP (SA L3; aclexplode reports TEMPORARY, and TEMP is accepted too)", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_database d, aclexplode(d.datacl) x WHERE d.datname=current_database() AND x.grantee=0 AND x.privilege_type IN ('TEMP', 'TEMPORARY'))"));
     var issuerRole = dbName + "_issuer";
     var definerRole = dbName + "_auth_definer";
     Ok($"role {issuerRole}: LOGIN NOSUPERUSER NOBYPASSRLS, member of nothing, and nothing is a member of it",
