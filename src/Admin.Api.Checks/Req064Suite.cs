@@ -295,6 +295,10 @@ static class Req064Suite
             }
             await app.StopAsync();
         }
+        catch (Exception ex)
+        {
+            Check("req064-finished", false, ex.GetType().Name + ": " + ex.Message);
+        }
         finally
         {
             await Cleanup(owner);
