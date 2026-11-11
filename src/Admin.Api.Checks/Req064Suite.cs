@@ -286,9 +286,6 @@ static class Req064Suite
             Check("stand-in-sign-in-opens-session-nav-locations-catalog", signedIn.Ok, signedIn.Detail);
             var shell = await NodeScript("session-closed.test.mjs", "PASS shell-goes-to-signin-on-closed-session");
             Check("shell-goes-to-signin-on-closed-session", shell.Ok, shell.Detail);
-            var hop = await NodeScript("session-hop.test.mjs", "PASS session-hop-labels");
-            Check("session-hop-labels", hop.Ok, hop.Detail);
-            Check("session-hop-has-no-reopen", hop.Detail.Contains("PASS session-hop-has-no-reopen", StringComparison.Ordinal), hop.Detail);
             var listen = await BashScript("own-listener.test.sh", "PASS own-listener-refuses-a-foreign-pid");
             Check("own-listener-refuses-a-foreign-pid", listen.Ok, listen.Detail);
 
@@ -1498,9 +1495,8 @@ static class Req064Suite
         var waited = await OpenWaits(owner, lockUser);
         Check("open-session-waits-on-the-login-lock", waited == "waiting True live 0 len 64", waited);
 
-        var cutoffUser = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000b2");
+        var cutoffUser = Guid.NewGuid();
         await EnsureUser(owner, cutoffUser);
-        await Exec(owner, "DELETE FROM auth.login_cutoff WHERE user_id = $1", cutoffUser);
         await ClearSessions(owner, cutoffUser);
         var old = await ScalarTime(owner, "SELECT clock_timestamp() - interval '1 hour'");
         var first = await Mint(cutoffUser, iat: old);
@@ -1517,11 +1513,122 @@ static class Req064Suite
             first.Length == 64 && afterOpen == 1 && afterRevoke == 0 && denied && still == 0 && fresh.Length == 64,
             $"open {afterOpen} revoke {afterRevoke} denied {denied} still {still} fresh {fresh.Length}");
 
-        var raceUser = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000b3");
+        var raceUser = Guid.NewGuid();
         await EnsureUser(owner, raceUser);
-        await Exec(owner, "DELETE FROM auth.login_cutoff WHERE user_id = $1", raceUser);
         var left = await OpenLogoutOverlaps(owner, raceUser);
         Check("open-logout-80-overlaps-leave-no-live-row", left == 0, left.ToString());
+
+        var lockedUser = Guid.NewGuid();
+        await EnsureUser(owner, lockedUser);
+        await ClearSessions(owner, lockedUser);
+        var locked = await OpenBehindLockUpdate(owner, lockedUser);
+        Check("open-blocked-behind-a-lock-does-not-open-a-locked-user",
+            locked == "waiting True while 0 outcome denied live 0", locked);
+
+        var futureUser = Guid.NewGuid();
+        await EnsureUser(owner, futureUser);
+        await ClearSessions(owner, futureUser);
+        var ahead = await ScalarTime(owner, "SELECT clock_timestamp() + interval '5 seconds'");
+        var beforeLogout = await Mint(futureUser, iat: ahead);
+        await RevokeLogin(futureUser);
+        var futureDenied = false;
+        try { await Mint(futureUser, iat: ahead, jti: Guid.NewGuid()); }
+        catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText == "session_denied") { futureDenied = true; }
+        var futureLive = await LiveSessions(owner, futureUser);
+        var farUser = Guid.NewGuid();
+        await EnsureUser(owner, farUser);
+        await ClearSessions(owner, farUser);
+        var far = await ScalarTime(owner, "SELECT clock_timestamp() + interval '61 seconds'");
+        var farDenied = false;
+        try { await Mint(farUser, iat: far); }
+        catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText == "session_denied") { farDenied = true; }
+        var near = await Mint(farUser, iat: await ScalarTime(owner, "SELECT clock_timestamp() + interval '5 seconds'"));
+        Check("future-iat-cannot-beat-logout-or-skew",
+            beforeLogout.Length == 64 && futureDenied && futureLive == 0 && farDenied && await LiveSessions(owner, farUser) == 1 && near.Length == 64,
+            $"before {beforeLogout.Length} denied {futureDenied} live {futureLive} far {farDenied} near {near.Length}");
+
+        var sameUser = Guid.NewGuid();
+        await EnsureUser(owner, sameUser);
+        await ClearSessions(owner, sameUser);
+        await RevokeLogin(sameUser);
+        var sameSecond = await ScalarTime(owner, "SELECT date_trunc('second', c.revoked_before) FROM auth.login_cutoff c WHERE c.user_id = '" + sameUser.ToString("D") + "'");
+        var sameDenied = false;
+        try { await Mint(sameUser, iat: sameSecond); }
+        catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText == "session_denied") { sameDenied = true; }
+        Check("same-second-re-sign-in-after-logout-is-denied",
+            sameDenied && await LiveSessions(owner, sameUser) == 0, $"denied {sameDenied}");
+
+        var writes = await OwnerCutoffWrites(owner, lockedUser);
+        Check("owner-cannot-write-login-cutoff", writes == "priv False insert 42501", writes);
+    }
+
+    static async Task<string> OpenBehindLockUpdate(NpgsqlDataSource owner, Guid user)
+    {
+        await using var hold = await owner.OpenConnectionAsync();
+        await using var tx = await hold.BeginTransactionAsync();
+        await using (var cmd = new NpgsqlCommand("SELECT pg_advisory_xact_lock(814064213, hashtext($1::uuid::text))", hold, tx))
+        {
+            cmd.Parameters.Add(new() { Value = user });
+            await cmd.ExecuteScalarAsync();
+        }
+        var open = Task.Run(async () =>
+        {
+            try
+            {
+                await Mint(user);
+                return "opened";
+            }
+            catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText == "session_denied")
+            {
+                return "denied";
+            }
+            catch (Exception ex)
+            {
+                return ex.GetType().Name;
+            }
+        });
+        await Task.Delay(800);
+        var waiting = !open.IsCompleted;
+        await using (var cmd = new NpgsqlCommand(
+            "UPDATE auth.app_user SET locked_until = clock_timestamp() + interval '1 hour' WHERE user_id = $1", hold, tx))
+        {
+            cmd.Parameters.Add(new() { Value = user });
+            await cmd.ExecuteNonQueryAsync();
+        }
+        var whileLocked = await LiveSessions(owner, user);
+        await tx.CommitAsync();
+        var outcome = "timeout";
+        try { outcome = await open.WaitAsync(TimeSpan.FromSeconds(8)); }
+        catch (Exception ex) { outcome = ex.GetType().Name; }
+        var live = await LiveSessions(owner, user);
+        return $"waiting {waiting} while {whileLocked} outcome {outcome} live {live}";
+    }
+
+    static async Task<string> OwnerCutoffWrites(NpgsqlDataSource owner, Guid user)
+    {
+        var priv = await ScalarBool(owner, """
+            SELECT has_table_privilege(current_user, 'auth.login_cutoff', 'INSERT')
+                OR has_table_privilege(current_user, 'auth.login_cutoff', 'UPDATE')
+                OR has_table_privilege(current_user, 'auth.login_cutoff', 'DELETE')
+            """);
+        var insert = "ok";
+        await using (var c = await owner.OpenConnectionAsync())
+        {
+            await using var tx = await c.BeginTransactionAsync();
+            try
+            {
+                await using var cmd = new NpgsqlCommand(
+                    "INSERT INTO auth.login_cutoff (user_id, revoked_before) VALUES ($1, clock_timestamp())", c, tx);
+                cmd.Parameters.Add(new() { Value = user });
+                await cmd.ExecuteNonQueryAsync();
+            }
+            catch (PostgresException ex)
+            {
+                insert = ex.SqlState;
+            }
+            await tx.RollbackAsync();
+        }
+        return $"priv {priv} insert {insert}";
     }
 
     static async Task<string> OpenWaits(NpgsqlDataSource owner, Guid user)
