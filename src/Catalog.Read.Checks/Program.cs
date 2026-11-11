@@ -384,8 +384,10 @@ try
     }
     var clearedRead = await noResetReader.ListEntriesAsync(super, CancellationToken.None);
     var afterClear = await PooledGuc(noReset);
-    if (clearedRead.Count == 3 && afterClear == "||||0") Pass("clear-wipes-principal-when-reset-disabled", afterClear);
-    else Fail("clear-wipes-principal-when-reset-disabled", $"rows {clearedRead.Count} guc {afterClear}");
+    var issLeft = await Scalar(noReset, "SELECT coalesce(current_setting('app.request_iss', true), '') || '|' || coalesce(current_setting('app.request_sub', true), '')");
+    // SetScope clears the flag GUCs. Clear is what wipes request_iss and request_sub. A no-op Clear leaves the plant.
+    if (clearedRead.Count == 3 && afterClear == "||||0" && issLeft == "|") Pass("clear-wipes-principal-when-reset-disabled", afterClear);
+    else Fail("clear-wipes-principal-when-reset-disabled", $"rows {clearedRead.Count} guc {afterClear} iss {issLeft}");
 
     await using var ownerReaderDs = NpgsqlDataSource.Create(Cs(OwnerRole, DbName, false));
     var ownerThrew = await ThrowsRole(() => new NpgsqlCatalogReader(ownerReaderDs).ListEntriesAsync(super, CancellationToken.None));
