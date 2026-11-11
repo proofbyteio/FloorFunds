@@ -1157,8 +1157,10 @@ await Check("concurrency: save_location_login_config commits row_version 2; a st
     await t2.RollbackAsync();
     var efDenied = false;
     await using var efConn = await adminDs.OpenConnectionAsync();
+    await using var npgTx = await efConn.BeginTransactionAsync();
+    await BindResolved(efConn, npgTx, "super", null);
     var db = new AuthDbContext(new DbContextOptionsBuilder<AuthDbContext>().UseNpgsql(efConn).Options);
-    await using var efTx = await db.Database.BeginTransactionAsync();
+    await db.Database.UseTransactionAsync(npgTx);
     try
     {
         var row = await db.LocationLoginConfigRows.SingleAsync(x => x.LocationId == L_NV);
