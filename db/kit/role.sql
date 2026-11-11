@@ -1,6 +1,6 @@
 -- floorfunds-kit: create or update ONE login role. psql variables: r (name), p (a SCRAM-SHA-256 verifier computed
 -- client-side by setup.sh/setup.ps1, KF-A: the cleartext password never reaches the server; set on stdin, never argv),
--- db and role (to name this run's kit roles: role, <db>_admin_api, <db>_login).
+-- db and role (to name this run's kit roles: role, <db>_admin_api, <db>_login, <db>_issuer).
 -- K1 + KF1/KF2: the check and the change run in ONE statement (a single DO block, one transaction):
 --   * role absent  -> CREATE ROLE ... and COMMENT ... IS 'floorfunds-kit' together (both or neither);
 --   * role present -> ALTER ROLE only if it carries the marker, is not a superuser, has none of BYPASSRLS,
@@ -17,7 +17,7 @@ BEGIN;
 SET LOCAL lock_timeout = '30s';
 LOCK TABLE pg_catalog.pg_authid, pg_catalog.pg_auth_members IN SHARE MODE;
 SELECT set_config('floorfunds_kit.r', :'r', true) AS kit_r, set_config('floorfunds_kit.p', :'p', true) AS kit_p,
-       set_config('floorfunds_kit.kit', concat_ws(',', :'role', :'db' || '_admin_api', :'db' || '_login'), true) AS kit_k \gset
+       set_config('floorfunds_kit.kit', concat_ws(',', :'role', :'db' || '_admin_api', :'db' || '_login', :'db' || '_issuer'), true) AS kit_k \gset
 \unset kit_p
 DO $kit$
 DECLARE

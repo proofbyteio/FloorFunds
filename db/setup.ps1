@@ -12,13 +12,15 @@
        output without its end marker (KF3); -Force never overrides that.
        Re-running on the kit's own (marked) objects needs -Force (K1, TL 8:32).
     1. owner login role + a database it owns (superuser step; marked 'floorfunds-kit')
-    2. the S2a app roles <db>_admin_api and <db>_login (superuser step; spec 8.2)
+    2. the S2a app roles <db>_admin_api and <db>_login, plus <db>_issuer (superuser step; spec 8.2).
+       <db>_issuer is LOGIN with no membership. Its password is only for the issuer process.
     3. db/migrations.sql applied AS THE OWNER (idempotent; the only way schema
        and tables are created). Skip with -NoMigrate.
     4. optional TEST-ONLY seed db/seed/*.sql (-Seed; SSE2-FAKE-TEST-ONLY data)
-  WARNING (I-3): -Password/-AdminApiPassword/-LoginPassword given on the command line (e.g. via
+  WARNING (I-3): -Password/-AdminApiPassword/-LoginPassword/-IssuerPassword given on the command line (e.g. via
   ConvertTo-SecureString -AsPlainText) put the password in argv, visible in the process list and in
-  shell history. Prefer the hidden prompts, or env FF_DB_PASSWORD / FF_ADMIN_API_PASSWORD / FF_LOGIN_PASSWORD.
+  shell history. Prefer the hidden prompts, or env FF_DB_PASSWORD / FF_ADMIN_API_PASSWORD / FF_LOGIN_PASSWORD /
+  FF_ISSUER_PASSWORD. FF_ISSUER_PASSWORD is for the issuer process only, not the admin host.
   Exit: 0 ok, 2 bad args, 3 psql missing, 4 migrations failed, 5 refused
   (nothing changed) or a kit SQL guard aborted (earlier steps may have completed; see db/README.md, I-1).
   Tested only with pwsh 7.6.9 on Linux; Windows (incl. the TCP admin login) untested.
@@ -34,6 +36,7 @@ param(
   [SecureString]$Password,
   [SecureString]$AdminApiPassword,   # else env FF_ADMIN_API_PASSWORD, else prompt
   [SecureString]$LoginPassword,      # else env FF_LOGIN_PASSWORD, else prompt
+  [SecureString]$IssuerPassword,     # else env FF_ISSUER_PASSWORD, else prompt. Issuer process only.
   [Alias('Host')][string]$DbHost = '127.0.0.1',
   [int]$Port = 5432,
   # Admin (superuser) connection. Windows default: psql -U postgres -h localhost.
@@ -56,8 +59,8 @@ if ($Role -cnotmatch $NameRe) { Write-Error "Invalid -Role name: must match $Nam
 if ($Port -lt 1 -or $Port -gt 65535) { Write-Error 'Invalid -Port' -ErrorAction Continue; exit 2 }
 # <db>_admin_api must still fit in 63 bytes.
 if ($Db.Length -gt 53) { Write-Error 'Invalid -Db name: at most 53 characters (app role <db>_admin_api must fit)' -ErrorAction Continue; exit 2 }
-$AdminApiRole = "${Db}_admin_api"; $LoginRole = "${Db}_login"
-if ($Role -ceq $AdminApiRole -or $Role -ceq $LoginRole) { Write-Error 'Invalid -Role: must not be an app role name' -ErrorAction Continue; exit 2 }
+$AdminApiRole = "${Db}_admin_api"; $LoginRole = "${Db}_login"; $IssuerRole = "${Db}_issuer"
+if ($Role -ceq $AdminApiRole -or $Role -ceq $LoginRole -or $Role -ceq $IssuerRole) { Write-Error 'Invalid -Role: must not be an app role name' -ErrorAction Continue; exit 2 }
 if (-not $NoMigrate -and -not (Test-Path -LiteralPath $Migrations -PathType Leaf)) { Write-Error "Migrations script not found: $Migrations" -ErrorAction Continue; exit 2 }
 if ($Seed -and $NoMigrate) { Write-Error '-Seed needs the migrations (drop -NoMigrate)' -ErrorAction Continue; exit 2 }
 if ($Drop -and -not $Force) { [Console]::Error.WriteLine('Refused: -Drop needs -Force (and drops only a kit-marked DB owned by -Role). Nothing was changed.'); exit 2 }
@@ -68,7 +71,7 @@ foreach ($f in 'preflight.sql', 'role.sql', 'database.sql') {
 # K1 hard refusals by name (no SQL at all): -Force never overrides these.
 function Stop-Refused([string]$why) { [Console]::Error.WriteLine("Refused: $why. Nothing was changed."); exit 5 }
 if ($Db -cin @('postgres', 'template0', 'template1')) { Stop-Refused "-Db $Db is a system database" }
-foreach ($r in @($Role, $AdminApiRole, $LoginRole)) {
+foreach ($r in @($Role, $AdminApiRole, $LoginRole, $IssuerRole)) {
   if ($r -ceq 'postgres') { Stop-Refused 'role postgres is the bootstrap superuser' }
   if ($r.StartsWith('pg_')) { Stop-Refused "role ${r}: the pg_ prefix is reserved" }
 }
@@ -89,6 +92,7 @@ function Get-Pw([SecureString]$given, [string]$envValue, [string]$prompt) {
 $pw = Get-Pw $Password $env:FF_DB_PASSWORD "Password for role $Role"
 $apiPw = Get-Pw $AdminApiPassword $env:FF_ADMIN_API_PASSWORD "Password for app role $AdminApiRole"
 $loginPw = Get-Pw $LoginPassword $env:FF_LOGIN_PASSWORD "Password for app role $LoginRole"
+$issuerPw = Get-Pw $IssuerPassword $env:FF_ISSUER_PASSWORD "Password for app role $IssuerRole"
 
 # Admin password: PGPASSWORD if already set; prompt only for a TCP admin connection.
 $adminPw = $env:PGPASSWORD
@@ -124,9 +128,9 @@ function Invoke-Psql([string]$sql, [string[]]$extra = @(), [switch]$Capture, [in
 function Get-KitSql([string]$name) { [System.IO.File]::ReadAllText((Join-Path $Kit $name)) }
 
 # 0. K1 preflight: read-only, before anything is changed.
-Write-Host "Preflight (read-only): $Db, $Role, $AdminApiRole, $LoginRole..."
+Write-Host "Preflight (read-only): $Db, $Role, $AdminApiRole, $LoginRole, $IssuerRole..."
 # KF-E: split on LF only, so a line ending in CR (e.g. "END ...`r") does not match exactly, as in setup.sh.
-$pre = @((Invoke-Psql (Get-KitSql 'preflight.sql') @('-tA', '-v', "api_role=$AdminApiRole", '-v', "login_role=$LoginRole") -Capture -FailCode 5) -split "`n" | Where-Object { $_ })
+$pre = @((Invoke-Psql (Get-KitSql 'preflight.sql') @('-tA', '-v', "api_role=$AdminApiRole", '-v', "login_role=$LoginRole", '-v', "issuer_role=$IssuerRole") -Capture -FailCode 5) -split "`n" | Where-Object { $_ })
 # KF3: fail closed. The preflight always ends with this line; empty or truncated output is a refusal.
 if (-not $pre.Count -or $pre[-1] -cne 'END floorfunds-kit-preflight') {
   [Console]::Error.WriteLine('Refused: the preflight returned no end marker (empty or incomplete output), so the catalog could not be checked. Nothing was changed.'); exit 5
@@ -170,7 +174,8 @@ Write-Host "Database ${Db}: create if missing (kit-marked only)..."
 # S2a app roles (spec 8.2). The migration grants to them and RAISEs if either is missing or privileged.
 Set-AppRole $AdminApiRole $apiPw
 Set-AppRole $LoginRole $loginPw
-$apiPw = $null; $loginPw = $null
+Set-AppRole $IssuerRole $issuerPw
+$apiPw = $null; $loginPw = $null; $issuerPw = $null
 
 # As the owner over TCP; the owner password goes in the child's env, never argv.
 function Invoke-OwnerPsql([string[]]$extra) {
@@ -217,4 +222,8 @@ Connection string templates (Npgsql); passwords are the ones you entered:
 
 Set them outside the repo, as env vars (see db/README.md, "Run and test"):
   CONNECTION_STRING (owner), ADMIN_API_CONNECTION_STRING, LOGIN_CONNECTION_STRING
+
+The issuer role $IssuerRole is LOGIN and a member of nothing. Its password is
+FF_ISSUER_PASSWORD, read only by the issuer process. Do not put it in the admin
+host's config, environment, pool, or connection strings.
 "@

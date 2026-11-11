@@ -49,10 +49,14 @@ same four steps. A second run on the same names is refused unless you add
    marker on roles) need it too. `CREATEROLE` + `CREATEDB` is not enough.
 1. **Owner role + database** (as that superuser): a login role (default
    `floorfunds_dev`) and a database it owns. CONNECT is revoked from PUBLIC.
-2. **App roles** (as a superuser; spec §8.2): `<db>_admin_api` (the admin API)
-   and `<db>_login` (the login service). Both are plain login roles: no
-   superuser, no BYPASSRLS, no CREATEDB/CREATEROLE/REPLICATION, and they own
-   nothing. The migration refuses to run if either is missing or privileged.
+2. **App roles** (as a superuser; spec §8.2): `<db>_admin_api` (the admin API),
+   `<db>_login` (the login service), and `<db>_issuer` (the issuer process).
+   All three are plain login roles: no superuser, no BYPASSRLS, no
+   CREATEDB/CREATEROLE/REPLICATION, and they own nothing. None is a member of
+   another role. `<db>_issuer` receives EXECUTE on `auth.open_session` directly.
+   Its password is `FF_ISSUER_PASSWORD`, read only by the issuer process. It is
+   not an Admin.Api connection string. The migration refuses to run if
+   `<db>_admin_api` or `<db>_login` is missing or privileged.
 3. **Migrations**: applies `db/migrations.sql` **as the owner role** over TCP.
    This is the only way the `auth` schema and tables are created. The script is
    idempotent; re-running it is a no-op. Skip with `--no-migrate` / `-NoMigrate`.
@@ -61,7 +65,7 @@ same four steps. A second run on the same names is refused unless you add
 **macOS / Linux**: `db/setup.sh`
 ```
 # Linux (runs the superuser psql as the postgres OS user via sudo; this is the default)
-./db/setup.sh                                  # db and owner role: floorfunds_dev; prompts for 3 passwords
+./db/setup.sh                                  # db and owner role: floorfunds_dev; prompts for 4 passwords
 ./db/setup.sh --seed                           # same, plus the TEST-ONLY seed
 
 # macOS Homebrew (you are already a superuser)
@@ -70,7 +74,7 @@ same four steps. A second run on the same names is refused unless you add
 Options:
 - `--db NAME` and `--role NAME`. Both default to `floorfunds_dev`. Names must match `^[a-z_][a-z0-9_]{0,62}$`; `--db` is at most 53 characters so that `<db>_admin_api` fits.
 - Owner password: `--password PW`, or env `FF_DB_PASSWORD`, else a hidden prompt.
-- App-role passwords: env `FF_ADMIN_API_PASSWORD` and `FF_LOGIN_PASSWORD`, else hidden prompts.
+- App-role passwords: env `FF_ADMIN_API_PASSWORD`, `FF_LOGIN_PASSWORD`, and `FF_ISSUER_PASSWORD`, else hidden prompts. `FF_ISSUER_PASSWORD` stays with the issuer process.
 - Prefer the prompts: `--password` can end up in your shell history. No password is ever printed.
 - **Warning (I-3):** `--password PW` (setup.sh), and `-Password` / `-AdminApiPassword` / `-LoginPassword` given on a pwsh command line (e.g. via `ConvertTo-SecureString -AsPlainText`), put the password in the process's argv, so other users can see it in the process list (`ps`), and it lands in shell history. Use the hidden prompt (the default) or the environment variables `FF_DB_PASSWORD`, `FF_ADMIN_API_PASSWORD`, `FF_LOGIN_PASSWORD` (readable only by your own user and root). The admin password for a TCP admin connection in setup.ps1 comes from `PGPASSWORD` or a prompt. The kit has no password-file option.
 - `--host` (default `127.0.0.1`) and `--port` (default `5432`): where the owner connects to apply the migrations and the seed (TCP, password auth). Also used in the printed connection strings.
@@ -111,7 +115,7 @@ Options:
 - Role memberships (KF-G): no `pg_auth_members` row may involve a kit role, as member or as granted role, not even between two roles of the same install (e.g. granting the `--role` owner role to `<db>_login`). The preflight and `db/kit/role.sql` refuse such a role (exit 5). Remove the membership with `REVOKE` and re-run.
 - `db/setup.ps1` has been tested only with pwsh 7.6.9 **on Linux**. It has never been run on Windows.
 - Package signature revocation (NuGet warning NU3018) could not be checked on the engineers' box, because it cannot reach the certificate revocation servers. Re-check it on a machine with normal network access before release, starting from an empty NuGet cache.
-- Scope of the KF1/KF2 fixes: they cover the three roles this run names (`--role`, `<db>_admin_api`, `<db>_login`) and the one `--db`. They check both what those roles are members of and (KF-C) which roles outside the kit are members of them. They do not remove memberships or attributes, they refuse instead. They do not close the window between `CREATE`/`DROP DATABASE` and their checks (see above).
+- Scope of the KF1/KF2 fixes: they cover the four roles this run names (`--role`, `<db>_admin_api`, `<db>_login`, `<db>_issuer`) and the one `--db`. They check both what those roles are members of and (KF-C) which roles outside the kit are members of them. They do not remove memberships or attributes, they refuse instead. They do not close the window between `CREATE`/`DROP DATABASE` and their checks (see above). Adding `<db>_issuer` did not add a membership: `EXECUTE` on `auth.open_session` is an object privilege.
 - The verifier is not a password, but anyone who reads it (`pg_authid`, a statement log with `log_statement = all`, or `psql` history) could attempt an offline guessing attack. Use long random passwords.
 - The admin connection must be a superuser (step 0): the role lock on `pg_authid`/`pg_auth_members` and the role checks need it. A non-superuser admin, even with `CREATEROLE` and `CREATEDB`, is refused up front by the preflight (exit 5, nothing changed); there is no non-superuser mode.
 
@@ -120,7 +124,7 @@ Options:
 ./db/setup.ps1                                   # floorfunds_dev; prompts for the passwords
 ./db/setup.ps1 -Db floorfunds_dev -Role floorfunds_dev -Force -Drop -Seed   # rebuild the kit's own DB
 ```
-- Same options as setup.sh: `-Db`, `-Role`, `-Password`, `-AdminApiPassword`, `-LoginPassword` (SecureStrings; otherwise env `FF_DB_PASSWORD`, `FF_ADMIN_API_PASSWORD`, `FF_LOGIN_PASSWORD`; otherwise hidden prompts), `-Host`, `-Port`, `-AdminHost`, `-AdminUser`, `-Force`, `-Drop`, `-NoMigrate`, `-Migrations`, `-Seed`.
+- Same options as setup.sh: `-Db`, `-Role`, `-Password`, `-AdminApiPassword`, `-LoginPassword`, `-IssuerPassword` (SecureStrings; otherwise env `FF_DB_PASSWORD`, `FF_ADMIN_API_PASSWORD`, `FF_LOGIN_PASSWORD`, `FF_ISSUER_PASSWORD`; otherwise hidden prompts), `-Host`, `-Port`, `-AdminHost`, `-AdminUser`, `-Force`, `-Drop`, `-NoMigrate`, `-Migrations`, `-Seed`.
 - The admin connection defaults to `psql -U postgres -h localhost`. The postgres password is read from `PGPASSWORD` if it is set; otherwise you are prompted. Use `-AdminHost ''` to connect through the local socket instead (Linux/macOS).
 - **Tested only with pwsh 7.6.9 on Linux**, installed from packages.microsoft.com (debian/13 trixie, prod) per TL's OK, run as the `postgres` OS user with `-AdminHost ''`. **Untested on Windows**: the Windows admin login over TCP with the postgres password, finding psql on PATH, and the EDB install directory.
 
