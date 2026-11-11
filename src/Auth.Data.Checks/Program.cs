@@ -508,9 +508,6 @@ if (ScratchLock.Refusal(ownerCs) is { } lockRefusedMain) { Console.Error.WriteLi
 await using var scratchLock = await ScratchLock.TryAcquireAsync(ownerCs);
 if (scratchLock is null) { Console.WriteLine(ScratchLock.BusyMessage(ownerCs)); return 5; }
 string adminRole = dbName + "_admin_api", loginRole = dbName + "_login";
-string[] LlcMutable = ["provider_kind", "display_name", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret_ref",
-                       "allow_db_fallback", "mfa_required", "updated_by", "updated_at", "row_version"];
-
 await using var ownerDs = NpgsqlDataSource.Create(ownerCs);
 await using var adminDs = NpgsqlDataSource.Create(adminCs);
 await using var loginDs = NpgsqlDataSource.Create(loginCs);
@@ -591,7 +588,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver, Req064RoleScope, Req064HistoryPartner, Req064Issuer, Req064Principal, Req064ReasonRead, Req064Definer, Req064RlsPrincipal]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver", "20261110200000_Req064RoleScope", "20261110210000_Req064HistoryPartner", "20261110220000_Req064Issuer", "20261110230000_Req064Principal", "20261110240000_Req064ReasonRead", "20261110250000_Req064Definer", "20261110260000_Req064RlsPrincipal"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver, Req064RoleScope, Req064HistoryPartner, Req064Issuer, Req064Principal, Req064ReasonRead, Req064Definer, Req064RlsPrincipal, Req064LocationSave]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver", "20261110200000_Req064RoleScope", "20261110210000_Req064HistoryPartner", "20261110220000_Req064Issuer", "20261110230000_Req064Principal", "20261110240000_Req064ReasonRead", "20261110250000_Req064Definer", "20261110260000_Req064RlsPrincipal", "20261110270000_Req064LocationSave"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
@@ -670,7 +667,6 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     var updAllowed = new Dictionary<(string, string), string[]>
     {
         [("location", adminRole)] = ["name"],
-        [("location_login_config", adminRole)] = LlcMutable,
         [("partner_reason_bounds", adminRole)] = ["reason_min_length", "reason_max_length", "updated_by", "updated_at", "row_version"],
         [("session", loginRole)] = ["last_seen_at", "revoked_at", "revoked_reason", "interactive_used_at", "handoff_used_at", "cage_consumed_at", "code_issued"],
     };
@@ -682,7 +678,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
         foreach (var r in new[] { adminRole, loginRole })
             if (await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.' || $2, $3, 'UPDATE')", r, t, col)
                 != (updAllowed.TryGetValue((t, r), out var ok) && ok.Contains(col))) colMism.Add($"{t}.{col}/{r}");
-    Ok($"grants: column UPDATE ({cols.Count} columns x 2 roles) = location(name) + location_login_config(11 mutable) + partner_reason_bounds(5 mutable, not partner_id) for admin_api; session(7) for login; nothing else",
+    Ok($"grants: column UPDATE ({cols.Count} columns x 2 roles) = location(name) + partner_reason_bounds(5 mutable, not partner_id) for admin_api; session(7) for login; location_login_config has no direct UPDATE",
         cols.Count > 0 && colMism.Count == 0, string.Join(", ", colMism));
     Ok("grants: admin_api UPDATE on location_login_config location_id/created_at/created_by = none (P2-1)",
         !await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.location_login_config', 'location_id', 'UPDATE') OR has_column_privilege($1, 'auth.location_login_config', 'created_at', 'UPDATE') OR has_column_privilege($1, 'auth.location_login_config', 'created_by', 'UPDATE')", adminRole));
@@ -724,14 +720,15 @@ await using (var c = await ownerDs.OpenConnectionAsync())
          WHERE n.nspname = 'auth' AND p.proname IN (
            '_request_user','actor_is_global','actor_is_any_admin','actor_has_any_location','actor_can_partner',
            'actor_location_sees_partner','actor_has_location','actor_can_location','actor_sees_change',
-           'list_existing_partners','resolve_grant','read_partner_bounds','save_partner_bounds','record_login_write')
+           'list_existing_partners','resolve_grant','read_partner_bounds','save_partner_bounds','record_login_write',
+           'save_location_login_config')
         """);
     Ok($"RLS: policy set == spec (owner {dbOwner} from pg_database/admin/login per table; no login policy on change)",
         definerOwns &&
         await Scalar<string>(c, null, "SELECT string_agg(tablename || ':' || policyname || ':' || cmd || ':' || array_to_string(roles, '+'), ' ' ORDER BY tablename, policyname) FROM pg_policies WHERE schemaname='auth'")
         == $"admin_assignment:admin_assignment_definer:SELECT:{definer} admin_assignment:admin_assignment_owner:ALL:{dbOwner} " +
            $"location:location_admin:ALL:{adminRole} location:location_definer:SELECT:{definer} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbOwner} " +
-           $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbOwner} " +
+           $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_definer:UPDATE:{definer} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbOwner} " +
            $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbOwner} " +
            $"login_write_principal:login_write_principal_definer:ALL:{definer} login_write_principal:login_write_principal_owner:ALL:{dbOwner} " +
            $"partner_reason_bounds:prb_definer:ALL:{definer} partner_reason_bounds:prb_insert:INSERT:{adminRole} partner_reason_bounds:prb_owner:ALL:{dbOwner} partner_reason_bounds:prb_select:SELECT:{adminRole} partner_reason_bounds:prb_update:UPDATE:{adminRole} " +
@@ -897,17 +894,9 @@ await Check("RLS admin_api: settings are transaction-local (next tx on same conn
 });
 await Check("RLS admin_api: partner pci cannot INSERT a nevada location (WITH CHECK, 42501)", async () =>
     await Try(adminDs, $"INSERT INTO auth.location VALUES (gen_random_uuid(), '{P_NV}', 'zz-x', 'x')", "partner", P_PCI) == "42501");
-await Check("RLS admin_api: partner pci UPDATE of nevada config touches 0 rows; own config 1 row", async () =>
-{
-    await using var c = await adminDs.OpenConnectionAsync();
-    await using var tx = await c.BeginTransactionAsync();
-    await BindResolved(c, tx, "partner", P_PCI);
-    await using var u1 = new NpgsqlCommand($"UPDATE auth.location_login_config SET mfa_required = mfa_required WHERE location_id = '{L_NV}'", c, tx);
-    await using var u2 = new NpgsqlCommand($"UPDATE auth.location_login_config SET mfa_required = mfa_required WHERE location_id = '{L_PCI}'", c, tx);
-    var a = await u1.ExecuteNonQueryAsync(); var b = await u2.ExecuteNonQueryAsync();
-    await tx.RollbackAsync();
-    return a == 0 && b == 1;
-});
+await Check("RLS admin_api: direct UPDATE of location_login_config is denied (42501), including the caller's own row", async () =>
+    await Try(adminDs, $"UPDATE auth.location_login_config SET mfa_required = mfa_required WHERE location_id = '{L_NV}'", "partner", P_PCI) == "42501"
+    && await Try(adminDs, $"UPDATE auth.location_login_config SET mfa_required = mfa_required WHERE location_id = '{L_PCI}'", "partner", P_PCI) == "42501");
 await Check("RLS admin_api: partner pci cannot INSERT a change row for nevada (42501)", async () =>
     await Try(adminDs, $"INSERT INTO auth.location_login_config_change VALUES (gen_random_uuid(), '{L_NV}', '{ACTOR}', 'partner', NULL, now(), 'updated', '{{mfa_required}}', '{{}}', '{{}}', 2)", "partner", P_PCI) == "42501");
 await Check("RLS admin_api: partner pci CAN insert own change row", async () =>
@@ -921,8 +910,8 @@ await Check("P2-1 admin_api: UPDATE location_login_config.created_at denied (425
     await Try(adminDs, $"UPDATE auth.location_login_config SET created_at = now() WHERE location_id = '{L_PCI}'", "super") == "42501");
 await Check("P2-1 admin_api: UPDATE location_login_config.created_by denied (42501)", async () =>
     await Try(adminDs, $"UPDATE auth.location_login_config SET created_by = gen_random_uuid() WHERE location_id = '{L_PCI}'", "super") == "42501");
-await Check("P2-1 admin_api: §8.5 UPDATE of all 11 mutable columns allowed (rolled back)", async () =>
-    await Try(adminDs, $"UPDATE auth.location_login_config SET provider_kind = provider_kind, display_name = display_name, entra_allowed_tenant_ids = entra_allowed_tenant_ids, oidc_authority = oidc_authority, oidc_client_id = oidc_client_id, secret_ref = secret_ref, allow_db_fallback = allow_db_fallback, mfa_required = mfa_required, updated_by = '{ACTOR}', updated_at = now(), row_version = row_version + 1 WHERE location_id = '{L_PCI}'", "super") == "ok");
+await Check("P2-1 admin_api: direct UPDATE of the 11 mutable location_login_config columns is denied (42501)", async () =>
+    await Try(adminDs, $"UPDATE auth.location_login_config SET provider_kind = provider_kind, display_name = display_name, entra_allowed_tenant_ids = entra_allowed_tenant_ids, oidc_authority = oidc_authority, oidc_client_id = oidc_client_id, secret_ref = secret_ref, allow_db_fallback = allow_db_fallback, mfa_required = mfa_required, updated_by = '{ACTOR}', updated_at = now(), row_version = row_version + 1 WHERE location_id = '{L_PCI}'", "super") == "42501");
 await Check("P2-1 admin_api: UPDATE on change table / audit_outbox denied (append-only, 42501)", async () =>
     await Try(adminDs, "UPDATE auth.location_login_config_change SET at = now()", "super") == "42501"
     && await Try(adminDs, "UPDATE auth.audit_outbox SET occurred_at = now()", "super") == "42501");
@@ -1075,45 +1064,60 @@ foreach (var (name, sql, state) in cases.Concat(sessCases))
 }
 
 // ================= 7. optimistic concurrency (§8.5) =================
-await Check("concurrency: two EF contexts (admin_api, super) on row_version 1 -> 2nd SaveChanges throws DbUpdateConcurrencyException; row_version 2", async () =>
+await Check("concurrency: save_location_login_config commits row_version 2; a stale call returns 0; direct EF UPDATE is 42501", async () =>
 {
-    async Task<(AuthDbContext db, NpgsqlConnection c, Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx)> Open()
-    {
-        var c = await adminDs.OpenConnectionAsync();
-        var db = new AuthDbContext(new DbContextOptionsBuilder<AuthDbContext>().UseNpgsql(c).Options);
-        var tx = await db.Database.BeginTransactionAsync();
-        await db.Database.ExecuteSqlRawAsync("SELECT set_config('app.request_iss','https://auth-data.test.invalid',true), set_config('app.request_sub','5f0c3e1a-0003-4000-8000-000000000c73',true), set_config('app.resolved_global_admin','',true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)");
-        return (db, c, tx);
-    }
-    var (db1, c1, t1) = await Open();
-    var (db2, c2, t2) = await Open();
+    await using var c1 = await adminDs.OpenConnectionAsync();
+    await using var t1 = await c1.BeginTransactionAsync();
+    await BindResolved(c1, t1, "super", null);
+    await using var save = new NpgsqlCommand(
+        "SELECT auth.save_location_login_config($1, 1, 'database', 'Nevada password', '{}', NULL, NULL, false, NULL, false, true, $2, now())", c1, t1);
+    save.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = L_NV });
+    save.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = ACTOR });
+    if (Convert.ToInt32(await save.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture) != 1) return false;
+    await t1.CommitAsync();
+    await using var c2 = await adminDs.OpenConnectionAsync();
+    await using var t2 = await c2.BeginTransactionAsync();
+    await BindResolved(c2, t2, "super", null);
+    await using var stale = new NpgsqlCommand(
+        "SELECT auth.save_location_login_config($1, 1, 'database', 'stale writer', '{}', NULL, NULL, false, NULL, false, true, $2, now())", c2, t2);
+    stale.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = L_NV });
+    stale.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = ACTOR });
+    var staleRows = Convert.ToInt32(await stale.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+    await t2.RollbackAsync();
+    var efDenied = false;
+    await using var efConn = await adminDs.OpenConnectionAsync();
+    var db = new AuthDbContext(new DbContextOptionsBuilder<AuthDbContext>().UseNpgsql(efConn).Options);
+    await using var efTx = await db.Database.BeginTransactionAsync();
     try
     {
-        var r1 = await db1.LocationLoginConfigRows.SingleAsync(x => x.LocationId == L_NV);
-        var r2 = await db2.LocationLoginConfigRows.SingleAsync(x => x.LocationId == L_NV);
-        if (r1.RowVersion != 1 || r2.RowVersion != 1) return false;
-        r1.MfaRequired = true; r1.RowVersion += 1; r1.UpdatedAt = DateTimeOffset.UtcNow;
-        await db1.SaveChangesAsync(); await t1.CommitAsync();
-        r2.DisplayName = "stale writer"; r2.RowVersion += 1;
-        try { await db2.SaveChangesAsync(); return false; }
-        catch (DbUpdateConcurrencyException) { }
-        await t2.RollbackAsync();
-        await using var oc = await ownerDs.OpenConnectionAsync();
-        return await Scalar<long>(oc, null, $"SELECT row_version FROM auth.location_login_config WHERE location_id = '{L_NV}'") == 2
-            && await Scalar<string>(oc, null, $"SELECT display_name FROM auth.location_login_config WHERE location_id = '{L_NV}'") == "Nevada password";
+        var row = await db.LocationLoginConfigRows.SingleAsync(x => x.LocationId == L_NV);
+        row.DisplayName = "ef writer"; row.RowVersion += 1;
+        try { await db.SaveChangesAsync(); }
+        catch (DbUpdateException ex) when (ex.InnerException is PostgresException pg && pg.SqlState == "42501") { efDenied = true; }
     }
-    finally { await db1.DisposeAsync(); await db2.DisposeAsync(); await c1.DisposeAsync(); await c2.DisposeAsync(); }
+    finally { await db.DisposeAsync(); }
+    await using var oc = await ownerDs.OpenConnectionAsync();
+    return staleRows == 0 && efDenied
+        && await Scalar<long>(oc, null, $"SELECT row_version FROM auth.location_login_config WHERE location_id = '{L_NV}'") == 2
+        && await Scalar<string>(oc, null, $"SELECT display_name FROM auth.location_login_config WHERE location_id = '{L_NV}'") == "Nevada password";
 });
-await Check("concurrency: raw §8.5 UPDATE ... WHERE row_version = stale -> 0 rows; = current -> 1 row", async () =>
+await Check("concurrency: direct UPDATE is 42501; save_location_login_config stale version returns 0 and current version returns 1", async () =>
 {
+    var direct = await Try(adminDs, $"UPDATE auth.location_login_config SET row_version = row_version + 1 WHERE location_id = '{L_NV}' AND row_version = 2", "super");
     await using var c = await adminDs.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
     await BindResolved(c, tx, "super", null);
-    await using var s = new NpgsqlCommand($"UPDATE auth.location_login_config SET row_version = row_version + 1 WHERE location_id = '{L_NV}' AND row_version = 1", c, tx);
-    await using var k = new NpgsqlCommand($"UPDATE auth.location_login_config SET row_version = row_version + 1 WHERE location_id = '{L_NV}' AND row_version = 2", c, tx);
-    var a = await s.ExecuteNonQueryAsync(); var b = await k.ExecuteNonQueryAsync();
+    await using var s = new NpgsqlCommand("SELECT auth.save_location_login_config($1, 1, 'database', 'Nevada password', '{}', NULL, NULL, false, NULL, false, true, $2, now())", c, tx);
+    await using var k = new NpgsqlCommand("SELECT auth.save_location_login_config($1, 2, 'database', 'Nevada password', '{}', NULL, NULL, false, NULL, false, true, $2, now())", c, tx);
+    foreach (var cmd in new[] { s, k })
+    {
+        cmd.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = L_NV });
+        cmd.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = ACTOR });
+    }
+    var a = Convert.ToInt32(await s.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+    var b = Convert.ToInt32(await k.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
     await tx.RollbackAsync();
-    return a == 0 && b == 1;
+    return direct == "42501" && a == 0 && b == 1;
 });
 
 // ================= 8. readers (as login) =================

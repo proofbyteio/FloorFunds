@@ -18,7 +18,8 @@ DECLARE
     'auth.resolve_grant(text, uuid)',
     'auth.read_partner_bounds(uuid)',
     'auth.save_partner_bounds(uuid, bigint, integer, integer, uuid, timestamptz)',
-    'auth.record_login_write(text, uuid)'
+    'auth.record_login_write(text, uuid)',
+    'auth.save_location_login_config(uuid, bigint, text, text, uuid[], text, text, boolean, text, boolean, boolean, uuid, timestamptz)'
   ];
 BEGIN
   IF NOT EXISTS (

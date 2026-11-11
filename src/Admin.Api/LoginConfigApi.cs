@@ -708,13 +708,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
         var now = Now();
         await using (var up = new NpgsqlCommand(
-            """
-            UPDATE auth.location_login_config SET provider_kind = $3, display_name = $4, entra_allowed_tenant_ids = $5,
-                   oidc_authority = CASE WHEN $8 THEN oidc_authority ELSE $6 END, oidc_client_id = CASE WHEN $8 THEN oidc_client_id ELSE $7 END,
-                   secret_ref = CASE WHEN $8 THEN secret_ref ELSE $9 END, allow_db_fallback = $10, mfa_required = $11,
-                   updated_by = $12, updated_at = $13, row_version = row_version + 1
-            WHERE location_id = $1 AND row_version = $2
-            """, c, tx))
+            "SELECT auth.save_location_login_config($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)", c, tx))
         {
             up.Parameters.Add(new() { Value = location });
             up.Parameters.Add(new() { Value = expected });
@@ -729,7 +723,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             up.Parameters.Add(new() { Value = n.MfaRequired });
             up.Parameters.Add(new() { Value = who.Id.UserId });
             up.Parameters.Add(new() { Value = now.UtcDateTime, NpgsqlDbType = NpgsqlDbType.TimestampTz });
-            if (await up.ExecuteNonQueryAsync() != 1) throw Err(409, "concurrency_conflict", b => b["current_row_version"] = row.RowVersion);
+            if (await up.ExecuteScalarAsync() is not (int or long) wrote || Convert.ToInt64(wrote, System.Globalization.CultureInfo.InvariantCulture) != 1)
+                throw Err(409, "concurrency_conflict", b => b["current_row_version"] = row.RowVersion);
         }
         var changeId = Guid.CreateVersion7();
         var after = AuditOutbox.State(n.ProviderKind, n.Tenants, n.AllowDbFallback, n.MfaRequired);
