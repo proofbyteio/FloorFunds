@@ -347,6 +347,8 @@ static class Req064Suite
                 await reader.ReadAsync();
                 var shown = reader.GetString(1);
                 Check("begin-request-query-text-is-a-parameter", shown.Contains("$1", StringComparison.Ordinal) && !shown.Contains(token, StringComparison.Ordinal));
+                var body = await ScalarText(owner, "SELECT pg_get_functiondef('auth.begin_request(text)'::regprocedure)");
+                Check("begin-request-body-hashes-the-parameter", body.Contains("convert_to(p_token", StringComparison.Ordinal) && !body.Contains("format(", StringComparison.Ordinal));
                 await reader.DisposeAsync();
                 await tx.RollbackAsync();
             }
@@ -364,6 +366,7 @@ static class Req064Suite
         Check("host-password-cannot-log-in-as-issuer", await HostPasswordRejected());
         var fresh = await Mint(Sa);
         Check("parallel-worker-does-not-drop-the-principal", await ParallelStillResolves(admin, fresh));
+        Check("current-principal-is-parallel-restricted", await ScalarText(owner, "SELECT proparallel::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'auth' AND p.proname = 'current_principal'") == "r");
         Check("pooled-connection-keeps-no-binding", await PooledBindingClears(admin, fresh));
     }
 
