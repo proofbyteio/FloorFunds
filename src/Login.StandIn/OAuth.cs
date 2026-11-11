@@ -398,6 +398,8 @@ public static class OAuth
             string? P(string k) => form is not null && form.ContainsKey(k) ? form[k].ToString() : c.Request.Query.TryGetValue(k, out var v) ? v.ToString() : null;
             var hint = P("id_token_hint");
             var hinted = hint is null ? null : await tokens.Validate(hint, "JWT", false, st.Clock.Now); // 11.2a ignores exp.
+            string? signedOutUser = null;
+            IResult result;
             lock (st.Gate)
             {
                 var now = st.Clock.Now;
@@ -418,14 +420,18 @@ public static class OAuth
                 var slug = s is { AdminType: null } ? s.Slug : (string)st.Fixtures["partners"]![0]!["locations"]![0]!["slug"]!;
                 if (s is not null && !s.Revoked)
                 {
+                    signedOutUser = s.UserId;
                     st.Auth.RevokeSession(s);
                     var e = Audit.Build(now, "auth.session.revoked", "success", s.UserId, new JsonObject { ["reason"] = "sign_out" }, Handoff.SessionScope(st, s), Ip(c), null, s.Sid);
                     e["session_kind"] = s.Kind; if (s.AdminType is not null) e["admin_type"] = s.AdminType; st.Emit(e); // 11.3: one per session.
                 }
                 c.Response.Cookies.Delete(SignIn.SessionCookie, new CookieOptions { Path = issuerPath });
                 // 11.2c: the end state is always the session's /l/{slug}. [ASSUMPTION A30] post_logout_redirect_uri is never followed.
-                return Results.Redirect(issuerPath + "/l/" + slug);
+                result = Results.Redirect(issuerPath + "/l/" + slug);
             }
+            if (signedOutUser is not null)
+                await RequestSessionRevoker.NotifyAsync(issuer, signedOutUser);
+            return result;
         }
         app.MapGet(issuerPath + "/connect/endsession", (Delegate)EndSession);
         app.MapPost(issuerPath + "/connect/endsession", (Delegate)EndSession);

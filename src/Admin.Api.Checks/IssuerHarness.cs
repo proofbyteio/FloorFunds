@@ -15,12 +15,14 @@ sealed class IssuerHarness : IAsyncDisposable
     readonly Process _process;
     readonly string _jwks;
     public string Url { get; }
+    public string CallerSecret { get; }
 
-    IssuerHarness(Process process, string url, string jwks)
+    IssuerHarness(Process process, string url, string jwks, string callerSecret)
     {
         _process = process;
         Url = url;
         _jwks = jwks;
+        CallerSecret = callerSecret;
     }
 
     public static async Task<IssuerHarness> Start(RsaSecurityKey publicKey, string expectedIssuer, string connectionString)
@@ -32,6 +34,7 @@ sealed class IssuerHarness : IAsyncDisposable
         var jwks = Path.Combine(Path.GetTempPath(), $"issuer-jwks-{Guid.NewGuid():N}.json");
         var jwk = JsonWebKeyConverter.ConvertFromRSASecurityKey(publicKey);
         await File.WriteAllTextAsync(jwks, JsonSerializer.Serialize(new { keys = new[] { new { kty = "RSA", kid = jwk.Kid, use = "sig", n = jwk.N, e = jwk.E } } }));
+        var callerSecret = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
         var psi = new ProcessStartInfo("dotnet", [dll, url])
         {
             WorkingDirectory = Path.GetDirectoryName(dll)!,
@@ -42,9 +45,11 @@ sealed class IssuerHarness : IAsyncDisposable
         psi.Environment["ISSUER_CONNECTION_STRING"] = connectionString;
         psi.Environment["ISSUER_ISS"] = expectedIssuer;
         psi.Environment["ISSUER_JWKS"] = jwks;
+        psi.Environment["ISSUER_CALLER_SECRET"] = callerSecret;
         psi.Environment.Remove("ADMIN_API_CONNECTION_STRING");
         psi.Environment.Remove("CONNECTION_STRING");
         psi.Environment.Remove("LOGIN_CONNECTION_STRING");
+        psi.Environment.Remove("STANDIN_CALLER_SECRET");
         var process = Process.Start(psi) ?? throw new InvalidOperationException("issuer did not start");
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         process.OutputDataReceived += (_, e) =>
@@ -60,7 +65,7 @@ sealed class IssuerHarness : IAsyncDisposable
             try { process.Kill(); } catch { }
             throw new InvalidOperationException("issuer did not listen");
         }
-        return new IssuerHarness(process, url, jwks);
+        return new IssuerHarness(process, url, jwks, callerSecret);
     }
 
     public async ValueTask DisposeAsync()

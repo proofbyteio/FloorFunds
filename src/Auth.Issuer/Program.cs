@@ -1,7 +1,9 @@
 // DEC-213. Verifies an access token and opens one database session for its jti.
 // Credentials and signing keys are read from this process only.
+// The caller secret is this process's own config. The admin host does not hold it.
 using System.Collections.Concurrent;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -9,6 +11,12 @@ using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 
 var listen = args.Length > 0 ? args[0] : "http://127.0.0.1:8766";
+if (!LoopbackPrefix(listen) && Environment.GetEnvironmentVariable("ISSUER_ALLOW_NON_LOOPBACK") != "1")
+{
+    Console.Error.WriteLine("issuer: refusing non-loopback listen prefix");
+    return 2;
+}
+
 var connectionString = Environment.GetEnvironmentVariable("ISSUER_CONNECTION_STRING");
 var iss = Environment.GetEnvironmentVariable("ISSUER_ISS");
 var jwksPath = Environment.GetEnvironmentVariable("ISSUER_JWKS");
@@ -40,7 +48,7 @@ var parameters = new TokenValidationParameters
 };
 var handler = new JsonWebTokenHandler { MapInboundClaims = false };
 await using var db = NpgsqlDataSource.Create(connectionString);
-var cache = new ConcurrentDictionary<Guid, string>();
+var cache = new ConcurrentDictionary<Guid, CachedSession>();
 var gates = new ConcurrentDictionary<Guid, SemaphoreSlim>();
 
 var listener = new HttpListener();
@@ -62,10 +70,16 @@ return 0;
 
 async Task Handle(HttpListenerContext ctx)
 {
-    if (ctx.Request.HttpMethod != "POST" || ctx.Request.Url?.AbsolutePath != "/v1/session")
+    var path = ctx.Request.Url?.AbsolutePath;
+    if (ctx.Request.HttpMethod != "POST" || path is not ("/v1/session" or "/v1/revoke"))
     {
         ctx.Response.StatusCode = 404;
         ctx.Response.Close();
+        return;
+    }
+    if (path == "/v1/revoke")
+    {
+        await Revoke(ctx);
         return;
     }
     using var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8);
@@ -82,7 +96,15 @@ async Task Handle(HttpListenerContext ctx)
     try
     {
         if (cache.TryGetValue(accepted.Jti, out var cached))
-            session = cached;
+        {
+            if (cached.User != accepted.User || !string.Equals(cached.Iss, accepted.Token.Issuer, StringComparison.Ordinal))
+            {
+                ctx.Response.StatusCode = 401;
+                ctx.Response.Close();
+                return;
+            }
+            session = cached.Session;
+        }
         else
         {
             try { session = await Open(accepted.Token.Issuer, accepted.User.ToString("D"), accepted.Jti, accepted.Exp); }
@@ -98,7 +120,7 @@ async Task Handle(HttpListenerContext ctx)
                 ctx.Response.Close();
                 return;
             }
-            cache[accepted.Jti] = session;
+            cache[accepted.Jti] = new CachedSession(session, accepted.User, accepted.Token.Issuer);
         }
     }
     finally { gate.Release(); }
@@ -116,6 +138,54 @@ async Task Handle(HttpListenerContext ctx)
     ctx.Response.ContentType = "application/json";
     ctx.Response.ContentLength64 = bytes.Length;
     await ctx.Response.OutputStream.WriteAsync(bytes);
+    ctx.Response.Close();
+}
+
+async Task Revoke(HttpListenerContext ctx)
+{
+    if (!CallerSecretOk(ctx.Request))
+    {
+        ctx.Response.StatusCode = 401;
+        ctx.Response.Close();
+        return;
+    }
+    using var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8);
+    var raw = await reader.ReadToEndAsync();
+    if (raw.Length is 0 or > 1024)
+    {
+        ctx.Response.StatusCode = 401;
+        ctx.Response.Close();
+        return;
+    }
+    string? tokenIss;
+    string? sub;
+    try
+    {
+        using var doc = JsonDocument.Parse(raw);
+        tokenIss = doc.RootElement.TryGetProperty("iss", out var i) && i.ValueKind == JsonValueKind.String ? i.GetString() : null;
+        sub = doc.RootElement.TryGetProperty("sub", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : null;
+    }
+    catch (JsonException)
+    {
+        ctx.Response.StatusCode = 401;
+        ctx.Response.Close();
+        return;
+    }
+    if (string.IsNullOrEmpty(tokenIss) || string.IsNullOrEmpty(sub))
+    {
+        ctx.Response.StatusCode = 401;
+        ctx.Response.Close();
+        return;
+    }
+    try { await RevokeLogin(tokenIss, sub); }
+    catch (PostgresException)
+    {
+        ctx.Response.StatusCode = 401;
+        ctx.Response.Close();
+        return;
+    }
+    ctx.Response.StatusCode = 200;
+    ctx.Response.ContentLength64 = 0;
     ctx.Response.Close();
 }
 
@@ -169,4 +239,31 @@ async Task<string> Open(string tokenIss, string sub, Guid jti, DateTime exp)
     return (string)(await cmd.ExecuteScalarAsync())!;
 }
 
+async Task RevokeLogin(string tokenIss, string sub)
+{
+    await using var c = await db.OpenConnectionAsync();
+    await using var cmd = new NpgsqlCommand("SELECT auth.revoke_login($1, $2)", c);
+    cmd.Parameters.Add(new NpgsqlParameter { Value = tokenIss });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = sub });
+    await cmd.ExecuteNonQueryAsync();
+}
+
+static bool CallerSecretOk(HttpListenerRequest req)
+{
+    var expected = Environment.GetEnvironmentVariable("ISSUER_CALLER_SECRET");
+    if (string.IsNullOrEmpty(expected)) return false;
+    var presented = req.Headers["X-Caller-Secret"] ?? "";
+    var a = SHA256.HashData(Encoding.UTF8.GetBytes(expected));
+    var b = SHA256.HashData(Encoding.UTF8.GetBytes(presented));
+    return presented.Length > 0 && CryptographicOperations.FixedTimeEquals(a, b);
+}
+
+static bool LoopbackPrefix(string listen)
+{
+    if (!Uri.TryCreate(listen, UriKind.Absolute, out var uri)) return false;
+    if (!string.Equals(uri.Scheme, "http", StringComparison.OrdinalIgnoreCase)) return false;
+    return uri.Host is "127.0.0.1" or "localhost" or "::1";
+}
+
+sealed record CachedSession(string Session, Guid User, string Iss);
 sealed record Accepted(JsonWebToken Token, Guid User, Guid Jti, DateTime Exp, string AdminType, Guid? Partner);
