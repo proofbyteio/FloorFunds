@@ -41,5 +41,6 @@
     <EmbeddedResource Include="Migrations\Req064Principal.sql" />
     <EmbeddedResource Include="Migrations\Req064ReasonRead.sql" />
     <EmbeddedResource Include="Migrations\Req064Definer.sql" />
+    <EmbeddedResource Include="Migrations\Req064RlsPrincipal.sql" />
   </ItemGroup>
 </Project>

@@ -591,7 +591,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver, Req064RoleScope, Req064HistoryPartner, Req064Issuer, Req064Principal, Req064ReasonRead, Req064Definer]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver", "20261110200000_Req064RoleScope", "20261110210000_Req064HistoryPartner", "20261110220000_Req064Issuer", "20261110230000_Req064Principal", "20261110240000_Req064ReasonRead", "20261110250000_Req064Definer"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver, Req064RoleScope, Req064HistoryPartner, Req064Issuer, Req064Principal, Req064ReasonRead, Req064Definer, Req064RlsPrincipal]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver", "20261110200000_Req064RoleScope", "20261110210000_Req064HistoryPartner", "20261110220000_Req064Issuer", "20261110230000_Req064Principal", "20261110240000_Req064ReasonRead", "20261110250000_Req064Definer", "20261110260000_Req064RlsPrincipal"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
@@ -708,10 +708,10 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     await using (var rr = await cmd.ExecuteReaderAsync())
         while (await rr.ReadAsync())
         {
-            bool want = rr.GetString(0) is "admin_assignment" or "location" or "location_login_config" or "location_login_config_change" or "partner_reason_bounds";
+            bool want = rr.GetString(0) is "admin_assignment" or "location" or "location_login_config" or "location_login_config_change" or "login_write_principal" or "partner_reason_bounds" or "user_issuer";
             if (rr.GetBoolean(1) != want || rr.GetBoolean(2) != want) rls.Add(rr.GetString(0));
         }
-    Ok("RLS: ENABLE+FORCE on exactly admin_assignment, location, location_login_config, location_login_config_change, partner_reason_bounds", rls.Count == 0, string.Join(",", rls));
+    Ok("RLS: ENABLE+FORCE on exactly admin_assignment, location, location_login_config, location_login_config_change, login_write_principal, partner_reason_bounds, user_issuer", rls.Count == 0, string.Join(",", rls));
     // K2 (SSE2 d787f76 review): the owner role is read from pg_database, not assumed equal to the DB name (kit --role != --db).
     var dbOwner = await Scalar<string>(c, null, "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()");
     var kitDb = await Scalar<string>(c, null, "SELECT current_database()");
@@ -733,7 +733,9 @@ await using (var c = await ownerDs.OpenConnectionAsync())
            $"location:location_admin:ALL:{adminRole} location:location_definer:SELECT:{definer} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbOwner} " +
            $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbOwner} " +
            $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbOwner} " +
-           $"partner_reason_bounds:prb_definer:ALL:{definer} partner_reason_bounds:prb_insert:INSERT:{adminRole} partner_reason_bounds:prb_owner:ALL:{dbOwner} partner_reason_bounds:prb_select:SELECT:{adminRole} partner_reason_bounds:prb_update:UPDATE:{adminRole}");
+           $"login_write_principal:login_write_principal_definer:ALL:{definer} login_write_principal:login_write_principal_owner:ALL:{dbOwner} " +
+           $"partner_reason_bounds:prb_definer:ALL:{definer} partner_reason_bounds:prb_insert:INSERT:{adminRole} partner_reason_bounds:prb_owner:ALL:{dbOwner} partner_reason_bounds:prb_select:SELECT:{adminRole} partner_reason_bounds:prb_update:UPDATE:{adminRole} " +
+           $"user_issuer:user_issuer_definer:SELECT:{definer} user_issuer:user_issuer_owner:ALL:{dbOwner}");
 }
 
 // ================= 3. seed == SI1 fixtures =================
