@@ -28,8 +28,10 @@ public sealed record AdminApiOptions
     public required IReadOnlySet<string> SecretRegions { get; init; }
     /// <summary>BackofficeAuth:Issuer, the iss of access_token_admin.</summary>
     public required string TokenIssuer { get; init; }
-    /// <summary>From BackofficeAuth:JwksPath (a JWKS file) in production; set directly by the in-process checks.</summary>
-    public required IReadOnlyList<SecurityKey> SigningKeys { get; init; }
+    /// <summary>BackofficeAuth:IssuerUrl. The host sends the raw token here and does not verify it.</summary>
+    public string IssuerUrl { get; init; } = "";
+    /// <summary>Empty. A non-empty list is refused: the host does not hold signing keys.</summary>
+    public IReadOnlyList<SecurityKey> SigningKeys { get; init; } = [];
     public required string AuditSchemaPath { get; init; }
     public string Urls { get; init; } = "";
     /// <summary>
@@ -62,8 +64,8 @@ public sealed record AdminApiOptions
         int Int(string k, int dflt) => c[k] is not { } v ? dflt
             : int.TryParse(v, System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n
             : throw new InvalidOperationException($"config {k} must be an integer");
-        var jwksPath = Req("BackofficeAuth:JwksPath");
-        var jwks = new JsonWebKeySet(File.ReadAllText(jwksPath));
+        if (c["BackofficeAuth:JwksPath"] is { Length: > 0 })
+            throw new InvalidOperationException("the host does not hold signing keys");
         return new AdminApiOptions
         {
             ConnectionString = c["ADMIN_API_CONNECTION_STRING"] is { Length: > 0 } cs ? cs : throw new InvalidOperationException("ADMIN_API_CONNECTION_STRING is required"),
@@ -73,7 +75,8 @@ public sealed record AdminApiOptions
             SecretAccountIds = List(c["SecretRef:AllowedAccountIds"]),
             SecretRegions = List(c["SecretRef:AllowedRegions"]),
             TokenIssuer = Req("BackofficeAuth:Issuer"),
-            SigningKeys = jwks.GetSigningKeys().ToList(),
+            IssuerUrl = Req("BackofficeAuth:IssuerUrl"),
+            SigningKeys = [],
             AuditSchemaPath = c["Audit:SchemaPath"] is { Length: > 0 } p ? p : Path.Combine(AppContext.BaseDirectory, "contract", "audit-events.schema.json"),
             Urls = c["Urls"] ?? "",
             ReasonMinLength = Int("LoginConfig:ReasonMinLength", DefaultReasonMinLength),
@@ -103,8 +106,10 @@ public sealed record AdminApiOptions
         });
         entra = r.Value!;
         if (!Uri.TryCreate(TokenIssuer, UriKind.Absolute, out var iss) || iss.Scheme is not ("https" or "http")) throw new InvalidOperationException("config BackofficeAuth:Issuer must be an absolute URI");
-        if (SigningKeys.Count == 0 || SigningKeys.Any(k => k is not (RsaSecurityKey or JsonWebKey { Kty: "RSA" })))
-            throw new InvalidOperationException("config BackofficeAuth:JwksPath must hold at least one RSA signing key (RS256 only)");
+        if (!Uri.TryCreate(IssuerUrl, UriKind.Absolute, out var issuerUrl) || issuerUrl.Scheme is not ("https" or "http"))
+            throw new InvalidOperationException("config BackofficeAuth:IssuerUrl must be an absolute URI");
+        if (SigningKeys.Count > 0)
+            throw new InvalidOperationException("the host does not hold signing keys");
         if (!File.Exists(AuditSchemaPath)) throw new InvalidOperationException("audit-events.schema.json not found (Audit:SchemaPath)");
         _ = new NpgsqlConnectionStringBuilder(ConnectionString);
         if (BodyReadTimeout <= TimeSpan.Zero || BodyReadTimeout > TimeSpan.FromSeconds(60)) throw new InvalidOperationException("BodyReadTimeout must be in (0, 60] s");

@@ -103,13 +103,14 @@ async Task BindAdminGrant(string sql, params object[] ps)
 }
 await BindAdminGrant("""
     INSERT INTO auth.app_user (user_id, partner_id, status) VALUES
-      ($1, NULL, 'active'), ($2, NULL, 'active'), ($3, NULL, 'active'), ($4, NULL, 'active')
+      ($1, NULL, 'active'), ($2, NULL, 'active'), ($3, NULL, 'active'), ($4, NULL, 'active'),
+      ($5, NULL, 'active'), ($6, NULL, 'active')
     ON CONFLICT (user_id) DO NOTHING
-    """, U_SA, U_PA, U_PB, U_RD);
+    """, U_SA, U_PA, U_PB, U_RD, U_NO, U_CU);
 await BindAdminGrant("""
-    INSERT INTO auth.user_issuer (user_id, issuer) VALUES ($1, $5), ($2, $5), ($3, $5), ($4, $5)
+    INSERT INTO auth.user_issuer (user_id, issuer) VALUES ($1, $7), ($2, $7), ($3, $7), ($4, $7), ($5, $7), ($6, $7)
     ON CONFLICT (user_id) DO UPDATE SET issuer = EXCLUDED.issuer
-    """, U_SA, U_PA, U_PB, U_RD, Issuer);
+    """, U_SA, U_PA, U_PB, U_RD, U_NO, U_CU, Issuer);
 await BindAdminGrant("""
     INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
       ($1, $1, 'super_admin', 'global', NULL, 'active', 1, $1, now()),
@@ -125,11 +126,14 @@ var publicKey = new RsaSecurityKey(rsa.ExportParameters(false)) { KeyId = "p3-te
 using var otherRsa = RSA.Create(2048);
 var otherKey = new RsaSecurityKey(otherRsa) { KeyId = "p3-test" };
 var schemaPath = Path.Combine(AppContext.BaseDirectory, "contract", "audit-events.schema.json");
+var issuerCs = Environment.GetEnvironmentVariable("ISSUER_CONNECTION_STRING");
+if (string.IsNullOrEmpty(issuerCs)) throw new InvalidOperationException("ISSUER_CONNECTION_STRING is not set");
+await using var issuerProc = await Admin.Api.Checks.IssuerHarness.Start(publicKey, Issuer, issuerCs);
 AdminApiOptions Opts(string? cs = null, string? schema = null) => new()
 {
     ConnectionString = cs ?? adminCs, EntraAuthority = Authority, EntraClientId = ClientId.ToUpperInvariant(), EntraSecretRef = DeployArn,
     SecretAccountIds = new HashSet<string> { "000000000000" }, SecretRegions = new HashSet<string> { "us-west-2" },
-    TokenIssuer = Issuer, SigningKeys = [publicKey], AuditSchemaPath = schema ?? schemaPath,
+    TokenIssuer = Issuer, IssuerUrl = issuerProc.Url, SigningKeys = [], AuditSchemaPath = schema ?? schemaPath,
 };
 
 // DEC-107: the default reason bounds, from the one named constant each (never retyped in the tests below).
@@ -226,8 +230,9 @@ foreach (var (n, bad) in new[] { ("empty", ""), ("not an ARN", "my-client-secret
 }
 Ok("startup: Entra:SecretRef in the allowlist accepted (unchanged)", Opts().Validated().EntraSecretRef == DeployArn);
 Ok("startup: AdminApiOptions.ToString prints neither Entra:SecretRef nor the connection string", !Opts().ToString().Contains("arn:") && !Opts().ToString().Contains(adminCs));
-Refuses("startup: no signing keys refused", o => o with { SigningKeys = [] }, "JwksPath");
-Refuses("startup: symmetric signing key refused", o => o with { SigningKeys = [new SymmetricSecurityKey(new byte[32])] }, "JwksPath");
+Refuses("startup: missing issuer url refused", o => o with { IssuerUrl = "" }, "IssuerUrl");
+Refuses("startup: signing keys on the host refused", o => o with { SigningKeys = [publicKey] }, "does not hold signing keys");
+Refuses("startup: symmetric signing key refused", o => o with { SigningKeys = [new SymmetricSecurityKey(new byte[32])] }, "does not hold signing keys");
 Refuses("startup: missing audit schema refused", o => o with { AuditSchemaPath = "/nonexistent/audit.json" }, "audit-events");
 await Check("startup: owner role refused by the DB guard (owns auth objects)", async () =>
 {
@@ -259,7 +264,10 @@ async Task<(int code, string err)> RunAdminApi(Action<IDictionary<string, string
         psi.Environment["SecretRef__AllowedAccountIds"] = "000000000000";
         psi.Environment["SecretRef__AllowedRegions"] = "us-west-2";
         psi.Environment["BackofficeAuth__Issuer"] = Issuer;
-        psi.Environment["BackofficeAuth__JwksPath"] = jwks;
+        psi.Environment["BackofficeAuth__IssuerUrl"] = "http://127.0.0.1:9";
+        psi.Environment.Remove("BackofficeAuth__JwksPath");
+        psi.Environment.Remove("ISSUER_CONNECTION_STRING");
+        psi.Environment.Remove("FF_ISSUER_PASSWORD");
         psi.Environment["Urls"] = "http://127.0.0.1:1"; // never reached
         edit(psi.Environment);
         using var p = Process.Start(psi)!;
@@ -305,7 +313,7 @@ await Check("DEC-107 startup: FromConfiguration reads LoginConfig:ReasonMinLengt
     try
     {
         Dictionary<string, string?> Base() => new() { ["ADMIN_API_CONNECTION_STRING"] = adminCs, ["Entra:Authority"] = Authority, ["Entra:ClientId"] = ClientId, ["Entra:SecretRef"] = DeployArn,
-            ["SecretRef:AllowedAccountIds"] = "000000000000", ["SecretRef:AllowedRegions"] = "us-west-2", ["BackofficeAuth:Issuer"] = Issuer, ["BackofficeAuth:JwksPath"] = jwks };
+            ["SecretRef:AllowedAccountIds"] = "000000000000", ["SecretRef:AllowedRegions"] = "us-west-2", ["BackofficeAuth:Issuer"] = Issuer, ["BackofficeAuth:IssuerUrl"] = issuerProc.Url };
         var o0 = AdminApiOptions.FromConfiguration(new ConfigurationBuilder().AddInMemoryCollection(Base()).Build()).Validated();
         var d = Base(); d["LoginConfig:ReasonMinLength"] = "50"; d["LoginConfig:ReasonMaxLength"] = "200";
         var cfg = new ConfigurationBuilder().AddInMemoryCollection(d).Build();
@@ -681,6 +689,7 @@ try
 
     // ================= 3. GET =================
     await UiHost.AllowReader(ownerDs, readerLocations, U_RD, U_SA, A1, true);
+    RD = Token("partner", U_RD, P_A);
     {
         var r = await Get(Cfg(A1), PA);
         Ok("get: PA own -> 200 restricted view, ETag", r.Status == 200 && r.ETag == "\"1\"" && !Obj(r.Body).ContainsKey("oidc_authority"));
@@ -1021,9 +1030,9 @@ try
             await s.ExecuteNonQueryAsync();
             var flagA = await CfgCount(A1);
             var flagB = await CfgCount(B1);
-            var issuerCs = Environment.GetEnvironmentVariable("ISSUER_CONNECTION_STRING") ?? throw new InvalidOperationException("ISSUER_CONNECTION_STRING is not set");
+            var sessionIssuerCs = Environment.GetEnvironmentVariable("ISSUER_CONNECTION_STRING") ?? throw new InvalidOperationException("ISSUER_CONNECTION_STRING is not set");
             string sessionToken;
-            await using (var issuer = NpgsqlDataSource.Create(issuerCs))
+            await using (var issuer = NpgsqlDataSource.Create(sessionIssuerCs))
             await using (var ic = await issuer.OpenConnectionAsync())
             await using (var open = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4)", ic))
             {
@@ -2397,6 +2406,7 @@ try
         Ok("Slice A location GET (P_A location, PA) -> reason_min_length 40, reason_max_length 120 (the partner's row)", g.Status == 200 && (int?)Obj(g.Body)["reason_min_length"] == 40 && (int?)Obj(g.Body)["reason_max_length"] == 120, Tg(g));
         if (g.Status == 200) ForSchema("login_config_get_restricted", g);
         await UiHost.AllowReader(ownerDs, readerLocations, U_RD, U_SA, LA, true);
+        RD = Token("partner", U_RD, P_A);
         g = await Get(Cfg(LA), RD);
         Ok("Slice A location GET (org:V reader of the P_A location) -> 40/120", g.Status == 200 && (int?)Obj(g.Body)["reason_min_length"] == 40 && (int?)Obj(g.Body)["reason_max_length"] == 120, Tg(g));
         await UiHost.AllowReader(ownerDs, readerLocations, U_RD, U_SA, LA, false);
@@ -2617,11 +2627,13 @@ finally
     async Task DropGrant(string sql)
     {
         await using var drop = new NpgsqlCommand(sql, c);
-        drop.Parameters.Add(new NpgsqlParameter { Value = new[] { U_SA, U_PA, U_PB, U_RD } });
+        drop.Parameters.Add(new NpgsqlParameter { Value = new[] { U_SA, U_PA, U_PB, U_RD, U_NO, U_CU } });
         await drop.ExecuteNonQueryAsync();
     }
     await using (var off = new NpgsqlCommand("ALTER TABLE auth.admin_assignment DISABLE TRIGGER USER", c)) await off.ExecuteNonQueryAsync();
     await using (var off = new NpgsqlCommand("ALTER TABLE auth.app_user DISABLE TRIGGER USER", c)) await off.ExecuteNonQueryAsync();
+    await DropGrant("DELETE FROM auth.request_binding WHERE user_id = ANY($1)");
+    await DropGrant("DELETE FROM auth.request_session WHERE user_id = ANY($1)");
     await DropGrant("DELETE FROM auth.admin_assignment WHERE user_id = ANY($1)");
     await using (var writes = new NpgsqlCommand("DELETE FROM auth.login_write_principal", c)) await writes.ExecuteNonQueryAsync();
     foreach (var t in Tables) { await using var d = new NpgsqlCommand($"DELETE FROM auth.{t}", c); await d.ExecuteNonQueryAsync(); }

@@ -59,6 +59,9 @@ static class Req064Suite
         var sign = new RsaSecurityKey(rsa) { KeyId = "req064" };
         var pub = new RsaSecurityKey(rsa.ExportParameters(false)) { KeyId = "req064" };
         var schema = Path.Combine(AppContext.BaseDirectory, "contract", "audit-events.schema.json");
+        var issuerCs = Environment.GetEnvironmentVariable("ISSUER_CONNECTION_STRING");
+        if (string.IsNullOrEmpty(issuerCs)) throw new InvalidOperationException("ISSUER_CONNECTION_STRING is not set");
+        await using var issuerProc = await Admin.Api.Checks.IssuerHarness.Start(pub, Issuer, issuerCs);
         var opt = new Admin.Api.AdminApiOptions
         {
             ConnectionString = adminCs,
@@ -68,7 +71,8 @@ static class Req064Suite
             SecretAccountIds = new HashSet<string> { "000000000000" },
             SecretRegions = new HashSet<string> { "us-west-2" },
             TokenIssuer = Issuer,
-            SigningKeys = [pub],
+            IssuerUrl = issuerProc.Url,
+            SigningKeys = [],
             AuditSchemaPath = schema,
         }.Validated();
         try
@@ -85,6 +89,31 @@ static class Req064Suite
             var noneTok = Mint(sign, None, "super", null);
             var cashTok = Mint(sign, Cash, "partner", Pa);
             var mixTok = Mint(sign, Mix, "super", null);
+            var same = await IssuerSession(issuerProc.Url, paTok);
+            var again = await IssuerSession(issuerProc.Url, paTok);
+            Check("reused-jwt-returns-the-same-session", same.Length == 64 && same == again);
+            Check("reused-jti-rejected-by-a-second-open", await ReusedJtiRejected(paTok));
+            using (var other = RSA.Create(2048))
+            {
+                var forgedJwt = Mint(new RsaSecurityKey(other) { KeyId = "req064" }, Upa, "partner", Pa);
+                Check("forged-jwt-rejected", await IssuerStatus(issuerProc.Url, forgedJwt) == 401);
+            }
+            var expiredClaims = Claims(Upa, "partner", Pa);
+            expiredClaims["exp"] = DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeSeconds();
+            expiredClaims["nbf"] = DateTimeOffset.UtcNow.AddMinutes(-10).ToUnixTimeSeconds();
+            var wrongAud = Claims(Upa, "partner", Pa);
+            wrongAud["aud"] = "login-api";
+            var wrongIss = Claims(Upa, "partner", Pa);
+            wrongIss["iss"] = "https://evil.invalid";
+            string Signed(Dictionary<string, object> claims) => new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
+            {
+                Claims = claims,
+                SigningCredentials = new SigningCredentials(sign, SecurityAlgorithms.RsaSha256),
+                TokenType = "at+jwt",
+            });
+            Check("expired-jwt-rejected", await IssuerStatus(issuerProc.Url, Signed(expiredClaims)) == 401);
+            Check("wrong-aud-jwt-rejected", await IssuerStatus(issuerProc.Url, Signed(wrongAud)) == 401);
+            Check("wrong-iss-jwt-rejected", await IssuerStatus(issuerProc.Url, Signed(wrongIss)) == 401);
 
             var navNone = await Send(http, HttpMethod.Get, "/api/nav", noneTok);
             var locNone = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", noneTok);
@@ -107,6 +136,7 @@ static class Req064Suite
             await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = $1", Apa);
             var after = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", paTok);
             await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = NULL WHERE assignment_id = $1", Apa);
+            paTok = Mint(sign, Upa, "super", null);
             Check("T6 revoke-takes-effect-on-next-request", before.Status == 200 && after.Status == 403,
                 $"before {before.Status} {Clip(before.Body)} after {after.Status} {Clip(after.Body)}");
 
@@ -232,6 +262,16 @@ static class Req064Suite
             Check("no-revoke-or-assign-api",
                 !host.Contains("/api/assign", StringComparison.Ordinal) && !host.Contains("/api/revoke", StringComparison.Ordinal)
                 && !host.Contains("MapPost(\"/api/admin", StringComparison.Ordinal));
+            var options = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Admin.Api", "AdminApiOptions.cs"));
+            var auth = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Admin.Api", "AdminAuth.cs"));
+            var api = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Admin.Api", "LoginConfigApi.cs"));
+            Check("host-does-not-read-issuer-credentials",
+                !host.Contains("ISSUER_CONNECTION_STRING", StringComparison.Ordinal)
+                && !options.Contains("ISSUER_CONNECTION_STRING", StringComparison.Ordinal)
+                && !auth.Contains("ISSUER_CONNECTION_STRING", StringComparison.Ordinal)
+                && !api.Contains("ISSUER_CONNECTION_STRING", StringComparison.Ordinal)
+                && !api.Contains("FF_ISSUER_PASSWORD", StringComparison.Ordinal)
+                && !api.Contains("set_config('app.request_iss'", StringComparison.Ordinal));
 
             await app.StopAsync();
         }
@@ -264,6 +304,8 @@ static class Req064Suite
         Check("expiry-is-min-of-now-plus-15m-and-jwt-exp", capped == "capped");
         Check("admin-api-cannot-open-session", await Denied(admin, "SELECT auth.open_session($1, $2, $3, $4)", Issuer, Upa.ToString("D"), Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(5)));
         Check("ttl-over-15-minutes-rejected", await TtlRejected(owner));
+        Check("thirty-third-live-session-rejected", await LiveCap(owner));
+        Check("six-hundred-first-open-rejected", await OpenRate(owner));
 
         await using (var c = await admin.OpenConnectionAsync())
         {
@@ -320,8 +362,9 @@ static class Req064Suite
         await Exec(owner, "UPDATE auth.admin_assignment SET status = 'active' WHERE user_id = $1 AND role_id = 'partner_admin'", Upa);
         Check("revocation-applies-on-the-next-action", nextDenied);
         Check("host-password-cannot-log-in-as-issuer", await HostPasswordRejected());
-        Check("parallel-worker-does-not-drop-the-principal", await ParallelStillResolves(admin, token));
-        Check("pooled-connection-keeps-no-binding", await PooledBindingClears(admin, token));
+        var fresh = await Mint(Sa);
+        Check("parallel-worker-does-not-drop-the-principal", await ParallelStillResolves(admin, fresh));
+        Check("pooled-connection-keeps-no-binding", await PooledBindingClears(admin, fresh));
     }
 
     static async Task<bool> HostPasswordRejected()
@@ -434,6 +477,54 @@ static class Req064Suite
             return false;
         }
         catch (PostgresException ex) when (ex.SqlState == "23514") { return true; }
+    }
+
+    static async Task<bool> LiveCap(NpgsqlDataSource owner)
+    {
+        await Exec(owner, "DELETE FROM auth.request_binding WHERE user_id = $1", Sa2);
+        await Exec(owner, "DELETE FROM auth.request_session WHERE user_id = $1", Sa2);
+        var opened = 0;
+        try
+        {
+            for (var i = 0; i < 40; i++)
+            {
+                await Mint(Sa2);
+                opened++;
+            }
+            return false;
+        }
+        catch (PostgresException ex) when (ex.SqlState == "54000" && ex.MessageText == "session_cap")
+        {
+            return opened == 32;
+        }
+        finally
+        {
+            await Exec(owner, "DELETE FROM auth.request_binding WHERE user_id = $1", Sa2);
+            await Exec(owner, "DELETE FROM auth.request_session WHERE user_id = $1", Sa2);
+        }
+    }
+
+    static async Task<bool> OpenRate(NpgsqlDataSource owner)
+    {
+        await Exec(owner, """
+            INSERT INTO auth.request_session (token_hash, jti, iss, sub, user_id, created_at, expires_at, revoked_at)
+            SELECT sha256(convert_to('rate-' || g::text, 'UTF8')), gen_random_uuid(), $2, $3, $1,
+                   clock_timestamp(), clock_timestamp() + interval '5 minutes', clock_timestamp()
+              FROM generate_series(1, 600) g
+            """, Sa2, Issuer, Sa2.ToString("D"));
+        try
+        {
+            await Mint(Sa2);
+            return false;
+        }
+        catch (PostgresException ex) when (ex.SqlState == "54000" && ex.MessageText == "session_rate")
+        {
+            return true;
+        }
+        finally
+        {
+            await Exec(owner, "DELETE FROM auth.request_session WHERE user_id = $1 AND revoked_at IS NOT NULL", Sa2);
+        }
     }
 
     static async Task<bool> Denied(NpgsqlDataSource ds, string sql, params object?[] ps)
@@ -666,12 +757,14 @@ static class Req064Suite
         try
         {
             await using var grantConn = await admin.OpenConnectionAsync();
+            await using var grantTx = await grantConn.BeginTransactionAsync();
+            await Begin(grantConn, grantTx, Both);
             await using (var grant = new NpgsqlCommand("""
                 SELECT (SELECT count(*) FROM unnest(partner_ids) x WHERE x = $3) = 1
                    AND (SELECT count(*) FROM unnest(partner_ids) x WHERE x = $4) = 1
                    AND role_wire = 'partner_admin' AND NOT global_admin
                   FROM auth.resolve_grant($1, $2)
-                """, grantConn))
+                """, grantConn, grantTx))
             {
                 grant.Parameters.Add(new() { Value = Issuer });
                 grant.Parameters.Add(new() { Value = Both });
@@ -1233,6 +1326,32 @@ static class Req064Suite
             TokenType = "at+jwt",
         });
 
+    static async Task<int> IssuerStatus(string url, string jwt)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        var res = await http.PostAsync(url.TrimEnd('/') + "/v1/session", new StringContent(jwt));
+        return (int)res.StatusCode;
+    }
+
+    static async Task<string> IssuerSession(string url, string jwt)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        var res = await http.PostAsync(url.TrimEnd('/') + "/v1/session", new StringContent(jwt));
+        if (!res.IsSuccessStatusCode) return "";
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        return doc.RootElement.GetProperty("session").GetString() ?? "";
+    }
+
+    static async Task<bool> ReusedJtiRejected(string jwt)
+    {
+        var json = Base64UrlEncoder.Decode(jwt.Split('.')[1]);
+        using var doc = JsonDocument.Parse(json);
+        var jti = Guid.Parse(doc.RootElement.GetProperty("jti").GetString()!);
+        var sub = Guid.Parse(doc.RootElement.GetProperty("sub").GetString()!);
+        try { await Mint(sub, jti: jti); return false; }
+        catch (PostgresException ex) when (ex.SqlState == "23505") { return true; }
+    }
+
     static Dictionary<string, object> Claims(Guid user, string adminType, Guid? partner)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -1240,6 +1359,7 @@ static class Req064Suite
         {
             ["iss"] = Issuer, ["aud"] = Admin.Api.AdminApiOptions.Audience, ["sub"] = user.ToString("D"),
             ["admin_type"] = adminType, ["iat"] = now, ["nbf"] = now, ["exp"] = now + 600,
+            ["jti"] = Guid.NewGuid().ToString("D"),
         };
         if (partner is Guid p) claims["partner_id"] = p.ToString("D");
         return claims;

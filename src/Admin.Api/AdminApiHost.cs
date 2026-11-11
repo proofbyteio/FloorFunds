@@ -31,7 +31,7 @@ public static class AdminApiHost
         b.Services.AddSingleton(opt);
         b.Services.AddSingleton(ds);
         b.Services.AddSingleton(new AuditOutbox(schema));
-        b.Services.AddSingleton(new AdminTokenValidator(opt));
+        b.Services.AddSingleton(new SessionIssuer(opt));
         b.Services.AddSingleton(directory ?? new DbAdminDirectory());
         b.Services.AddSingleton(clock ?? TimeProvider.System);
         b.Services.AddSingleton<LoginConfigApi>();

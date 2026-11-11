@@ -8,7 +8,7 @@ using NpgsqlTypes;
 namespace Admin.Api;
 
 /// <summary>A caller after step 1 (authn) and the server-side role lookup. Nothing here comes from request data.</summary>
-public sealed record Caller(AdminIdentity Id, AdminGrant Grant, string RequestId)
+public sealed record Caller(AdminIdentity Id, AdminGrant Grant, string RequestId, string SessionToken)
 {
     public bool IsSuper => Grant.Role == BuiltInRole.SuperAdmin;
     public bool IsPartnerAdmin => Grant.Role == BuiltInRole.PartnerAdmin;
@@ -29,7 +29,7 @@ sealed record LlcRow(Guid LocationId, Guid PartnerId, string Slug, string Name, 
 /// (set_config(..., true)), from the resolved grant, never from the body, headers, query, path, or token admin_type.
 /// All SQL is parameterised.
 /// </summary>
-public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, AdminTokenValidator tokens, IAdminDirectory directory,
+public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, SessionIssuer tokens, IAdminDirectory directory,
     AuditOutbox outbox, ILogger<LoginConfigApi> log, TimeProvider clock)
 {
     const int MaxBody = 64 * 1024;
@@ -69,11 +69,26 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         NpgsqlTransaction? tx = null;
         try
         {
-            var id = await tokens.AuthenticateAsync(ctx.Request);
-            if (id is null) { ctx.Response.Headers.WWWAuthenticate = "Bearer"; return Results.StatusCode(401); }
+            IssuedSession issued;
+            try
+            {
+                var opened = await tokens.OpenAsync(ctx.Request, ctx.RequestAborted);
+                if (opened is null) { ctx.Response.Headers.WWWAuthenticate = "Bearer"; return Results.StatusCode(401); }
+                issued = opened;
+            }
+            catch (IssuerUnavailableException)
+            {
+                return Results.StatusCode(503);
+            }
+            var id = issued.Identity;
             c = await db.OpenConnectionAsync(ctx.RequestAborted);
             tx = await c.BeginTransactionAsync(ctx.RequestAborted);
-            await SetPrincipalAsync(c, tx, id.Issuer, id.UserId);
+            try { await BeginRequestAsync(c, tx, issued.SessionToken); }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
+            {
+                await SafeRollback(c, tx);
+                return Results.StatusCode(403);
+            }
             AdminGrant g;
             try { g = await directory.ResolveAsync(id, c, tx, ctx.RequestAborted); }
             catch (PostgresException)
@@ -82,7 +97,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
                 return Results.StatusCode(403);
             }
             await SetScopeAsync(c, tx, g, id.UserId);
-            return await f(new Caller(Wire(id, g), g, requestId), c, tx);
+            return await f(new Caller(Wire(id, g), g, requestId, issued.SessionToken), c, tx);
         }
         catch (Fail x)
         {
@@ -137,16 +152,15 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     /// <summary>
     /// The only admin-api writer of the request principal. Transaction-local.
-    /// Called from Run after the token is accepted, and again on the reason-bounds retry
-    /// because that retry opens a new transaction. Catalog reads set the same settings
-    /// on their own connection from an already-resolved CatalogReadScope.
+    /// Called from Run after the issuer returns a session token, and again on the
+    /// reason-bounds retry because that retry opens a new transaction. Both calls
+    /// are begin_request of the same session token. The host does not call
+    /// open_session and does not set app.request_iss or app.request_sub.
     /// </summary>
-    static async Task SetPrincipalAsync(NpgsqlConnection c, NpgsqlTransaction tx, string issuer, Guid subject)
+    static async Task BeginRequestAsync(NpgsqlConnection c, NpgsqlTransaction tx, string sessionToken)
     {
-        await using var cmd = new NpgsqlCommand(
-            "SELECT set_config('app.request_iss', $1, true), set_config('app.request_sub', $2, true)", c, tx);
-        cmd.Parameters.Add(new() { Value = issuer });
-        cmd.Parameters.Add(new() { Value = subject.ToString("D") });
+        await using var cmd = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx);
+        cmd.Parameters.Add(new() { Value = sessionToken });
         await cmd.ExecuteNonQueryAsync();
     }
 
@@ -527,8 +541,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             await tx.RollbackAsync();
             await using var tx2 = await c.BeginTransactionAsync();
             // The principal is transaction-local, so the rolled-back transaction dropped it.
-            // Same function as Run, still set_config(..., true), still the verified token identity.
-            await SetPrincipalAsync(c, tx2, who.Id.Issuer, who.Id.UserId);
+            // Same begin_request as Run, same session token, not a second open_session.
+            await BeginRequestAsync(c, tx2, who.SessionToken);
             await SetScopeAsync(c, tx2, who.Grant, who.Id.UserId);
             var won = await LoadBoundsAsync(c, tx2, partner, true) ?? throw new InvalidOperationException("unique violation without a row");
             await tx2.CommitAsync();
@@ -658,7 +672,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         if (im.Count != 1 || IfMatchRe.Match(im[0] ?? "") is not { Success: true } m) throw Err(400, "if_match_invalid");
         var expected = long.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
 
-        var row = await LoadAsync(c, tx, location, real, true) ?? throw Err(404, "not_found");
+        // admin_api has no UPDATE, so this read cannot FOR UPDATE. The version predicate inside
+        // auth.save_location_login_config is the write lock; a lost race returns 0 and becomes 409.
+        var row = await LoadAsync(c, tx, location, real, false) ?? throw Err(404, "not_found");
         // Step 6.
         if (row.RowVersion != expected) throw Err(409, "concurrency_conflict", b => b["current_row_version"] = row.RowVersion);
         // Step 7. Oversize = 413, nothing written (rolled back) [TLD 2026-11-04 9:28, P3-2]; steps 3-6 still answer first (P3-3: no change).

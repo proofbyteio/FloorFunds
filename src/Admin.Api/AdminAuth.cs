@@ -1,6 +1,6 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
-using Microsoft.IdentityModel.JsonWebTokens;
-using Microsoft.IdentityModel.Tokens;
 
 namespace Admin.Api;
 
@@ -42,63 +42,53 @@ public interface IAdminDirectory
     Task<AdminGrant> ResolveAsync(AdminIdentity id, Npgsql.NpgsqlConnection connection, Npgsql.NpgsqlTransaction transaction, CancellationToken ct);
 }
 
-public sealed class AdminTokenValidator(AdminApiOptions o)
-{
-    readonly JsonWebTokenHandler _h = new() { MapInboundClaims = false };
-    readonly TokenValidationParameters _p = new()
-    {
-        ValidIssuer = o.TokenIssuer, IssuerSigningKeys = o.SigningKeys, ValidAudience = AdminApiOptions.Audience,
-        ValidAlgorithms = [SecurityAlgorithms.RsaSha256], ValidTypes = ["at+jwt"], RequireExpirationTime = true,
-        RequireSignedTokens = true, ValidateLifetime = true, ValidateIssuerSigningKey = true, ClockSkew = TimeSpan.FromSeconds(30),
-    };
-    readonly HashSet<string> _kids = o.SigningKeys.Select(k => k.KeyId).Where(id => !string.IsNullOrEmpty(id)).ToHashSet(StringComparer.Ordinal)!;
+/// <summary>The issuer process is not reachable. The host answers 503 and does not open a session itself.</summary>
+public sealed class IssuerUnavailableException : Exception;
 
-    /// <summary>
-    /// Step 1 (authn). Null = 401. Exactly one "Authorization: Bearer" header; access_token_admin claim rules.
-    /// Unknown kid and duplicate JSON members are rejected. The duplicate-member and kid checks follow
-    /// Catalog.ScratchAuth/FrozenAdminTokenGate.cs:19 (AllowDuplicateProperties = false), :90-91 (header and
-    /// payload parse), and :123-131 (kid must equal a configured key id).
-    /// </summary>
-    public async Task<AdminIdentity?> AuthenticateAsync(HttpRequest req)
+/// <summary>What the issuer process returns after it has verified the token and opened a session.</summary>
+public sealed record IssuedSession(string SessionToken, AdminIdentity Identity);
+
+/// <summary>
+/// Sends the raw bearer token to the issuer process. This process does not verify the signature
+/// and does not hold the issuer role. Null is a rejected token (401). A connection failure throws
+/// <see cref="IssuerUnavailableException"/> (503).
+/// </summary>
+public sealed class SessionIssuer(AdminApiOptions o)
+{
+    readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(3) };
+
+    public async Task<IssuedSession?> OpenAsync(HttpRequest req, CancellationToken ct)
     {
         var hs = req.Headers.Authorization;
         if (hs.Count != 1 || hs[0] is not { } h || !h.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) return null;
         var token = h[7..].Trim();
         if (token.Length is 0 or > 8192) return null;
-        TokenValidationResult r;
-        try { r = await _h.ValidateTokenAsync(token, _p); } catch (Exception) { return null; }
-        if (!r.IsValid || r.SecurityToken is not JsonWebToken t) return null;
-        if (!HeaderAccepted(t)) return null;
-        // aud: one string (access_token_base); no location_id on an /admin token; not a recovery re-enrol session.
-        if (t.Audiences.Count() != 1 || t.TryGetPayloadValue<object>("location_id", out _)) return null;
-        if (t.TryGetPayloadValue<object>("aud", out var audRaw) && audRaw is not string) return null;
-        if (!t.TryGetPayloadValue<string>("sub", out var sub) || !Guid.TryParseExact(sub, "D", out var userId)) return null;
-        if (!t.TryGetPayloadValue<string>("admin_type", out var at) || at is not ("super" or "partner")) return null;
-        if (t.TryGetPayloadValue<string>("session_kind", out var sk) && sk == "recovery_reenroll") return null;
-        var hasPartner = t.TryGetPayloadValue<object>("partner_id", out _);
-        Guid? partner = null;
-        if (at == "partner")
-        {
-            if (!t.TryGetPayloadValue<string>("partner_id", out var ps) || !Guid.TryParseExact(ps, "D", out var pid) || pid == Guid.Empty) return null;
-            partner = pid;
-        }
-        else if (hasPartner) return null;
-        var issuer = t.Issuer ?? "";
-        return new AdminIdentity(userId, at, partner, issuer);
-    }
-
-    bool HeaderAccepted(JsonWebToken t)
-    {
+        HttpResponseMessage res;
         try
         {
-            var headerJson = Base64UrlEncoder.Decode(t.EncodedHeader);
-            using var header = JsonDocument.Parse(headerJson, new JsonDocumentOptions { AllowDuplicateProperties = false, MaxDepth = 8 });
-            if (!header.RootElement.TryGetProperty("kid", out var kid) || kid.ValueKind != JsonValueKind.String) return false;
-            if (!_kids.Contains(kid.GetString() ?? "")) return false;
-            using var payload = JsonDocument.Parse(Base64UrlEncoder.Decode(t.EncodedPayload), new JsonDocumentOptions { AllowDuplicateProperties = false, MaxDepth = 16 });
-            return payload.RootElement.ValueKind == JsonValueKind.Object;
+            using var msg = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(o.IssuerUrl), "/v1/session"))
+            { Content = new StringContent(token, Encoding.UTF8, "text/plain") };
+            res = await _http.SendAsync(msg, ct);
         }
-        catch (JsonException) { return false; }
-        catch (Exception) { return false; }
+        catch (HttpRequestException) { throw new IssuerUnavailableException(); }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested) { throw new IssuerUnavailableException(); }
+        using (res)
+        {
+            if (res.StatusCode == HttpStatusCode.Unauthorized) return null;
+            if (res.StatusCode != HttpStatusCode.OK) throw new IssuerUnavailableException();
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+            var root = doc.RootElement;
+            var session = root.GetProperty("session").GetString();
+            var sub = root.GetProperty("sub").GetString();
+            var iss = root.GetProperty("iss").GetString() ?? "";
+            var adminType = root.GetProperty("admin_type").GetString() ?? "";
+            if (session is not { Length: 64 } || !Guid.TryParseExact(sub, "D", out var userId))
+                throw new IssuerUnavailableException();
+            Guid? partner = null;
+            if (root.TryGetProperty("partner_id", out var p) && p.ValueKind == JsonValueKind.String
+                && Guid.TryParseExact(p.GetString(), "D", out var pid))
+                partner = pid;
+            return new IssuedSession(session, new AdminIdentity(userId, adminType, partner, iss));
+        }
     }
 }
