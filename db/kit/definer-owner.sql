@@ -26,7 +26,8 @@ DECLARE
     'auth.current_principal()',
     'auth.session_issuer()',
     'auth.revoke_session(text)',
-    'auth.revoke_on_principal_change()'
+    'auth.revoke_on_principal_change()',
+    'auth.revoke_login(text, text)'
   ];
 BEGIN
   IF NOT EXISTS (
