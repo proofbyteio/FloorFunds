@@ -2,9 +2,9 @@
 
 One URL: <http://127.0.0.1:5088/>
 
-Start it with `ui/admin-shell/start.sh`. The script refuses to run unless this machine is the dev stand-in (`ADMIN_DEV_SHELL=1`, `ASPNETCORE_ENVIRONMENT=Development`, loopback only). It creates a disposable kit database `ff_kit_adminshell` on `127.0.0.1:5432` through `db/setup.sh`, with synthetic passwords generated in the script. It does not read `/tmp/req064-env.sh` or any file outside this repo. It starts the stand-in, Admin.Api, and this shell. The browser uses the one URL. `/api` is proxied to Admin.Api and `/standin` is proxied to the stand-in. The access token stays on the server.
+The supported path on the box is `ctl.sh`. `ui/admin-shell/start.sh` is the in-repo script and uses the same host settings. It refuses to run unless this machine is the dev stand-in (`ADMIN_DEV_SHELL=1`, `ASPNETCORE_ENVIRONMENT=Development`, loopback only). It creates a disposable kit database `ff_kit_adminshell` on `127.0.0.1:5432` through `db/setup.sh`, with synthetic passwords generated in the script. It does not read `/tmp/req064-env.sh` or any file outside this repo. It starts the stand-in, the issuer, Admin.Api, and this shell. Admin.Api is given `BackofficeAuth__IssuerUrl` and is not given `BackofficeAuth__JwksPath`, the issuer connection string, or the issuer secret. The browser uses the one URL. `/api` is proxied to Admin.Api and `/standin` is proxied to the stand-in. The access token stays on the server. A session-expired response reopens through the issuer once.
 
-The script does not grant the fixture Super Admin. That assignment is a separate dev-only step:
+The script does not grant the fixture Super Admin or the fixture Partner Admin. Those assignments are a separate dev-only step:
 
 `REQ064_DEV_SEED=1 ui/admin-shell/seed-dev-assignment.sh`
 
