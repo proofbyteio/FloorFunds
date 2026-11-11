@@ -139,6 +139,12 @@ static class Req064Suite
             paTok = Mint(sign, Upa, "super", null);
             Check("T6 revoke-takes-effect-on-next-request", before.Status == 200 && after.Status == 403,
                 $"before {before.Status} {Clip(before.Body)} after {after.Status} {Clip(after.Body)}");
+            await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = $1", Apa);
+            var freshRevoked = Mint(sign, Upa, "super", null);
+            var stillDenied = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", freshRevoked);
+            await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = NULL WHERE assignment_id = $1", Apa);
+            paTok = Mint(sign, Upa, "super", null);
+            Check("revoked-assignment-denies-a-new-session", stillDenied.Status == 403, $"status {stillDenied.Status}");
 
             var navCash = await Send(http, HttpMethod.Get, "/api/nav", cashTok);
             var cashLoc = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", cashTok);
