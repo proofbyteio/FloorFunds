@@ -1,9 +1,12 @@
 -- floorfunds-kit: (re)create the database. psql variables: db, role, drop (0/1).
--- Intermediate REQ-064 databases are recreated. main 18372896's history is only the four
--- ids below. Any other id (20261110290000, 20261110300000, or a later REQ-064 id) means
--- --force drops and recreates. In-place migration is not attempted, so an old
--- open_session or revoke_login is not left behind. A history that is a subset of those
--- four ids, or a database with no history table, is migrated in place.
+-- Intermediate REQ-064 databases are recreated. The list is the thirteen REQ-064 ids
+-- present at 9ebb0eb (the last tip before 20261111180000_Req064SessionClose) and absent
+-- from main 18372896. Those files are still applied at the tip, ahead of SessionClose;
+-- a database that recorded one of them under runs 7-10 is not migrated in place.
+-- 20261111180000_Req064SessionClose is the tip migration and is not on the list.
+-- An id that is not on the list, including a future main id, does not by itself drop
+-- the database. A history that is a subset of main's four ids, or a database with no
+-- history table, is migrated in place.
 -- KF2: CREATE DATABASE and DROP DATABASE cannot run inside a transaction block or a DO block (PostgreSQL rule), so
 -- they cannot share one statement with their check. What the kit does instead:
 --   * DROP: a DO block refuses (raises) unless :db is a marked, non-template DB owned by :role (not a superuser); the DROP that follows
@@ -27,18 +30,29 @@ SELECT EXISTS (
   WHERE n.nspname = 'public' AND c.relname = '__EFMigrationsHistory'
 ) AS kit_hist \gset
 \if :kit_hist
+-- req064-intermediate-id-list: run 7-10 ids at 9ebb0eb that main 18372896 does not have.
 SELECT EXISTS (
   SELECT 1 FROM public."__EFMigrationsHistory"
-   WHERE "MigrationId" NOT IN (
-     '20261104160000_S2aInitial',
-     '20261104170000_S2aLlcColumnUpdate',
-     '20261105080000_S2aPartnerReasonBounds',
-     '20261108190000_CatalogMasterData')
+   WHERE "MigrationId" IN (
+     '20261110160000_Req064AssignmentResolver',
+     '20261110200000_Req064RoleScope',
+     '20261110210000_Req064HistoryPartner',
+     '20261110220000_Req064Issuer',
+     '20261110230000_Req064Principal',
+     '20261110240000_Req064ReasonRead',
+     '20261110250000_Req064Definer',
+     '20261110260000_Req064RlsPrincipal',
+     '20261110270000_Req064LocationSave',
+     '20261110280000_Req064RevokeTemp',
+     '20261110290000_Req064Session',
+     '20261110300000_Req064RevokeLogin',
+     '20261110310000_Req064Actor')
 ) AS kit_intermediate \gset
+-- end-req064-intermediate-id-list
 \endif
 \c postgres
 \if :kit_intermediate
-\echo Recreating :db : migration history has a REQ-064 id that is not on main 18372896. In-place migration is not supported.
+\echo Recreating :db : migration history contains a listed intermediate REQ-064 id. In-place migration is not supported.
 -- intermediate-req064-recreate
 \set drop 1
 \endif

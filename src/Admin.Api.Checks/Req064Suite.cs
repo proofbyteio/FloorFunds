@@ -1582,8 +1582,68 @@ static class Req064Suite
         var writes = await OwnerCutoffWrites(owner, lockedUser);
         Check("owner-cannot-write-login-cutoff",
             writes == "priv False insert 42501 update 42501 delete 42501", writes);
-        var recreated = await BashRepo("db/tests/intermediate-recreate.sh", "PASS force-recreates-an-intermediate-req064-database");
-        Check("force-recreates-an-intermediate-req064-database", recreated.Ok, recreated.Detail);
+        var truncated = await OwnerDdl(owner, "TRUNCATE TABLE auth.login_cutoff");
+        Check("owner-cannot-truncate-login-cutoff", truncated == "42501", truncated);
+        var replaced = await OwnerDdl(owner, """
+            CREATE OR REPLACE FUNCTION auth.session_still_open(p_token text, p_iat timestamptz)
+            RETURNS boolean LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, auth
+            AS $$ SELECT true $$
+            """);
+        var altered = await OwnerDdl(owner, "ALTER FUNCTION auth.session_still_open(text, timestamptz) OWNER TO CURRENT_USER");
+        Check("owner-cannot-replace-session-still-open",
+            replaced == "42501" && altered == "42501", $"replace {replaced} alter {altered}");
+        var stray = await ScalarText(owner, """
+            SELECT coalesce(string_agg(n.nspname || '.' || p.proname, ', ' ORDER BY n.nspname, p.proname), '')
+              FROM pg_proc p
+              JOIN pg_namespace n ON n.oid = p.pronamespace
+              JOIN pg_roles r ON r.oid = p.proowner
+             WHERE p.prosecdef
+               AND n.nspname IN ('auth', 'catalog')
+               AND r.rolname IS DISTINCT FROM current_database() || '_auth_definer'
+               AND (n.nspname, p.proname) NOT IN (
+                 -- Last-SA triggers on app_user and admin_assignment. The owner keeps
+                 -- TRUNCATE there so the guard raises last_active_super_admin, not 42501.
+                 ('auth', '_last_sa_guard'),
+                 ('auth', '_last_sa_truncate_guard'),
+                 -- S2a location helpers. They predate the auth definer and are not
+                 -- request-principal functions.
+                 ('auth', 'location_partner'),
+                 ('auth', 'tenant_bound_elsewhere'),
+                 -- Catalog registry writers and triggers. The migration user owns the
+                 -- catalog tables. There is no catalog definer role.
+                 ('catalog', '_insert_marker'),
+                 ('catalog', '_insert_subtype'),
+                 ('catalog', '_seal_marker'),
+                 ('catalog', '_sealed_marker'),
+                 ('catalog', '_visible_ref'),
+                 ('catalog', 'apply_claim_edit'),
+                 ('catalog', 'apply_entry_create'),
+                 ('catalog', 'subtype_count'),
+                 ('catalog', 'subtype_json'),
+                 ('catalog', 'tg_a_ref_guard'),
+                 ('catalog', 'tg_claim_subtype'),
+                 ('catalog', 'tg_no_delete'),
+                 ('catalog', 'tg_processor_cycle_commit'),
+                 ('catalog', 'tg_processor_parent'),
+                 ('catalog', 'tg_registry_before'),
+                 ('catalog', 'tg_registry_commit'),
+                 ('catalog', 'tg_registry_pending'),
+                 ('catalog', 'tg_registry_update'),
+                 ('catalog', 'tg_scope_refuse'),
+                 ('catalog', 'tg_subtype_no_update'),
+                 ('catalog', 'tg_subtype_seal'),
+                 ('catalog', 'tg_tx_marker_stmt'))
+            """);
+        Check("security-definer-owner-is-the-definer-role", stray == "", stray);
+        var history = await BashRepoText("db/tests/intermediate-recreate.sh");
+        Check("force-recreates-an-intermediate-req064-database",
+            history.Text.Contains("PASS force-recreates-an-intermediate-req064-database", StringComparison.Ordinal), history.Text);
+        Check("future-main-id-is-kept",
+            history.Text.Contains("PASS future-main-id-is-kept", StringComparison.Ordinal), history.Text);
+        Check("each-intermediate-req064-id-is-recreated",
+            history.Text.Contains("PASS each-intermediate-req064-id-is-recreated", StringComparison.Ordinal), history.Text);
+        Check("non-kit-database-is-refused",
+            history.Text.Contains("PASS non-kit-database-is-refused", StringComparison.Ordinal), history.Text);
     }
 
     static async Task<string> OpenBehindLockUpdate(NpgsqlDataSource owner, Guid user)
@@ -1685,6 +1745,26 @@ static class Req064Suite
         var update = await CutoffWrite(owner, user, "UPDATE auth.login_cutoff SET revoked_before = clock_timestamp() WHERE user_id = $1");
         var delete = await CutoffWrite(owner, user, "DELETE FROM auth.login_cutoff WHERE user_id = $1");
         return $"priv {priv} insert {insert} update {update} delete {delete}";
+    }
+
+    static async Task<string> OwnerDdl(NpgsqlDataSource owner, string sql)
+    {
+        await using var c = await owner.OpenConnectionAsync();
+        await using var tx = await c.BeginTransactionAsync();
+        try
+        {
+            await using var cmd = new NpgsqlCommand(sql, c, tx);
+            await cmd.ExecuteNonQueryAsync();
+            return "ok";
+        }
+        catch (PostgresException ex)
+        {
+            return ex.SqlState;
+        }
+        finally
+        {
+            await tx.RollbackAsync();
+        }
     }
 
     static async Task<string> CutoffWrite(NpgsqlDataSource owner, Guid user, string sql)
@@ -1878,7 +1958,7 @@ static class Req064Suite
         return (process.ExitCode == 0 && text.Contains(pass, StringComparison.Ordinal), (text + err).Trim());
     }
 
-    static Task<(bool Ok, string Detail)> BashRepo(string relative, string pass)
+    static async Task<(int Code, string Text)> BashRepoText(string relative)
     {
         var psi = new ProcessStartInfo("bash", [Path.Combine(RepoRoot(), relative)])
         {
@@ -1887,7 +1967,12 @@ static class Req064Suite
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        return FinishScript(psi, pass);
+        using var process = Process.Start(psi);
+        if (process is null) return (1, "process did not start");
+        var text = await process.StandardOutput.ReadToEndAsync();
+        var err = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return (process.ExitCode, (text + err).Trim());
     }
 
     static async Task<(bool Ok, string Detail)> FinishScript(ProcessStartInfo psi, string pass)
