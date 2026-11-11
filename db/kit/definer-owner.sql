@@ -28,7 +28,8 @@ DECLARE
     'auth.session_issuer()',
     'auth.revoke_session(text)',
     'auth.revoke_on_principal_change()',
-    'auth.revoke_login(text, text)'
+    'auth.revoke_login(text, text)',
+    'auth.session_still_open(text, timestamptz)'
   ];
 BEGIN
   IF NOT EXISTS (
@@ -49,7 +50,10 @@ BEGIN
   -- The migration user keeps SELECT on login_cutoff. Writes stay on the definer,
   -- which owns revoke_login after this step. Scratch databases skip this file,
   -- so their owner-run functions still have the table privileges.
-  EXECUTE format('REVOKE INSERT, UPDATE, DELETE ON TABLE auth.login_cutoff FROM %I', owner_name);
+  EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE auth.login_cutoff FROM %I', owner_name);
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_database() || '_issuer') THEN
+    EXECUTE format('GRANT EXECUTE ON FUNCTION auth.session_still_open(text, timestamptz) TO %I', current_database() || '_issuer');
+  END IF;
   EXECUTE format('ALTER FUNCTION auth._login_cutoff_user_delete() OWNER TO %I', r);
   EXECUTE format('GRANT EXECUTE ON FUNCTION auth._login_cutoff_user_delete() TO %I', owner_name);
   EXECUTE format('GRANT DELETE ON TABLE auth.login_cutoff TO %I', r);

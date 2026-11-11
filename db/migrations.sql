@@ -4699,6 +4699,10 @@ BEGIN
   -- the definer-owner step, so the trigger still runs as that owner. The kit
   -- definer also receives EXECUTE below, for after that step changes the owner.
   EXECUTE format('REVOKE ALL ON FUNCTION auth.revoke_login(text, text) FROM %I', owner_name);
+  -- login_cutoff has no foreign key. The last-active-super-admin guard is the
+  -- trigger on app_user and admin_assignment. TRUNCATE here would erase every
+  -- cutoff and let a pre-logout iat open, so the owner does not keep it.
+  EXECUTE format('REVOKE TRUNCATE ON TABLE auth.login_cutoff FROM %I', owner_name);
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
     EXECUTE format('REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz, timestamptz) FROM %I', a);
     EXECUTE format('REVOKE ALL ON TABLE auth.login_cutoff FROM %I', a);
