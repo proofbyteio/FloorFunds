@@ -142,7 +142,12 @@ public sealed class NpgsqlCatalogReader
             await using (var guc = new NpgsqlCommand(SetScopeSql, conn, tx))
             {
                 guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = token });
-                await guc.ExecuteNonQueryAsync(ct);
+                try { await guc.ExecuteNonQueryAsync(ct); }
+                catch (PostgresException ex) when (ex.SqlState == "42501"
+                    && ex.MessageText is "session_expired" or "session_denied")
+                {
+                    throw new CatalogSessionClosedException();
+                }
             }
             await using var cmd = new NpgsqlCommand(sql, conn, tx);
             bind(cmd);

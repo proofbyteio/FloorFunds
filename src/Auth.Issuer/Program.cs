@@ -93,14 +93,10 @@ async Task Handle(HttpListenerContext ctx)
     var gate = gates.GetOrAdd(accepted.Jti, _ => new SemaphoreSlim(1, 1));
     await gate.WaitAsync();
     string session;
-    // The host calls this without reopen and keeps the cached token, so an
-    // expired row becomes session_expired at begin_request. The shell's one
-    // retry calls ?reopen=1, which replaces that expired row. A revoked row
-    // or a different subject is still rejected.
-    var reopen = ctx.Request.Url?.Query?.Contains("reopen=1", StringComparison.Ordinal) == true;
+    // A repeated jti returns the same session token. It does not open another row.
     try
     {
-        if (!reopen && cache.TryGetValue(accepted.Jti, out var cached))
+        if (cache.TryGetValue(accepted.Jti, out var cached))
         {
             if (cached.User != accepted.User || !string.Equals(cached.Iss, accepted.Token.Issuer, StringComparison.Ordinal))
             {
@@ -112,7 +108,7 @@ async Task Handle(HttpListenerContext ctx)
         }
         else
         {
-            try { session = await Open(accepted.Token.Issuer, accepted.User.ToString("D"), accepted.Jti, accepted.Exp); }
+            try { session = await Open(accepted.Token.Issuer, accepted.User.ToString("D"), accepted.Jti, accepted.Exp, accepted.Iat); }
             catch (PostgresException ex) when (ex.SqlState is "42501" or "23505")
             {
                 ctx.Response.StatusCode = 401;
@@ -215,7 +211,8 @@ async Task<Accepted?> TryAccept(string raw)
         partner = pid;
     }
     else if (hasPartner) return null;
-    return new Accepted(t, user, jti, DateTime.SpecifyKind(t.ValidTo, DateTimeKind.Utc), adminType, partner);
+    if (t.IssuedAt == DateTime.MinValue) return null;
+    return new Accepted(t, user, jti, DateTime.SpecifyKind(t.ValidTo, DateTimeKind.Utc), DateTime.SpecifyKind(t.IssuedAt, DateTimeKind.Utc), adminType, partner);
 }
 
 bool HeaderAccepted(JsonWebToken t)
@@ -233,14 +230,15 @@ bool HeaderAccepted(JsonWebToken t)
     catch (Exception) { return false; }
 }
 
-async Task<string> Open(string tokenIss, string sub, Guid jti, DateTime exp)
+async Task<string> Open(string tokenIss, string sub, Guid jti, DateTime exp, DateTime iat)
 {
     await using var c = await db.OpenConnectionAsync();
-    await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4)", c);
+    await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4, $5)", c);
     cmd.Parameters.Add(new NpgsqlParameter { Value = tokenIss });
     cmd.Parameters.Add(new NpgsqlParameter { Value = sub });
     cmd.Parameters.Add(new NpgsqlParameter { Value = jti });
     cmd.Parameters.Add(new NpgsqlParameter { Value = exp });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = iat });
     return (string)(await cmd.ExecuteScalarAsync())!;
 }
 
@@ -271,4 +269,4 @@ static bool LoopbackPrefix(string listen)
 }
 
 sealed record CachedSession(string Session, Guid User, string Iss);
-sealed record Accepted(JsonWebToken Token, Guid User, Guid Jti, DateTime Exp, string AdminType, Guid? Partner);
+sealed record Accepted(JsonWebToken Token, Guid User, Guid Jti, DateTime Exp, DateTime Iat, string AdminType, Guid? Partner);

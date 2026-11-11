@@ -21,7 +21,8 @@ DECLARE
     'auth.save_partner_bounds(uuid, bigint, integer, integer, uuid, timestamptz)',
     'auth.record_login_write(text, uuid)',
     'auth.save_location_login_config(uuid, bigint, text, text, uuid[], text, text, boolean, text, boolean, boolean, uuid, timestamptz)',
-    'auth.open_session(text, text, uuid, timestamptz)',
+    'auth.open_session(text, text, uuid, timestamptz, timestamptz)',
+    'auth._lock_login(uuid)',
     'auth.begin_request(text)',
     'auth.current_principal()',
     'auth.session_issuer()',
@@ -44,7 +45,7 @@ BEGIN
   SELECT pg_get_userbyid(datdba)::text INTO owner_name
     FROM pg_database WHERE datname = current_database();
   EXECUTE format('GRANT EXECUTE ON FUNCTION auth.begin_request(text), auth.current_principal(), auth.session_issuer(), auth.revoke_session(text) TO %I', owner_name);
-  EXECUTE format('REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz) FROM %I', owner_name);
+  EXECUTE format('REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz, timestamptz) FROM %I', owner_name);
   -- catalog._actor calls resolve_grant while the registry trigger runs as the owner.
   EXECUTE format('GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid) TO %I', owner_name);
   -- The login-config UPDATE reads the kept columns. The definer needs SELECT as well as UPDATE.

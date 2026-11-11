@@ -44,6 +44,22 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         public JsonObject? Body { get; } = body;
     }
 
+    sealed class ClosedSession : Exception
+    {
+    }
+
+    const string ClosedBody = "{\"error\":\"session_expired\"}";
+
+    static bool IsClosedSession(PostgresException ex)
+        => ex.SqlState == PostgresErrorCodes.InsufficientPrivilege
+           && ex.MessageText is "session_expired" or "session_denied";
+
+    static IResult Closed(HttpContext ctx)
+    {
+        ctx.Response.Headers.WWWAuthenticate = "Bearer";
+        return Results.Text(ClosedBody, "application/json; charset=utf-8", null, 401);
+    }
+
     static Fail Err(int status, string code, Action<JsonObject>? more = null)
     {
         var b = new JsonObject { ["error"] = code };
@@ -84,11 +100,10 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             c = await db.OpenConnectionAsync(ctx.RequestAborted);
             tx = await c.BeginTransactionAsync(ctx.RequestAborted);
             try { await BeginRequestAsync(c, tx, issued.SessionToken); }
-            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege && ex.MessageText == "session_expired")
+            catch (PostgresException ex) when (IsClosedSession(ex))
             {
                 await SafeRollback(c, tx);
-                ctx.Response.Headers.WWWAuthenticate = "Bearer";
-                return Json(401, new JsonObject { ["error"] = "session_expired" });
+                return Closed(ctx);
             }
             catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
             {
@@ -109,6 +124,11 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         {
             await SafeRollback(c, tx);
             return x.Body is null ? Results.StatusCode(x.Status) : Json(x.Status, x.Body);
+        }
+        catch (ClosedSession)
+        {
+            await SafeRollback(c, tx);
+            return Closed(ctx);
         }
         catch (Exception x)
         {
@@ -548,7 +568,12 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             await using var tx2 = await c.BeginTransactionAsync();
             // The principal is transaction-local, so the rolled-back transaction dropped it.
             // Same begin_request as Run, same session token, not a second open_session.
-            await BeginRequestAsync(c, tx2, who.SessionToken);
+            try { await BeginRequestAsync(c, tx2, who.SessionToken); }
+            catch (PostgresException ex) when (IsClosedSession(ex))
+            {
+                await tx2.RollbackAsync();
+                throw new ClosedSession();
+            }
             await SetScopeAsync(c, tx2, who.Grant, who.Id.UserId);
             var won = await LoadBoundsAsync(c, tx2, partner, true) ?? throw new InvalidOperationException("unique violation without a row");
             await tx2.CommitAsync();

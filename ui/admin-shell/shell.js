@@ -26,20 +26,13 @@ function goSignIn() {
 }
 
 export async function api(path, opts) {
-  const { sessionReopened, ...rest } = opts ?? {};
-  const res = await fetch(path, { credentials: "same-origin", ...rest });
+  const res = await fetch(path, { credentials: "same-origin", ...opts });
   const text = await res.text();
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = { raw: text }; }
-  // One silent reopen. A second expiry, or a failed reopen, leaves for /signin
-  // and does not draw the assignment or screen banners.
-  if (res.status === 401 && body && body.error === "session_expired" && !sessionReopened) {
-    const opened = await fetch("/api/session", { method: "POST", credentials: "same-origin" });
-    if (!opened.ok) { goSignIn(); return { status: 401, body }; }
-    const retried = await api(path, { ...rest, sessionReopened: true });
-    if (retried.status === 401) goSignIn();
-    return retried;
-  }
+  // Expired, revoked, and logged-out sessions are one 401. Leave for /signin
+  // before the assignment or screen banners can draw.
+  if (res.status === 401) { goSignIn(); return { status: 401, body }; }
   return { status: res.status, body };
 }
 

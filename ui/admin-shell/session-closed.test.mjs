@@ -1,7 +1,6 @@
-// The shell reopens an expired session once. A failed reopen goes to /signin
-// and does not draw the assignment or screen banners.
+// A closed session goes to /signin. The shell does not call /api/session and
+// does not draw the assignment or screen banners.
 const calls = [];
-let nav = 0;
 const texts = [];
 
 function node() {
@@ -31,13 +30,7 @@ globalThis.location = { hash: "#/home", went: "", assign(url) { this.went = url;
 globalThis.window = { addEventListener() {} };
 globalThis.fetch = async (url) => {
   calls.push(String(url));
-  if (url === "/api/session") return json(200, { error: "ok" });
-  if (url === "/api/nav") {
-    nav += 1;
-    if (nav === 1) return json(401, { error: "session_expired" });
-    return json(200, { screens: ["create_location", "config"] });
-  }
-  if (String(url).startsWith("/api/orgs/locations")) return json(200, { locations: [] });
+  if (url === "/api/nav") return json(401, { error: "session_expired" });
   return json(200, {});
 };
 
@@ -49,23 +42,23 @@ const shell = await import("./shell.js");
 await shell.started;
 
 const sessionCalls = calls.filter((url) => url === "/api/session").length;
-const navCalls = calls.filter((url) => url === "/api/nav").length;
 const banned = texts.some((t) => t === "No assignment" || t === "This screen is not available");
 let failed = 0;
 function check(name, ok, detail) {
   if (ok) console.log("PASS " + name);
   else { failed += 1; console.log("FAIL " + name + (detail ? " :: " + detail : "")); }
 }
-check("shell-reopens-an-expired-session-once", sessionCalls === 1 && navCalls === 2 && location.went === "" && !banned,
-  `session=${sessionCalls} nav=${navCalls} went=${location.went} banned=${banned}`);
+check("shell-goes-to-signin-on-closed-session", sessionCalls === 0 && location.went === "/signin" && !banned,
+  `session=${sessionCalls} went=${location.went} banned=${banned}`);
 
-let second = 0;
-globalThis.fetch = async (url) => {
-  if (url === "/api/session") { second += 1; return json(401, { error: "session_expired" }); }
-  return json(401, { error: "session_expired" });
-};
+location.went = "";
+globalThis.fetch = async () => json(401, { error: "session_denied" });
 await shell.api("/api/nav");
-check("shell-failed-reopen-goes-to-signin", second === 1 && location.went === "/signin",
-  `session=${second} went=${location.went}`);
+check("shell-goes-to-signin-on-any-401", location.went === "/signin", `went=${location.went}`);
+
+location.went = "";
+globalThis.fetch = async () => json(403, {});
+const denied = await shell.api("/api/nav");
+check("shell-keeps-a-403", denied.status === 403 && location.went === "", `status=${denied.status} went=${location.went}`);
 
 if (failed !== 0) process.exit(1);

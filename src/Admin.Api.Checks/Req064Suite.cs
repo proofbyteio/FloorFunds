@@ -146,7 +146,8 @@ static class Req064Suite
             var after = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", paTok);
             await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = NULL WHERE assignment_id = $1", Apa);
             paTok = Mint(sign, Upa, "super", null);
-            Check("T6 revoke-takes-effect-on-next-request", before.Status == 200 && after.Status == 403,
+            Check("T6 revoke-takes-effect-on-next-request",
+                before.Status == 200 && after.Status == 401 && after.Body == "{\"error\":\"session_expired\"}",
                 $"before {before.Status} {Clip(before.Body)} after {after.Status} {Clip(after.Body)}");
             await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = $1", Apa);
             var freshRevoked = Mint(sign, Upa, "super", null);
@@ -278,10 +279,18 @@ static class Req064Suite
                 !host.Contains("/api/assign", StringComparison.Ordinal) && !host.Contains("/api/revoke", StringComparison.Ordinal)
                 && !host.Contains("MapPost(\"/api/admin", StringComparison.Ordinal));
             await SessionExpiry(http, issuerProc.Url, sign, owner, Sa);
+            await ClosedSessions(http, sign, owner);
+            await LoginSerialization(owner);
+            await BoundsRetry(http, sign, owner, Sa);
             var signedIn = await StandInSignIn.Run(ownerCs, adminCs, issuerCs);
             Check("stand-in-sign-in-opens-session-nav-locations-catalog", signedIn.Ok, signedIn.Detail);
-            var shell = await ShellReopen();
-            Check("shell-reopens-an-expired-session-once", shell.Ok, shell.Detail);
+            var shell = await NodeScript("session-closed.test.mjs", "PASS shell-goes-to-signin-on-closed-session");
+            Check("shell-goes-to-signin-on-closed-session", shell.Ok, shell.Detail);
+            var hop = await NodeScript("session-hop.test.mjs", "PASS session-hop-labels");
+            Check("session-hop-labels", hop.Ok, hop.Detail);
+            Check("session-hop-has-no-reopen", hop.Detail.Contains("PASS session-hop-has-no-reopen", StringComparison.Ordinal), hop.Detail);
+            var listen = await BashScript("own-listener.test.sh", "PASS own-listener-refuses-a-foreign-pid");
+            Check("own-listener-refuses-a-foreign-pid", listen.Ok, listen.Detail);
 
             var options = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Admin.Api", "AdminApiOptions.cs"));
             var auth = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Admin.Api", "AdminAuth.cs"));
@@ -342,8 +351,8 @@ static class Req064Suite
         }
         Check("expiry-is-min-of-now-plus-15m-and-jwt-exp", capped == "capped", capped);
         var token = minted ?? await Mint(Upa);
-        Check("admin-api-cannot-open-session", await Denied(admin, "SELECT auth.open_session($1, $2, $3, $4)", Issuer, Upa.ToString("D"), Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(5)));
-        Check("owner-cannot-open-session", await Denied(owner, "SELECT auth.open_session($1, $2, $3, $4)", Issuer, Upa.ToString("D"), Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(5)));
+        Check("admin-api-cannot-open-session", await Denied(admin, "SELECT auth.open_session($1, $2, $3, $4, $5)", Issuer, Upa.ToString("D"), Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(5), DateTimeOffset.UtcNow));
+        Check("owner-cannot-open-session", await Denied(owner, "SELECT auth.open_session($1, $2, $3, $4, $5)", Issuer, Upa.ToString("D"), Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(5), DateTimeOffset.UtcNow));
         Check("ttl-over-15-minutes-rejected", await TtlRejected(owner));
         Check("thirty-third-live-session-rejected", await LiveCap(owner));
         Check("six-hundred-first-open-rejected", await OpenRate(owner));
@@ -1411,6 +1420,9 @@ static class Req064Suite
         return (int)res.StatusCode;
     }
 
+    static bool SameClosed((int Status, string Body, string Authenticate) got)
+        => got.Status == 401 && got.Body == "{\"error\":\"session_expired\"}" && got.Authenticate == "Bearer";
+
     static async Task SessionExpiry(HttpClient http, string issuerUrl, RsaSecurityKey sign, NpgsqlDataSource owner, Guid user)
     {
         var jwt = Mint(sign, user, "super", null);
@@ -1419,24 +1431,255 @@ static class Req064Suite
         var opened = await Send(http, HttpMethod.Get, "/api/nav", jwt);
         Check("session-live-before-expiry", opened.Status == 200, opened.Status.ToString());
         await Exec(owner, "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE jti = $1", jti);
-        var expired = await Send(http, HttpMethod.Get, "/api/nav", jwt);
-        Check("session-expired-is-a-distinct-401",
-            expired.Status == 401 && expired.Body.Contains("session_expired", StringComparison.Ordinal)
-            && !expired.Body.Contains("No assignment", StringComparison.Ordinal)
-            && !expired.Body.Contains("not available", StringComparison.Ordinal),
-            expired.Status + " " + Clip(expired.Body));
-        var reopened = await IssuerStatus(issuerUrl + "/v1/session?reopen=1", jwt, absolute: true);
-        Check("session-expired-reopen-then-nav-200", reopened == 200 && (await Send(http, HttpMethod.Get, "/api/nav", jwt)).Status == 200,
-            "reopen " + reopened);
+        var expired = await SendClosed(http, HttpMethod.Get, "/api/nav", jwt);
+        var again = await IssuerStatus(issuerUrl, jwt);
+        var rows = await ScalarLong(owner, "SELECT count(*) FROM auth.request_session WHERE jti = $1", jti);
+        var live = await ScalarLong(owner, "SELECT count(*) FROM auth.request_session WHERE jti = $1 AND revoked_at IS NULL AND expires_at > clock_timestamp()", jti);
+        Check("expired-session-is-the-unified-401", SameClosed(expired), expired.Status + " " + expired.Authenticate + " " + Clip(expired.Body));
+        Check("expired-session-is-not-replaced", again == 200 && SameClosed(expired) && rows == 1 && live == 0,
+            $"issuer {again} rows {rows} live {live}");
         await Exec(owner, "UPDATE auth.request_session SET revoked_at = clock_timestamp() WHERE jti = $1", jti);
-        var revived = await IssuerStatus(issuerUrl + "/v1/session?reopen=1", jwt, absolute: true);
+        var revived = await IssuerStatus(issuerUrl, jwt);
+        var nav = await SendClosed(http, HttpMethod.Get, "/api/nav", jwt);
         var still = await ScalarLong(owner, "SELECT count(*) FROM auth.request_session WHERE jti = $1 AND revoked_at IS NOT NULL", jti);
-        Check("revoked-session-is-not-reopened", revived == 401 && still == 1, "reopen " + revived);
+        Check("revoked-session-is-not-replaced", revived == 200 && SameClosed(nav) && still == 1,
+            $"issuer {revived} nav {nav.Status} revoked {still}");
     }
 
-    static async Task<(bool Ok, string Detail)> ShellReopen()
+    static async Task ClosedSessions(HttpClient http, RsaSecurityKey sign, NpgsqlDataSource owner)
     {
-        var psi = new ProcessStartInfo("node", [Path.Combine(RepoRoot(), "ui", "admin-shell", "session-reopen.test.mjs")])
+        var user = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000b0");
+        await EnsureUser(owner, user);
+        var expiredJwt = Mint(sign, user, "super", null);
+        var revokedJwt = Mint(sign, user, "super", null);
+        var loggedOutJwt = Mint(sign, user, "super", null);
+        var openedExpired = await Send(http, HttpMethod.Get, "/api/nav", expiredJwt);
+        var openedRevoked = await Send(http, HttpMethod.Get, "/api/nav", revokedJwt);
+        var openedLoggedOut = await Send(http, HttpMethod.Get, "/api/nav", loggedOutJwt);
+        Check("closed-session-fixtures-opened", openedExpired.Status == 200 && openedRevoked.Status == 200 && openedLoggedOut.Status == 200,
+            $"{openedExpired.Status} {openedRevoked.Status} {openedLoggedOut.Status}");
+        await Exec(owner, "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE jti = $1", JtiOf(expiredJwt));
+        await Exec(owner, "UPDATE auth.request_session SET revoked_at = clock_timestamp() WHERE jti = $1", JtiOf(revokedJwt));
+        var expired = await SendClosed(http, HttpMethod.Get, "/api/nav", expiredJwt);
+        var revoked = await SendClosed(http, HttpMethod.Get, "/api/nav", revokedJwt);
+        await using (var c = await (await IssuerDs()).OpenConnectionAsync())
+        await using (var cmd = new NpgsqlCommand("SELECT auth.revoke_login($1, $2)", c))
+        {
+            cmd.Parameters.Add(new() { Value = Issuer });
+            cmd.Parameters.Add(new() { Value = user.ToString("D") });
+            await cmd.ExecuteNonQueryAsync();
+        }
+        var loggedOut = await SendClosed(http, HttpMethod.Get, "/api/nav", loggedOutJwt);
+        Check("closed-sessions-are-byte-identical",
+            SameClosed(expired) && expired == revoked && revoked == loggedOut,
+            $"expired {expired.Status} {expired.Authenticate} {Clip(expired.Body)} | revoked {revoked.Status} {revoked.Authenticate} {Clip(revoked.Body)} | logged-out {loggedOut.Status} {loggedOut.Authenticate} {Clip(loggedOut.Body)}");
+    }
+
+    static async Task LoginSerialization(NpgsqlDataSource owner)
+    {
+        var sql = await File.ReadAllTextAsync(Path.Combine(RepoRoot(), "db", "migrations.sql"));
+        var oldAt = sql.IndexOf("20261110290000_Req064Session", StringComparison.Ordinal);
+        var newAt = sql.IndexOf("20261111180000_Req064SessionClose", StringComparison.Ordinal);
+        var oldBody = oldAt >= 0 && newAt > oldAt ? sql[oldAt..newAt] : "";
+        var applied = await ScalarLong(owner, """SELECT count(*) FROM public."__EFMigrationsHistory" WHERE "MigrationId" = '20261111180000_Req064SessionClose'""");
+        var def = await ScalarText(owner, "SELECT pg_get_functiondef('auth.open_session(text,text,uuid,timestamptz,timestamptz)'::regprocedure)");
+        var gone = await ScalarBool(owner, "SELECT to_regprocedure('auth.open_session(text,text,uuid,timestamptz)') IS NULL");
+        Check("shipped-session-migration-still-contains-the-replace",
+            oldBody.Contains("DELETE FROM auth.request_session", StringComparison.Ordinal)
+            && oldBody.Contains("expires_at <= v_created", StringComparison.Ordinal));
+        Check("live-open-session-does-not-replace-an-expired-jti",
+            applied == 1 && gone && def.Contains("jti_reused", StringComparison.Ordinal)
+            && !def.Contains("DELETE FROM auth.request_session", StringComparison.Ordinal),
+            $"applied {applied} gone {gone}");
+
+        var lockUser = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000b1");
+        await EnsureUser(owner, lockUser);
+        await ClearSessions(owner, lockUser);
+        var waited = await OpenWaits(owner, lockUser);
+        Check("open-session-waits-on-the-login-lock", waited == "waiting True live 0 len 64", waited);
+
+        var cutoffUser = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000b2");
+        await EnsureUser(owner, cutoffUser);
+        await Exec(owner, "DELETE FROM auth.login_cutoff WHERE user_id = $1", cutoffUser);
+        await ClearSessions(owner, cutoffUser);
+        var old = await ScalarTime(owner, "SELECT clock_timestamp() - interval '1 hour'");
+        var first = await Mint(cutoffUser, iat: old);
+        var afterOpen = await LiveSessions(owner, cutoffUser);
+        await RevokeLogin(cutoffUser);
+        var afterRevoke = await LiveSessions(owner, cutoffUser);
+        var denied = false;
+        try { await Mint(cutoffUser, iat: old, jti: Guid.NewGuid()); }
+        catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText == "session_denied") { denied = true; }
+        var still = await LiveSessions(owner, cutoffUser);
+        var freshAt = await ScalarTime(owner, "SELECT clock_timestamp()");
+        var fresh = await Mint(cutoffUser, iat: freshAt);
+        Check("jwt-issued-before-logout-cannot-open",
+            first.Length == 64 && afterOpen == 1 && afterRevoke == 0 && denied && still == 0 && fresh.Length == 64,
+            $"open {afterOpen} revoke {afterRevoke} denied {denied} still {still} fresh {fresh.Length}");
+
+        var raceUser = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000b3");
+        await EnsureUser(owner, raceUser);
+        await Exec(owner, "DELETE FROM auth.login_cutoff WHERE user_id = $1", raceUser);
+        var left = await OpenLogoutOverlaps(owner, raceUser);
+        Check("open-logout-80-overlaps-leave-no-live-row", left == 0, left.ToString());
+    }
+
+    static async Task<string> OpenWaits(NpgsqlDataSource owner, Guid user)
+    {
+        await using var hold = await owner.OpenConnectionAsync();
+        await using var tx = await hold.BeginTransactionAsync();
+        await using (var cmd = new NpgsqlCommand("SELECT pg_advisory_xact_lock(814064213, hashtext($1::uuid::text))", hold, tx))
+        {
+            cmd.Parameters.Add(new() { Value = user });
+            await cmd.ExecuteScalarAsync();
+        }
+        var open = Task.Run(async () => await Mint(user));
+        await Task.Delay(800);
+        var waiting = !open.IsCompleted;
+        var live = await LiveSessions(owner, user);
+        await tx.CommitAsync();
+        try
+        {
+            var token = await open.WaitAsync(TimeSpan.FromSeconds(8));
+            return $"waiting {waiting} live {live} len {token.Length}";
+        }
+        catch (Exception ex)
+        {
+            return $"waiting {waiting} live {live} error {ex.GetType().Name} {ex.Message}";
+        }
+    }
+
+    static async Task ClearSessions(NpgsqlDataSource owner, Guid user)
+    {
+        await Exec(owner, "DELETE FROM auth.request_binding b USING auth.request_session s WHERE b.token_hash = s.token_hash AND s.user_id = $1", user);
+        await Exec(owner, "DELETE FROM auth.request_session WHERE user_id = $1", user);
+    }
+
+    static async Task<long> OpenLogoutOverlaps(NpgsqlDataSource owner, Guid user)
+    {
+        for (var n = 0; n < 80; n++)
+        {
+            var iat = await ScalarTime(owner, "SELECT clock_timestamp()");
+            var jti = Guid.NewGuid();
+            var open = Task.Run(async () =>
+            {
+                try { await Mint(user, iat: iat, jti: jti); }
+                catch (PostgresException ex) when (ex.SqlState is "42501" or "23505") { }
+            });
+            var revoke = Task.Run(async () => await RevokeLogin(user));
+            await Task.WhenAll(open, revoke);
+        }
+        return await LiveSessions(owner, user);
+    }
+
+    static async Task BoundsRetry(HttpClient http, RsaSecurityKey sign, NpgsqlDataSource owner, Guid user)
+    {
+        var partner = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000ee");
+        var jwt = Mint(sign, user, "super", null);
+        try
+        {
+            await Exec(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = $1", partner);
+            await Exec(owner, """
+                CREATE OR REPLACE FUNCTION auth._test_bounds_dup() RETURNS trigger
+                LANGUAGE plpgsql
+                SET search_path = pg_catalog, auth
+                AS $fn$
+                BEGIN
+                  IF pg_trigger_depth() > 1 THEN
+                    RETURN NEW;
+                  END IF;
+                  PERFORM pg_sleep(2);
+                  INSERT INTO auth.partner_reason_bounds (
+                    partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version)
+                  VALUES (NEW.partner_id, NEW.reason_min_length, NEW.reason_max_length, NEW.updated_by, NEW.updated_at, NEW.row_version);
+                  RETURN NEW;
+                END
+                $fn$
+                """);
+            await Exec(owner, """
+                DO $g$
+                BEGIN
+                  EXECUTE format('GRANT EXECUTE ON FUNCTION auth._test_bounds_dup() TO %I', current_database() || '_auth_definer');
+                END
+                $g$
+                """);
+            await Exec(owner, """
+                CREATE TRIGGER test_bounds_dup
+                  BEFORE INSERT ON auth.partner_reason_bounds
+                  FOR EACH ROW EXECUTE FUNCTION auth._test_bounds_dup()
+                """);
+            var put = new HttpRequestMessage(HttpMethod.Put, $"/api/orgs/partners/{partner:D}/login-config/reason-bounds");
+            put.Headers.TryAddWithoutValidation("Authorization", "Bearer " + jwt);
+            put.Headers.TryAddWithoutValidation("If-Match", "\"0\"");
+            put.Content = new StringContent("""{"reason_min_length":10,"reason_max_length":20}""", Encoding.UTF8, "application/json");
+            var send = http.SendAsync(put);
+            await Task.Delay(400);
+            var held = !send.IsCompleted;
+            if (held)
+                await Exec(owner, "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE jti = $1", JtiOf(jwt));
+            using var res = await send.WaitAsync(TimeSpan.FromSeconds(10));
+            var body = await res.Content.ReadAsStringAsync();
+            var authn = res.Headers.WwwAuthenticate.ToString();
+            Check("bounds-retry-closed-session-is-401",
+                held && (int)res.StatusCode == 401 && body == "{\"error\":\"session_expired\"}" && authn == "Bearer",
+                $"held {held} status {(int)res.StatusCode} auth [{authn}] body {Clip(body)}");
+        }
+        finally
+        {
+            await Exec(owner, "DROP TRIGGER IF EXISTS test_bounds_dup ON auth.partner_reason_bounds");
+            await Exec(owner, "DROP FUNCTION IF EXISTS auth._test_bounds_dup()");
+            await Exec(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = $1", partner);
+        }
+    }
+
+    static Guid JtiOf(string jwt)
+    {
+        using var claims = JsonDocument.Parse(Base64UrlEncoder.Decode(jwt.Split('.')[1]));
+        return Guid.Parse(claims.RootElement.GetProperty("jti").GetString()!);
+    }
+
+    static async Task EnsureUser(NpgsqlDataSource owner, Guid user)
+    {
+        await Exec(owner, """
+            INSERT INTO auth.app_user (user_id, partner_id, status)
+            VALUES ($1, NULL, 'active')
+            ON CONFLICT (user_id) DO UPDATE SET status = 'active', locked_until = NULL
+            """, user);
+        await Exec(owner, """
+            INSERT INTO auth.user_issuer (user_id, issuer)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET issuer = EXCLUDED.issuer
+            """, user, Issuer);
+    }
+
+    static async Task RevokeLogin(Guid user)
+    {
+        await using var c = await (await IssuerDs()).OpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand("SELECT auth.revoke_login($1, $2)", c);
+        cmd.Parameters.Add(new() { Value = Issuer });
+        cmd.Parameters.Add(new() { Value = user.ToString("D") });
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    static Task<long> LiveSessions(NpgsqlDataSource owner, Guid user)
+        => ScalarLong(owner, "SELECT count(*) FROM auth.request_session WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > clock_timestamp()", user);
+
+    static async Task<DateTimeOffset> ScalarTime(NpgsqlDataSource ds, string sql)
+    {
+        await using var c = await ds.OpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand(sql, c);
+        var v = await cmd.ExecuteScalarAsync();
+        return v switch
+        {
+            DateTimeOffset dto => dto,
+            DateTime dt => new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Utc)),
+            _ => throw new InvalidOperationException("expected a timestamp"),
+        };
+    }
+
+    static async Task<(bool Ok, string Detail)> NodeScript(string file, string pass)
+    {
+        var psi = new ProcessStartInfo("node", [Path.Combine(RepoRoot(), "ui", "admin-shell", file)])
         {
             WorkingDirectory = Path.Combine(RepoRoot(), "ui", "admin-shell"),
             RedirectStandardOutput = true,
@@ -1448,8 +1691,24 @@ static class Req064Suite
         var text = await process.StandardOutput.ReadToEndAsync();
         var err = await process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
-        var ok = process.ExitCode == 0 && text.Contains("PASS shell-reopens-an-expired-session-once", StringComparison.Ordinal);
-        return (ok, (text + err).Trim());
+        return (process.ExitCode == 0 && text.Contains(pass, StringComparison.Ordinal), (text + err).Trim());
+    }
+
+    static async Task<(bool Ok, string Detail)> BashScript(string file, string pass)
+    {
+        var psi = new ProcessStartInfo("bash", [Path.Combine(RepoRoot(), "ui", "admin-shell", file)])
+        {
+            WorkingDirectory = Path.Combine(RepoRoot(), "ui", "admin-shell"),
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        using var process = Process.Start(psi);
+        if (process is null) return (false, "bash did not start");
+        var text = await process.StandardOutput.ReadToEndAsync();
+        var err = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return (process.ExitCode == 0 && text.Contains(pass, StringComparison.Ordinal), (text + err).Trim());
     }
 
     static async Task<string> IssuerSession(string url, string jwt)
@@ -1515,6 +1774,15 @@ static class Req064Suite
         return ((int)res.StatusCode, body);
     }
 
+    static async Task<(int Status, string Body, string Authenticate)> SendClosed(HttpClient http, HttpMethod method, string path, string token)
+    {
+        var req = new HttpRequestMessage(method, path);
+        req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token);
+        var res = await http.SendAsync(req);
+        var body = await res.Content.ReadAsStringAsync();
+        return ((int)res.StatusCode, body, res.Headers.WwwAuthenticate.ToString());
+    }
+
     static List<string> Screens(string body)
     {
         using var doc = JsonDocument.Parse(body);
@@ -1550,14 +1818,15 @@ static class Req064Suite
         return _issuer ??= NpgsqlDataSource.Create(cs);
     }
 
-    static async Task<string> Mint(Guid user, string? iss = null, DateTimeOffset? exp = null, Guid? jti = null)
+    static async Task<string> Mint(Guid user, string? iss = null, DateTimeOffset? exp = null, Guid? jti = null, DateTimeOffset? iat = null)
     {
         await using var c = await (await IssuerDs()).OpenConnectionAsync();
-        await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4)", c);
+        await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4, $5)", c);
         cmd.Parameters.Add(new() { Value = iss ?? Issuer });
         cmd.Parameters.Add(new() { Value = user.ToString("D") });
         cmd.Parameters.Add(new() { Value = jti ?? Guid.NewGuid() });
         cmd.Parameters.Add(new() { Value = exp ?? DateTimeOffset.UtcNow.AddMinutes(5) });
+        cmd.Parameters.Add(new() { Value = iat ?? DateTimeOffset.UtcNow });
         return (string)(await cmd.ExecuteScalarAsync())!;
     }
 

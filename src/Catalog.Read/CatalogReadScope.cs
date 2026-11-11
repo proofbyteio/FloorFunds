@@ -76,3 +76,15 @@ public sealed class CatalogReadRoleException : InvalidOperationException
 {
     public CatalogReadRoleException(string message) : base(message) { }
 }
+
+/// <summary>
+/// Expired, revoked, and logged-out sessions are one result. The SQL texts stay distinct.
+/// </summary>
+public sealed class CatalogSessionClosedException : Exception
+{
+    public const int StatusCode = 401;
+    public const string Body = "{\"error\":\"session_expired\"}";
+    public const string Authenticate = "Bearer";
+
+    public CatalogSessionClosedException() : base("session_expired") { }
+}

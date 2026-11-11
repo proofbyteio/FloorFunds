@@ -255,11 +255,12 @@ try
     async Task<string> OpenCatalogSession(Guid user)
     {
         await using var c = await issuerDs.OpenConnectionAsync();
-        await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4)", c);
+        await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4, $5)", c);
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = CatalogSessionSql.CatalogIssuer });
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = user.ToString("D") });
         cmd.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = Guid.NewGuid() });
         cmd.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.UtcNow.AddMinutes(5) });
+        cmd.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.UtcNow });
         return (string)(await cmd.ExecuteScalarAsync())!;
     }
     var fixtureToken = await OpenCatalogSession(fixtureActor);

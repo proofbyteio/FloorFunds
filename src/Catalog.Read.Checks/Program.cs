@@ -92,10 +92,11 @@ async Task<string> SqlState(NpgsqlDataSource ds, string sql)
     }
 }
 
-async Task Exec(NpgsqlDataSource ds, string sql)
+async Task Exec(NpgsqlDataSource ds, string sql, params object[] ps)
 {
     await using var conn = await ds.OpenConnectionAsync();
     await using var cmd = new NpgsqlCommand(sql, conn);
+    foreach (var p in ps) cmd.Parameters.Add(new NpgsqlParameter { Value = p });
     await cmd.ExecuteNonQueryAsync();
 }
 
@@ -155,11 +156,12 @@ try
     async Task<string> OpenCatalogSession(Guid user)
     {
         await using var c = await issuer.OpenConnectionAsync();
-        await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4)", c);
+        await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4, $5)", c);
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = CatalogSessionSql.CatalogIssuer });
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = user.ToString("D") });
         cmd.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = Guid.NewGuid() });
         cmd.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.UtcNow.AddMinutes(5) });
+        cmd.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.UtcNow });
         return (string)(await cmd.ExecuteScalarAsync())!;
     }
     var fixtureToken = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser));
@@ -405,6 +407,35 @@ try
     var ownerCount = await Scalar(owner, "SELECT count(*) FROM catalog.registered_entry");
     if (stillThere == "0" && ownerCount == "3") Pass("refusals-did-not-persist-a-write", $"adminBare={stillThere} owner={ownerCount}");
     else Fail("refusals-did-not-persist-a-write", $"adminBare={stillThere} owner={ownerCount}");
+
+    async Task<string> ClosedShape(string token)
+    {
+        try
+        {
+            await reader.ListEntriesAsync(CatalogReadScope.Super().WithSession(token), CancellationToken.None);
+            return "opened";
+        }
+        catch (CatalogSessionClosedException)
+        {
+            return CatalogSessionClosedException.StatusCode + "|" + CatalogSessionClosedException.Body + "|" + CatalogSessionClosedException.Authenticate;
+        }
+        catch (Exception ex)
+        {
+            return ex.GetType().Name + " " + ex.Message;
+        }
+    }
+    var closedA = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser));
+    var closedB = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser));
+    var closedC = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser));
+    await Exec(owner, "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE token_hash = sha256(convert_to($1, 'UTF8'))", closedA);
+    await Exec(owner, "UPDATE auth.request_session SET revoked_at = clock_timestamp() WHERE token_hash = sha256(convert_to($1, 'UTF8'))", closedB);
+    var shapeA = await ClosedShape(closedA);
+    var shapeB = await ClosedShape(closedB);
+    await Exec(issuer, "SELECT auth.revoke_login($1, $2)", CatalogSessionSql.CatalogIssuer, CatalogSessionSql.CatalogSuperUser);
+    var shapeC = await ClosedShape(closedC);
+    var oneShape = CatalogSessionClosedException.StatusCode + "|" + CatalogSessionClosedException.Body + "|" + CatalogSessionClosedException.Authenticate;
+    if (shapeA == oneShape && shapeA == shapeB && shapeB == shapeC) Pass("catalog-closed-sessions-are-one-exception", shapeA);
+    else Fail("catalog-closed-sessions-are-one-exception", $"a {shapeA} b {shapeB} c {shapeC}");
 
     log.Add("SECTION not-released");
     log.Add("candidate-function tests: not added");

@@ -1041,12 +1041,13 @@ try
             string sessionToken;
             await using (var issuer = NpgsqlDataSource.Create(sessionIssuerCs))
             await using (var ic = await issuer.OpenConnectionAsync())
-            await using (var open = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4)", ic))
+            await using (var open = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4, $5)", ic))
             {
                 open.Parameters.Add(new() { Value = Issuer });
                 open.Parameters.Add(new() { Value = U_PA.ToString("D") });
                 open.Parameters.Add(new() { Value = Guid.NewGuid() });
                 open.Parameters.Add(new() { Value = DateTimeOffset.UtcNow.AddMinutes(5) });
+                open.Parameters.Add(new() { Value = DateTime.UtcNow });
                 sessionToken = (string)(await open.ExecuteScalarAsync())!;
             }
             await using var who = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx);

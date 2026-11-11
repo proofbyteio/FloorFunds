@@ -532,11 +532,12 @@ async Task<string> MintSession(Guid user)
 {
     if (issuerDs is null) throw new InvalidOperationException("ISSUER_CONNECTION_STRING is not set");
     await using var ic = await issuerDs.OpenConnectionAsync();
-    await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4)", ic);
+    await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4, $5)", ic);
     cmd.Parameters.Add(new NpgsqlParameter { Value = "https://auth-data.test.invalid" });
     cmd.Parameters.Add(new NpgsqlParameter { Value = user.ToString("D") });
     cmd.Parameters.Add(new NpgsqlParameter { Value = Guid.NewGuid() });
     cmd.Parameters.Add(new NpgsqlParameter { Value = DateTimeOffset.UtcNow.AddMinutes(5) });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = DateTime.UtcNow });
     return (string)(await cmd.ExecuteScalarAsync())!;
 }
 async Task BindResolved(NpgsqlConnection c, NpgsqlTransaction? tx, string adminType, Guid? partner)
@@ -614,7 +615,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver, Req064RoleScope, Req064HistoryPartner, Req064Issuer, Req064Principal, Req064ReasonRead, Req064Definer, Req064RlsPrincipal, Req064LocationSave, Req064RevokeTemp, Req064Session, Req064RevokeLogin, Req064Actor]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver", "20261110200000_Req064RoleScope", "20261110210000_Req064HistoryPartner", "20261110220000_Req064Issuer", "20261110230000_Req064Principal", "20261110240000_Req064ReasonRead", "20261110250000_Req064Definer", "20261110260000_Req064RlsPrincipal", "20261110270000_Req064LocationSave", "20261110280000_Req064RevokeTemp", "20261110290000_Req064Session", "20261110300000_Req064RevokeLogin", "20261110310000_Req064Actor"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver, Req064RoleScope, Req064HistoryPartner, Req064Issuer, Req064Principal, Req064ReasonRead, Req064Definer, Req064RlsPrincipal, Req064LocationSave, Req064RevokeTemp, Req064Session, Req064RevokeLogin, Req064Actor, Req064SessionClose]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver", "20261110200000_Req064RoleScope", "20261110210000_Req064HistoryPartner", "20261110220000_Req064Issuer", "20261110230000_Req064Principal", "20261110240000_Req064ReasonRead", "20261110250000_Req064Definer", "20261110260000_Req064RlsPrincipal", "20261110270000_Req064LocationSave", "20261110280000_Req064RevokeTemp", "20261110290000_Req064Session", "20261110300000_Req064RevokeLogin", "20261110310000_Req064Actor", "20261111180000_Req064SessionClose"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
@@ -642,7 +643,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
         bad.AddRange(dbCols.Keys.Select(k => $"{table}.{k} not in EF model"));
     }
     Ok($"schema: {designModel.GetEntityTypes().Count()} EF tables / {cols} columns == pg_catalog (name, type, nullability)", bad.Count == 0, string.Join("; ", bad));
-    Ok("schema: exactly 15 tables in auth (Slice A: + partner_reason_bounds; REQ-064: + admin_assignment, user_issuer, login_write_principal, request_session, request_binding)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='auth'") == 15);
+    Ok("schema: exactly 16 tables in auth (Slice A: + partner_reason_bounds; REQ-064: + admin_assignment, user_issuer, login_write_principal, request_session, request_binding, login_cutoff)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='auth'") == 16);
     Ok("schema: exactly one sequence auth.resolver_read_seq (REQ-064)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_sequences WHERE schemaname='auth'") == 1
         && await Scalar<string>(c, null, "SELECT string_agg(sequencename, ',' ORDER BY sequencename) FROM pg_sequences WHERE schemaname='auth'") == "resolver_read_seq");
     Ok("schema: history table in public, not auth", await Scalar<bool>(c, null, "SELECT to_regclass('public.\"__EFMigrationsHistory\"') IS NOT NULL AND to_regclass('auth.\"__EFMigrationsHistory\"') IS NULL"));
@@ -693,12 +694,12 @@ await using (var c = await ownerDs.OpenConnectionAsync())
             """, adminRole, new[] { issuerRole, definerRole }) == 0);
     Ok("open_session EXECUTE is granted to the issuer role and not to admin_api, the database owner, or PUBLIC",
         await Scalar<bool>(c, null, """
-            SELECT has_function_privilege($1, 'auth.open_session(text,text,uuid,timestamptz)', 'EXECUTE')
-               AND NOT has_function_privilege($2, 'auth.open_session(text,text,uuid,timestamptz)', 'EXECUTE')
-               AND NOT has_function_privilege((SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()), 'auth.open_session(text,text,uuid,timestamptz)', 'EXECUTE')
+            SELECT has_function_privilege($1, 'auth.open_session(text,text,uuid,timestamptz,timestamptz)', 'EXECUTE')
+               AND NOT has_function_privilege($2, 'auth.open_session(text,text,uuid,timestamptz,timestamptz)', 'EXECUTE')
+               AND NOT has_function_privilege((SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()), 'auth.open_session(text,text,uuid,timestamptz,timestamptz)', 'EXECUTE')
                AND NOT EXISTS (
                  SELECT 1 FROM pg_proc p, aclexplode(p.proacl) x
-                  WHERE p.oid = 'auth.open_session(text,text,uuid,timestamptz)'::regprocedure AND x.grantee = 0)
+                  WHERE p.oid = 'auth.open_session(text,text,uuid,timestamptz,timestamptz)'::regprocedure AND x.grantee = 0)
             """, issuerRole, adminRole));
     Ok("begin_request EXECUTE is granted to admin_api and not to login",
         await Scalar<bool>(c, null, """
@@ -770,10 +771,10 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     await using (var rr = await cmd.ExecuteReaderAsync())
         while (await rr.ReadAsync())
         {
-            bool want = rr.GetString(0) is "admin_assignment" or "location" or "location_login_config" or "location_login_config_change" or "login_write_principal" or "partner_reason_bounds" or "request_binding" or "request_session" or "user_issuer";
+            bool want = rr.GetString(0) is "admin_assignment" or "location" or "location_login_config" or "location_login_config_change" or "login_cutoff" or "login_write_principal" or "partner_reason_bounds" or "request_binding" or "request_session" or "user_issuer";
             if (rr.GetBoolean(1) != want || rr.GetBoolean(2) != want) rls.Add(rr.GetString(0));
         }
-    Ok("RLS: ENABLE+FORCE on exactly admin_assignment, location, location_login_config, location_login_config_change, login_write_principal, partner_reason_bounds, request_binding, request_session, user_issuer", rls.Count == 0, string.Join(",", rls));
+    Ok("RLS: ENABLE+FORCE on exactly admin_assignment, location, location_login_config, location_login_config_change, login_cutoff, login_write_principal, partner_reason_bounds, request_binding, request_session, user_issuer", rls.Count == 0, string.Join(",", rls));
     // K2 (SSE2 d787f76 review): the owner role is read from pg_database, not assumed equal to the DB name (kit --role != --db).
     var dbOwner = await Scalar<string>(c, null, "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()");
     var kitDb = await Scalar<string>(c, null, "SELECT current_database()");
@@ -788,7 +789,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
            'actor_location_sees_partner','actor_has_location','actor_can_location','actor_sees_change',
            'list_existing_partners','resolve_grant','read_partner_bounds','save_partner_bounds','record_login_write',
            'save_location_login_config','open_session','begin_request','current_principal','session_issuer',
-           'revoke_session','revoke_on_principal_change','revoke_login')
+           'revoke_session','revoke_on_principal_change','revoke_login','_lock_login')
         """);
     Ok($"RLS: policy set == spec (owner {dbOwner} from pg_database/admin/login per table; no login policy on change)",
         definerOwns &&
@@ -797,6 +798,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
            $"location:location_admin:ALL:{adminRole} location:location_definer:SELECT:{definer} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbOwner} " +
            $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_definer:UPDATE:{definer} location_login_config:llc_definer_read:SELECT:{definer} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbOwner} " +
            $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbOwner} " +
+           $"login_cutoff:login_cutoff_definer:ALL:{definer} login_cutoff:login_cutoff_owner:ALL:{dbOwner} " +
            $"login_write_principal:login_write_principal_definer:ALL:{definer} login_write_principal:login_write_principal_owner:ALL:{dbOwner} " +
            $"partner_reason_bounds:prb_definer:ALL:{definer} partner_reason_bounds:prb_insert:INSERT:{adminRole} partner_reason_bounds:prb_owner:ALL:{dbOwner} partner_reason_bounds:prb_select:SELECT:{adminRole} partner_reason_bounds:prb_update:UPDATE:{adminRole} " +
            $"request_binding:request_binding_definer:ALL:{definer} request_binding:request_binding_owner:ALL:{dbOwner} " +

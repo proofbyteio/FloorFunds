@@ -66,7 +66,7 @@ public static class AdminApiHost
                            WHERE n.nspname = 'auth' AND pg_has_role(current_user, t.relowner, 'MEMBER'))
                    OR EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = 'auth' AND pg_has_role(current_user, n.nspowner, 'MEMBER')),
                    r.rolname = current_database() || '_issuer',
-                   has_function_privilege(current_user, 'auth.open_session(text,text,uuid,timestamptz)', 'EXECUTE')
+                   has_function_privilege(current_user, 'auth.open_session(text,text,uuid,timestamptz,timestamptz)', 'EXECUTE')
                    OR has_function_privilege(current_user, 'auth.revoke_session(text)', 'EXECUTE')
                    OR has_function_privilege(current_user, 'auth.revoke_login(text,text)', 'EXECUTE'),
                    current_setting('log_statement'),

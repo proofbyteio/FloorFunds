@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { openIssuerSession } from "./session-hop.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.ADMIN_SHELL_PORT || 5088);
@@ -174,13 +175,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/session") {
       const session = sessions.get(cookie(req));
       if (!session?.token) { sendJson(res, 401, { error: "unauthorized" }); return; }
-      if (!issuerUrl.startsWith("http://127.0.0.1:")) { sendJson(res, 503, { error: "issuer_unavailable" }); return; }
-      const opened = await fetch(issuerUrl.replace(/\/$/, "") + "/v1/session?reopen=1", {
-        method: "POST",
-        headers: { "content-type": "text/plain" },
-        body: session.token,
-      });
-      sendJson(res, opened.ok ? 200 : 401, { error: opened.ok ? "ok" : "session_expired" });
+      const opened = await openIssuerSession(issuerUrl, session.token);
+      sendJson(res, opened.status, { error: opened.error });
       return;
     }
     if (url.pathname.startsWith("/api/")) {
