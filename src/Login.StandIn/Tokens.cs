@@ -32,7 +32,8 @@ public sealed class TokenIssuer
         long iat = now.ToUnixTimeSeconds();
         // The dev shell is a local session a person keeps open. Other clients stay at AccessLifetime.
         long exp = iat + (c.ClientId == Clients.DevShellClientId ? 3600 : AccessLifetime);
-        var jti = NewHandle();
+        // request_session.jti is uuid. The issuer accepts only the "D" form. Other handles stay NewHandle.
+        var jti = Guid.NewGuid().ToString("D");
         var cl = new Dictionary<string, object>
         {
             ["iss"] = _issuer, ["sub"] = s.UserId, ["aud"] = c.Aud ?? throw new InvalidOperationException("openid-only client has no access token"), ["exp"] = exp, ["iat"] = iat, ["jti"] = jti, ["scope"] = scope,
