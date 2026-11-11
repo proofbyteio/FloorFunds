@@ -98,13 +98,13 @@ public sealed class NpgsqlAllowlistedHistory
         {
             await ClearSessionAsync(conn, cancellationToken);
             await AssertProductionRoleAsync(conn, cancellationToken);
+            var token = CatalogSessions.TokenFor(scope);
+            if (string.IsNullOrEmpty(token))
+                throw new CatalogReadContextException("catalog read context is missing or invalid.");
             await using var tx = await conn.BeginTransactionAsync(cancellationToken);
-            await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY", conn, tx))
-                await readOnly.ExecuteNonQueryAsync(cancellationToken);
             await using (var guc = new NpgsqlCommand(SetScopeSql, conn, tx))
             {
-                guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = scope.ResolvedGlobal });
-                guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = scope.ResolvedPartnerCsv });
+                guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = token });
                 await guc.ExecuteNonQueryAsync(cancellationToken);
             }
             await using var cmd = new NpgsqlCommand(sql, conn, tx);

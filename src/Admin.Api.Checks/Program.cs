@@ -1021,9 +1021,20 @@ try
             await s.ExecuteNonQueryAsync();
             var flagA = await CfgCount(A1);
             var flagB = await CfgCount(B1);
-            await using var who = new NpgsqlCommand("SELECT set_config('app.request_iss',$1,true), set_config('app.request_sub',$2,true)", c, tx);
-            who.Parameters.Add(new() { Value = Issuer });
-            who.Parameters.Add(new() { Value = U_PA.ToString("D") });
+            var issuerCs = Environment.GetEnvironmentVariable("ISSUER_CONNECTION_STRING") ?? throw new InvalidOperationException("ISSUER_CONNECTION_STRING is not set");
+            string sessionToken;
+            await using (var issuer = NpgsqlDataSource.Create(issuerCs))
+            await using (var ic = await issuer.OpenConnectionAsync())
+            await using (var open = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4)", ic))
+            {
+                open.Parameters.Add(new() { Value = Issuer });
+                open.Parameters.Add(new() { Value = U_PA.ToString("D") });
+                open.Parameters.Add(new() { Value = Guid.NewGuid() });
+                open.Parameters.Add(new() { Value = DateTimeOffset.UtcNow.AddMinutes(5) });
+                sessionToken = (string)(await open.ExecuteScalarAsync())!;
+            }
+            await using var who = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx);
+            who.Parameters.Add(new() { Value = sessionToken });
             await who.ExecuteNonQueryAsync();
             var a = await CfgCount(A1);
             var b = await CfgCount(B1);

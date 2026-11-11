@@ -19,7 +19,13 @@ DECLARE
     'auth.read_partner_bounds(uuid)',
     'auth.save_partner_bounds(uuid, bigint, integer, integer, uuid, timestamptz)',
     'auth.record_login_write(text, uuid)',
-    'auth.save_location_login_config(uuid, bigint, text, text, uuid[], text, text, boolean, text, boolean, boolean, uuid, timestamptz)'
+    'auth.save_location_login_config(uuid, bigint, text, text, uuid[], text, text, boolean, text, boolean, boolean, uuid, timestamptz)',
+    'auth.open_session(text, text, uuid, timestamptz)',
+    'auth.begin_request(text)',
+    'auth.current_principal()',
+    'auth.session_issuer()',
+    'auth.revoke_session(text)',
+    'auth.revoke_on_principal_change()'
   ];
 BEGIN
   IF NOT EXISTS (

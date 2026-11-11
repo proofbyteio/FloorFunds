@@ -525,9 +525,23 @@ Guid ACTOR = Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c0a");
 string Iss(Guid t) => $"https://login.microsoftonline.com/{t}/v2.0";
 const string FakeArn = "arn:aws:secretsmanager:us-west-2:000000000000:secret:FAKE-test-only/pci-main-AbCdEf"; // SSE2-FAKE-TEST-ONLY
 
+var issuerCs = Environment.GetEnvironmentVariable("ISSUER_CONNECTION_STRING");
+await using var issuerDs = string.IsNullOrEmpty(issuerCs) ? null : NpgsqlDataSource.Create(issuerCs);
+var sessionTokens = new Dictionary<Guid, string>();
+async Task<string> MintSession(Guid user)
+{
+    if (issuerDs is null) throw new InvalidOperationException("ISSUER_CONNECTION_STRING is not set");
+    await using var ic = await issuerDs.OpenConnectionAsync();
+    await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4)", ic);
+    cmd.Parameters.Add(new NpgsqlParameter { Value = "https://auth-data.test.invalid" });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = user.ToString("D") });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = Guid.NewGuid() });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = DateTimeOffset.UtcNow.AddMinutes(5) });
+    return (string)(await cmd.ExecuteScalarAsync())!;
+}
 async Task BindResolved(NpgsqlConnection c, NpgsqlTransaction? tx, string adminType, Guid? partner)
 {
-    // The flags are cleared. The principal is the only authorization input.
+    // The flags are cleared. The principal is the session binding, not a GUC.
     Guid? who = adminType switch
     {
         "super" => Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"),
@@ -536,9 +550,20 @@ async Task BindResolved(NpgsqlConnection c, NpgsqlTransaction? tx, string adminT
         _ => null,
     };
     if (who is Guid id)
-        await Exec(c, tx, "SELECT set_config('app.request_iss','https://auth-data.test.invalid',true), set_config('app.request_sub',$1,true), set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)", id.ToString("D"));
+    {
+        if (!sessionTokens.TryGetValue(id, out var token)) sessionTokens[id] = token = await MintSession(id);
+        await Exec(c, tx, "SAVEPOINT session_bind");
+        try { await Exec(c, tx, "SELECT auth.begin_request($1)", token); }
+        catch (PostgresException ex) when (ex.SqlState == "42501")
+        {
+            await Exec(c, tx, "ROLLBACK TO SAVEPOINT session_bind");
+            sessionTokens[id] = token = await MintSession(id);
+            await Exec(c, tx, "SELECT auth.begin_request($1)", token);
+        }
+        await Exec(c, tx, "SELECT set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)");
+    }
     else
-        await Exec(c, tx, "SELECT set_config('app.request_iss','',true), set_config('app.request_sub','',true), set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type',$1,true), set_config('app.partner_id','',true)", adminType);
+        await Exec(c, tx, "SELECT set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type',$1,true), set_config('app.partner_id','',true)", adminType);
 }
 async Task Exec(NpgsqlConnection c, NpgsqlTransaction? tx, string sql, params object?[] ps)
 {
@@ -589,7 +614,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver, Req064RoleScope, Req064HistoryPartner, Req064Issuer, Req064Principal, Req064ReasonRead, Req064Definer, Req064RlsPrincipal, Req064LocationSave, Req064RevokeTemp]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver", "20261110200000_Req064RoleScope", "20261110210000_Req064HistoryPartner", "20261110220000_Req064Issuer", "20261110230000_Req064Principal", "20261110240000_Req064ReasonRead", "20261110250000_Req064Definer", "20261110260000_Req064RlsPrincipal", "20261110270000_Req064LocationSave", "20261110280000_Req064RevokeTemp"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver, Req064RoleScope, Req064HistoryPartner, Req064Issuer, Req064Principal, Req064ReasonRead, Req064Definer, Req064RlsPrincipal, Req064LocationSave, Req064RevokeTemp, Req064Session]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver", "20261110200000_Req064RoleScope", "20261110210000_Req064HistoryPartner", "20261110220000_Req064Issuer", "20261110230000_Req064Principal", "20261110240000_Req064ReasonRead", "20261110250000_Req064Definer", "20261110260000_Req064RlsPrincipal", "20261110270000_Req064LocationSave", "20261110280000_Req064RevokeTemp", "20261110290000_Req064Session"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
@@ -617,7 +642,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
         bad.AddRange(dbCols.Keys.Select(k => $"{table}.{k} not in EF model"));
     }
     Ok($"schema: {designModel.GetEntityTypes().Count()} EF tables / {cols} columns == pg_catalog (name, type, nullability)", bad.Count == 0, string.Join("; ", bad));
-    Ok("schema: exactly 13 tables in auth (Slice A: + partner_reason_bounds; REQ-064: + admin_assignment, user_issuer, login_write_principal)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='auth'") == 13);
+    Ok("schema: exactly 15 tables in auth (Slice A: + partner_reason_bounds; REQ-064: + admin_assignment, user_issuer, login_write_principal, request_session, request_binding)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='auth'") == 15);
     Ok("schema: exactly one sequence auth.resolver_read_seq (REQ-064)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_sequences WHERE schemaname='auth'") == 1
         && await Scalar<string>(c, null, "SELECT string_agg(sequencename, ',' ORDER BY sequencename) FROM pg_sequences WHERE schemaname='auth'") == "resolver_read_seq");
     Ok("schema: history table in public, not auth", await Scalar<bool>(c, null, "SELECT to_regclass('public.\"__EFMigrationsHistory\"') IS NOT NULL AND to_regclass('auth.\"__EFMigrationsHistory\"') IS NULL"));
@@ -641,6 +666,44 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     Ok("schema auth: no PUBLIC privileges", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_namespace n, aclexplode(n.nspacl) x WHERE n.nspname='auth' AND x.grantee=0)"));
     Ok("database: no PUBLIC CONNECT (ff-db.sh REVOKE)", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_database d, aclexplode(d.datacl) x WHERE d.datname=current_database() AND x.grantee=0 AND x.privilege_type='CONNECT')"));
     Ok("database: no PUBLIC TEMP (SA L3; this repo creates no temporary table)", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_database d, aclexplode(d.datacl) x WHERE d.datname=current_database() AND x.grantee=0 AND x.privilege_type='TEMP')"));
+    var issuerRole = dbName + "_issuer";
+    var definerRole = dbName + "_auth_definer";
+    Ok($"role {issuerRole}: LOGIN NOSUPERUSER NOBYPASSRLS, member of nothing, and nothing is a member of it",
+        await Scalar<bool>(c, null, """
+            SELECT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls AND NOT rolcreatedb AND NOT rolcreaterole
+              FROM pg_roles WHERE rolname = $1
+            """, issuerRole)
+        && await Scalar<long>(c, null, """
+            SELECT count(*) FROM pg_auth_members m
+              JOIN pg_roles a ON a.oid = m.roleid
+              JOIN pg_roles b ON b.oid = m.member
+             WHERE a.rolname = $1 OR b.rolname = $1
+            """, issuerRole) == 0);
+    Ok("admin_api is not a member of the issuer role or the NOLOGIN definer, directly or through another role",
+        await Scalar<long>(c, null, """
+            WITH RECURSIVE m AS (
+              SELECT member, roleid FROM pg_auth_members
+              UNION
+              SELECT m.member, e.roleid FROM m JOIN pg_auth_members e ON e.member = m.roleid
+            )
+            SELECT count(*) FROM m
+              JOIN pg_roles mem ON mem.oid = m.member
+              JOIN pg_roles role ON role.oid = m.roleid
+             WHERE mem.rolname = $1 AND role.rolname = ANY($2)
+            """, adminRole, new[] { issuerRole, definerRole }) == 0);
+    Ok("open_session EXECUTE is granted to the issuer role and not to admin_api or PUBLIC",
+        await Scalar<bool>(c, null, """
+            SELECT has_function_privilege($1, 'auth.open_session(text,text,uuid,timestamptz)', 'EXECUTE')
+               AND NOT has_function_privilege($2, 'auth.open_session(text,text,uuid,timestamptz)', 'EXECUTE')
+               AND NOT EXISTS (
+                 SELECT 1 FROM pg_proc p, aclexplode(p.proacl) x
+                  WHERE p.oid = 'auth.open_session(text,text,uuid,timestamptz)'::regprocedure AND x.grantee = 0)
+            """, issuerRole, adminRole));
+    Ok("begin_request EXECUTE is granted to admin_api and not to login",
+        await Scalar<bool>(c, null, """
+            SELECT has_function_privilege($1, 'auth.begin_request(text)', 'EXECUTE')
+               AND NOT has_function_privilege($2, 'auth.begin_request(text)', 'EXECUTE')
+            """, adminRole, loginRole));
 
     // §8.4 matrix: every (table, role, privilege) at table level.
     var privs = new[] { "SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER" };
@@ -706,10 +769,10 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     await using (var rr = await cmd.ExecuteReaderAsync())
         while (await rr.ReadAsync())
         {
-            bool want = rr.GetString(0) is "admin_assignment" or "location" or "location_login_config" or "location_login_config_change" or "login_write_principal" or "partner_reason_bounds" or "user_issuer";
+            bool want = rr.GetString(0) is "admin_assignment" or "location" or "location_login_config" or "location_login_config_change" or "login_write_principal" or "partner_reason_bounds" or "request_binding" or "request_session" or "user_issuer";
             if (rr.GetBoolean(1) != want || rr.GetBoolean(2) != want) rls.Add(rr.GetString(0));
         }
-    Ok("RLS: ENABLE+FORCE on exactly admin_assignment, location, location_login_config, location_login_config_change, login_write_principal, partner_reason_bounds, user_issuer", rls.Count == 0, string.Join(",", rls));
+    Ok("RLS: ENABLE+FORCE on exactly admin_assignment, location, location_login_config, location_login_config_change, login_write_principal, partner_reason_bounds, request_binding, request_session, user_issuer", rls.Count == 0, string.Join(",", rls));
     // K2 (SSE2 d787f76 review): the owner role is read from pg_database, not assumed equal to the DB name (kit --role != --db).
     var dbOwner = await Scalar<string>(c, null, "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()");
     var kitDb = await Scalar<string>(c, null, "SELECT current_database()");
@@ -723,7 +786,8 @@ await using (var c = await ownerDs.OpenConnectionAsync())
            '_request_user','actor_is_global','actor_is_any_admin','actor_has_any_location','actor_can_partner',
            'actor_location_sees_partner','actor_has_location','actor_can_location','actor_sees_change',
            'list_existing_partners','resolve_grant','read_partner_bounds','save_partner_bounds','record_login_write',
-           'save_location_login_config')
+           'save_location_login_config','open_session','begin_request','current_principal','session_issuer',
+           'revoke_session','revoke_on_principal_change')
         """);
     Ok($"RLS: policy set == spec (owner {dbOwner} from pg_database/admin/login per table; no login policy on change)",
         definerOwns &&
@@ -734,6 +798,8 @@ await using (var c = await ownerDs.OpenConnectionAsync())
            $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbOwner} " +
            $"login_write_principal:login_write_principal_definer:ALL:{definer} login_write_principal:login_write_principal_owner:ALL:{dbOwner} " +
            $"partner_reason_bounds:prb_definer:ALL:{definer} partner_reason_bounds:prb_insert:INSERT:{adminRole} partner_reason_bounds:prb_owner:ALL:{dbOwner} partner_reason_bounds:prb_select:SELECT:{adminRole} partner_reason_bounds:prb_update:UPDATE:{adminRole} " +
+           $"request_binding:request_binding_definer:ALL:{definer} request_binding:request_binding_owner:ALL:{dbOwner} " +
+           $"request_session:request_session_definer:ALL:{definer} request_session:request_session_owner:ALL:{dbOwner} " +
            $"user_issuer:user_issuer_definer:SELECT:{definer} user_issuer:user_issuer_owner:ALL:{dbOwner}");
 }
 
@@ -789,8 +855,11 @@ async Task CleanupCheckData()
     await Exec(c, tx, "DELETE FROM auth.external_login WHERE subject = ANY($1)", new[] { S1, S2, S3, S9 });
     await Exec(c, tx, "ALTER TABLE auth.admin_assignment DISABLE TRIGGER USER");
     await Exec(c, tx, "ALTER TABLE auth.app_user DISABLE TRIGGER USER");
-    await Exec(c, tx, "DELETE FROM auth.user_issuer WHERE user_id = ANY($1)", new[] { Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75") });
-    await Exec(c, tx, "DELETE FROM auth.admin_assignment WHERE user_id = ANY($1)", new[] { Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75") });
+    var scopeUsers = new[] { Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75") };
+    await Exec(c, tx, "DELETE FROM auth.request_binding WHERE user_id = ANY($1)", scopeUsers);
+    await Exec(c, tx, "DELETE FROM auth.request_session WHERE user_id = ANY($1)", scopeUsers);
+    await Exec(c, tx, "DELETE FROM auth.user_issuer WHERE user_id = ANY($1)", scopeUsers);
+    await Exec(c, tx, "DELETE FROM auth.admin_assignment WHERE user_id = ANY($1)", scopeUsers);
     await Exec(c, tx, "DELETE FROM auth.app_user WHERE user_id = ANY($1)", new[] { U_DIS, U_LCK, Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75") });
     await Exec(c, tx, "ALTER TABLE auth.app_user ENABLE TRIGGER USER");
     await Exec(c, tx, "ALTER TABLE auth.admin_assignment ENABLE TRIGGER USER");

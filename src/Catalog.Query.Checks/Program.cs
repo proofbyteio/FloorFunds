@@ -247,6 +247,25 @@ try
     var loaded = await Scalar(ownerDs, "SELECT count(*) FROM catalog.registered_entry");
     if (loaded != fixtures.Count.ToString())
         throw new InvalidOperationException($"BLOCKER fixture row count {loaded}, expected {fixtures.Count}");
+    async Task<string> OpenCatalogSession(Guid user)
+    {
+        await using var c = await ownerDs.OpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4)", c);
+        cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = CatalogSessionSql.CatalogIssuer });
+        cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = user.ToString("D") });
+        cmd.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = Guid.NewGuid() });
+        cmd.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.UtcNow.AddMinutes(5) });
+        return (string)(await cmd.ExecuteScalarAsync())!;
+    }
+    var catalogTokens = new Dictionary<string, string>
+    {
+        ["super"] = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser)),
+        [partnerA.ToString("D")] = await OpenCatalogSession(partnerA),
+        [partnerB.ToString("D")] = await OpenCatalogSession(partnerB),
+    };
+    CatalogSessions.Use(scope => scope.AdminType == "super"
+        ? catalogTokens["super"]
+        : catalogTokens[scope.PartnerId!.Value.ToString("D")]);
     Note("SECTION fixture-load");
     Note(FixtureLabel);
     Note($"fixture rows present: {loaded}");

@@ -44,5 +44,6 @@
     <EmbeddedResource Include="Migrations\Req064RlsPrincipal.sql" />
     <EmbeddedResource Include="Migrations\Req064LocationSave.sql" />
     <EmbeddedResource Include="Migrations\Req064RevokeTemp.sql" />
+    <EmbeddedResource Include="Migrations\Req064Session.sql" />
   </ItemGroup>
 </Project>

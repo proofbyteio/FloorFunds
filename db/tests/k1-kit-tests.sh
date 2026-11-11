@@ -131,6 +131,7 @@ checks() { # checks DB OWNER -> last line of the DB checks (passwords from the c
       CONNECTION_STRING="Host=127.0.0.1;Port=5432;Database=$1;Username=$2;Password=$FF_DB_PASSWORD" \
       ADMIN_API_CONNECTION_STRING="Host=127.0.0.1;Port=5432;Database=$1;Username=$1_admin_api;Password=$FF_ADMIN_API_PASSWORD" \
       LOGIN_CONNECTION_STRING="Host=127.0.0.1;Port=5432;Database=$1;Username=$1_login;Password=$FF_LOGIN_PASSWORD" \
+      ISSUER_CONNECTION_STRING="Host=127.0.0.1;Port=5432;Database=$1;Username=$1_issuer;Password=$FF_ISSUER_PASSWORD" \
       AUTH_CHECKS_DB="$1" && dotnet run --no-build --project Auth.Data.Checks -- Login.StandIn/fixtures.json 2>&1 | tail -1 ); }
 cleanup() {
   for d in $(q "SELECT datname FROM pg_database WHERE datname LIKE '$PL%'"); do q "DROP DATABASE \"$d\" WITH (FORCE)" >/dev/null; done

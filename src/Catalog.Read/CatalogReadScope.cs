@@ -9,10 +9,21 @@ public sealed class CatalogReadScope
     private readonly string _adminType;
     private readonly Guid? _partnerId;
 
-    private CatalogReadScope(string adminType, Guid? partnerId)
+    private CatalogReadScope(string adminType, Guid? partnerId, string? sessionToken = null)
     {
         _adminType = adminType;
         _partnerId = partnerId;
+        SessionToken = sessionToken;
+    }
+
+    /// <summary>Raw session token for begin_request. Null until the caller or CatalogSessions supplies one.</summary>
+    public string? SessionToken { get; }
+
+    public CatalogReadScope WithSession(string token)
+    {
+        if (string.IsNullOrEmpty(token))
+            throw new CatalogReadContextException("catalog read context is missing or invalid.");
+        return new(_adminType, _partnerId, token);
     }
 
     /// <summary>Scope-kind label for logs. It is not written to app.admin_type.</summary>

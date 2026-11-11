@@ -135,13 +135,13 @@ public sealed class NpgsqlCatalogReader
             if (scope is null || !scope.IsValid)
                 throw new CatalogReadContextException("catalog read context is missing or invalid.");
             await AssertProductionRoleAsync(conn, ct);
+            var token = CatalogSessions.TokenFor(scope);
+            if (string.IsNullOrEmpty(token))
+                throw new CatalogReadContextException("catalog read context is missing or invalid.");
             await using var tx = await conn.BeginTransactionAsync(ct);
-            await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY", conn, tx))
-                await readOnly.ExecuteNonQueryAsync(ct);
             await using (var guc = new NpgsqlCommand(SetScopeSql, conn, tx))
             {
-                guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = scope.ResolvedGlobal });
-                guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = scope.ResolvedPartnerCsv });
+                guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = token });
                 await guc.ExecuteNonQueryAsync(ct);
             }
             await using var cmd = new NpgsqlCommand(sql, conn, tx);

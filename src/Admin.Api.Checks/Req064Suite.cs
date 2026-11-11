@@ -132,7 +132,7 @@ static class Req064Suite
             var mixB = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config", mixTok);
             var mixNav = await Send(http, HttpMethod.Get, "/api/nav", mixTok);
             var mixClient = await Send(http, HttpMethod.Get, "/api/screens/create-client", mixTok);
-            var mixGrant = await ScalarBool(admin, """
+            var mixGrant = await ScalarBoolAs(admin, Mix, """
                 SELECT outcome = 'grant' AND role_wire = 'partner_admin' AND NOT global_admin
                    AND partner_ids = ARRAY[$3]::uuid[] AND NOT ($4 = ANY (partner_ids))
                   FROM auth.resolve_grant($1, $2)
@@ -143,13 +143,14 @@ static class Req064Suite
                 && mixScreens.Contains("create_location") && mixScreens.Contains("config") && !mixScreens.Contains("create_client"),
                 $"grant {mixGrant} A {mixA.Status} B {mixB.Status} nav {mixNav.Status} {Clip(mixNav.Body)} client {mixClient.Status}");
             Check("history-label-uses-the-record-partner", await HistoryLabel(owner, admin));
-            var wrongIssuer = await ScalarBool(admin,
-                "SELECT outcome = 'deny' AND role_wire = 'none' FROM auth.resolve_grant($1, $2)",
-                "https://not-the-issuer.example", Mix);
-            var rightIssuer = await ScalarBool(admin,
+            var wrongIssuer = await OpenDenied("https://not-the-issuer.example", Mix);
+            var ignoredArgs = await ScalarBoolAs(admin, Mix,
                 "SELECT outcome = 'grant' AND role_wire = 'partner_admin' AND partner_ids = ARRAY[$3]::uuid[] FROM auth.resolve_grant($1, $2)",
-                Issuer, Mix, Pa);
-            Check("wrong-issuer-does-not-resolve", wrongIssuer && rightIssuer, $"wrong {wrongIssuer} right {rightIssuer}");
+                "https://not-the-issuer.example", Mix, Pa);
+            var unbound = await ScalarBool(admin,
+                "SELECT outcome = 'deny' AND role_wire = 'none' FROM auth.resolve_grant($1, $2)",
+                Issuer, Mix);
+            Check("wrong-issuer-does-not-resolve", wrongIssuer && ignoredArgs && unbound, $"open {wrongIssuer} ignored {ignoredArgs} unbound {unbound}");
             Check("login-write-records-the-request-principal", await LoginWritePrincipal(admin, owner));
             Check("token-admin-type-does-not-choose-the-principal", await TokenPrincipalRowCount(http, admin, owner, paTok));
             var bareRows = await ScalarLong(admin, """
@@ -189,12 +190,7 @@ static class Req064Suite
             var resolvedCount = await ScalarInTx(admin,
                 "SELECT set_config('app.resolved_global_admin','on', true)",
                 "SELECT count(*) FROM catalog.registered_entry WHERE entry_id = $1", Fee);
-            var principalCount = await ScalarInTx(admin, """
-                SELECT set_config('app.request_iss', 'https://req064.test.invalid', true),
-                       set_config('app.request_sub', '5f0c3e1a-0064-4000-8000-000000000031', true),
-                       set_config('app.resolved_global_admin', '', true),
-                       set_config('app.admin_type', '', true)
-                """, "SELECT count(*) FROM catalog.registered_entry WHERE entry_id = $1", Fee);
+            var principalCount = await CountAs(admin, Sa, "SELECT count(*) FROM catalog.registered_entry WHERE entry_id = $1", Fee);
             Check("T12 flag-does-not-grant-and-principal-does", forgedCount == 0 && resolvedCount == 0 && principalCount == 1,
                 $"{forgedCount},{resolvedCount},{principalCount}");
 
@@ -217,6 +213,7 @@ static class Req064Suite
 
             await GuardPaths(owner);
             await Concurrency(owner);
+            await SessionProofs(owner, admin);
             var extraUser = await ExecOk(owner,
                 "INSERT INTO auth.app_user (user_id, partner_id, status) VALUES ('5f0c3e1a-0064-4000-8000-000000000037', NULL, 'active')");
             var extra = extraUser && await ExecOk(owner, """
@@ -244,6 +241,237 @@ static class Req064Suite
         }
         Console.WriteLine($"{_pass} passed, {_fail} failed");
         return _fail == 0 ? 0 : 1;
+    }
+
+    static async Task SessionProofs(NpgsqlDataSource owner, NpgsqlDataSource admin)
+    {
+        var unknown = new string('a', 64);
+        Check("unknown-token-denied", await Denied(admin, "SELECT auth.begin_request($1)", unknown));
+        Check("truncated-token-denied", await Denied(admin, "SELECT auth.begin_request($1)", unknown[..16]));
+        Check("forged-guc-does-not-grant", await ForgedGuc(admin));
+
+        var expiredOpen = await OpenDeniedExp();
+        Check("expired-token-rejected-at-open", expiredOpen);
+
+        var token = await Mint(Upa, exp: DateTimeOffset.UtcNow.AddHours(2));
+        var capped = await ScalarText(owner, """
+            SELECT CASE WHEN expires_at <= created_at + interval '15 minutes'
+                         AND expires_at > created_at + interval '14 minutes'
+                        THEN 'capped' ELSE 'open' END
+              FROM auth.request_session
+             WHERE token_hash = sha256(convert_to($1, 'UTF8'))
+            """, token);
+        Check("expiry-is-min-of-now-plus-15m-and-jwt-exp", capped == "capped");
+        Check("admin-api-cannot-open-session", await Denied(admin, "SELECT auth.open_session($1, $2, $3, $4)", Issuer, Upa.ToString("D"), Guid.NewGuid(), DateTimeOffset.UtcNow.AddMinutes(5)));
+        Check("ttl-over-15-minutes-rejected", await TtlRejected(owner));
+
+        await using (var c = await admin.OpenConnectionAsync())
+        {
+            await using var tx = await c.BeginTransactionAsync();
+            await using (var b = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx))
+            {
+                b.Parameters.Add(new() { Value = token });
+                await b.ExecuteNonQueryAsync();
+            }
+            var rebound = await DeniedOn(c, tx, "SELECT auth.begin_request($1)", token);
+            Check("double-begin-request-rejected", rebound);
+            await tx.RollbackAsync();
+        }
+
+        await using (var c = await admin.OpenConnectionAsync())
+        {
+            await using (var tx = await c.BeginTransactionAsync())
+            {
+                await using var b = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx);
+                b.Parameters.Add(new() { Value = token });
+                await b.ExecuteNonQueryAsync();
+                await tx.CommitAsync();
+            }
+            await using var next = await c.BeginTransactionAsync();
+            var principal = await ScalarOn(c, next, "SELECT auth.current_principal() IS NULL");
+            Check("binding-does-not-survive-commit", principal);
+            await next.RollbackAsync();
+        }
+
+        await using (var c = await admin.OpenConnectionAsync())
+        {
+            await using (var tx = await c.BeginTransactionAsync())
+            {
+                await using var b = new NpgsqlCommand("""
+                    SELECT auth.begin_request($1), query FROM pg_stat_activity WHERE pid = pg_backend_pid()
+                    """, c, tx);
+                b.Parameters.Add(new() { Value = token });
+                await using var reader = await b.ExecuteReaderAsync();
+                await reader.ReadAsync();
+                var shown = reader.GetString(1);
+                Check("begin-request-query-text-is-a-parameter", shown.Contains("$1", StringComparison.Ordinal) && !shown.Contains(token, StringComparison.Ordinal));
+                await reader.DisposeAsync();
+                await tx.RollbackAsync();
+            }
+        }
+
+        var revoked = await Mint(Sa2);
+        await Exec(owner, "SELECT auth.revoke_session($1)", revoked);
+        Check("revoked-session-denied-on-next-action", await Denied(admin, "SELECT auth.begin_request($1)", revoked));
+
+        var live = await Mint(Upa);
+        await Exec(owner, "UPDATE auth.admin_assignment SET status = 'disabled' WHERE user_id = $1 AND role_id = 'partner_admin'", Upa);
+        var nextDenied = await Denied(admin, "SELECT auth.begin_request($1)", live);
+        await Exec(owner, "UPDATE auth.admin_assignment SET status = 'active' WHERE user_id = $1 AND role_id = 'partner_admin'", Upa);
+        Check("revocation-applies-on-the-next-action", nextDenied);
+        Check("host-password-cannot-log-in-as-issuer", await HostPasswordRejected());
+        Check("parallel-worker-does-not-drop-the-principal", await ParallelStillResolves(admin, token));
+        Check("pooled-connection-keeps-no-binding", await PooledBindingClears(admin, token));
+    }
+
+    static async Task<bool> HostPasswordRejected()
+    {
+        var adminCs = Environment.GetEnvironmentVariable("ADMIN_API_CONNECTION_STRING");
+        var issuerCs = Environment.GetEnvironmentVariable("ISSUER_CONNECTION_STRING");
+        if (string.IsNullOrEmpty(adminCs) || string.IsNullOrEmpty(issuerCs)) return false;
+        var admin = new NpgsqlConnectionStringBuilder(adminCs);
+        var issuer = new NpgsqlConnectionStringBuilder(issuerCs);
+        if (admin.Username == issuer.Username) return false;
+        admin.Username = issuer.Username;
+        try
+        {
+            await using var c = new NpgsqlConnection(admin.ConnectionString);
+            await c.OpenAsync();
+            return false;
+        }
+        catch (Exception) { return true; }
+    }
+
+    static async Task<bool> ParallelStillResolves(NpgsqlDataSource admin, string token)
+    {
+        await using var c = await admin.OpenConnectionAsync();
+        await using var tx = await c.BeginTransactionAsync();
+        await using (var b = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx))
+        {
+            b.Parameters.Add(new() { Value = token });
+            await b.ExecuteNonQueryAsync();
+        }
+        var armed = false;
+        foreach (var guc in new[] { "SET LOCAL debug_parallel_query = on", "SET LOCAL force_parallel_mode = on" })
+        {
+            await using (var sp = new NpgsqlCommand("SAVEPOINT parallel_guc", c, tx))
+                await sp.ExecuteNonQueryAsync();
+            try
+            {
+                await using var set = new NpgsqlCommand(guc, c, tx);
+                await set.ExecuteNonQueryAsync();
+                armed = true;
+                break;
+            }
+            catch (PostgresException)
+            {
+                await using var rb = new NpgsqlCommand("ROLLBACK TO SAVEPOINT parallel_guc", c, tx);
+                await rb.ExecuteNonQueryAsync();
+            }
+        }
+        await using var q = new NpgsqlCommand("SELECT auth.current_principal()", c, tx);
+        var principal = await q.ExecuteScalarAsync();
+        await tx.RollbackAsync();
+        return armed && principal is Guid;
+    }
+
+    static async Task<bool> PooledBindingClears(NpgsqlDataSource admin, string token)
+    {
+        int pid;
+        await using (var c = await admin.OpenConnectionAsync())
+        {
+            pid = Convert.ToInt32(await new NpgsqlCommand("SELECT pg_backend_pid()", c).ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+            await using var tx = await c.BeginTransactionAsync();
+            await using var b = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx);
+            b.Parameters.Add(new() { Value = token });
+            await b.ExecuteNonQueryAsync();
+            await tx.CommitAsync();
+            await using var discard = new NpgsqlCommand("DISCARD ALL", c);
+            await discard.ExecuteNonQueryAsync();
+        }
+        for (var i = 0; i < 8; i++)
+        {
+            await using var c = await admin.OpenConnectionAsync();
+            var now = Convert.ToInt32(await new NpgsqlCommand("SELECT pg_backend_pid()", c).ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+            if (now != pid) continue;
+            await using var tx = await c.BeginTransactionAsync();
+            var principal = await ScalarOn(c, tx, "SELECT auth.current_principal() IS NULL");
+            await tx.RollbackAsync();
+            return principal;
+        }
+        return false;
+    }
+
+    static async Task<bool> ForgedGuc(NpgsqlDataSource admin)
+    {
+        await using var c = await admin.OpenConnectionAsync();
+        await using var tx = await c.BeginTransactionAsync();
+        await using var set = new NpgsqlCommand("SELECT set_config('app.request_iss', $1, true), set_config('app.request_sub', $2, true)", c, tx);
+        set.Parameters.Add(new() { Value = Issuer });
+        set.Parameters.Add(new() { Value = Upa.ToString("D") });
+        await set.ExecuteNonQueryAsync();
+        await using var q = new NpgsqlCommand("SELECT count(*) FROM auth.location WHERE location_id = $1", c, tx);
+        q.Parameters.Add(new() { Value = La });
+        var n = Convert.ToInt64(await q.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+        await tx.RollbackAsync();
+        return n == 0;
+    }
+
+    static async Task<bool> OpenDeniedExp()
+    {
+        try { await Mint(Upa, exp: DateTimeOffset.UtcNow.AddMinutes(-1)); return false; }
+        catch (PostgresException ex) when (ex.SqlState == "42501") { return true; }
+    }
+
+    static async Task<bool> TtlRejected(NpgsqlDataSource owner)
+    {
+        try
+        {
+            await Exec(owner, """
+                INSERT INTO auth.request_session (token_hash, jti, iss, sub, user_id, created_at, expires_at)
+                VALUES (sha256(convert_to('ttl-over', 'UTF8')), gen_random_uuid(), $2, $3, $1, clock_timestamp(), clock_timestamp() + interval '16 minutes')
+                """, Upa, Issuer, Upa.ToString("D"));
+            return false;
+        }
+        catch (PostgresException ex) when (ex.SqlState == "23514") { return true; }
+    }
+
+    static async Task<bool> Denied(NpgsqlDataSource ds, string sql, params object?[] ps)
+    {
+        try { await Exec(ds, sql, ps); return false; }
+        catch (PostgresException ex) when (ex.SqlState == "42501") { return true; }
+    }
+
+    static async Task<bool> DeniedOn(NpgsqlConnection c, NpgsqlTransaction tx, string sql, params object?[] ps)
+    {
+        await using var sp = new NpgsqlCommand("SAVEPOINT denied_probe", c, tx);
+        await sp.ExecuteNonQueryAsync();
+        try
+        {
+            await using var cmd = new NpgsqlCommand(sql, c, tx);
+            foreach (var p in ps) cmd.Parameters.Add(new() { Value = p ?? DBNull.Value });
+            await cmd.ExecuteNonQueryAsync();
+            return false;
+        }
+        catch (PostgresException ex) when (ex.SqlState is "42501" or "25001")
+        {
+            await using var rb = new NpgsqlCommand("ROLLBACK TO SAVEPOINT denied_probe", c, tx);
+            await rb.ExecuteNonQueryAsync();
+            return true;
+        }
+    }
+
+    static async Task<bool> ScalarOn(NpgsqlConnection c, NpgsqlTransaction tx, string sql)
+    {
+        await using var cmd = new NpgsqlCommand(sql, c, tx);
+        return await cmd.ExecuteScalarAsync() is true;
+    }
+
+    static async Task<string> ScalarTextOn(NpgsqlConnection c, NpgsqlTransaction tx, string sql)
+    {
+        await using var cmd = new NpgsqlCommand(sql, c, tx);
+        var value = await cmd.ExecuteScalarAsync();
+        return value is null or DBNull ? "" : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "";
     }
 
     static async Task GuardPaths(NpgsqlDataSource owner)
@@ -278,18 +506,15 @@ static class Req064Suite
     {
         await using var c = await admin.OpenConnectionAsync();
         await using var tx = await c.BeginTransactionAsync();
+        await Begin(c, tx, Upa);
         await using (var set = new NpgsqlCommand("""
-            SELECT set_config('app.request_iss', $1, true),
-                   set_config('app.request_sub', $2, true),
-                   set_config('app.resolved_global_admin', 'on', true),
-                   set_config('app.resolved_partner_ids', $3, true),
-                   set_config('app.resolved_location_ids', $4, true),
+            SELECT set_config('app.resolved_global_admin', 'on', true),
+                   set_config('app.resolved_partner_ids', $1, true),
+                   set_config('app.resolved_location_ids', $2, true),
                    set_config('app.admin_type', 'super', true),
-                   set_config('app.partner_id', $3, true)
+                   set_config('app.partner_id', $1, true)
             """, c, tx))
         {
-            set.Parameters.Add(new() { Value = Issuer });
-            set.Parameters.Add(new() { Value = Upa.ToString("D") });
             set.Parameters.Add(new() { Value = Pb.ToString("D") });
             set.Parameters.Add(new() { Value = Lb.ToString("D") });
             await set.ExecuteNonQueryAsync();
@@ -603,15 +828,9 @@ static class Req064Suite
                 INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, location_id, status, version, granted_by, granted_at)
                 VALUES ($1, $2, 'cashier', 'location', $3, 'active', 1, $4, now())
                 """, grant, None, La, Sa);
-            var own = await ScalarInTx(admin,
-                $"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{None:D}', true)",
-                "SELECT count(*) FROM auth.location WHERE location_id = $1", La);
-            var sib = await ScalarInTx(admin,
-                $"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{None:D}', true)",
-                "SELECT count(*) FROM auth.location WHERE location_id = $1", sibling);
-            var other = await ScalarInTx(admin,
-                $"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{None:D}', true)",
-                "SELECT count(*) FROM auth.location WHERE location_id = $1", Lb);
+            var own = await CountAs(admin, None, "SELECT count(*) FROM auth.location WHERE location_id = $1", La);
+            var sib = await CountAs(admin, None, "SELECT count(*) FROM auth.location WHERE location_id = $1", sibling);
+            var other = await CountAs(admin, None, "SELECT count(*) FROM auth.location WHERE location_id = $1", Lb);
             var ok = own == 1 && sib == 0 && other == 0;
             if (!ok) Console.WriteLine($"FAIL location-only: own {own} sibling {sib} other {other}");
             return ok;
@@ -687,25 +906,18 @@ static class Req064Suite
     {
         await using var c = await admin.OpenConnectionAsync();
         await using var tx = await c.BeginTransactionAsync();
-        var setup = flags
-            ? """
-              SELECT set_config('app.request_iss', '', true),
-                     set_config('app.request_sub', '', true),
-                     set_config('app.resolved_global_admin', 'on', true),
-                     set_config('app.resolved_partner_ids', '5f0c3e1a-0064-4000-8000-000000000011,5f0c3e1a-0064-4000-8000-000000000012', true),
-                     set_config('app.resolved_location_ids', '5f0c3e1a-0064-4000-8000-000000000021', true),
-                     set_config('app.admin_type', 'super', true)
-              """
-            : "SELECT set_config('app.request_iss', $1, true), set_config('app.request_sub', $2, true)";
-        await using (var set = new NpgsqlCommand(setup, c, tx))
+        if (flags)
         {
-            if (!flags)
-            {
-                set.Parameters.Add(new() { Value = Issuer });
-                set.Parameters.Add(new() { Value = user!.Value.ToString("D") });
-            }
+            await using var set = new NpgsqlCommand("""
+                SELECT set_config('app.resolved_global_admin', 'on', true),
+                       set_config('app.resolved_partner_ids', '5f0c3e1a-0064-4000-8000-000000000011,5f0c3e1a-0064-4000-8000-000000000012', true),
+                       set_config('app.resolved_location_ids', '5f0c3e1a-0064-4000-8000-000000000021', true),
+                       set_config('app.admin_type', 'super', true)
+                """, c, tx);
             await set.ExecuteNonQueryAsync();
         }
+        else if (user is Guid id)
+            await Begin(c, tx, id);
         try
         {
             await using var call = new NpgsqlCommand("SELECT auth.save_partner_bounds($1, 0, 10, 20, $2, now())", c, tx);
@@ -736,21 +948,16 @@ static class Req064Suite
                 INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, location_id, status, version, granted_by, granted_at)
                 VALUES ($1, $2, 'cashier', 'location', $3, 'active', 1, $4, now())
                 """, view, Cash, La, Sa);
-            async Task<long> See(string setup, Guid partner)
-            {
-                return await ScalarInTx(admin, setup, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1", partner);
-            }
-            var cashA = await See($"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{Cash:D}', true)", Pa);
-            var cashB = await See($"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{Cash:D}', true)", Pb);
-            var paA = await See($"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{Upa:D}', true)", Pa);
-            var paB = await See($"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{Upa:D}', true)", Pb);
-            var saA = await See($"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{Sa:D}', true)", Pa);
-            var saB = await See($"SELECT set_config('app.request_iss', '{Issuer}', true), set_config('app.request_sub', '{Sa:D}', true)", Pb);
-            var flagA = await See("""
-                SELECT set_config('app.request_iss', '', true), set_config('app.request_sub', '', true),
-                       set_config('app.resolved_global_admin', 'on', true),
-                       set_config('app.resolved_partner_ids', '5f0c3e1a-0064-4000-8000-000000000011', true),
-                       set_config('app.resolved_location_ids', '5f0c3e1a-0064-4000-8000-000000000022', true)
+            async Task<long> See(Guid? user, Guid partner)
+                => await CountAs(admin, user, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1", partner);
+            var cashA = await See(Cash, Pa);
+            var cashB = await See(Cash, Pb);
+            var paA = await See(Upa, Pa);
+            var paB = await See(Upa, Pb);
+            var saA = await See(Sa, Pa);
+            var saB = await See(Sa, Pb);
+            var flagA = await CountAs(admin, null, """
+                SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1
                 """, Pa);
             var ok = cashA == 1 && cashB == 0 && paA == 1 && paB == 0 && saA == 1 && saB == 1 && flagA == 0;
             if (!ok) Console.WriteLine($"FAIL bounds-read: cash {cashA}/{cashB} pa {paA}/{paB} sa {saA}/{saB} flag {flagA}");
@@ -811,14 +1018,7 @@ static class Req064Suite
             {
                 await using var c = await admin.OpenConnectionAsync();
                 await using var tx = await c.BeginTransactionAsync();
-                await using (var set = new NpgsqlCommand("""
-                    SELECT set_config('app.request_iss', 'https://req064.test.invalid', true),
-                           set_config('app.request_sub', $1, true)
-                    """, c, tx))
-                {
-                    set.Parameters.Add(new() { Value = boundsSubject });
-                    await set.ExecuteNonQueryAsync();
-                }
+                await Begin(c, tx, Guid.Parse(boundsSubject));
                 await using var count = new NpgsqlCommand("""
                     SELECT (SELECT count(*) FROM auth.location WHERE location_id = $1)
                          + (SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $2)
@@ -868,13 +1068,7 @@ static class Req064Suite
         {
             await using var c = await admin.OpenConnectionAsync();
             await using var tx = await c.BeginTransactionAsync();
-            await using (var set = new NpgsqlCommand(
-                "SELECT set_config('app.request_iss', $1, true), set_config('app.request_sub', $2, true)", c, tx))
-            {
-                set.Parameters.Add(new() { Value = Issuer });
-                set.Parameters.Add(new() { Value = user.ToString("D") });
-                await set.ExecuteNonQueryAsync();
-            }
+            await Begin(c, tx, user);
             await using var call = new NpgsqlCommand("SELECT auth.record_login_write('location_login_config', $1)", c, tx);
             call.Parameters.Add(new() { Value = target });
             await call.ExecuteNonQueryAsync();
@@ -945,10 +1139,12 @@ static class Req064Suite
         await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000ab"));
         await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = $1", Guid.Parse("5f0c3e1a-0064-4000-8000-000000000023"));
         await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = ANY($1)", new[] { La, Lb });
-        await ExecQuiet(owner, "DELETE FROM auth.user_issuer WHERE user_id = ANY($1)",
-            new[] { Sa, Sa2, Upa, Both, None, Cash, Mix, Guid.Parse("5f0c3e1a-0064-4000-8000-000000000037") });
+        var reqUsers = new[] { Sa, Sa2, Upa, Both, None, Cash, Mix, Guid.Parse("5f0c3e1a-0064-4000-8000-000000000037") };
+        await ExecQuiet(owner, "DELETE FROM auth.request_binding WHERE user_id = ANY($1)", reqUsers);
+        await ExecQuiet(owner, "DELETE FROM auth.request_session WHERE user_id = ANY($1)", reqUsers);
+        await ExecQuiet(owner, "DELETE FROM auth.user_issuer WHERE user_id = ANY($1)", reqUsers);
         await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE user_id = ANY($1) OR assignment_id = ANY($2)",
-            new[] { Sa, Sa2, Upa, Both, None, Cash, Mix, Guid.Parse("5f0c3e1a-0064-4000-8000-000000000037") },
+            reqUsers,
             new[] { Asa, Asa2, Apa, AbothA, AbothB, Acash, AmixA, AmixB, Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000a7") });
         await ExecQuiet(owner, "DELETE FROM auth.app_user WHERE user_id = ANY($1)",
             new[] { Sa, Sa2, Upa, Both, None, Cash, Mix, Guid.Parse("5f0c3e1a-0064-4000-8000-000000000037") });
@@ -1103,6 +1299,79 @@ static class Req064Suite
     {
         try { await Exec(ds, sql, ps); return true; }
         catch (Exception ex) { Console.WriteLine("FAIL sql :: " + ex.GetType().Name + " " + ex.Message); return false; }
+    }
+
+    static NpgsqlDataSource? _issuer;
+    static readonly Dictionary<Guid, string> _sessions = new();
+
+    static async Task<NpgsqlDataSource> IssuerDs()
+    {
+        var cs = Environment.GetEnvironmentVariable("ISSUER_CONNECTION_STRING");
+        if (string.IsNullOrEmpty(cs)) throw new InvalidOperationException("ISSUER_CONNECTION_STRING is not set");
+        return _issuer ??= NpgsqlDataSource.Create(cs);
+    }
+
+    static async Task<string> Mint(Guid user, string? iss = null, DateTimeOffset? exp = null, Guid? jti = null)
+    {
+        await using var c = await (await IssuerDs()).OpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4)", c);
+        cmd.Parameters.Add(new() { Value = iss ?? Issuer });
+        cmd.Parameters.Add(new() { Value = user.ToString("D") });
+        cmd.Parameters.Add(new() { Value = jti ?? Guid.NewGuid() });
+        cmd.Parameters.Add(new() { Value = exp ?? DateTimeOffset.UtcNow.AddMinutes(5) });
+        return (string)(await cmd.ExecuteScalarAsync())!;
+    }
+
+    static async Task Begin(NpgsqlConnection c, NpgsqlTransaction tx, Guid user)
+    {
+        if (!_sessions.TryGetValue(user, out var token)) _sessions[user] = token = await Mint(user);
+        await using (var sp = new NpgsqlCommand("SAVEPOINT session_bind", c, tx))
+            await sp.ExecuteNonQueryAsync();
+        try
+        {
+            await using var b = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx);
+            b.Parameters.Add(new() { Value = token });
+            await b.ExecuteNonQueryAsync();
+        }
+        catch (PostgresException ex) when (ex.SqlState == "42501")
+        {
+            await using var rb = new NpgsqlCommand("ROLLBACK TO SAVEPOINT session_bind", c, tx);
+            await rb.ExecuteNonQueryAsync();
+            _sessions[user] = token = await Mint(user);
+            await using var b = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx);
+            b.Parameters.Add(new() { Value = token });
+            await b.ExecuteNonQueryAsync();
+        }
+    }
+
+    static async Task<long> CountAs(NpgsqlDataSource ds, Guid? user, string sql, params object?[] ps)
+    {
+        await using var c = await ds.OpenConnectionAsync();
+        await using var tx = await c.BeginTransactionAsync();
+        if (user is Guid id) await Begin(c, tx, id);
+        await using var cmd = new NpgsqlCommand(sql, c, tx);
+        foreach (var p in ps) cmd.Parameters.Add(new() { Value = p ?? DBNull.Value });
+        var value = await cmd.ExecuteScalarAsync();
+        await tx.RollbackAsync();
+        return value is long n ? n : Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    static async Task<bool> ScalarBoolAs(NpgsqlDataSource ds, Guid user, string sql, params object?[] ps)
+    {
+        await using var c = await ds.OpenConnectionAsync();
+        await using var tx = await c.BeginTransactionAsync();
+        await Begin(c, tx, user);
+        await using var cmd = new NpgsqlCommand(sql, c, tx);
+        foreach (var p in ps) cmd.Parameters.Add(new() { Value = p ?? DBNull.Value });
+        var value = await cmd.ExecuteScalarAsync();
+        await tx.RollbackAsync();
+        return value is true;
+    }
+
+    static async Task<bool> OpenDenied(string iss, Guid user)
+    {
+        try { await Mint(user, iss); return false; }
+        catch (PostgresException ex) when (ex.SqlState == "42501") { return true; }
     }
 
     static async Task<long> ScalarInTx(NpgsqlDataSource ds, string setupSql, string sql, params object?[] ps)
