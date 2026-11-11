@@ -90,21 +90,15 @@ BEGIN
     RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
   END IF;
   PERFORM auth._lock_login(v_user);
-  -- Status is read again after the lock. A lock or disable that commits while
-  -- this open waits must not insert a live row.
-  IF NOT EXISTS (SELECT 1 FROM auth.app_user u WHERE u.user_id = v_user AND u.status = 'active' AND (u.locked_until IS NULL OR u.locked_until <= clock_timestamp())) THEN
+  -- Status is read again after the lock, against v_created. A lock that was in
+  -- force when this open started still denies after locked_until passes while
+  -- we wait, and that open does not insert a row.
+  IF NOT EXISTS (SELECT 1 FROM auth.app_user u WHERE u.user_id = v_user AND u.status = 'active' AND (u.locked_until IS NULL OR u.locked_until <= v_created)) THEN
     RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
   END IF;
-  IF p_iat > clock_timestamp() + interval '60 seconds' THEN
-    RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
-  END IF;
-  -- A future iat is not proof the token was issued after logout.
-  IF EXISTS (
-    SELECT 1 FROM auth.login_cutoff c
-     WHERE c.user_id = v_user
-       AND p_iat > clock_timestamp()
-       AND p_iat > c.revoked_before
-  ) THEN
+  -- One second is the remaining future-iat window. A later iat is not proof
+  -- the token was issued after logout.
+  IF p_iat > clock_timestamp() + interval '1 second' THEN
     RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
   END IF;
   IF EXISTS (
@@ -223,6 +217,29 @@ BEGIN
 END
 $fn$;
 
+-- A cached issuer session is replayed only while this is still true. A revoked
+-- row or an iat at or before login_cutoff is not served from the cache.
+CREATE OR REPLACE FUNCTION auth.session_still_open(p_token text, p_iat timestamptz) RETURNS boolean
+  LANGUAGE sql
+  STABLE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, auth
+AS $fn$
+  SELECT EXISTS (
+    SELECT 1
+      FROM auth.request_session s
+     WHERE s.token_hash = sha256(convert_to(p_token, 'UTF8'))
+       AND s.revoked_at IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM auth.login_cutoff c
+          WHERE c.user_id = s.user_id
+            AND p_iat <= c.revoked_before
+       )
+  );
+$fn$;
+
+REVOKE ALL ON FUNCTION auth.session_still_open(text, timestamptz) FROM PUBLIC;
+
 REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz, timestamptz) FROM PUBLIC;
 
 DO $close$
@@ -251,6 +268,7 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = i AND rolcanlogin AND NOT rolsuper) THEN
     EXECUTE format('GRANT EXECUTE ON FUNCTION auth.open_session(text, text, uuid, timestamptz, timestamptz) TO %I', i);
     EXECUTE format('GRANT EXECUTE ON FUNCTION auth.revoke_login(text, text) TO %I', i);
+    EXECUTE format('GRANT EXECUTE ON FUNCTION auth.session_still_open(text, timestamptz) TO %I', i);
   END IF;
   IF EXISTS (
     SELECT 1 FROM pg_roles

@@ -45,6 +45,16 @@ static class Req064Suite
     public static async Task<int> RunAsync(string ownerCs, string adminCs, string mode)
     {
         await using var owner = NpgsqlDataSource.Create(ownerCs);
+        if (mode == "race")
+        {
+            var raceUser = Guid.NewGuid();
+            await EnsureUser(owner, raceUser);
+            var left = await OpenLogoutOverlaps(owner, raceUser);
+            var fourArg = await ScalarBool(owner, "SELECT to_regprocedure('auth.open_session(text,text,uuid,timestamptz)') IS NULL");
+            Check("open-logout-80-overlaps-leave-no-live-row", left == 0, left.ToString());
+            Check("four-arg-open-session-is-absent", fourArg);
+            return _fail == 0 ? 0 : 1;
+        }
         await using var admin = NpgsqlDataSource.Create(adminCs);
         await Cleanup(owner);
         var others = await ScalarLong(owner, """
@@ -197,6 +207,15 @@ static class Req064Suite
                 "SELECT outcome = 'deny' AND role_wire = 'none' FROM auth.resolve_grant($1, $2)",
                 Issuer, Mix);
             Check("wrong-issuer-does-not-resolve", wrongIssuer && ignoredArgs && unbound, $"open {wrongIssuer} ignored {ignoredArgs} unbound {unbound}");
+            var nameUser = Guid.NewGuid();
+            await EnsureUser(owner, nameUser);
+            var schemeIss = await OpenDenied("http://req064.test.invalid", nameUser);
+            var slashIss = await OpenDenied("https://req064.test.invalid/", nameUser);
+            var prefixIss = await OpenDenied("https://req064.test", nameUser);
+            var exactIss = await Mint(nameUser);
+            Check("issuer-name-alone-does-not-open",
+                schemeIss && slashIss && prefixIss && exactIss.Length == 64,
+                $"scheme {schemeIss} slash {slashIss} prefix {prefixIss} exact {exactIss.Length}");
             Check("login-write-records-the-request-principal", await LoginWritePrincipal(admin, owner));
             Check("token-admin-type-does-not-choose-the-principal", await TokenPrincipalRowCount(http, admin, owner, paTok));
             var bareRows = await ScalarLong(admin, """
@@ -1439,8 +1458,8 @@ static class Req064Suite
         var revived = await IssuerStatus(issuerUrl, jwt);
         var nav = await SendClosed(http, HttpMethod.Get, "/api/nav", jwt);
         var still = await ScalarLong(owner, "SELECT count(*) FROM auth.request_session WHERE jti = $1 AND revoked_at IS NOT NULL", jti);
-        Check("revoked-session-is-not-replaced", revived == 200 && SameClosed(nav) && still == 1,
-            $"issuer {revived} nav {nav.Status} revoked {still}");
+        Check("revoked-session-is-not-replaced", revived == 401 && SameClosed(nav) && still == 1,
+            $"issuer {revived} nav {nav.Status} {nav.Authenticate} {Clip(nav.Body)} revoked {still}");
     }
 
     static async Task ClosedSessions(HttpClient http, RsaSecurityKey sign, NpgsqlDataSource owner)
@@ -1525,41 +1544,44 @@ static class Req064Suite
         Check("open-blocked-behind-a-lock-does-not-open-a-locked-user",
             locked == "waiting True while 0 outcome denied live 0", locked);
 
+        var expiryUser = Guid.NewGuid();
+        await EnsureUser(owner, expiryUser);
+        await ClearSessions(owner, expiryUser);
+        var expiry = await OpenBehindExpiringLock(owner, expiryUser);
+        Check("open-during-a-lock-does-not-grant-after-expiry",
+            expiry == "waiting True while 0 outcome denied live 0 later 64", expiry);
+
         var futureUser = Guid.NewGuid();
         await EnsureUser(owner, futureUser);
         await ClearSessions(owner, futureUser);
-        var ahead = await ScalarTime(owner, "SELECT clock_timestamp() + interval '5 seconds'");
-        var beforeLogout = await Mint(futureUser, iat: ahead);
+        var ahead5 = await ScalarTime(owner, "SELECT clock_timestamp() + interval '5 seconds'");
+        var ahead60 = await ScalarTime(owner, "SELECT clock_timestamp() + interval '60 seconds'");
+        var denied5 = await OpenDeniedAt(futureUser, ahead5);
+        var denied60 = await OpenDeniedAt(futureUser, ahead60);
         await RevokeLogin(futureUser);
-        var futureDenied = false;
-        try { await Mint(futureUser, iat: ahead, jti: Guid.NewGuid()); }
-        catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText == "session_denied") { futureDenied = true; }
+        var after5 = await OpenDeniedAt(futureUser, ahead5);
+        var after60 = await OpenDeniedAt(futureUser, ahead60);
         var futureLive = await LiveSessions(owner, futureUser);
-        var farUser = Guid.NewGuid();
-        await EnsureUser(owner, farUser);
-        await ClearSessions(owner, farUser);
-        var far = await ScalarTime(owner, "SELECT clock_timestamp() + interval '61 seconds'");
-        var farDenied = false;
-        try { await Mint(farUser, iat: far); }
-        catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText == "session_denied") { farDenied = true; }
-        var near = await Mint(farUser, iat: await ScalarTime(owner, "SELECT clock_timestamp() + interval '5 seconds'"));
+        await Task.Delay(1100 - DateTimeOffset.UtcNow.Millisecond);
+        var freshIat = await Mint(futureUser, iat: await ScalarTime(owner, "SELECT clock_timestamp()"));
         Check("future-iat-cannot-beat-logout-or-skew",
-            beforeLogout.Length == 64 && futureDenied && futureLive == 0 && farDenied && await LiveSessions(owner, farUser) == 1 && near.Length == 64,
-            $"before {beforeLogout.Length} denied {futureDenied} live {futureLive} far {farDenied} near {near.Length}");
+            denied5 && denied60 && after5 && after60 && futureLive == 0 && freshIat.Length == 64,
+            $"before5 {denied5} before60 {denied60} after5 {after5} after60 {after60} live {futureLive} fresh {freshIat.Length}");
 
         var sameUser = Guid.NewGuid();
         await EnsureUser(owner, sameUser);
         await ClearSessions(owner, sameUser);
         await RevokeLogin(sameUser);
         var sameSecond = await ScalarTime(owner, "SELECT date_trunc('second', c.revoked_before) FROM auth.login_cutoff c WHERE c.user_id = '" + sameUser.ToString("D") + "'");
-        var sameDenied = false;
-        try { await Mint(sameUser, iat: sameSecond); }
-        catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText == "session_denied") { sameDenied = true; }
+        var sameDenied = await OpenDeniedAt(sameUser, sameSecond);
+        var exactDenied = await OpenAtRevokedBefore(owner, sameUser);
         Check("same-second-re-sign-in-after-logout-is-denied",
-            sameDenied && await LiveSessions(owner, sameUser) == 0, $"denied {sameDenied}");
+            sameDenied && exactDenied && await LiveSessions(owner, sameUser) == 0,
+            $"second {sameDenied} exact {exactDenied}");
 
         var writes = await OwnerCutoffWrites(owner, lockedUser);
-        Check("owner-cannot-write-login-cutoff", writes == "priv False insert 42501", writes);
+        Check("owner-cannot-write-login-cutoff",
+            writes == "priv False insert 42501 update 42501 delete 42501", writes);
     }
 
     static async Task<string> OpenBehindLockUpdate(NpgsqlDataSource owner, Guid user)
@@ -1604,6 +1626,52 @@ static class Req064Suite
         return $"waiting {waiting} while {whileLocked} outcome {outcome} live {live}";
     }
 
+    static async Task<string> OpenBehindExpiringLock(NpgsqlDataSource owner, Guid user)
+    {
+        await using var hold = await owner.OpenConnectionAsync();
+        await using var tx = await hold.BeginTransactionAsync();
+        await using (var cmd = new NpgsqlCommand("SELECT pg_advisory_xact_lock(814064213, hashtext($1::uuid::text))", hold, tx))
+        {
+            cmd.Parameters.Add(new() { Value = user });
+            await cmd.ExecuteScalarAsync();
+        }
+        var open = Task.Run(async () =>
+        {
+            try
+            {
+                await Mint(user);
+                return "opened";
+            }
+            catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText == "session_denied")
+            {
+                return "denied";
+            }
+            catch (Exception ex)
+            {
+                return ex.GetType().Name;
+            }
+        });
+        await Task.Delay(200);
+        await using (var cmd = new NpgsqlCommand(
+            "UPDATE auth.app_user SET locked_until = clock_timestamp() + interval '300 milliseconds' WHERE user_id = $1", hold, tx))
+        {
+            cmd.Parameters.Add(new() { Value = user });
+            await cmd.ExecuteNonQueryAsync();
+        }
+        await Task.Delay(800);
+        var waiting = !open.IsCompleted;
+        var whileLocked = await LiveSessions(owner, user);
+        await tx.CommitAsync();
+        var outcome = "timeout";
+        try { outcome = await open.WaitAsync(TimeSpan.FromSeconds(8)); }
+        catch (Exception ex) { outcome = ex.GetType().Name; }
+        var live = await LiveSessions(owner, user);
+        string later;
+        try { later = (await Mint(user)).Length.ToString(); }
+        catch (Exception ex) { later = ex.GetType().Name; }
+        return $"waiting {waiting} while {whileLocked} outcome {outcome} live {live} later {later}";
+    }
+
     static async Task<string> OwnerCutoffWrites(NpgsqlDataSource owner, Guid user)
     {
         var priv = await ScalarBool(owner, """
@@ -1611,24 +1679,31 @@ static class Req064Suite
                 OR has_table_privilege(current_user, 'auth.login_cutoff', 'UPDATE')
                 OR has_table_privilege(current_user, 'auth.login_cutoff', 'DELETE')
             """);
-        var insert = "ok";
-        await using (var c = await owner.OpenConnectionAsync())
+        var insert = await CutoffWrite(owner, user, "INSERT INTO auth.login_cutoff (user_id, revoked_before) VALUES ($1, clock_timestamp())");
+        var update = await CutoffWrite(owner, user, "UPDATE auth.login_cutoff SET revoked_before = clock_timestamp() WHERE user_id = $1");
+        var delete = await CutoffWrite(owner, user, "DELETE FROM auth.login_cutoff WHERE user_id = $1");
+        return $"priv {priv} insert {insert} update {update} delete {delete}";
+    }
+
+    static async Task<string> CutoffWrite(NpgsqlDataSource owner, Guid user, string sql)
+    {
+        await using var c = await owner.OpenConnectionAsync();
+        await using var tx = await c.BeginTransactionAsync();
+        try
         {
-            await using var tx = await c.BeginTransactionAsync();
-            try
-            {
-                await using var cmd = new NpgsqlCommand(
-                    "INSERT INTO auth.login_cutoff (user_id, revoked_before) VALUES ($1, clock_timestamp())", c, tx);
-                cmd.Parameters.Add(new() { Value = user });
-                await cmd.ExecuteNonQueryAsync();
-            }
-            catch (PostgresException ex)
-            {
-                insert = ex.SqlState;
-            }
+            await using var cmd = new NpgsqlCommand(sql, c, tx);
+            cmd.Parameters.Add(new() { Value = user });
+            await cmd.ExecuteNonQueryAsync();
+            return "ok";
+        }
+        catch (PostgresException ex)
+        {
+            return ex.SqlState;
+        }
+        finally
+        {
             await tx.RollbackAsync();
         }
-        return $"priv {priv} insert {insert}";
     }
 
     static async Task<string> OpenWaits(NpgsqlDataSource owner, Guid user)
@@ -1795,6 +1870,28 @@ static class Req064Suite
         };
         using var process = Process.Start(psi);
         if (process is null) return (false, "node did not start");
+        var text = await process.StandardOutput.ReadToEndAsync();
+        var err = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return (process.ExitCode == 0 && text.Contains(pass, StringComparison.Ordinal), (text + err).Trim());
+    }
+
+    static Task<(bool Ok, string Detail)> BashRepo(string relative, string pass)
+    {
+        var psi = new ProcessStartInfo("bash", [Path.Combine(RepoRoot(), relative)])
+        {
+            WorkingDirectory = RepoRoot(),
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        return FinishScript(psi, pass);
+    }
+
+    static async Task<(bool Ok, string Detail)> FinishScript(ProcessStartInfo psi, string pass)
+    {
+        using var process = Process.Start(psi);
+        if (process is null) return (false, "process did not start");
         var text = await process.StandardOutput.ReadToEndAsync();
         var err = await process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
@@ -1989,6 +2086,18 @@ static class Req064Suite
         catch (PostgresException ex) when (ex.SqlState == "42501") { return true; }
     }
 
+    static async Task<bool> OpenDeniedAt(Guid user, DateTimeOffset iat)
+    {
+        try { await Mint(user, iat: iat); return false; }
+        catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText == "session_denied") { return true; }
+    }
+
+    static async Task<bool> OpenAtRevokedBefore(NpgsqlDataSource owner, Guid user)
+    {
+        var exact = await ScalarTime(owner, "SELECT revoked_before FROM auth.login_cutoff WHERE user_id = '" + user.ToString("D") + "'");
+        return await OpenDeniedAt(user, exact);
+    }
+
     static async Task<long> ScalarInTx(NpgsqlDataSource ds, string setupSql, string sql, params object?[] ps)
     {
         await using var c = await ds.OpenConnectionAsync();
@@ -2128,6 +2237,108 @@ static class Req064Suite
             await Exec(owner, "DELETE FROM auth.request_binding WHERE user_id = $1", user);
             await Exec(owner, "DELETE FROM auth.request_session WHERE user_id = $1", user);
         }
+        await IssuerRejectsFutureIat(issuer, sign, owner);
+        await RevokedTokenIsNotCached(issuer, sign, owner);
+    }
+
+    static async Task IssuerRejectsFutureIat(Admin.Api.Checks.IssuerHarness issuer, RsaSecurityKey sign, NpgsqlDataSource owner)
+    {
+        var user = Guid.NewGuid();
+        await EnsureUser(owner, user);
+        string Signed(int ahead)
+        {
+            var claims = Claims(user, "super", null);
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            claims["iat"] = now + ahead;
+            claims["nbf"] = now - 1;
+            claims["exp"] = now + 600;
+            return new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
+            {
+                Claims = claims,
+                SigningCredentials = new SigningCredentials(sign, SecurityAlgorithms.RsaSha256),
+                TokenType = "at+jwt",
+            });
+        }
+        await WithWidenedIat(owner, async () =>
+        {
+            var plus5 = await IssuerStatus(issuer.Url, Signed(5));
+            var plus60 = await IssuerStatus(issuer.Url, Signed(60));
+            var live = await LiveSessions(owner, user);
+            Check("issuer-rejects-iat-beyond-one-second", plus5 == 401 && plus60 == 401 && live == 0,
+                $"plus5 {plus5} plus60 {plus60} live {live}");
+        });
+    }
+
+    static async Task RevokedTokenIsNotCached(Admin.Api.Checks.IssuerHarness issuer, RsaSecurityKey sign, NpgsqlDataSource owner)
+    {
+        var user = Guid.NewGuid();
+        await EnsureUser(owner, user);
+        var jwt = new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
+        {
+            Claims = Claims(user, "super", null),
+            SigningCredentials = new SigningCredentials(sign, SecurityAlgorithms.RsaSha256),
+            TokenType = "at+jwt",
+        });
+        var first = await IssuerSession(issuer.Url, jwt);
+        var revoked = await PostRevoke(issuer.Url, issuer.CallerSecret, Issuer, user.ToString("D"));
+        var again = await IssuerStatus(issuer.Url, jwt);
+        var live = await LiveSessions(owner, user);
+        Check("revoked-token-is-not-served-from-the-cache",
+            first.Length == 64 && revoked == 200 && again == 401 && live == 0,
+            $"first {first.Length} revoke {revoked} again {again} live {live}");
+    }
+
+    static async Task WithWidenedIat(NpgsqlDataSource owner, Func<Task> body)
+    {
+        var db = await ScalarText(owner, "SELECT current_database()");
+        var def = await ScalarText(owner, "SELECT pg_get_functiondef('auth.open_session(text,text,uuid,timestamptz,timestamptz)'::regprocedure)");
+        if (!def.Contains("interval '1 second'", StringComparison.Ordinal))
+        {
+            await body();
+            return;
+        }
+        var widened = ToReplace(def).Replace("interval '1 second'", "interval '2 minutes'", StringComparison.Ordinal);
+        var path = Path.Combine(Path.GetTempPath(), "req064-widen-iat.sql");
+        await File.WriteAllTextAsync(path, widened);
+        SudoPsqlFile(db, path);
+        try { await body(); }
+        finally
+        {
+            await File.WriteAllTextAsync(path, ToReplace(def));
+            SudoPsqlFile(db, path);
+        }
+    }
+
+    static string ToReplace(string def)
+    {
+        var sql = def.Trim();
+        if (!sql.StartsWith("CREATE OR REPLACE", StringComparison.Ordinal))
+            sql = sql.Replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION");
+        if (!sql.EndsWith(';')) sql += ";";
+        return sql + "\n";
+    }
+
+    static void SudoPsqlFile(string database, string path)
+    {
+        var psi = new ProcessStartInfo("sudo", ["-u", "postgres", "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", database, "-f", path])
+        {
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
+        using var process = Process.Start(psi) ?? throw new InvalidOperationException("psql did not start");
+        var err = process.StandardError.ReadToEnd();
+        process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0) throw new InvalidOperationException("psql " + process.ExitCode + " " + err);
+    }
+
+    static async Task<string> ScalarText(NpgsqlDataSource ds, string sql)
+    {
+        await using var c = await ds.OpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand(sql, c);
+        var value = await cmd.ExecuteScalarAsync();
+        return value as string ?? "";
     }
 
     static async Task<string> ScalarOnText(NpgsqlConnection c, NpgsqlTransaction tx, string sql)

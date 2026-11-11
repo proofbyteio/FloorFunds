@@ -92,6 +92,10 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
                 if (opened is null) { ctx.Response.Headers.WWWAuthenticate = "Bearer"; return Results.StatusCode(401); }
                 issued = opened;
             }
+            catch (SessionClosedException)
+            {
+                return Closed(ctx);
+            }
             catch (IssuerUnavailableException)
             {
                 return Results.StatusCode(503);

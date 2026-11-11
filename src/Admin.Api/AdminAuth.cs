@@ -45,6 +45,9 @@ public interface IAdminDirectory
 /// <summary>The issuer process is not reachable. The host answers 503 and does not open a session itself.</summary>
 public sealed class IssuerUnavailableException : Exception;
 
+/// <summary>The issuer refused a token whose session is revoked or cut off. The host answers the one closed-session 401.</summary>
+public sealed class SessionClosedException : Exception;
+
 /// <summary>What the issuer process returns after it has verified the token and opened a session.</summary>
 public sealed record IssuedSession(string SessionToken, AdminIdentity Identity);
 
@@ -74,7 +77,12 @@ public sealed class SessionIssuer(AdminApiOptions o)
         catch (TaskCanceledException) when (!ct.IsCancellationRequested) { throw new IssuerUnavailableException(); }
         using (res)
         {
-            if (res.StatusCode == HttpStatusCode.Unauthorized) return null;
+            if (res.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                var denied = await res.Content.ReadAsStringAsync(ct);
+                if (denied == "{\"error\":\"session_expired\"}") throw new SessionClosedException();
+                return null;
+            }
             if (res.StatusCode != HttpStatusCode.OK) throw new IssuerUnavailableException();
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
             var root = doc.RootElement;

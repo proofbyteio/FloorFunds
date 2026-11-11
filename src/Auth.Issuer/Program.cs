@@ -104,6 +104,12 @@ async Task Handle(HttpListenerContext ctx)
                 ctx.Response.Close();
                 return;
             }
+            // A revoked row or an iat at or before login_cutoff is not served from the cache.
+            if (!await SessionStillOpen(cached.Session, accepted.Iat))
+            {
+                await WriteClosed(ctx);
+                return;
+            }
             session = cached.Session;
         }
         else
@@ -213,7 +219,8 @@ async Task<Accepted?> TryAccept(string raw)
     else if (hasPartner) return null;
     if (t.IssuedAt == DateTime.MinValue) return null;
     var issuedAt = DateTime.SpecifyKind(t.IssuedAt, DateTimeKind.Utc);
-    if (issuedAt > DateTime.UtcNow.AddSeconds(60)) return null;
+    const int IatFutureSeconds = 1;
+    if (issuedAt > DateTime.UtcNow.AddSeconds(IatFutureSeconds)) return null;
     return new Accepted(t, user, jti, DateTime.SpecifyKind(t.ValidTo, DateTimeKind.Utc), issuedAt, adminType, partner);
 }
 
@@ -230,6 +237,26 @@ bool HeaderAccepted(JsonWebToken t)
     }
     catch (JsonException) { return false; }
     catch (Exception) { return false; }
+}
+
+async Task WriteClosed(HttpListenerContext ctx)
+{
+    var bytes = "{\"error\":\"session_expired\"}"u8.ToArray();
+    ctx.Response.StatusCode = 401;
+    ctx.Response.ContentType = "application/json";
+    ctx.Response.Headers["WWW-Authenticate"] = "Bearer";
+    ctx.Response.ContentLength64 = bytes.Length;
+    await ctx.Response.OutputStream.WriteAsync(bytes);
+    ctx.Response.Close();
+}
+
+async Task<bool> SessionStillOpen(string session, DateTime iat)
+{
+    await using var c = await db.OpenConnectionAsync();
+    await using var cmd = new NpgsqlCommand("SELECT auth.session_still_open($1, $2)", c);
+    cmd.Parameters.Add(new NpgsqlParameter { Value = session });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = iat });
+    return (bool)(await cmd.ExecuteScalarAsync())!;
 }
 
 async Task<string> Open(string tokenIss, string sub, Guid jti, DateTime exp, DateTime iat)

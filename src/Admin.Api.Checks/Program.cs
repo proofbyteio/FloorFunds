@@ -37,6 +37,8 @@ var ownerCs = Env("CONNECTION_STRING");
 var adminCs = Env("ADMIN_API_CONNECTION_STRING");
 if (args is ["--req064"])
     return await Req064Suite.RunAsync(ownerCs, adminCs);
+if (args is ["--race"])
+    return await Req064Suite.RunAsync(ownerCs, adminCs, "race");
 if (args is ["--issuer"])
     return await Req064Suite.RunAsync(ownerCs, adminCs, "issuer");
 if (args is ["--probe"])
