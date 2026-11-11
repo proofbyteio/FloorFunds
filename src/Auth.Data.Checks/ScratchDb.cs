@@ -315,6 +315,10 @@ static class ScratchDb
     // o3: cluster-level state that must be identical before and after a run. Read-only catalog queries (no pg_authid).
     // scopePrefix empty: every ff_scratch_* object is left out. A non-empty prefix keeps that run's own
     // database and roles and leaves every other ff_scratch_* name out, including shared-description counts.
+    // This run's own database is gone. Another run's marked scratch database does not count.
+    public static bool RunLeftNoMarkedScratch(string after, string before, bool stillExists, IReadOnlyCollection<string> marked, string runName)
+        => after == before && !stillExists && !marked.Contains(runName);
+
     public static async Task<string> ClusterSnapshotAsync(string adminCs, string scopePrefix = "")
     {
         if (scopePrefix.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(scopePrefix, "^ff_scratch_[a-z0-9]{6,24}\\z"))

@@ -1347,7 +1347,26 @@ await Check("Q2: this run's scratch DB dropped in the finally; no MARKED ff_scra
     if (after != scratchSnap) Console.WriteLine($"Q2: cluster snapshot changed: {ScratchDb.Diff(scratchSnap, after)}");
     var adminV = await ScratchDb.AdminRoleViolationsAsync(scratchAdminCs);
     if (adminV.Count > 0) Console.WriteLine($"Q2: ff_scratchadm: {string.Join("; ", adminV)}");
-    return after == scratchSnap && adminV.Count == 0 && !(await ScratchDb.StateAsync(scratchAdminCs, scratchName)).exists && (await ScratchDb.ListAsync(scratchAdminCs, markedOnly: true)).Count == 0;
+    var marked = await ScratchDb.ListAsync(scratchAdminCs, markedOnly: true);
+    var exists = (await ScratchDb.StateAsync(scratchAdminCs, scratchName)).exists;
+    return ScratchDb.RunLeftNoMarkedScratch(after, scratchSnap, exists, marked, scratchName) && adminV.Count == 0;
+});
+await Check("Q2: a marked scratch database from another run does not fail this run's cleanup", async () =>
+{
+    if (scratchAdminCs is null || scratchName is null || scratchSnap is null) return false;
+    var decoy = await ScratchDb.CreateMarkedAsync(scratchAdminCs);
+    try
+    {
+        var after = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs, scratchName);
+        var marked = await ScratchDb.ListAsync(scratchAdminCs, markedOnly: true);
+        var exists = (await ScratchDb.StateAsync(scratchAdminCs, scratchName)).exists;
+        return marked.Contains(decoy) && ScratchDb.RunLeftNoMarkedScratch(after, scratchSnap, exists, marked, scratchName);
+    }
+    finally
+    {
+        try { await ScratchDb.DropAsync(scratchAdminCs, decoy); }
+        catch (Exception e) { Console.WriteLine($"Q2 overlap cleanup: {e.GetType().Name}"); }
+    }
 });
 await Check("Q2: another run's ff_scratch_* database and role do not change this run's scoped snapshot", async () =>
 {
