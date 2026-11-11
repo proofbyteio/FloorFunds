@@ -151,8 +151,8 @@ rc=$(SH --db ${P}a --role ${P}a_owner --drop)
 ok "[sh] --drop without --force -> rc 2, nothing changed" "$([[ $rc == 2 && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
 oid0=$(dboid ${P}a); h0=$(pwhash ${P}a_owner)
 TRICKY="k1'q\\b-$(PW)"; rc=$(FF_DB_PASSWORD="$TRICKY" SH --db ${P}a --role ${P}a_owner --force)
-ok "[sh] --force on the kit's own objects -> rc 0, same DB oid, owner password re-set (quote+backslash password logs in)" \
-  "$([[ $rc == 0 && $(dboid ${P}a) == "$oid0" && $(pwhash ${P}a_owner) != "$h0" ]] && PGPASSWORD="$TRICKY" psql -X -tA -h 127.0.0.1 -U ${P}a_owner -d ${P}a -c 'select 1' >/dev/null 2>&1 && echo 1 || echo 0)" "rc=$rc"
+ok "[sh] --force on the kit's own objects -> rc 0, DB recreated (history is past main 18372896), owner password re-set (quote+backslash password logs in)" \
+  "$([[ $rc == 0 && $(dboid ${P}a) != "$oid0" && $(marked x ${P}a) == 1 && $(pwhash ${P}a_owner) != "$h0" ]] && PGPASSWORD="$TRICKY" psql -X -tA -h 127.0.0.1 -U ${P}a_owner -d ${P}a -c 'select 1' >/dev/null 2>&1 && echo 1 || echo 0)" "rc=$rc"
 rc=$(SH --db ${P}a --role ${P}a_owner --force --drop --seed)
 ok "[sh] --force --drop -> rc 0, DB recreated (new oid), still marked" "$([[ $rc == 0 && $(dboid ${P}a) != "$oid0" && $(marked x ${P}a) == 1 ]] && echo 1 || echo 0)" "rc=$rc"
 r=$(checks ${P}a ${P}a_owner); ok "[sh] DB checks after --force --drop -> $r" "$([[ $r == '181 passed, 0 failed' ]] && echo 1 || echo 0)"
@@ -228,9 +228,9 @@ kf1_attr() { # ATTR ROLE
 }
 kf1_attr BYPASSRLS ${P}a_owner; kf1_attr CREATEROLE ${P}a_admin_api; kf1_attr REPLICATION ${P}a_login; kf1_attr CREATEDB ${P}a_owner
 oid0=$(dboid ${P}a); rc=$(SH $A)
-ok "[sh] KF1 after every grant/attribute was reverted: --force on ${P}a -> rc 0, same DB oid" "$([[ $rc == 0 && $(dboid ${P}a) == "$oid0" ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
+ok "[sh] KF1 after every grant/attribute was reverted: --force on ${P}a -> rc 0, DB recreated rather than migrated in place" "$([[ $rc == 0 && $(dboid ${P}a) != "$oid0" && $(marked x ${P}a) == 1 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
 mapfile -t pa < <(ps1args $A); rc=$(PS "${pa[@]}")
-ok "[ps1] KF1 after every grant/attribute was reverted: -Force on ${P}a -> rc 0, same DB oid" "$([[ $rc == 0 && $(dboid ${P}a) == "$oid0" ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
+ok "[ps1] KF1 after every grant/attribute was reverted: -Force on ${P}a -> rc 0, DB recreated rather than migrated in place" "$([[ $rc == 0 && $(dboid ${P}a) != "$oid0" && $(marked x ${P}a) == 1 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
 
 # B4 defence in depth: the mutating kit SQL itself refuses unmarked objects (if the preflight were bypassed / raced)
 s0=$(snap)

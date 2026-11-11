@@ -1,4 +1,9 @@
 -- floorfunds-kit: (re)create the database. psql variables: db, role, drop (0/1).
+-- Intermediate REQ-064 databases are recreated. main 18372896's history is only the four
+-- ids below. Any other id (20261110290000, 20261110300000, or a later REQ-064 id) means
+-- --force drops and recreates. In-place migration is not attempted, so an old
+-- open_session or revoke_login is not left behind. A history that is a subset of those
+-- four ids, or a database with no history table, is migrated in place.
 -- KF2: CREATE DATABASE and DROP DATABASE cannot run inside a transaction block or a DO block (PostgreSQL rule), so
 -- they cannot share one statement with their check. What the kit does instead:
 --   * DROP: a DO block refuses (raises) unless :db is a marked, non-template DB owned by :role (not a superuser); the DROP that follows
@@ -10,6 +15,35 @@
 --     CONNECT and GRANTs CONNECT to :role, all in one transaction. If the re-check fails it raises; the unmarked DB
 --     is then left in place and every later run refuses it (it has no marker).
 --   * existing DB: the same DO block requires the marker, owner :role and not a template, then REVOKE/GRANT.
+\if :drop
+\else
+SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db') AS kit_have \gset
+\if :kit_have
+\c :db
+SELECT false AS kit_intermediate \gset
+SELECT EXISTS (
+  SELECT 1 FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public' AND c.relname = '__EFMigrationsHistory'
+) AS kit_hist \gset
+\if :kit_hist
+SELECT EXISTS (
+  SELECT 1 FROM public."__EFMigrationsHistory"
+   WHERE "MigrationId" NOT IN (
+     '20261104160000_S2aInitial',
+     '20261104170000_S2aLlcColumnUpdate',
+     '20261105080000_S2aPartnerReasonBounds',
+     '20261108190000_CatalogMasterData')
+) AS kit_intermediate \gset
+\endif
+\c postgres
+\if :kit_intermediate
+\echo Recreating :db : migration history has a REQ-064 id that is not on main 18372896. In-place migration is not supported.
+-- intermediate-req064-recreate
+\set drop 1
+\endif
+\endif
+\endif
 \if :drop
 SELECT set_config('floorfunds_kit.db', :'db', false) AS kit_db, set_config('floorfunds_kit.role', :'role', false) AS kit_role \gset
 DO $kit$

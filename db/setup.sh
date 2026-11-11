@@ -5,7 +5,12 @@
 #      and any existing role or DB the kit did not create (no 'floorfunds-kit' marker); --force never overrides
 #      that; nor kit roles with BYPASSRLS/CREATEROLE/CREATEDB/REPLICATION or any role membership outside the kit
 #      (KF1); output without the preflight's end marker is a refusal (KF3). Re-running on the kit's own (marked) objects needs --force (K1, TL 8:32).
-#   1. owner login role + a database it owns (superuser step; created objects are marked 'floorfunds-kit')
+#   1. owner login role + a database it owns (superuser step; created objects are marked 'floorfunds-kit').
+#      --force is the only supported path for an intermediate REQ-064 database. db/kit/database.sql
+#      drops and recreates a marked database whose __EFMigrationsHistory has any id other than
+#      main 18372896's four ids (20261104160000, 20261104170000, 20261105080000, 20261108190000).
+#      That includes 20261110290000, 20261110300000, and every later REQ-064 id. In-place
+#      migration is not attempted. A history that is a subset of those four ids is migrated in place.
 #   2. the S2a app roles <db>_admin_api and <db>_login, plus <db>_issuer (superuser step; spec §8.2).
 #      <db>_issuer is a LOGIN role with no membership. Its password is only for the issuer process.
 #   3. db/migrations.sql applied AS THE OWNER (idempotent script from the EF runner;
@@ -47,6 +52,9 @@ Usage: db/setup.sh [--db NAME] [--role NAME] [--password PW] [--host H] [--port 
   --admin-host     host the superuser psql connects to (default: local socket)
   --force          proceed when the kit's own (marked) DB/roles already exist: re-set their
                    passwords and grants. Never acts on objects the kit did not create.
+                   A marked database whose migration history is not a subset of main
+                   18372896 is dropped and recreated. That is the only supported path
+                   for an intermediate REQ-064 database. In-place migration is not attempted.
   --drop           drop and recreate ONLY the named database; needs --force, and only a
                    kit-marked DB owned by --role is ever dropped.
   Always refused (even with --force): --db postgres/template0/template1 or any template DB,
@@ -174,7 +182,7 @@ upsert_role() {
 upsert_role "$ROLE" "$PASSWORD"
 
 if [[ "$DROP" -eq 1 ]]; then echo "Dropping database $DB (only this database, only if kit-marked)..."; fi
-echo "Database $DB: create if missing (kit-marked only)..."
+echo "Database $DB: create if missing (kit-marked only). --force recreates a database whose history is not main 18372896..."
 run_psql -v drop="$DROP" -f - <"$KIT/database.sql" \
   || { echo "Database $DB: kit SQL step aborted (see the psql error above)." >&2; exit 5; }
 

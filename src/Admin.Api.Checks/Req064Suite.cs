@@ -1582,6 +1582,8 @@ static class Req064Suite
         var writes = await OwnerCutoffWrites(owner, lockedUser);
         Check("owner-cannot-write-login-cutoff",
             writes == "priv False insert 42501 update 42501 delete 42501", writes);
+        var recreated = await BashRepo("db/tests/intermediate-recreate.sh", "PASS force-recreates-an-intermediate-req064-database");
+        Check("force-recreates-an-intermediate-req064-database", recreated.Ok, recreated.Detail);
     }
 
     static async Task<string> OpenBehindLockUpdate(NpgsqlDataSource owner, Guid user)
