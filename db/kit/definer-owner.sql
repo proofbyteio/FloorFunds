@@ -46,6 +46,17 @@ BEGIN
     FROM pg_database WHERE datname = current_database();
   EXECUTE format('GRANT EXECUTE ON FUNCTION auth.begin_request(text), auth.current_principal(), auth.session_issuer(), auth.revoke_session(text) TO %I', owner_name);
   EXECUTE format('REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz, timestamptz) FROM %I', owner_name);
+  -- The migration user keeps SELECT on login_cutoff. Writes stay on the definer,
+  -- which owns revoke_login after this step. Scratch databases skip this file,
+  -- so their owner-run functions still have the table privileges.
+  EXECUTE format('REVOKE INSERT, UPDATE, DELETE ON TABLE auth.login_cutoff FROM %I', owner_name);
+  EXECUTE format('ALTER FUNCTION auth._login_cutoff_user_delete() OWNER TO %I', r);
+  EXECUTE format('GRANT EXECUTE ON FUNCTION auth._login_cutoff_user_delete() TO %I', owner_name);
+  EXECUTE format('GRANT DELETE ON TABLE auth.login_cutoff TO %I', r);
+  EXECUTE 'DROP POLICY IF EXISTS login_cutoff_owner ON auth.login_cutoff';
+  EXECUTE format(
+    'CREATE POLICY login_cutoff_owner ON auth.login_cutoff FOR SELECT TO %I USING (true)',
+    owner_name);
   -- catalog._actor calls resolve_grant while the registry trigger runs as the owner.
   EXECUTE format('GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid) TO %I', owner_name);
   -- The login-config UPDATE reads the kept columns. The definer needs SELECT as well as UPDATE.
