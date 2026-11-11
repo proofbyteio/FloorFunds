@@ -4371,6 +4371,10 @@ BEGIN
     IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110310000_Req064Actor') THEN
     -- The catalog actor is the bound session principal. Resolved GUCs are not read.
     -- correlation_id and reason are the write label, not the principal.
+    -- Main's catalog._actor has fewer OUT columns. CREATE OR REPLACE cannot change
+    -- the return type, so the old function is dropped first.
+
+    DROP FUNCTION IF EXISTS catalog._actor();
 
     CREATE OR REPLACE FUNCTION catalog._actor(
       OUT admin_type text,

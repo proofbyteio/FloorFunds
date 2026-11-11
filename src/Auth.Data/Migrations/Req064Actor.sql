@@ -1,6 +1,8 @@
 -- The catalog actor is the bound session principal. Resolved GUCs are not read.
 -- correlation_id and reason are the write label, not the principal.
 
+DROP FUNCTION IF EXISTS catalog._actor();
+
 CREATE OR REPLACE FUNCTION catalog._actor(
   OUT admin_type text,
   OUT partner_id uuid,
