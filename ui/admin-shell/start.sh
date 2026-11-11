@@ -33,7 +33,39 @@ ADMIN_PW="$(gen_pw)"
 LOGIN_PW="$(gen_pw)"
 ISSUER_PW="$(gen_pw)"
 export FF_DB_PASSWORD="$OWNER_PW" FF_ADMIN_API_PASSWORD="$ADMIN_PW" FF_LOGIN_PASSWORD="$LOGIN_PW"
-# The issuer password is for setup and the issuer process only. It is not exported.
+# Synthetic owner-test database only. A database left from 67d2546 or 9ebb0eb is
+# dropped and created again, then seeded. Any other name or host is refused.
+if [[ "$DB_NAME" != "ff_kit_adminshell" || "$DB_HOST" != "127.0.0.1" ]]; then
+  echo "admin shell refused to start: the owner-test database must be the synthetic loopback database ff_kit_adminshell" >&2
+  exit 2
+fi
+kit_state="$(sudo -u postgres psql -tA -c "SELECT CASE
+  WHEN EXISTS (
+    SELECT 1 FROM pg_database d
+     WHERE d.datname = 'ff_kit_adminshell' AND NOT d.datistemplate
+       AND shobj_description(d.oid, 'pg_database') = 'floorfunds-kit'
+  ) THEN 'marked'
+  WHEN EXISTS (SELECT 1 FROM pg_database d WHERE d.datname = 'ff_kit_adminshell') THEN 'foreign'
+  ELSE 'absent'
+END")"
+case "$kit_state" in
+  foreign)
+    echo "admin shell refused to start: ff_kit_adminshell exists and is not a synthetic kit database" >&2
+    exit 2
+    ;;
+  marked)
+    echo "Dropping synthetic database ff_kit_adminshell so a database migrated at an older tip does not survive"
+    FF_ISSUER_PASSWORD="$ISSUER_PW" bash db/setup.sh --db "$DB_NAME" --role "$DB_NAME" --host "$DB_HOST" --port "$DB_PORT" --force --drop --no-migrate
+    ;;
+  absent)
+    echo "Synthetic database ff_kit_adminshell is absent; it will be created from the current migrations"
+    ;;
+  *)
+    echo "admin shell refused to start: could not read whether ff_kit_adminshell is a synthetic kit database" >&2
+    exit 2
+    ;;
+esac
+echo "Creating synthetic database ff_kit_adminshell from the current migrations and loading the seed"
 FF_ISSUER_PASSWORD="$ISSUER_PW" bash db/setup.sh --db "$DB_NAME" --role "$DB_NAME" --host "$DB_HOST" --port "$DB_PORT" --force --seed
 export CONNECTION_STRING="Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_NAME};Password=${OWNER_PW}"
 export ADMIN_API_CONNECTION_STRING="Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_NAME}_admin_api;Password=${ADMIN_PW}"
@@ -53,16 +85,18 @@ printf '%s\n' '{"entries":[{"value":"127.0.0.1/32"},{"value":"::1/128"}]}' > "$S
 dotnet build src/Login.StandIn/Login.StandIn.csproj -p:IncludeStandIn=true -v q --nologo
 dotnet build src/Auth.Issuer/Auth.Issuer.csproj -v q --nologo
 dotnet build src/Admin.Api/Admin.Api.csproj -v q --nologo
+# shellcheck source=own-listener.sh
+source "$(dirname "$0")/own-listener.sh"
+require_port_free 18080 "stand-in"
+require_port_free 18081 "stand-in token"
+require_port_free 18090 "admin API"
+require_port_free 18091 "issuer"
 nohup dotnet run --project src/Login.StandIn/Login.StandIn.csproj --no-build -p:IncludeStandIn=true > /tmp/ff-db/admin-shell-standin.log 2>&1 &
 echo $! > /tmp/ff-db/admin-shell-standin.pid
-for _ in $(seq 1 80); do
-  if curl -fsS "http://127.0.0.1:18080/standin/.well-known/jwks" -o /tmp/ff-db/admin-shell-jwks.json; then
-    break
-  fi
-  sleep 0.25
-done
-if ! kill -0 "$(cat /tmp/ff-db/admin-shell-standin.pid)" 2>/dev/null; then
-  echo "admin shell refused to start: the stand-in exited" >&2
+wait_own_listener "$(cat /tmp/ff-db/admin-shell-standin.pid)" 18080 "stand-in"
+wait_own_listener "$(cat /tmp/ff-db/admin-shell-standin.pid)" 18081 "stand-in token"
+if ! curl -fsS "http://127.0.0.1:18080/standin/.well-known/jwks" -o /tmp/ff-db/admin-shell-jwks.json; then
+  echo "admin shell refused to start: stand-in pid $(cat /tmp/ff-db/admin-shell-standin.pid) owns port 18080 but did not serve its JWKS" >&2
   exit 1
 fi
 test -s /tmp/ff-db/admin-shell-jwks.json
@@ -84,27 +118,19 @@ export Urls=http://127.0.0.1:18090
   exec dotnet run --project src/Auth.Issuer/Auth.Issuer.csproj --no-build -- http://127.0.0.1:18091
 ) > /tmp/ff-db/admin-shell-issuer.log 2>&1 &
 echo $! > /tmp/ff-db/admin-shell-issuer.pid
-issuer_ok=0
-for _ in $(seq 1 80); do
-  if curl -fsS -o /dev/null -X POST --data '' http://127.0.0.1:18091/v1/session; then
-    issuer_ok=1
-    break
-  fi
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST --data 'x' http://127.0.0.1:18091/v1/session || true)"
-  if [[ "$code" == "401" ]]; then issuer_ok=1; break; fi
-  sleep 0.25
-done
-if [[ "$issuer_ok" != "1" ]]; then
-  echo "admin shell refused to start: the issuer did not listen" >&2
+wait_own_listener "$(cat /tmp/ff-db/admin-shell-issuer.pid)" 18091 "issuer"
+issuer_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST --data 'x' http://127.0.0.1:18091/v1/session || true)"
+if [[ "$issuer_code" != "401" ]]; then
+  echo "admin shell refused to start: issuer pid $(cat /tmp/ff-db/admin-shell-issuer.pid) owns port 18091 but returned ${issuer_code}" >&2
   exit 1
 fi
 nohup dotnet run --project src/Admin.Api/Admin.Api.csproj --no-build > /tmp/ff-db/admin-shell-api.log 2>&1 &
 echo $! > /tmp/ff-db/admin-shell-api.pid
-ok=0
-for _ in $(seq 1 80); do
-  code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18090/api/nav || true)"
-  if [[ "$code" == "401" ]]; then ok=1; break; fi
-  sleep 0.25
-done
-test "$ok" = 1
+wait_own_listener "$(cat /tmp/ff-db/admin-shell-api.pid)" 18090 "admin API"
+api_code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18090/api/nav || true)"
+if [[ "$api_code" != "401" ]]; then
+  echo "admin shell refused to start: admin API pid $(cat /tmp/ff-db/admin-shell-api.pid) owns port 18090 but /api/nav returned ${api_code}" >&2
+  exit 1
+fi
+echo "admin shell listeners are the stand-in, issuer, and API this script started"
 node ui/admin-shell/server.mjs
