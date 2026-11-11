@@ -14,10 +14,20 @@ public static class Listeners
     // [TL Decision 9:26 PM, ports] STANDIN_PORT_BASE (default 18080): front = base, back = base+1, control = base+2; loopback only.
     public static int Base(IConfiguration c) => int.TryParse(Environment.GetEnvironmentVariable("STANDIN_PORT_BASE"), out var b) && b is > 1024 and < 65533 ? b : c.GetValue("StandIn:PortBase", 18080);
     public static StandInPorts Read(IConfiguration c) { var b = Base(c); return new(b, b + 1, b + 2); }
-    // Each instance has its own /tmp state dir keyed by the base (client keys, pid).
-    // G8 (TL 10:30 PM): root from STANDIN_STATE_DIR, default /tmp/sse-d0. [ASSUMPTION A71] must be an absolute path under /tmp (as B2), else default.
-    public static string StateRoot { get { var e = Environment.GetEnvironmentVariable("STANDIN_STATE_DIR"); return e is { Length: > 0 } && Path.IsPathRooted(e) && Path.GetFullPath(e).StartsWith("/tmp/") ? Path.GetFullPath(e).TrimEnd('/') : "/tmp/sse-d0"; } }
-    public static string StateDir(StandInPorts p) => $"{StateRoot}/standin-{p.Front}";
+    // Each instance has its own temp state dir keyed by the base (client keys, pid).
+    // G8 (TL 10:30 PM): root from STANDIN_STATE_DIR, default /tmp/sse-d0 (Windows: %TEMP%\sse-d0).
+    // [ASSUMPTION A71] must be an absolute path under the stand-in temp root (as B2), else default.
+    public static string StateRoot
+    {
+        get
+        {
+            var e = Environment.GetEnvironmentVariable("STANDIN_STATE_DIR");
+            if (e is { Length: > 0 } && Path.IsPathRooted(e) && StandInPaths.IsUnderAllowedTemp(e))
+                return StandInPaths.NormalizeDir(e);
+            return StandInPaths.DefaultStateRoot;
+        }
+    }
+    public static string StateDir(StandInPorts p) => Path.Combine(StateRoot, $"standin-{p.Front}");
 
     // Every listener binds 127.0.0.1 only. ASPNETCORE_URLS is ignored because Kestrel is configured explicitly.
     public static void Bind(WebApplicationBuilder b, StandInPorts p)

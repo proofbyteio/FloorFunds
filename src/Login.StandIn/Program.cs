@@ -29,7 +29,7 @@ if (!issuerPath.Contains("/standin")) { Console.Error.WriteLine("Login.StandIn r
 builder.Services.AddAntiforgery(o => { o.Cookie.Name = "standin_af"; o.FormFieldName = "__RequestVerificationToken"; o.Cookie.Path = issuerPath; o.SuppressXFrameOptionsHeader = true; }); // F7: never SAMEORIGIN
 var app = builder.Build();
 // Slice 3: the allowlist runs first on every front request.
-var allow = new Allowlist(cfg["StandIn:AllowlistJson"] ?? "/tmp/sse-d0/allowlist-active.json");
+var allow = new Allowlist(cfg["StandIn:AllowlistJson"] ?? Path.Combine(StandInPaths.DefaultStateRoot, "allowlist-active.json"));
 Console.WriteLine($"allowlist loaded={allow.Loaded} entries={allow.Count}");
 // TL 9:32: every stand-in response carries a CSP with frame-ancestors 'none' (pages set their own, richer one).
 app.Use((c, next) => { c.Response.OnStarting(() => { if (!c.Response.Headers.ContainsKey("Content-Security-Policy")) c.Response.Headers.ContentSecurityPolicy = Ui.DefaultCsp; c.Response.Headers.XFrameOptions = "DENY"; return Task.CompletedTask; }); return next(c); });

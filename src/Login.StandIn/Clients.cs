@@ -17,11 +17,11 @@ public static class Clients
     public const string AssertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 
     // [TL Decision 9:16 PM, B2] FIXTURE client keys: fresh RSA-2048 per client at every start and reset (7.6 allows RS256 only).
-    // The private key is written only under /tmp (never the repo), PKCS#8 PEM, file mode 0600; the public key stays in memory.
+    // The private key is written only under the stand-in temp root (never the repo), PKCS#8 PEM, file mode 0600; the public key stays in memory.
     public static Dictionary<string, OAuthClient> Load(JsonObject fx, string keyDir)
     {
-        var full = Path.GetFullPath(keyDir);
-        if (!full.StartsWith("/tmp/", StringComparison.Ordinal)) throw new InvalidOperationException("FIXTURE client keys may only be written under /tmp");
+        var full = StandInPaths.NormalizeDir(keyDir);
+        if (!StandInPaths.IsUnderAllowedTemp(full)) throw new InvalidOperationException("FIXTURE client keys may only be written under the stand-in temp directory");
         Directory.CreateDirectory(full);
         var d = new Dictionary<string, OAuthClient>(StringComparer.Ordinal);
         foreach (var c in fx["clients"]!.AsArray())
