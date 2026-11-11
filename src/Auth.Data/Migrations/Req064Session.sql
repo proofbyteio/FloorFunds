@@ -92,7 +92,29 @@ BEGIN
     INSERT INTO auth.request_session (token_hash, jti, iss, sub, user_id, created_at, expires_at)
     VALUES (v_hash, p_jti, p_iss, p_sub, v_user, v_created, v_exp);
   EXCEPTION WHEN unique_violation THEN
-    RAISE EXCEPTION 'jti_reused' USING ERRCODE = '23505';
+    -- Same jti, same subject, already expired, not revoked: replace the row.
+    -- A live row, a revoked row, or a different subject stays jti_reused.
+    DELETE FROM auth.request_binding b
+     USING auth.request_session s
+     WHERE b.token_hash = s.token_hash
+       AND s.jti = p_jti
+       AND s.user_id = v_user
+       AND s.iss = p_iss
+       AND s.sub = p_sub
+       AND s.revoked_at IS NULL
+       AND s.expires_at <= v_created;
+    DELETE FROM auth.request_session s
+     WHERE s.jti = p_jti
+       AND s.user_id = v_user
+       AND s.iss = p_iss
+       AND s.sub = p_sub
+       AND s.revoked_at IS NULL
+       AND s.expires_at <= v_created;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'jti_reused' USING ERRCODE = '23505';
+    END IF;
+    INSERT INTO auth.request_session (token_hash, jti, iss, sub, user_id, created_at, expires_at)
+    VALUES (v_hash, p_jti, p_iss, p_sub, v_user, v_created, v_exp);
   END;
   RETURN v_token;
 END
@@ -113,6 +135,16 @@ BEGIN
      AND s.revoked_at IS NULL
      AND s.expires_at > clock_timestamp();
   IF v_user IS NULL THEN
+    -- The row is still checked. Expired and not revoked is a distinct error
+    -- so the host can return 401. Revoked and unknown stay session_denied.
+    IF EXISTS (
+      SELECT 1 FROM auth.request_session s
+       WHERE s.token_hash = v_hash
+         AND s.revoked_at IS NULL
+         AND s.expires_at <= clock_timestamp()
+    ) THEN
+      RAISE EXCEPTION 'session_expired' USING ERRCODE = '42501';
+    END IF;
     RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
   END IF;
   BEGIN

@@ -84,6 +84,12 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             c = await db.OpenConnectionAsync(ctx.RequestAborted);
             tx = await c.BeginTransactionAsync(ctx.RequestAborted);
             try { await BeginRequestAsync(c, tx, issued.SessionToken); }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege && ex.MessageText == "session_expired")
+            {
+                await SafeRollback(c, tx);
+                ctx.Response.Headers.WWWAuthenticate = "Bearer";
+                return Json(401, new JsonObject { ["error"] = "session_expired" });
+            }
             catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
             {
                 await SafeRollback(c, tx);

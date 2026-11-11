@@ -7,6 +7,7 @@
 
 const main = document.querySelector("#main");
 const navEl = document.querySelector("#nav");
+let leaving = false;
 
 const pages = {
   home: { label: "Home", need: null },
@@ -19,11 +20,26 @@ const pages = {
 
 let grant = [];
 
-async function api(path, opts) {
-  const res = await fetch(path, { credentials: "same-origin", ...opts });
+function goSignIn() {
+  leaving = true;
+  location.assign("/signin");
+}
+
+export async function api(path, opts) {
+  const { sessionReopened, ...rest } = opts ?? {};
+  const res = await fetch(path, { credentials: "same-origin", ...rest });
   const text = await res.text();
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = { raw: text }; }
+  // One silent reopen. A second expiry, or a failed reopen, leaves for /signin
+  // and does not draw the assignment or screen banners.
+  if (res.status === 401 && body && body.error === "session_expired" && !sessionReopened) {
+    const opened = await fetch("/api/session", { method: "POST", credentials: "same-origin" });
+    if (!opened.ok) { goSignIn(); return { status: 401, body }; }
+    const retried = await api(path, { ...rest, sessionReopened: true });
+    if (retried.status === 401) goSignIn();
+    return retried;
+  }
   return { status: res.status, body };
 }
 
@@ -60,6 +76,7 @@ function banner(kind, title, text) {
 }
 
 function denied() {
+  if (leaving) return;
   main.replaceChildren(
     h("h1", "This screen is not available"),
     banner("error", "Denied", "The server did not grant this screen. The menu only lists screens the grant includes."),
@@ -67,6 +84,7 @@ function denied() {
 }
 
 function noAssignment() {
+  if (leaving) return;
   main.replaceChildren(
     h("h1", "No assignment"),
     banner("warning", "No access", "This sign-in has no active assignment. Nothing on this screen is granted by the token."),
@@ -288,7 +306,7 @@ async function showClients() {
 
 async function draw() {
   const me = await api("/api/nav");
-  if (me.status === 401) { location.assign("/signin"); return; }
+  if (me.status === 401) { goSignIn(); return; }
   grant = me.status === 200 ? (me.body.screens ?? []) : [];
   const name = route();
   renderNav(name === "denied" ? "" : name);
@@ -302,5 +320,8 @@ async function draw() {
   if (name === "clients") return showClients();
 }
 
-window.addEventListener("hashchange", () => { draw(); });
-draw();
+export let started = Promise.resolve();
+if (main) {
+  window.addEventListener("hashchange", () => { draw(); });
+  started = draw();
+}

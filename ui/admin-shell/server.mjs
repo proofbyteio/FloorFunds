@@ -11,6 +11,7 @@ const port = Number(process.env.ADMIN_SHELL_PORT || 5088);
 const apiOrigin = process.env.ADMIN_API_ORIGIN || "http://127.0.0.1:18090";
 const standinOrigin = process.env.STANDIN_FRONT_ORIGIN || "http://127.0.0.1:18080";
 const tokenUrl = process.env.STANDIN_TOKEN_URL || "http://127.0.0.1:18081/standin/connect/token";
+const issuerUrl = process.env.ISSUER_URL || "";
 const publicOrigin = `http://127.0.0.1:${port}`;
 
 if (process.env.ADMIN_DEV_SHELL !== "1") {
@@ -168,6 +169,18 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.startsWith("/standin/")) {
       const body = req.method === "GET" || req.method === "HEAD" ? null : await readBody(req);
       await proxy(req, res, standinOrigin + url.pathname + url.search, body);
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/session") {
+      const session = sessions.get(cookie(req));
+      if (!session?.token) { sendJson(res, 401, { error: "unauthorized" }); return; }
+      if (!issuerUrl.startsWith("http://127.0.0.1:")) { sendJson(res, 503, { error: "issuer_unavailable" }); return; }
+      const opened = await fetch(issuerUrl.replace(/\/$/, "") + "/v1/session?reopen=1", {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: session.token,
+      });
+      sendJson(res, opened.ok ? 200 : 401, { error: opened.ok ? "ok" : "session_expired" });
       return;
     }
     if (url.pathname.startsWith("/api/")) {

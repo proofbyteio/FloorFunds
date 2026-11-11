@@ -93,9 +93,14 @@ async Task Handle(HttpListenerContext ctx)
     var gate = gates.GetOrAdd(accepted.Jti, _ => new SemaphoreSlim(1, 1));
     await gate.WaitAsync();
     string session;
+    // The host calls this without reopen and keeps the cached token, so an
+    // expired row becomes session_expired at begin_request. The shell's one
+    // retry calls ?reopen=1, which replaces that expired row. A revoked row
+    // or a different subject is still rejected.
+    var reopen = ctx.Request.Url?.Query?.Contains("reopen=1", StringComparison.Ordinal) == true;
     try
     {
-        if (cache.TryGetValue(accepted.Jti, out var cached))
+        if (!reopen && cache.TryGetValue(accepted.Jti, out var cached))
         {
             if (cached.User != accepted.User || !string.Equals(cached.Iss, accepted.Token.Issuer, StringComparison.Ordinal))
             {

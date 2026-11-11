@@ -277,6 +277,12 @@ static class Req064Suite
             Check("no-revoke-or-assign-api",
                 !host.Contains("/api/assign", StringComparison.Ordinal) && !host.Contains("/api/revoke", StringComparison.Ordinal)
                 && !host.Contains("MapPost(\"/api/admin", StringComparison.Ordinal));
+            await SessionExpiry(http, issuerProc.Url, sign, owner, Sa);
+            var signedIn = await StandInSignIn.Run(ownerCs, adminCs, issuerCs);
+            Check("stand-in-sign-in-opens-session-nav-locations-catalog", signedIn.Ok, signedIn.Detail);
+            var shell = await ShellReopen();
+            Check("shell-reopens-an-expired-session-once", shell.Ok, shell.Detail);
+
             var options = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Admin.Api", "AdminApiOptions.cs"));
             var auth = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Admin.Api", "AdminAuth.cs"));
             var api = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Admin.Api", "LoginConfigApi.cs"));
@@ -1395,11 +1401,55 @@ static class Req064Suite
             TokenType = "at+jwt",
         });
 
-    static async Task<int> IssuerStatus(string url, string jwt)
+    static Task<int> IssuerStatus(string url, string jwt) => IssuerStatus(url, jwt, false);
+
+    static async Task<int> IssuerStatus(string url, string jwt, bool absolute)
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-        var res = await http.PostAsync(url.TrimEnd('/') + "/v1/session", new StringContent(jwt));
+        var target = absolute ? url : url.TrimEnd('/') + "/v1/session";
+        var res = await http.PostAsync(target, new StringContent(jwt));
         return (int)res.StatusCode;
+    }
+
+    static async Task SessionExpiry(HttpClient http, string issuerUrl, RsaSecurityKey sign, NpgsqlDataSource owner, Guid user)
+    {
+        var jwt = Mint(sign, user, "super", null);
+        using var claims = JsonDocument.Parse(Base64UrlEncoder.Decode(jwt.Split('.')[1]));
+        var jti = Guid.Parse(claims.RootElement.GetProperty("jti").GetString()!);
+        var opened = await Send(http, HttpMethod.Get, "/api/nav", jwt);
+        Check("session-live-before-expiry", opened.Status == 200, opened.Status.ToString());
+        await Exec(owner, "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE jti = $1", jti);
+        var expired = await Send(http, HttpMethod.Get, "/api/nav", jwt);
+        Check("session-expired-is-a-distinct-401",
+            expired.Status == 401 && expired.Body.Contains("session_expired", StringComparison.Ordinal)
+            && !expired.Body.Contains("No assignment", StringComparison.Ordinal)
+            && !expired.Body.Contains("not available", StringComparison.Ordinal),
+            expired.Status + " " + Clip(expired.Body));
+        var reopened = await IssuerStatus(issuerUrl + "/v1/session?reopen=1", jwt, absolute: true);
+        Check("session-expired-reopen-then-nav-200", reopened == 200 && (await Send(http, HttpMethod.Get, "/api/nav", jwt)).Status == 200,
+            "reopen " + reopened);
+        await Exec(owner, "UPDATE auth.request_session SET revoked_at = clock_timestamp() WHERE jti = $1", jti);
+        var revived = await IssuerStatus(issuerUrl + "/v1/session?reopen=1", jwt, absolute: true);
+        var still = await ScalarLong(owner, "SELECT count(*) FROM auth.request_session WHERE jti = $1 AND revoked_at IS NOT NULL", jti);
+        Check("revoked-session-is-not-reopened", revived == 401 && still == 1, "reopen " + revived);
+    }
+
+    static async Task<(bool Ok, string Detail)> ShellReopen()
+    {
+        var psi = new ProcessStartInfo("node", [Path.Combine(RepoRoot(), "ui", "admin-shell", "session-reopen.test.mjs")])
+        {
+            WorkingDirectory = Path.Combine(RepoRoot(), "ui", "admin-shell"),
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        using var process = Process.Start(psi);
+        if (process is null) return (false, "node did not start");
+        var text = await process.StandardOutput.ReadToEndAsync();
+        var err = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        var ok = process.ExitCode == 0 && text.Contains("PASS shell-reopens-an-expired-session-once", StringComparison.Ordinal);
+        return (ok, (text + err).Trim());
     }
 
     static async Task<string> IssuerSession(string url, string jwt)
