@@ -308,6 +308,7 @@ static class Req064Suite
             await ClosedSessions(http, sign, owner);
             await LoginConfigHttp(http, Mint(sign, Sa, "super", null), owner);
             await LoginSerialization(owner, admin);
+            await MigratorCannotTruncate(owner, "auth.app_user", "migrator-cannot-truncate-app-user");
             await BoundsRetry(http, sign, owner, Sa);
             await SessionDeniedArm(http, sign, owner, Sa);
             var signedIn = await StandInSignIn.Run(ownerCs, adminCs, issuerCs);
@@ -727,6 +728,12 @@ static class Req064Suite
         var other = await Count(Lb);
         await tx.RollbackAsync();
         return own == 1 && other == 0;
+    }
+
+    static async Task MigratorCannotTruncate(NpgsqlDataSource owner, string table, string name)
+    {
+        var state = await OwnerDdl(owner, "TRUNCATE " + table);
+        Check(name, state == "42501", state);
     }
 
     static async Task<bool> TruncateGuard(NpgsqlDataSource owner)
