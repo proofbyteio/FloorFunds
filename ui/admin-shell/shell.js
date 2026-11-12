@@ -13,7 +13,7 @@ let leaving = false;
 const pages = {
   home: { label: "Home", need: null },
   locations: { label: "Locations", need: "create_location" },
-  catalog: { label: "Catalog", need: null },
+  catalog: { label: "Catalog", need: "catalog" },
   clients: { label: "Clients", need: "create_client" },
 };
 

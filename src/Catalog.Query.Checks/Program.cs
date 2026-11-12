@@ -5,6 +5,8 @@ using Catalog.Query;
 using Catalog.Read;
 using Npgsql;
 
+if (args.Contains("--catalog-read-check")) return await CatalogReadProbe.Run();
+
 const string DbName = "ff_kit_dec192_query1";
 const string OwnerRole = "dec192qmig";
 const string AdminRole = "ff_kit_dec192_query1_admin_api";

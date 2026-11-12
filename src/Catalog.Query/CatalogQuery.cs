@@ -23,7 +23,7 @@ public sealed class CatalogQuery
     {
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(actor);
-        if (!actor.IsManagementRole)
+        if (!CatalogReadAuthorization.MayRead(actor))
             return CatalogQueryResult.Forbidden();
 
         var scope = ScopeFor(actor);
@@ -87,7 +87,7 @@ public sealed class CatalogQuery
         Guid entryId,
         CancellationToken cancellationToken)
     {
-        if (!actor.IsManagementRole)
+        if (!CatalogReadAuthorization.MayRead(actor))
             return null;
         var scope = ScopeFor(actor);
         var row = await _storage.FindEntryAsync(scope, entryId, cancellationToken);
@@ -111,7 +111,7 @@ public sealed class CatalogQuery
     /// </summary>
     private static bool Visible(CatalogPrincipal actor, CatalogEntryRow entry)
     {
-        if (!actor.IsManagementRole)
+        if (!CatalogReadAuthorization.MayRead(actor))
             return false;
         if (entry.OwnerPartnerId is null)
             return true;

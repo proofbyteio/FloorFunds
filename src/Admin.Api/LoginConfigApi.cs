@@ -854,6 +854,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             screens.Add("create_location");
             screens.Add("config");
         }
+        if (CatalogNav.Includes(who.Id.UserId, who.Grant)) screens.Add("catalog");
         return Json(200, new JsonObject { ["screens"] = screens, ["product_name"] = opt.ProductName });
     });
 
@@ -861,7 +862,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
     public Task<IResult> CatalogScreenAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         if (c.State != System.Data.ConnectionState.Open || tx.Connection is null) throw Err(403, "forbidden");
-        if (!who.IsAdmin) throw Err(403, "forbidden");
+        if (!CatalogNav.Includes(who.Id.UserId, who.Grant)) throw Err(403, "forbidden");
         return Json(200, new JsonObject { ["screen"] = "catalog", ["write"] = "held" });
     });
 
