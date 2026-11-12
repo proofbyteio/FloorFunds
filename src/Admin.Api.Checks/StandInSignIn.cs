@@ -112,25 +112,23 @@ static class StandInSignIn
 
     static async Task Bind(string ownerCs, string issuer)
     {
-        await using var c = await Open(ownerCs);
-        await Exec(c, """
+        await using var seed = await Req064Suite.OpenTestSeed(NpgsqlDataSource.Create(ownerCs));
+        await using var sc = await seed.OpenConnectionAsync();
+        await Exec(sc, """
             INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, status, version, granted_by, granted_at)
             SELECT $1, u.user_id, 'super_admin', 'global', 'active', 1, u.user_id, now()
               FROM auth.app_user u
              WHERE u.user_id = $2
-            ON CONFLICT (assignment_id) DO NOTHING
             """, Guid.Parse(SaAssignment), Guid.Parse(Sa));
-        await Exec(c, """
+        await Exec(sc, """
             INSERT INTO auth.admin_assignment (
               assignment_id, user_id, role_id, scope_kind, partner_id, location_id, status, version, granted_by, granted_at, revoked_at)
             SELECT $1, u.user_id, 'partner_admin', 'partner', $2, NULL, 'active', 1, u.user_id, now(), NULL
               FROM auth.app_user u
              WHERE u.user_id = $3
-            ON CONFLICT (assignment_id) DO NOTHING
             """, Guid.Parse(PaAssignment), Guid.Parse(Partner), Guid.Parse(Pa));
-        await Exec(c, """
+        await Exec(sc, """
             INSERT INTO auth.user_issuer (user_id, issuer) VALUES ($1, $3), ($2, $3)
-            ON CONFLICT (user_id) DO UPDATE SET issuer = EXCLUDED.issuer
             """, Guid.Parse(Sa), Guid.Parse(Pa), issuer);
     }
 

@@ -805,7 +805,7 @@ static class Req064Suite
             detail.Contains("subtype_count", StringComparison.Ordinal), detail);
     }
 
-    static async Task<NpgsqlDataSource> OpenTestSeed(NpgsqlDataSource owner)
+    public static async Task<NpgsqlDataSource> OpenTestSeed(NpgsqlDataSource owner)
     {
         string database;
         string host;
@@ -2427,16 +2427,21 @@ static class Req064Suite
 
     static async Task EnsureUser(NpgsqlDataSource owner, Guid user)
     {
-        await Exec(owner, """
+        await using var seed = await OpenTestSeed(owner);
+        await InsertOnce(seed, """
             INSERT INTO auth.app_user (user_id, partner_id, status)
             VALUES ($1, NULL, 'active')
-            ON CONFLICT (user_id) DO UPDATE SET status = 'active', locked_until = NULL
             """, user);
-        await Exec(owner, """
+        await InsertOnce(seed, """
             INSERT INTO auth.user_issuer (user_id, issuer)
             VALUES ($1, $2)
-            ON CONFLICT (user_id) DO UPDATE SET issuer = EXCLUDED.issuer
             """, user, Issuer);
+    }
+
+    static async Task InsertOnce(NpgsqlDataSource ds, string sql, params object?[] ps)
+    {
+        try { await Exec(ds, sql, ps); }
+        catch (PostgresException ex) when (ex.SqlState == "23505") { }
     }
 
     static async Task RevokeSession(string token)

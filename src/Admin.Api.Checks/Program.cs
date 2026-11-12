@@ -119,42 +119,42 @@ string Arn(string name, string region = "us-west-2", string acct = "000000000000
 // The deployment's one app-registration secret reference, Entra:SecretRef [TLD 2026-11-04 9:49, D-51]. Fake account 000000000000.
 string DeployArn = Arn("deploy/app-reg");
 // M-A: resolve_grant matches issuer and subject. Stand-in issuers cannot live in external_login.
-await using (var issuerBind = await ownerDs.OpenConnectionAsync())
-await using (var issuerCmd = new NpgsqlCommand("""
-    INSERT INTO auth.user_issuer (user_id, issuer)
-    SELECT u.user_id, $1 FROM auth.app_user u
-    WHERE NOT EXISTS (SELECT 1 FROM auth.user_issuer i WHERE i.user_id = u.user_id)
-    """, issuerBind))
-{
-    issuerCmd.Parameters.Add(new NpgsqlParameter { Value = Issuer });
-    await issuerCmd.ExecuteNonQueryAsync();
-}
 // The 788 checks resolve authority in TestDirectory. Row security reads assignments, so these
-// token subjects need a matching row. They are removed in the cleanup below.
-async Task BindAdminGrant(string sql, params object[] ps)
+// token subjects need a matching row. A fresh scratch database has none of them yet.
+await using (var seedDs = await Req064Suite.OpenTestSeed(ownerDs))
 {
-    await using var c = await ownerDs.OpenConnectionAsync();
-    await using var cmd = new NpgsqlCommand(sql, c);
-    foreach (var p in ps) cmd.Parameters.Add(new NpgsqlParameter { Value = p });
-    await cmd.ExecuteNonQueryAsync();
+    await using (var issuerBind = await seedDs.OpenConnectionAsync())
+    await using (var issuerCmd = new NpgsqlCommand("""
+        INSERT INTO auth.user_issuer (user_id, issuer)
+        SELECT u.user_id, $1 FROM auth.app_user u
+        WHERE NOT EXISTS (SELECT 1 FROM auth.user_issuer i WHERE i.user_id = u.user_id)
+        """, issuerBind))
+    {
+        issuerCmd.Parameters.Add(new NpgsqlParameter { Value = Issuer });
+        await issuerCmd.ExecuteNonQueryAsync();
+    }
+    async Task SeedGrant(string sql, params object[] ps)
+    {
+        await using var c = await seedDs.OpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand(sql, c);
+        foreach (var p in ps) cmd.Parameters.Add(new NpgsqlParameter { Value = p });
+        await cmd.ExecuteNonQueryAsync();
+    }
+    await SeedGrant("""
+        INSERT INTO auth.app_user (user_id, partner_id, status) VALUES
+          ($1, NULL, 'active'), ($2, NULL, 'active'), ($3, NULL, 'active'), ($4, NULL, 'active'),
+          ($5, NULL, 'active'), ($6, NULL, 'active')
+        """, U_SA, U_PA, U_PB, U_RD, U_NO, U_CU);
+    await SeedGrant("""
+        INSERT INTO auth.user_issuer (user_id, issuer) VALUES ($1, $7), ($2, $7), ($3, $7), ($4, $7), ($5, $7), ($6, $7)
+        """, U_SA, U_PA, U_PB, U_RD, U_NO, U_CU, Issuer);
+    await SeedGrant("""
+        INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
+          ($1, $1, 'super_admin', 'global', NULL, 'active', 1, $1, now()),
+          ($2, $2, 'partner_admin', 'partner', $4, 'active', 1, $1, now()),
+          ($3, $3, 'partner_admin', 'partner', $5, 'active', 1, $1, now())
+        """, U_SA, U_PA, U_PB, P_A, P_B);
 }
-await BindAdminGrant("""
-    INSERT INTO auth.app_user (user_id, partner_id, status) VALUES
-      ($1, NULL, 'active'), ($2, NULL, 'active'), ($3, NULL, 'active'), ($4, NULL, 'active'),
-      ($5, NULL, 'active'), ($6, NULL, 'active')
-    ON CONFLICT (user_id) DO NOTHING
-    """, U_SA, U_PA, U_PB, U_RD, U_NO, U_CU);
-await BindAdminGrant("""
-    INSERT INTO auth.user_issuer (user_id, issuer) VALUES ($1, $7), ($2, $7), ($3, $7), ($4, $7), ($5, $7), ($6, $7)
-    ON CONFLICT (user_id) DO UPDATE SET issuer = EXCLUDED.issuer
-    """, U_SA, U_PA, U_PB, U_RD, U_NO, U_CU, Issuer);
-await BindAdminGrant("""
-    INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
-      ($1, $1, 'super_admin', 'global', NULL, 'active', 1, $1, now()),
-      ($2, $2, 'partner_admin', 'partner', $4, 'active', 1, $1, now()),
-      ($3, $3, 'partner_admin', 'partner', $5, 'active', 1, $1, now())
-    ON CONFLICT (assignment_id) DO NOTHING
-    """, U_SA, U_PA, U_PB, P_A, P_B);
 
 // ---------- keys, options ----------
 using var rsa = RSA.Create(2048);
