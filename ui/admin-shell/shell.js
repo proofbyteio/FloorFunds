@@ -13,25 +13,30 @@ let leaving = false;
 const pages = {
   home: { label: "Home", need: null },
   locations: { label: "Locations", need: "create_location" },
+  // F-21. create_location and config come from GET /api/nav screens
+  // (LoginConfigApi.NavAsync for Super Admin and Partner Admin).
+  create: { label: "Create location", need: "create_location" },
+  config: { label: "Sign-in config", need: "config" },
   catalog: { label: "Catalog", need: "catalog" },
   clients: { label: "Clients", need: "create_client" },
 };
 
 let grant = [];
 
-// DEC-237. The only client checks are required, and the limit already in
-// LoginConfigValidator.ValidateCreate: a name of more than 200 Unicode scalars
-// is name_invalid. No placeholder, no helper, and no extra character rule.
+// Location name length matches the existing LoginConfigValidator limit: more
+// than 200 Unicode scalars is name_invalid. Count by code points ([...value]),
+// not UTF-16 .length. The 200 limit itself is a proposal pending PQ-313.
 export function locationNameClientError(value) {
   const name = String(value ?? "").trim();
-  if (name.length === 0) return "required";
+  if ([...name].length === 0) return "required";
   if ([...name].length > 200) return "name_invalid";
   return "";
 }
 
-function goSignIn() {
+function goSignIn(reason) {
   leaving = true;
-  location.assign("/signin");
+  // Fixed enum only. session_expired uses reason=expired; other 401s have no reason.
+  location.assign(reason === "expired" ? "/signin?reason=expired" : "/signin");
 }
 
 export async function api(path, opts) {
@@ -40,17 +45,30 @@ export async function api(path, opts) {
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = { raw: text }; }
   // Expired, revoked, and logged-out sessions are one 401. Leave for /signin
-  // before the assignment or screen banners can draw.
+  // before the assignment or screen banners can draw. The expiry sentence is
+  // rendered on the admin sign-in page after the handoff (F-TL-B / DEC-220).
   if (res.status === 401) {
-    const productName = productNameFromConfig(body);
-    if (productName && main) main.replaceChildren(h("p", "For security, " + productName + " asks for your sign-in again."));
-    goSignIn();
+    goSignIn(body && body.error === "session_expired" ? "expired" : "");
     return { status: 401, body };
   }
   return { status: res.status, body };
 }
 
+const uuidRe = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+const orgsNewRe = new RegExp("^/orgs/(" + uuidRe + ")/locations/new/?$");
+const orgsSignInRe = new RegExp("^/orgs/(" + uuidRe + ")/locations/(" + uuidRe + ")/sign-in/?$");
+
+function orgsRoute() {
+  const path = location.pathname || "/";
+  let m = path.match(orgsNewRe);
+  if (m) return { kind: "create", partnerId: m[1] };
+  m = path.match(orgsSignInRe);
+  if (m) return { kind: "config", partnerId: m[1], locationId: m[2] };
+  return null;
+}
+
 function route() {
+  if (orgsRoute()) return "orgs";
   const name = (location.hash || "#/home").slice(2) || "home";
   return pages[name] ? name : "denied";
 }
@@ -59,6 +77,8 @@ function renderNav(current) {
   navEl.replaceChildren();
   if (grant.length === 0) return;
   for (const [id, page] of Object.entries(pages)) {
+    // F-05. Create and Sign-in config stay in pages for F-21 routing, not as nav labels.
+    if (id === "create" || id === "config") continue;
     if (page.need && !grant.includes(page.need)) continue;
     const a = document.createElement("a");
     a.href = "#/" + id;
@@ -149,24 +169,29 @@ function table(rows) {
   return t;
 }
 
+async function createLocationControl() {
+  if (!grant.includes("create_location")) return null;
+  const partners = await api("/api/screens/location-partners");
+  const id = partners.body?.partners?.[0];
+  if (!id) return null;
+  const a = primaryControl("a", "Create location");
+  // UX F-06: real /orgs path. server.mjs serves it as the shell.
+  a.href = "/orgs/" + id + "/locations/new";
+  return a;
+}
+
 async function showLocations() {
   const list = await api("/api/orgs/locations");
   if (list.status === 403) return denied();
   const rows = list.body?.locations ?? [];
+  const create = await createLocationControl();
   if (rows.length === 0) {
     main.replaceChildren(h("h1", "Locations"), banner("info", "No locations", "There are no locations for this grant yet."));
-    if (grant.includes("create_location")) {
-      const partners = await api("/api/screens/location-partners");
-      const id = partners.body?.partners?.[0];
-      if (id) {
-        const a = primaryControl("a", "Create location");
-        a.href = "/orgs/" + id + "/locations/new";
-        main.append(a);
-      }
-    }
+    if (create) main.append(create);
     return;
   }
   main.replaceChildren(h("h1", "Locations"), table(rows));
+  if (create) main.append(create);
 }
 
 async function fillPartners(select) {
@@ -195,7 +220,7 @@ export async function showCreate(state) {
   name.id = "location-name";
   name.name = "name";
   name.required = true;
-  name.maxLength = 200;
+  // Do not set HTML maxlength: it counts UTF-16 units. JS + server use Unicode scalars (F-24 / PQ-313).
   const nameField = h("label");
   nameField.className = "field";
   nameField.htmlFor = "location-name";
@@ -333,7 +358,7 @@ export async function showCreate(state) {
   main.append(form);
 }
 
-async function showConfig() {
+async function showConfig(selectedLocationId) {
   const list = await api("/api/orgs/locations");
   if (list.status === 403) return denied();
   main.replaceChildren(h("h1", "Sign-in configuration"));
@@ -350,7 +375,11 @@ async function showConfig() {
     const o = document.createElement("option");
     o.value = row.location_id;
     o.textContent = row.name;
+    if (selectedLocationId && row.location_id === selectedLocationId) o.selected = true;
     select.append(o);
+  }
+  if (selectedLocationId && ![...select.options].some((o) => o.value === selectedLocationId)) {
+    select.value = rows[0].location_id;
   }
   const out = h("div");
   async function load() {
@@ -406,6 +435,7 @@ async function showCatalog() {
   for (const [n, title, wire] of catalogNames) {
     const li = document.createElement("li");
     const a = h("a", n + " " + title);
+    // F-23. admin-shell serves ui/catalog-presentation under /catalog (see server.mjs).
     a.href = "/catalog/#/family/" + wire + "/list";
     li.append(a);
     ul.append(li);
@@ -424,7 +454,7 @@ async function showClients() {
 
 async function draw() {
   const me = await api("/api/nav");
-  if (me.status === 401) { goSignIn(); return; }
+  if (me.status === 401) return;
   const productName = productNameFromConfig(me.body);
   applyProductName(document.querySelector(".admin-lockup__name"), productName);
   if (productName) document.title = productName;
@@ -435,9 +465,12 @@ async function draw() {
     signedIn.textContent = who && role ? "Signed in as " + who + " · Role: " + role : "";
   }
   grant = me.status === 200 ? (me.body.screens ?? []) : [];
+  const deep = orgsRoute();
   const name = route();
-  renderNav(name === "denied" ? "" : name);
+  renderNav(deep ? "locations" : name === "denied" ? "" : name);
   if (grant.length === 0) return noAssignment();
+  if (deep?.kind === "create") return showCreate();
+  if (deep?.kind === "config") return showConfig(deep.locationId);
   if (name === "denied") return denied();
   if (name === "home") return showHome();
   if (name === "locations") return showLocations();
@@ -448,6 +481,10 @@ async function draw() {
 }
 
 export let started = Promise.resolve();
+export function redraw() {
+  started = draw();
+  return started;
+}
 if (main) {
   window.addEventListener("hashchange", () => { started = draw(); });
   started = draw();

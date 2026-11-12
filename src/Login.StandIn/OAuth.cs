@@ -97,7 +97,10 @@ public static class OAuth
                     if (s is null || s.Kind == "recovery_reenroll" || s.AdminType is not ("super" or "partner"))
                     {
                         if (prompt == "none") return Back(redirectUri, issuer, state, ("error", "login_required"));
-                        return Results.Redirect(issuerPath + "/admin?ret=" + Uri.EscapeDataString(ret));
+                        // F-TL-B / DEC-220. Fixed enum only; never echo arbitrary query text.
+                        var admin = issuerPath + "/admin?ret=" + Uri.EscapeDataString(ret);
+                        if (Q("ff_reason") == "expired") admin += "&reason=expired";
+                        return Results.Redirect(admin);
                     }
                     if (!st.Users.Values.Any(u => u.UserId == s.UserId)) return Back(redirectUri, issuer, state, ("error", "access_denied"));
                     return IssueDevShell(c, client, s, redirectUri, state, challenge, Q("nonce"), scopes, now);

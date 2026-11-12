@@ -127,7 +127,7 @@ const nameInput = (function find(node) {
   }
   return null;
 })(main);
-check("location-name-has-no-placeholder", nameInput && nameInput.required === true && nameInput.maxLength === 200 && !nameInput.placeholder);
+check("location-name-has-no-placeholder", nameInput && nameInput.required === true && !nameInput.placeholder && !(nameInput.maxLength > 0));
 
 nameInput.value = "   ";
 await nameInput.formListeners?.submit?.({ preventDefault() {} });

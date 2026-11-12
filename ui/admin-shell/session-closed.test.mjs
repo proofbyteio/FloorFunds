@@ -48,7 +48,7 @@ function check(name, ok, detail) {
   if (ok) console.log("PASS " + name);
   else { failed += 1; console.log("FAIL " + name + (detail ? " :: " + detail : "")); }
 }
-check("shell-goes-to-signin-on-closed-session", sessionCalls === 0 && location.went === "/signin" && !banned,
+check("shell-goes-to-signin-on-closed-session", sessionCalls === 0 && location.went === "/signin?reason=expired" && !banned,
   `session=${sessionCalls} went=${location.went} banned=${banned}`);
 
 location.went = "";

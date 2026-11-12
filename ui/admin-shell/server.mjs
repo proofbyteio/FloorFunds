@@ -136,7 +136,9 @@ const server = http.createServer(async (req, res) => {
       const verifier = b64url(crypto.randomBytes(32));
       const state = b64url(crypto.randomBytes(16));
       const challenge = b64url(crypto.createHash("sha256").update(verifier).digest());
-      sessions.set(id, { verifier, state, token: "" });
+      // Fixed enum only. Never echo arbitrary query text into the handoff.
+      const reason = url.searchParams.get("reason") === "expired" ? "expired" : "";
+      sessions.set(id, { verifier, state, token: "", reason });
       const q = new URLSearchParams({
         client_id: "admin_dev_shell",
         redirect_uri: publicOrigin + "/signin-oidc",
@@ -146,6 +148,7 @@ const server = http.createServer(async (req, res) => {
         code_challenge: challenge,
         code_challenge_method: "S256",
       });
+      if (reason === "expired") q.set("ff_reason", "expired");
       setCookie(res, id);
       res.writeHead(302, { location: "/standin/connect/authorize?" + q.toString() });
       res.end();
@@ -197,7 +200,31 @@ const server = http.createServer(async (req, res) => {
       serveFile(res, file);
       return;
     }
-    const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+    // F-20 / UX F-06. Real /orgs paths are served as the shell; shell.js routes the view.
+    const orgsNew = /^\/orgs\/[0-9a-fA-F-]{36}\/locations\/new\/?$/.test(url.pathname);
+    const orgsSignIn = /^\/orgs\/[0-9a-fA-F-]{36}\/locations\/[0-9a-fA-F-]{36}\/sign-in\/?$/.test(url.pathname);
+    if (orgsNew || orgsSignIn || url.pathname === "/") {
+      serveFile(res, path.resolve(root, "index.html"));
+      return;
+    }
+    // F-23. Smaller safe change: serve the existing catalog-presentation app at /catalog
+    // so family list links resolve on this shell host (no new copy or behaviour).
+    const catalogRoot = path.resolve(root, "../catalog-presentation");
+    if (url.pathname === "/catalog" || url.pathname === "/catalog/") {
+      serveFile(res, path.resolve(catalogRoot, "index.html"));
+      return;
+    }
+    if (url.pathname.startsWith("/catalog/")) {
+      const rel = url.pathname.slice("/catalog/".length);
+      const file = path.resolve(catalogRoot, rel);
+      if (!file.startsWith(catalogRoot + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+        sendJson(res, 404, { error: "not_found" });
+        return;
+      }
+      serveFile(res, file);
+      return;
+    }
+    const rel = url.pathname.slice(1);
     const file = path.resolve(root, rel);
     if (!file.startsWith(root + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
       sendJson(res, 404, { error: "not_found" });

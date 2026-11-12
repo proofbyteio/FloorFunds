@@ -59,9 +59,10 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_database() || '_issuer') THEN
     EXECUTE format('GRANT EXECUTE ON FUNCTION auth.session_still_open(text, timestamptz) TO %I', current_database() || '_issuer');
   END IF;
-  -- The last-SA triggers stay on app_user and admin_assignment. The owner keeps
-  -- TRUNCATE on those tables so the guard runs. EXECUTE lets the trigger fire.
-  -- It does not allow CREATE OR REPLACE or ALTER OWNER.
+  -- The last-SA triggers stay on app_user and admin_assignment. The migrator
+  -- does not keep TRUNCATE on those tables (A2 / no-TRUNCATE override). EXECUTE
+  -- on the guard functions lets the trigger fire; it does not allow CREATE OR
+  -- REPLACE or ALTER OWNER.
   EXECUTE format('GRANT EXECUTE ON FUNCTION auth._last_sa_guard(), auth._last_sa_truncate_guard() TO %I', owner_name);
   -- LoginConfigApi calls these as admin_api. ALTER OWNER keeps an explicit GRANT.
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_database() || '_admin_api') THEN
