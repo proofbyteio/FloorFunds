@@ -790,7 +790,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
            'list_existing_partners','resolve_grant','read_partner_bounds','save_partner_bounds','record_login_write',
            'save_location_login_config','open_session','begin_request','current_principal','session_issuer',
            'revoke_session','revoke_on_principal_change','revoke_login','_lock_login','_login_cutoff_user_delete',
-           'session_still_open')
+           'session_still_open','_last_sa_guard','_last_sa_truncate_guard','location_partner','tenant_bound_elsewhere')
         """);
     Ok($"RLS: policy set == spec (owner {dbOwner} from pg_database/admin/login per table; no login policy on change)",
         definerOwns &&

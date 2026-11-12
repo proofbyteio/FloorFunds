@@ -29,7 +29,11 @@ DECLARE
     'auth.revoke_session(text)',
     'auth.revoke_on_principal_change()',
     'auth.revoke_login(text, text)',
-    'auth.session_still_open(text, timestamptz)'
+    'auth.session_still_open(text, timestamptz)',
+    'auth._last_sa_guard()',
+    'auth._last_sa_truncate_guard()',
+    'auth.location_partner(uuid)',
+    'auth.tenant_bound_elsewhere(uuid, uuid)'
   ];
 BEGIN
   IF NOT EXISTS (
@@ -53,6 +57,16 @@ BEGIN
   EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE auth.login_cutoff FROM %I', owner_name);
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_database() || '_issuer') THEN
     EXECUTE format('GRANT EXECUTE ON FUNCTION auth.session_still_open(text, timestamptz) TO %I', current_database() || '_issuer');
+  END IF;
+  -- The last-SA triggers stay on app_user and admin_assignment. The owner keeps
+  -- TRUNCATE on those tables so the guard runs. EXECUTE lets the trigger fire.
+  -- It does not allow CREATE OR REPLACE or ALTER OWNER.
+  EXECUTE format('GRANT EXECUTE ON FUNCTION auth._last_sa_guard(), auth._last_sa_truncate_guard() TO %I', owner_name);
+  -- LoginConfigApi calls these as admin_api. ALTER OWNER keeps an explicit GRANT.
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_database() || '_admin_api') THEN
+    EXECUTE format(
+      'GRANT EXECUTE ON FUNCTION auth.location_partner(uuid), auth.tenant_bound_elsewhere(uuid, uuid) TO %I',
+      current_database() || '_admin_api');
   END IF;
   EXECUTE format('ALTER FUNCTION auth._login_cutoff_user_delete() OWNER TO %I', r);
   EXECUTE format('GRANT EXECUTE ON FUNCTION auth._login_cutoff_user_delete() TO %I', owner_name);

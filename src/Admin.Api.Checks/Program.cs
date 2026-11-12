@@ -41,6 +41,8 @@ if (args is ["--race"])
     return await Req064Suite.RunAsync(ownerCs, adminCs, "race");
 if (args is ["--issuer"])
     return await Req064Suite.RunAsync(ownerCs, adminCs, "issuer");
+if (args is ["--helpers"])
+    return await Req064Suite.RunAsync(ownerCs, adminCs, "helpers");
 if (args is ["--probe"])
     return await Req064Suite.RunAsync(ownerCs, adminCs, "probe");
 var loginCs = Env("LOGIN_CONNECTION_STRING"); // <db>_login, read-only: the login readers (TLD 10:02 Q1 restart check)

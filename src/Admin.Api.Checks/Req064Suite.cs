@@ -55,6 +55,13 @@ static class Req064Suite
             Check("four-arg-open-session-is-absent", fourArg);
             return _fail == 0 ? 0 : 1;
         }
+        if (mode == "helpers")
+        {
+            await using var helperAdmin = NpgsqlDataSource.Create(adminCs);
+            await ProveDefinerHelpers(owner, helperAdmin);
+            Console.WriteLine($"{_pass} passed, {_fail} failed");
+            return _fail == 0 ? 0 : 1;
+        }
         await using var admin = NpgsqlDataSource.Create(adminCs);
         await Cleanup(owner);
         var others = await ScalarLong(owner, """
@@ -299,7 +306,8 @@ static class Req064Suite
                 && !host.Contains("MapPost(\"/api/admin", StringComparison.Ordinal));
             await SessionExpiry(http, issuerProc.Url, sign, owner, Sa);
             await ClosedSessions(http, sign, owner);
-            await LoginSerialization(owner);
+            await LoginConfigHttp(http, Mint(sign, Sa, "super", null), owner);
+            await LoginSerialization(owner, admin);
             await BoundsRetry(http, sign, owner, Sa);
             var signedIn = await StandInSignIn.Run(ownerCs, adminCs, issuerCs);
             Check("stand-in-sign-in-opens-session-nav-locations-catalog", signedIn.Ok, signedIn.Detail);
@@ -1491,7 +1499,7 @@ static class Req064Suite
             $"expired {expired.Status} {expired.Authenticate} {Clip(expired.Body)} | revoked {revoked.Status} {revoked.Authenticate} {Clip(revoked.Body)} | logged-out {loggedOut.Status} {loggedOut.Authenticate} {Clip(loggedOut.Body)}");
     }
 
-    static async Task LoginSerialization(NpgsqlDataSource owner)
+    static async Task LoginSerialization(NpgsqlDataSource owner, NpgsqlDataSource admin)
     {
         var sql = await File.ReadAllTextAsync(Path.Combine(RepoRoot(), "db", "migrations.sql"));
         var oldAt = sql.IndexOf("20261110290000_Req064Session", StringComparison.Ordinal);
@@ -1592,49 +1600,7 @@ static class Req064Suite
         var altered = await OwnerDdl(owner, "ALTER FUNCTION auth.session_still_open(text, timestamptz) OWNER TO CURRENT_USER");
         Check("owner-cannot-replace-session-still-open",
             replaced == "42501" && altered == "42501", $"replace {replaced} alter {altered}");
-        var stray = await ScalarText(owner, """
-            SELECT coalesce(string_agg(n.nspname || '.' || p.proname, ', ' ORDER BY n.nspname, p.proname), '')
-              FROM pg_proc p
-              JOIN pg_namespace n ON n.oid = p.pronamespace
-              JOIN pg_roles r ON r.oid = p.proowner
-             WHERE p.prosecdef
-               AND n.nspname IN ('auth', 'catalog')
-               AND r.rolname IS DISTINCT FROM current_database() || '_auth_definer'
-               AND (n.nspname, p.proname) NOT IN (
-                 -- Last-SA triggers on app_user and admin_assignment. The owner keeps
-                 -- TRUNCATE there so the guard raises last_active_super_admin, not 42501.
-                 ('auth', '_last_sa_guard'),
-                 ('auth', '_last_sa_truncate_guard'),
-                 -- S2a location helpers. They predate the auth definer and are not
-                 -- request-principal functions.
-                 ('auth', 'location_partner'),
-                 ('auth', 'tenant_bound_elsewhere'),
-                 -- Catalog registry writers and triggers. The migration user owns the
-                 -- catalog tables. There is no catalog definer role.
-                 ('catalog', '_insert_marker'),
-                 ('catalog', '_insert_subtype'),
-                 ('catalog', '_seal_marker'),
-                 ('catalog', '_sealed_marker'),
-                 ('catalog', '_visible_ref'),
-                 ('catalog', 'apply_claim_edit'),
-                 ('catalog', 'apply_entry_create'),
-                 ('catalog', 'subtype_count'),
-                 ('catalog', 'subtype_json'),
-                 ('catalog', 'tg_a_ref_guard'),
-                 ('catalog', 'tg_claim_subtype'),
-                 ('catalog', 'tg_no_delete'),
-                 ('catalog', 'tg_processor_cycle_commit'),
-                 ('catalog', 'tg_processor_parent'),
-                 ('catalog', 'tg_registry_before'),
-                 ('catalog', 'tg_registry_commit'),
-                 ('catalog', 'tg_registry_pending'),
-                 ('catalog', 'tg_registry_update'),
-                 ('catalog', 'tg_scope_refuse'),
-                 ('catalog', 'tg_subtype_no_update'),
-                 ('catalog', 'tg_subtype_seal'),
-                 ('catalog', 'tg_tx_marker_stmt'))
-            """);
-        Check("security-definer-owner-is-the-definer-role", stray == "", stray);
+        await ProveDefinerHelpers(owner, admin);
         var history = await BashRepoText("db/tests/intermediate-recreate.sh");
         Check("force-recreates-an-intermediate-req064-database",
             history.Text.Contains("PASS force-recreates-an-intermediate-req064-database", StringComparison.Ordinal), history.Text);
@@ -1644,6 +1610,185 @@ static class Req064Suite
             history.Text.Contains("PASS each-intermediate-req064-id-is-recreated", StringComparison.Ordinal), history.Text);
         Check("non-kit-database-is-refused",
             history.Text.Contains("PASS non-kit-database-is-refused", StringComparison.Ordinal), history.Text);
+    }
+
+    static async Task ProveDefinerHelpers(NpgsqlDataSource owner, NpgsqlDataSource admin)
+    {
+        var lastSa = await OwnerReplaces(owner,
+            """
+            CREATE OR REPLACE FUNCTION auth._last_sa_guard() RETURNS trigger
+            LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, auth
+            AS $$ BEGIN RETURN NULL; END $$
+            """,
+            "ALTER FUNCTION auth._last_sa_guard() OWNER TO CURRENT_USER",
+            """
+            CREATE OR REPLACE FUNCTION auth._last_sa_truncate_guard() RETURNS trigger
+            LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, auth
+            AS $$ BEGIN RETURN NULL; END $$
+            """,
+            "ALTER FUNCTION auth._last_sa_truncate_guard() OWNER TO CURRENT_USER");
+        Check("owner-cannot-replace-last-sa-guards", lastSa == "42501 42501 42501 42501", lastSa);
+        var replaced = await OwnerReplaces(owner,
+            """
+            CREATE OR REPLACE FUNCTION auth.location_partner(p_location_id uuid) RETURNS uuid
+            LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, auth
+            AS $$ SELECT NULL::uuid $$
+            """,
+            "ALTER FUNCTION auth.location_partner(uuid) OWNER TO CURRENT_USER",
+            """
+            CREATE OR REPLACE FUNCTION auth.tenant_bound_elsewhere(p_tid uuid, p_partner_id uuid) RETURNS boolean
+            LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, auth
+            AS $$ SELECT false $$
+            """,
+            "ALTER FUNCTION auth.tenant_bound_elsewhere(uuid, uuid) OWNER TO CURRENT_USER");
+        Check("owner-cannot-replace-location-helpers", replaced == "42501 42501 42501 42501", replaced);
+        var sweep = await SecurityDefinerSweep(owner);
+        Check("security-definer-owner-is-the-definer-role", sweep == "", sweep);
+
+        // The same statements LoginConfigApi sends. admin_api has no resolved GUCs,
+        // so RLS hides the rows. The definer functions still see them.
+        var loc = Guid.NewGuid();
+        var partner = Guid.NewGuid();
+        var otherPartner = Guid.NewGuid();
+        var tenant = Guid.NewGuid();
+        var slug = "h" + loc.ToString("N")[..16];
+        var actor = Guid.NewGuid();
+        try
+        {
+            await Exec(owner, "INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ($1, $2, $3, $4)",
+                loc, partner, slug, "Req064 helper");
+            await Exec(owner, """
+                INSERT INTO auth.location_login_config (
+                  location_id, provider_kind, display_name, entra_allowed_tenant_ids,
+                  oidc_authority, oidc_client_id, secret_ref, allow_db_fallback, mfa_required,
+                  created_by, created_at, updated_by, updated_at)
+                VALUES ($1, 'entra', 'Req064 helper', ARRAY[$2]::uuid[],
+                        'https://login.microsoftonline.com', '5f0c3e1a-00cc-4000-8000-0000000000cc',
+                        'arn:aws:secretsmanager:us-west-2:000000000000:secret:FAKE-test-only/req064-AbCdEf',
+                        false, true, $3, clock_timestamp(), $3, clock_timestamp())
+                """, loc, tenant, actor);
+            var hidden = await ScalarLong(admin, "SELECT count(*) FROM auth.location WHERE location_id = $1", loc);
+            var seen = await ScalarText(admin, "SELECT auth.location_partner($1)::text", loc);
+            var elsewhere = await ScalarBool(admin, "SELECT auth.tenant_bound_elsewhere($1, $2)", tenant, otherPartner);
+            var home = await ScalarBool(admin, "SELECT auth.tenant_bound_elsewhere($1, $2)", tenant, partner);
+            Check("login-config-helpers-see-through-the-definer",
+                hidden == 0 && seen == partner.ToString("D") && elsewhere && !home,
+                $"hidden {hidden} seen {seen} elsewhere {elsewhere} home {home}");
+        }
+        finally
+        {
+            await ExecQuiet(owner, "DELETE FROM auth.location_login_config WHERE location_id = $1", loc);
+            await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = $1", loc);
+        }
+    }
+
+    static async Task<string> OwnerReplaces(NpgsqlDataSource owner, params string[] sql)
+    {
+        var parts = new string[sql.Length];
+        for (var i = 0; i < sql.Length; i++) parts[i] = await OwnerDdl(owner, sql[i]);
+        return string.Join(' ', parts);
+    }
+
+    static async Task<string> SecurityDefinerSweep(NpgsqlDataSource owner)
+    {
+        // REQ-065 owns a catalog definer role. Until then this exact set is the residual:
+        // every SECURITY DEFINER in auth and catalog is the auth definer, or one of these,
+        // owned by the database owner. A new one or a missing one fails the build.
+        var raw = await ScalarText(owner, """
+            WITH definers AS (
+              SELECT n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' AS sig,
+                     r.rolname = current_database() || '_auth_definer' AS definer_owned,
+                     r.rolname = (
+                       SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()
+                     ) AS migration_owned
+                FROM pg_proc p
+                JOIN pg_namespace n ON n.oid = p.pronamespace
+                JOIN pg_roles r ON r.oid = p.proowner
+               WHERE p.prosecdef
+                 AND n.nspname IN ('auth', 'catalog')
+            ),
+            pinned(sig) AS (
+              VALUES
+                ('catalog._insert_marker(p_entry uuid, p_kind text)'),
+                ('catalog._insert_subtype(p_entry uuid, p_family text, p_code text, p_owner uuid, j jsonb)'),
+                ('catalog._seal_marker()'),
+                ('catalog._sealed_marker()'),
+                ('catalog._visible_ref(p_entry uuid, p_family text, p_owner uuid, p_mode text)'),
+                ('catalog.apply_claim_edit(p_entry_id uuid, p_expected_version bigint, p_patch jsonb)'),
+                ('catalog.apply_entry_create(p_entry_id uuid, p_family text, p_entry_class text, p_owner_partner_id uuid, p_code text, p_is_active boolean, p_subtype jsonb, p_registry_row_count integer)'),
+                ('catalog.subtype_count(p_entry uuid)'),
+                ('catalog.subtype_json(p_entry uuid)'),
+                ('catalog.tg_a_ref_guard()'),
+                ('catalog.tg_claim_subtype()'),
+                ('catalog.tg_no_delete()'),
+                ('catalog.tg_processor_cycle_commit()'),
+                ('catalog.tg_processor_parent()'),
+                ('catalog.tg_registry_before()'),
+                ('catalog.tg_registry_commit()'),
+                ('catalog.tg_registry_pending()'),
+                ('catalog.tg_registry_update()'),
+                ('catalog.tg_scope_refuse()'),
+                ('catalog.tg_subtype_no_update()'),
+                ('catalog.tg_subtype_seal()'),
+                ('catalog.tg_tx_marker_stmt()')
+            )
+            SELECT CASE
+              WHEN (SELECT count(*) FROM pinned) <> 22 THEN 'pin count'
+              ELSE coalesce((
+                     SELECT string_agg(sig, ', ' ORDER BY sig) FROM definers
+                      WHERE NOT definer_owned AND sig NOT IN (SELECT sig FROM pinned)
+                   ), '')
+                   || '|' ||
+                   coalesce((
+                     SELECT string_agg(sig, ', ' ORDER BY sig) FROM pinned
+                      WHERE sig NOT IN (SELECT sig FROM definers WHERE migration_owned AND NOT definer_owned)
+                   ), '')
+            END
+            """);
+        return raw == "|" ? "" : raw;
+    }
+
+    static async Task LoginConfigHttp(HttpClient http, string saTok, NpgsqlDataSource owner)
+    {
+        var tenant = Guid.NewGuid();
+        string Body(Guid partner) =>
+            "{\"partner_id\":\"" + partner.ToString("D") + "\",\"name\":\"Req064 Helper " + tenant.ToString("N")[..8] +
+            "\",\"login_config\":{\"provider_kind\":\"entra\",\"display_name\":\"Req064 Helper\"," +
+            "\"entra_allowed_tenant_ids\":[\"" + tenant.ToString("D") + "\"],\"allow_db_fallback\":false,\"mfa_required\":true}}";
+        Guid created = Guid.Empty;
+        try
+        {
+            var first = await SendJson(http, HttpMethod.Post, "/api/orgs/locations", saTok, Body(Pa));
+            if (first.Status == 201)
+            {
+                using var doc = JsonDocument.Parse(first.Body);
+                created = doc.RootElement.GetProperty("location_id").GetGuid();
+            }
+            var got = await Send(http, HttpMethod.Get, "/api/orgs/locations/" + created.ToString("D") + "/login-config", saTok);
+            var second = await SendJson(http, HttpMethod.Post, "/api/orgs/locations", saTok, Body(Pb));
+            Check("login-config-helpers-still-serve-the-api",
+                first.Status == 201 && got.Status == 200 && second.Status == 422
+                && second.Body.Contains("tenant_bound_elsewhere", StringComparison.Ordinal),
+                $"create {first.Status} {Clip(first.Body)} get {got.Status} bound {second.Status} {Clip(second.Body)}");
+        }
+        finally
+        {
+            if (created != Guid.Empty)
+            {
+                await ExecQuiet(owner, "DELETE FROM auth.location_login_config_change WHERE location_id = $1", created);
+                await ExecQuiet(owner, "DELETE FROM auth.location_login_config WHERE location_id = $1", created);
+                await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = $1", created);
+                await ExecQuiet(owner, "DELETE FROM auth.audit_outbox WHERE envelope::text LIKE '%' || $1 || '%'", created.ToString("D"));
+            }
+        }
+    }
+
+    static async Task<(int Status, string Body)> SendJson(HttpClient http, HttpMethod method, string path, string token, string json)
+    {
+        var req = new HttpRequestMessage(method, path);
+        req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token);
+        req.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        return await Read(await http.SendAsync(req));
     }
 
     static async Task<string> OpenBehindLockUpdate(NpgsqlDataSource owner, Guid user)
@@ -2256,8 +2401,68 @@ static class Req064Suite
         Check("reused-jti-rejected-for-a-different-subject", session.Length == 64 && status == 401);
     }
 
+    static async Task CatalogActorIgnoresForgedGuc(NpgsqlDataSource owner, Guid user)
+    {
+        // iat is the database clock. A client clock behind the cutoff made a post-logout
+        // open miss, and ScalarOnText let the P0001 escape as req064-finished.
+        var detail = "missing";
+        try
+        {
+            var iat = await ScalarTime(owner, "SELECT clock_timestamp()");
+            var token = await Mint(user, iat: iat);
+            await using var c = await owner.OpenConnectionAsync();
+            await using var tx = await c.BeginTransactionAsync();
+            try
+            {
+                await using (var b = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx))
+                {
+                    b.Parameters.Add(new() { Value = token });
+                    await b.ExecuteNonQueryAsync();
+                }
+                await using (var guc = new NpgsqlCommand("""
+                    SELECT set_config('app.resolved_global_admin', '', true),
+                           set_config('app.resolved_partner_ids', 'ffffffff-ffff-4fff-8fff-ffffffffffff', true),
+                           set_config('app.actor_user_id', 'ffffffff-ffff-4fff-8fff-ffffffffffff', true),
+                           set_config('app.correlation_id', 'req064-actor', true)
+                    """, c, tx))
+                    await guc.ExecuteNonQueryAsync();
+                await using (var sp = new NpgsqlCommand("SAVEPOINT actor_probe", c, tx))
+                    await sp.ExecuteNonQueryAsync();
+                try
+                {
+                    detail = await ScalarOnText(c, tx, "SELECT admin_type || '|' || actor_user_id::text FROM catalog._actor()");
+                }
+                catch (PostgresException ex)
+                {
+                    await using var rb = new NpgsqlCommand("ROLLBACK TO SAVEPOINT actor_probe", c, tx);
+                    await rb.ExecuteNonQueryAsync();
+                    var why = await ScalarTextOn(c, tx, """
+                        SELECT coalesce(g.outcome, '') || '|' || coalesce(g.user_id::text, '')
+                             || '|' || coalesce(auth.current_principal()::text, '')
+                          FROM auth.resolve_grant('', '00000000-0000-0000-0000-000000000000'::uuid) g
+                        """);
+                    detail = ex.SqlState + ":" + ex.MessageText + " grant " + why;
+                }
+            }
+            finally
+            {
+                try { await tx.RollbackAsync(); } catch (ObjectDisposedException) { }
+            }
+        }
+        catch (PostgresException ex)
+        {
+            detail = ex.SqlState + ":" + ex.MessageText;
+        }
+        Check("forged-resolved-guc-does-not-change-catalog-actor",
+            detail == "super|" + user.ToString("D"), detail);
+    }
+
     static async Task IssuerSecurity(Admin.Api.Checks.IssuerHarness issuer, RsaSecurityKey sign, NpgsqlDataSource owner, NpgsqlDataSource admin, Admin.Api.AdminApiOptions opt, string issuerCs)
     {
+        // Bind the actor proof before any logout in this method. Logout of Sa revokes
+        // every live row and sets login_cutoff. A later open of that same user was the
+        // resolve_grant miss: catalog._actor raised P0001 and the check did not catch it.
+        await CatalogActorIgnoresForgedGuc(owner, Sa2);
         string Signed(Dictionary<string, object> claims) => new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
         {
             Claims = claims,
@@ -2274,6 +2479,8 @@ static class Req064Suite
             && await Denied(admin, "SELECT auth.begin_request($1)", second)
             && await BeginOk(admin, other),
             $"revoke {revoked}");
+        // Seed cached Sa's token. That row is revoked. Drop it so a later bind mints again.
+        _sessions.Remove(Sa);
         // iat is a whole second and revoked_before is clock_timestamp(). A JWT minted
         // later in the logout second is still at or before the cutoff. The next sign-in
         // in this suite waits for the following second.
@@ -2299,26 +2506,6 @@ static class Req064Suite
         Check("admin-api-cannot-set-log-statement", await Denied(admin, "SET log_statement = 'all'"));
         Check("host-refuses-log-statement-all", await LoggingRefusal(opt, admin, "log_statement", "all"));
         Check("host-refuses-duration-zero-with-parameter-logging", await LoggingRefusal(opt, admin, "log_min_duration_statement", "0"));
-        var actorTok = await Mint(Sa);
-        await using (var c = await owner.OpenConnectionAsync())
-        {
-            await using var tx = await c.BeginTransactionAsync();
-            await using (var b = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx))
-            {
-                b.Parameters.Add(new() { Value = actorTok });
-                await b.ExecuteNonQueryAsync();
-            }
-            await using (var guc = new NpgsqlCommand("""
-                SELECT set_config('app.resolved_global_admin', '', true),
-                       set_config('app.resolved_partner_ids', 'ffffffff-ffff-4fff-8fff-ffffffffffff', true),
-                       set_config('app.actor_user_id', 'ffffffff-ffff-4fff-8fff-ffffffffffff', true),
-                       set_config('app.correlation_id', 'req064-actor', true)
-                """, c, tx))
-                await guc.ExecuteNonQueryAsync();
-            var got = await ScalarOnText(c, tx, "SELECT admin_type || '|' || actor_user_id::text FROM catalog._actor()");
-            Check("forged-resolved-guc-does-not-change-catalog-actor", got == "super|" + Sa.ToString("D"), got);
-            await tx.RollbackAsync();
-        }
         foreach (var user in new[] { Sa, Sa2, Upa })
         {
             await Exec(owner, "DELETE FROM auth.request_binding WHERE user_id = $1", user);
