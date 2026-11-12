@@ -15,6 +15,9 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="../KitAdmin/KitAdmin.cs" Link="KitAdmin.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../Admin.Api/Admin.Api.csproj" />
     <ProjectReference Include="../Auth.Issuer/Auth.Issuer.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>

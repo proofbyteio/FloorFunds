@@ -427,7 +427,10 @@ try
     var closedA = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser));
     var closedB = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser));
     var closedC = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser));
-    await Exec(owner, "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE token_hash = sha256(convert_to($1, 'UTF8'))", closedA);
+    KitAdmin.Arm(DbName, Port);
+    var tag = "k" + Guid.NewGuid().ToString("N");
+    KitAdmin.Exec("catalog-closed-sessions-are-one-exception",
+        "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE token_hash = sha256(convert_to($" + tag + "$" + closedA + "$" + tag + "$, 'UTF8'))");
     await Exec(owner, "UPDATE auth.request_session SET revoked_at = clock_timestamp() WHERE token_hash = sha256(convert_to($1, 'UTF8'))", closedB);
     var shapeA = await ClosedShape(closedA);
     var shapeB = await ClosedShape(closedB);

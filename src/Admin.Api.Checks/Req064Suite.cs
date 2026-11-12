@@ -44,6 +44,8 @@ static class Req064Suite
 
     public static async Task<int> RunAsync(string ownerCs, string adminCs, string mode)
     {
+        var ownerBuilder = new NpgsqlConnectionStringBuilder(ownerCs);
+        KitAdmin.Arm(ownerBuilder.Database ?? "", ownerBuilder.Port == 0 ? 5432 : ownerBuilder.Port);
         await using var owner = NpgsqlDataSource.Create(ownerCs);
         if (mode == "race")
         {
@@ -465,11 +467,8 @@ static class Req064Suite
         }
 
         var stale = await Mint(Sa2);
-        await Exec(owner, """
-            UPDATE auth.request_session
-               SET expires_at = clock_timestamp() - interval '1 second'
-             WHERE token_hash = sha256(convert_to($1, 'UTF8'))
-            """, stale);
+        KitAdmin.Exec("expired-session-rejected-by-begin-request",
+            "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE token_hash = sha256(convert_to(" + SqlText(stale) + ", 'UTF8'))");
         Check("expired-session-rejected-by-begin-request", await Denied(admin, "SELECT auth.begin_request($1)", stale));
         await Exec(owner, "DELETE FROM auth.request_binding WHERE token_hash = sha256(convert_to($1, 'UTF8'))", stale);
         await Exec(owner, "DELETE FROM auth.request_session WHERE token_hash = sha256(convert_to($1, 'UTF8'))", stale);
@@ -1570,7 +1569,8 @@ static class Req064Suite
         var jti = Guid.Parse(claims.RootElement.GetProperty("jti").GetString()!);
         var opened = await Send(http, HttpMethod.Get, "/api/nav", jwt);
         Check("session-live-before-expiry", opened.Status == 200, opened.Status.ToString());
-        await Exec(owner, "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE jti = $1", jti);
+        KitAdmin.Exec("expired-session-is-the-unified-401",
+            "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE jti = '" + jti + "'");
         var expired = await SendClosed(http, HttpMethod.Get, "/api/nav", jwt);
         var again = await IssuerStatus(issuerUrl, jwt);
         var rows = await ScalarLong(owner, "SELECT count(*) FROM auth.request_session WHERE jti = $1", jti);
@@ -1598,7 +1598,8 @@ static class Req064Suite
         var openedLoggedOut = await Send(http, HttpMethod.Get, "/api/nav", loggedOutJwt);
         Check("closed-session-fixtures-opened", openedExpired.Status == 200 && openedRevoked.Status == 200 && openedLoggedOut.Status == 200,
             $"{openedExpired.Status} {openedRevoked.Status} {openedLoggedOut.Status}");
-        await Exec(owner, "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE jti = $1", JtiOf(expiredJwt));
+        KitAdmin.Exec("closed-sessions-are-byte-identical",
+            "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE jti = '" + JtiOf(expiredJwt) + "'");
         await Exec(owner, "UPDATE auth.request_session SET revoked_at = clock_timestamp() WHERE jti = $1", JtiOf(revokedJwt));
         var expired = await SendClosed(http, HttpMethod.Get, "/api/nav", expiredJwt);
         var revoked = await SendClosed(http, HttpMethod.Get, "/api/nav", revokedJwt);
@@ -2271,7 +2272,8 @@ static class Req064Suite
             await Task.Delay(400);
             var held = !send.IsCompleted;
             if (held)
-                await Exec(owner, "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE jti = $1", JtiOf(jwt));
+                KitAdmin.Exec("bounds-retry-closed-session-is-401",
+                    "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE jti = '" + JtiOf(jwt) + "'");
             using var res = await send.WaitAsync(TimeSpan.FromSeconds(10));
             var body = await res.Content.ReadAsStringAsync();
             var authn = res.Headers.WwwAuthenticate.ToString();
@@ -2368,11 +2370,8 @@ static class Req064Suite
             await ClearSessions(owner, user);
             var token = await Mint(user);
             var open = await IssuerBool("SELECT auth.session_still_open($1, clock_timestamp())", token);
-            await Exec(owner, """
-                UPDATE auth.request_session
-                   SET expires_at = clock_timestamp()
-                 WHERE token_hash = sha256(convert_to($1, 'UTF8'))
-                """, token);
+            KitAdmin.Exec("session-still-open-closes-when-expired",
+                "UPDATE auth.request_session SET expires_at = clock_timestamp() WHERE token_hash = sha256(convert_to(" + SqlText(token) + ", 'UTF8'))");
             var expired = await IssuerBool("SELECT auth.session_still_open($1, clock_timestamp())", token);
             Check("session-still-open-closes-when-expired", open == true && expired == false, $"open {open} expired {expired}");
 
@@ -2412,6 +2411,12 @@ static class Req064Suite
         {
             return ex.SqlState + ":" + ex.MessageText;
         }
+    }
+
+    static string SqlText(string value)
+    {
+        var tag = "k" + Guid.NewGuid().ToString("N");
+        return "$" + tag + "$" + value + "$" + tag + "$";
     }
 
     static Guid JtiOf(string jwt)

@@ -18,6 +18,35 @@ using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 
+if (args is ["--kit-admin-check"])
+    return KitAdmin.Check(RepoRoot());
+if (args is ["--kit-admin-guard"])
+{
+    try
+    {
+        KitAdmin.Exec("expired-session-rejected-by-begin-request", "SELECT 1");
+        Console.WriteLine("ran");
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine(ex.Message);
+        return 1;
+    }
+}
+
+static string RepoRoot()
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null)
+    {
+        if (File.Exists(Path.Combine(dir.FullName, "src", "KitAdmin", "KitAdmin.cs")))
+            return dir.FullName;
+        dir = dir.Parent;
+    }
+    return Directory.GetCurrentDirectory();
+}
+
 int pass = 0, fail = 0;
 void Ok(string name, bool cond, string? detail = null)
 {

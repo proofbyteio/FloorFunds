@@ -1,0 +1,76 @@
+// KitAdmin guards. Each mutant is applied, the check is run, the mutant is restored.
+import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const kit = join(root, "src", "KitAdmin", "KitAdmin.cs");
+const suite = join(root, "src", "Admin.Api.Checks", "Req064Suite.cs");
+const project = join(root, "src", "Admin.Api.Checks", "Admin.Api.Checks.csproj");
+
+function run(args, env) {
+  const r = spawnSync("dotnet", ["run", "--project", project, "--no-restore", "--", ...args], {
+    cwd: root,
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+  });
+  return (r.stdout || "") + (r.stderr || "");
+}
+
+function check() {
+  return run(["--kit-admin-check"]);
+}
+
+let failed = 0;
+function expect(name, cond, detail) {
+  if (cond) console.log("PASS " + name);
+  else {
+    failed++;
+    console.log("FAIL " + name + (detail ? " :: " + detail.slice(0, 400) : ""));
+  }
+}
+
+const originalKit = readFileSync(kit, "utf8");
+const originalSuite = readFileSync(suite, "utf8");
+try {
+  const base = check();
+  expect("call-sites-match-before-mutants", base.includes("PASS kit-admin-call-sites-match-the-decisions-list") && !base.includes("FAIL "), base);
+  expect("no-test-seed-update-before-mutants", base.includes("PASS no-test-code-updates-or-deletes-as-test-seed"), base);
+
+  const extra = originalSuite.replace(
+    "static class Req064Suite\n{",
+    "static class Req064Suite\n{\n    static void ExtraKitAdminCall() { KitAdmin.Exec(\"extra-call-site\", \"SELECT 1\"); }\n",
+  );
+  writeFileSync(suite, extra);
+  const extraOut = check();
+  expect("mutant-extra-kit-admin-call-site-killed", extraOut.includes("FAIL kit-admin-call-not-on-the-list extra-call-site"), extraOut);
+  writeFileSync(suite, originalSuite);
+
+  const updated = originalSuite.replace(
+    "static class Req064Suite\n{",
+    "static class Req064Suite\n{\n    static Task SeedUpdateMutant(NpgsqlDataSource seed) => Exec(seed, \"UPDATE auth.app_user SET status = status\");\n",
+  );
+  writeFileSync(suite, updated);
+  const updateOut = check();
+  expect("mutant-test-seed-update-killed", updateOut.includes("FAIL test-seed-update-or-delete"), updateOut);
+  writeFileSync(suite, originalSuite);
+
+  const unguarded = originalKit.replace(
+    "        // scratch-guard\n        if (!IsScratchDatabase(db))\n            throw new InvalidOperationException(\"kit admin refused: database is not a scratch database\");\n        // end-scratch-guard\n",
+    "",
+  );
+  writeFileSync(kit, unguarded);
+  const guardOut = run(["--kit-admin-guard"], { FF_KIT_MODE: "1", FF_KIT_DB: "postgres", FF_KIT_PORT: "5432" });
+  expect("mutant-scratch-guard-removed-killed", guardOut.includes("ran") && !guardOut.includes("not a scratch database"), guardOut);
+  writeFileSync(kit, originalKit);
+
+  const restored = check();
+  expect("call-sites-match-after-restore", restored.includes("PASS kit-admin-call-sites-match-the-decisions-list") && !restored.includes("FAIL "), restored);
+  const refused = run(["--kit-admin-guard"], { FF_KIT_MODE: "1", FF_KIT_DB: "postgres", FF_KIT_PORT: "5432" });
+  expect("scratch-guard-refuses-a-non-scratch-database", refused.includes("kit admin refused: database is not a scratch database"), refused);
+} finally {
+  writeFileSync(kit, originalKit);
+  writeFileSync(suite, originalSuite);
+}
+process.exit(failed === 0 ? 0 : 1);
