@@ -2686,9 +2686,10 @@ finally
     // always prints (never exit 134 from an unhandled cleanup exception).
     try
     {
-        var state = KitAdmin.SqlState("last-active-sa-delete",
-            "DELETE FROM auth.admin_assignment WHERE user_id = '" + U_SA.ToString("D") + "'::uuid");
-        Ok("cleanup: last-SA guard still fires (P0001); A1.3 no table delete", state == "P0001");
+        // Truncate always exercises the last-SA guard regardless of how many
+        // fixture SAs remain after the checks (seeded DBs keep more than U_SA).
+        var state = KitAdmin.SqlState("last-active-sa-truncate", "TRUNCATE auth.admin_assignment");
+        Ok("cleanup: last-SA guard still fires (P0001); A1.3 no table delete", state == "P0001", state);
     }
     catch (Exception ex)
     {
