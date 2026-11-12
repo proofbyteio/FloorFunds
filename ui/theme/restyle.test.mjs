@@ -93,6 +93,10 @@ const fontFiles = {
   "ui/theme/fonts/InterVariable-Italic.woff2": "e564f652916db6c139570fefb9524a77c4d48f30c92928de9db19b6b5c7a262a",
   "ui/theme/fonts/LICENSE.txt": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
   "ui/theme/logo-1.svg": "117217d83459f9215cd379a759b7e2e2902111760c2f853de85d9f7ef235165e",
+  "ui/theme/favicon.ico": "c568d5cf976ce09ce47fb914ee23529b96109b2b742bfecb065766932600aea8",
+  "ui/theme/favicon-32x32.png": "f9afacde45f3183612ab1d9fc79bf4aace22b3406e25e9d05a6c9e37cff4eb41",
+  "ui/theme/favicon-16x16.png": "8e0954cb63b1069135091de40160f08432387114b1ad760e0ff6111392151c6d",
+  "ui/theme/apple-touch-icon.png": "4c5ff5af68095839d9c4a13169fc0bd6656b8b807204076781801ec48e97d48e",
 };
 for (const [rel, want] of Object.entries(fontFiles)) {
   const got = createHash("sha256").update(readFileSync(join(root, rel))).digest("hex");

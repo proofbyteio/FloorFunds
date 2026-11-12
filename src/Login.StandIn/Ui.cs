@@ -118,6 +118,10 @@ public static class Ui
         app.MapGet(IssuerPath + "/ui/theme.css", (HttpContext c) => Asset(c, "theme.css", "text/css; charset=utf-8"));
         app.MapGet(IssuerPath + "/ui/theme-tokens.css", (HttpContext c) => ThemeAsset(c, "theme-tokens.css", "text/css; charset=utf-8"));
         app.MapGet(IssuerPath + "/ui/logo-1.svg", (HttpContext c) => ThemeAsset(c, "logo-1.svg", "image/svg+xml"));
+        app.MapGet(IssuerPath + "/ui/favicon.ico", (HttpContext c) => ThemeAsset(c, "favicon.ico", "image/x-icon"));
+        app.MapGet(IssuerPath + "/ui/favicon-32x32.png", (HttpContext c) => ThemeAsset(c, "favicon-32x32.png", "image/png"));
+        app.MapGet(IssuerPath + "/ui/favicon-16x16.png", (HttpContext c) => ThemeAsset(c, "favicon-16x16.png", "image/png"));
+        app.MapGet(IssuerPath + "/ui/apple-touch-icon.png", (HttpContext c) => ThemeAsset(c, "apple-touch-icon.png", "image/png"));
         app.MapGet(IssuerPath + "/ui/js/{name}", (string name, HttpContext c) =>
             name is "signin.js" or "handoff.js" ? Asset(c, "js/" + name, "text/javascript; charset=utf-8") : Results.NotFound());
         app.MapGet(IssuerPath + "/ui/fonts/{name}", (string name, HttpContext c) => name switch
