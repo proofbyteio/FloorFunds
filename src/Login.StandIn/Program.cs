@@ -2,6 +2,7 @@
 using Login.StandIn;
 
 if (args.Contains("--location-signin-check")) return LocationSignInProbe.Run();
+if (args.Contains("--admin-signout-check")) return OAuthSignOutProbe.Run();
 
 var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration;

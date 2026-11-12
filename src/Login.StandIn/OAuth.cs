@@ -12,6 +12,11 @@ public static class OAuth
 {
     const int CodeLifetime = 60, RefreshLeeway = 30;
 
+    // Admin sign-out ends at the shell /signin. That route hands off through the
+    // existing dev-shell authorize redirect to /admin. Location sign-out stays on /l/{slug}.
+    public static string SignOutTarget(bool adminSession, string issuerPath, string slug) =>
+        adminSession ? "/signin" : issuerPath + "/l/" + slug;
+
     static IResult BadLink(HttpContext c)
     {
         // 4.8: our own error page, never a redirect, never an echo.
@@ -427,9 +432,7 @@ public static class OAuth
                 }
                 c.Response.Cookies.Delete(SignIn.SessionCookie, new CookieOptions { Path = issuerPath });
                 // 11.2c: the end state is always the session's /l/{slug}. [ASSUMPTION A30] post_logout_redirect_uri is never followed.
-                result = s?.AdminType is not null
-                    ? Results.Redirect(issuerPath + "/admin")
-                    : Results.Redirect(issuerPath + "/l/" + slug);
+                result = Results.Redirect(SignOutTarget(s?.AdminType is not null, issuerPath, slug));
             }
             if (signedOutUser is not null)
                 await RequestSessionRevoker.NotifyAsync(issuer, signedOutUser);
