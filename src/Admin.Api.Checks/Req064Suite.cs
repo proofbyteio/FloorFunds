@@ -312,6 +312,7 @@ static class Req064Suite
             await MigratorCannotTruncate(owner, "auth.admin_assignment", "migrator-cannot-truncate-admin-assignment");
             await SuperuserTruncateRaises(owner, "auth.app_user", "superuser-truncate-app-user-raises-last-active-super-admin");
             await SuperuserTruncateRaises(owner, "auth.admin_assignment", "superuser-truncate-admin-assignment-raises-last-active-super-admin");
+            await GrantTruncateMutant(owner);
             await BoundsRetry(http, sign, owner, Sa);
             await SessionDeniedArm(http, sign, owner, Sa);
             var signedIn = await StandInSignIn.Run(ownerCs, adminCs, issuerCs);
@@ -769,6 +770,37 @@ static class Req064Suite
     {
         var detail = await SuperuserTruncateDetail(owner, table);
         return detail.Contains("P0001", StringComparison.Ordinal) && detail.Contains("last_active_super_admin", StringComparison.Ordinal);
+    }
+
+    static async Task GrantTruncateMutant(NpgsqlDataSource owner)
+    {
+        string database;
+        string role;
+        await using (var c = await owner.OpenConnectionAsync())
+        {
+            database = (string)(await new NpgsqlCommand("SELECT current_database()", c).ExecuteScalarAsync())!;
+            role = (string)(await new NpgsqlCommand("SELECT current_user", c).ExecuteScalarAsync())!;
+        }
+        var safe = System.Text.RegularExpressions.Regex.IsMatch(database, "^[a-z0-9_]+\\z")
+            && System.Text.RegularExpressions.Regex.IsMatch(role, "^[a-z0-9_]+\\z");
+        var detail = "refused";
+        if (safe)
+        {
+            var sql = "BEGIN; GRANT TRUNCATE ON TABLE auth.app_user TO " + role + "; SET ROLE " + role + "; TRUNCATE auth.app_user;";
+            var p = Process.Start(new ProcessStartInfo("sudo", ["-u", "postgres", "psql", "-d", database, "-v", "ON_ERROR_STOP=1", "-c", sql])
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            }) ?? throw new InvalidOperationException("psql did not start");
+            var stdout = await p.StandardOutput.ReadToEndAsync();
+            var stderr = await p.StandardError.ReadToEndAsync();
+            await p.WaitForExitAsync();
+            detail = "exit " + p.ExitCode + " " + stdout + stderr;
+        }
+        var killed = detail.Contains("P0001", StringComparison.Ordinal)
+            && detail.Contains("last_active_super_admin", StringComparison.Ordinal)
+            && !detail.Contains("42501", StringComparison.Ordinal);
+        Check("grant-truncate-mutant-fails-migrator-cannot-truncate-app-user", killed, detail);
     }
 
     static async Task<string> SuperuserTruncateDetail(NpgsqlDataSource owner, string table)
