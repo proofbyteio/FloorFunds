@@ -117,19 +117,19 @@ public static class Handoff
         }
         string RetField(string? ret) => ret is null ? "" : $"""<input type="hidden" name="ret" value="{E(ret)}">""";
         string Page(string? err, int step, string t, string? ret = null) => $"""
-<div data-testid="error-area" role="alert"><div data-testid="error-admin-sign-in">{(err is null ? "" : E(err))}</div></div>
+<div data-testid="error-area" role="alert"{(err is null ? " hidden" : "")}><div data-testid="error-admin-sign-in">{(err is null ? "" : E(err))}</div></div>
 """ + (step == 1 ? $"""
 <form method="post" action="{issuerPath}/admin"><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
 {RetField(ret)}
-<label>Username <input data-testid="field-admin-username" name="username"></label>
-<label>Password <input data-testid="field-admin-password" name="password" type="password"></label>
+<label for="admin-username">Username <input id="admin-username" data-testid="field-admin-username" name="username" autocomplete="username" required></label>
+<label for="admin-password">Password <input id="admin-password" data-testid="field-admin-password" name="password" type="password" autocomplete="current-password" required></label>
 <div class="admin-cta group"><button class="button button--primary button--block btn-primary" data-testid="admin-signin-submit" type="submit"><span class="btn-primary__press">Sign in</span></button><span class="btn-primary-halo" aria-hidden="true"></span></div></form>
 """ : $"""
 <form method="post" action="{issuerPath}/admin/mfa"><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
-<label>Code <input data-testid="field-admin-totp" name="totp_code" inputmode="numeric"></label>
+<label for="admin-totp">Code <input id="admin-totp" data-testid="field-admin-totp" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label>
 <button data-testid="admin-totp-submit" type="submit">Continue</button></form>
 <form method="post" action="{issuerPath}/admin/mfa"><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
-<label>Recovery code <input data-testid="field-admin-recovery-code" name="recovery_code"></label>
+<label for="admin-recovery">Recovery code <input id="admin-recovery" data-testid="field-admin-recovery-code" name="recovery_code" autocomplete="off" required></label>
 <button data-testid="admin-recovery-submit" type="submit">Use recovery code</button></form>
 """);
         IResult Admin(HttpContext c, string? err, int step, string? ret = null) => SignIn.Html("page-admin-sign-in", Page(err, step, af.GetAndStoreTokens(c).RequestToken!, ret), productLockup: step == 1);
