@@ -219,6 +219,25 @@ def cycle(name, apply, restore, cmd, build=None, seeded=False):
         print("WARNING", name, "did not pass after restore", flush=True)
         WARNINGS.append(name + " did not pass after restore")
 
+def cycle_files(name, apply, restore, cmd, build=None):
+    """File-only mutant cycle: no DB reseed (UX / server / shell)."""
+    only = os.environ.get("MUTANT_ONLY", "")
+    if only and name not in only.split(","):
+        print("skip", name)
+        return
+    try:
+        apply()
+        rc = run(name + "-fail", cmd, build)
+        if rc == 0:
+            print("WARNING", name, "did not fail", flush=True)
+            WARNINGS.append(name + " did not fail")
+    finally:
+        restore()
+    rc = run(name + "-pass", cmd, build)
+    if rc != 0:
+        print("WARNING", name, "did not pass after restore", flush=True)
+        WARNINGS.append(name + " did not pass after restore")
+
 def main():
     # Capture policies and function bodies from a freshly installed kit DB.
     reseed("baseline-capture")
@@ -265,6 +284,23 @@ def main():
     cycle("m4-last-sa-no-raise",
           lambda: install_fn(noop_mut, "auth._last_sa_guard()", OWNER, False),
           lambda: restore_fn("auth._last_sa_guard()"), REQ)
+
+    # m4b MEDIUM-2: remove DELETE from the last-SA row trigger (UPDATE stays)
+    def m4b_remove_delete():
+        sudo_psql("""
+DROP TRIGGER IF EXISTS admin_assignment_last_sa ON auth.admin_assignment;
+CREATE TRIGGER admin_assignment_last_sa
+  BEFORE UPDATE ON auth.admin_assignment
+  FOR EACH ROW EXECUTE FUNCTION auth._last_sa_guard();
+""")
+    def m4b_restore_delete():
+        sudo_psql("""
+DROP TRIGGER IF EXISTS admin_assignment_last_sa ON auth.admin_assignment;
+CREATE TRIGGER admin_assignment_last_sa
+  BEFORE UPDATE OR DELETE ON auth.admin_assignment
+  FOR EACH ROW EXECUTE FUNCTION auth._last_sa_guard();
+""")
+    cycle("m4b-last-sa-delete-trigger-removed", m4b_remove_delete, m4b_restore_delete, REQ)
 
     # m7 no nextval (SSE2 MEDIUM-1 / SA M-1: PERFORM NULL must FAIL resolver-store-is-read)
     cycle("m7-no-nextval",
@@ -849,6 +885,77 @@ ALTER FUNCTION auth.zz_unlisted_definer() OWNER TO ff_kit_req064;
         else:
             print("NAMED", name, text, flush=True)
 
+    # --- UX / server mutants (UPDATE 36/38): file-only, no DB reseed ---
+    ORGS = ["node", "ui/admin-shell/orgs-routes.test.mjs"]
+    GATES = ["node", "ui/admin-shell/route-gates.test.mjs"]
+    SCALARS = ["node", "ui/admin-shell/location-name-scalars.test.mjs"]
+    EXPIRED = ["node", "ui/admin-shell/session-expired-reason.test.mjs"]
+    REACH = ["node", "ui/admin-shell/browser-reachability.test.mjs"]
+
+    # F-20: remove both /orgs server routes
+    def f20_apply():
+        patch("ui/admin-shell/server.mjs",
+              'if (orgsNew || orgsSignIn || url.pathname === "/")',
+              'if (url.pathname === "/" && false && (orgsNew || orgsSignIn))')
+    cycle_files("f20-orgs-server-routes-removed", f20_apply,
+                lambda: git_checkout("ui/admin-shell/server.mjs"), ORGS)
+
+    # F-21: create gate removed (need: null)
+    def f21_create_apply():
+        patch("ui/admin-shell/shell.js",
+              'create: { label: "Create location", need: "create_location" }',
+              'create: { label: "Create location", need: null }')
+    cycle_files("f21-create-gate-removed", f21_create_apply,
+                lambda: git_checkout("ui/admin-shell/shell.js"), GATES)
+
+    # F-21: config gate removed
+    def f21_config_apply():
+        patch("ui/admin-shell/shell.js",
+              'config: { label: "Sign-in config", need: "config" }',
+              'config: { label: "Sign-in config", need: null }')
+    cycle_files("f21-config-gate-removed", f21_config_apply,
+                lambda: git_checkout("ui/admin-shell/shell.js"), GATES)
+
+    # F-23: break catalog family route serving
+    def f23_apply():
+        patch("ui/admin-shell/server.mjs",
+              'if (url.pathname === "/catalog" || url.pathname === "/catalog/")',
+              'if (url.pathname === "/katalog" || url.pathname === "/katalog/")')
+    cycle_files("f23-catalog-family-route-broken", f23_apply,
+                lambda: git_checkout("ui/admin-shell/server.mjs"), ORGS)
+
+    # F-TL-B: drop expiry sentence
+    def ftb_apply():
+        patch("src/Login.StandIn/Handoff.cs",
+              'reason == "expired"\n                ? $"""<p class="card__subtitle" data-testid="session-expired-sentence">For security, {E(Ui.ProductName)} asks for your sign-in again.</p>"""\n                : "";',
+              'reason == "expired"\n                ? ""\n                : "";')
+    cycle_files("ftlb-drop-expiry-sentence", ftb_apply,
+                lambda: git_checkout("src/Login.StandIn/Handoff.cs"), EXPIRED)
+
+    # F-24: revert client to UTF-16 .length
+    def f24_apply():
+        patch("ui/admin-shell/shell.js",
+              'if ([...name].length > 200) return "name_invalid";',
+              'if (name.length > 200) return "name_invalid";')
+    cycle_files("f24-client-utf16-length", f24_apply,
+                lambda: git_checkout("ui/admin-shell/shell.js"), SCALARS)
+
+    # href-served: create href points at a path the server does not serve
+    def href_create_apply():
+        patch("ui/admin-shell/shell.js",
+              'a.href = "/orgs/" + id + "/locations/new";',
+              'a.href = "/orgs/" + id + "/locations/create";')
+    cycle_files("href-create-not-served", href_create_apply,
+                lambda: git_checkout("ui/admin-shell/shell.js"), ORGS)
+
+    # href-served: sign-in href broken shape
+    def href_signin_apply():
+        patch("ui/admin-shell/shell.js",
+              'config.href = "/orgs/" + row.partner_id + "/locations/" + row.location_id + "/sign-in";',
+              'config.href = "/orgs/" + row.partner_id + "/locations/" + row.location_id + "/signin";')
+    cycle_files("href-signin-not-served", href_signin_apply,
+                lambda: git_checkout("ui/admin-shell/shell.js"), ORGS)
+
     expect("access-jti-is-newhandle", "FAIL stand-in-sign-in-opens-session-nav-locations-catalog")
     expect("closed-session-split", "FAIL closed-sessions-are-byte-identical")
     expect("shell-skips-signin", "FAIL shell-goes-to-signin-on-closed-session")
@@ -872,6 +979,16 @@ ALTER FUNCTION auth.zz_unlisted_definer() OWNER TO ff_kit_req064;
     expect("owner-can-replace-location-partner", "FAIL owner-cannot-replace-location-helpers")
     expect("unlisted-owner-definer", "FAIL security-definer-owner-is-the-definer-role")
     expect("m7-no-nextval", "FAIL resolver-store-is-read")
+
+    expect("m4b-last-sa-delete-trigger-removed", "FAIL last-active-sa-delete")
+    expect("f20-orgs-server-routes-removed", "FAIL server-serves-orgs-new")
+    expect("f21-create-gate-removed", "FAIL pages-has-create-gated-by-create_location")
+    expect("f21-config-gate-removed", "FAIL pages-has-config-gated-by-config")
+    expect("f23-catalog-family-route-broken", "FAIL server-serves-catalog")
+    expect("ftlb-drop-expiry-sentence", "FAIL expiry-sentence-mutant-applied")
+    expect("f24-client-utf16-length", "FAIL utf16-mutant-applied")
+    expect("href-create-not-served", "FAIL every-orgs-href-matches-served-shape")
+    expect("href-signin-not-served", "FAIL every-orgs-href-matches-served-shape")
 
     print("MUTANTS_DONE")
     if WARNINGS:
@@ -902,7 +1019,9 @@ if __name__ == "__main__":
             "src/Auth.Issuer/Program.cs",
             "src/Auth.Data.Checks/ScratchDb.cs",
             "src/Login.StandIn/Tokens.cs",
+            "src/Login.StandIn/Handoff.cs",
             "ui/admin-shell/shell.js",
+            "ui/admin-shell/server.mjs",
             "src/Catalog.Read/NpgsqlCatalogReader.cs",
             "db/kit/database.sql")
         for sig, (defn, grant) in SAVED.items():
@@ -911,6 +1030,15 @@ if __name__ == "__main__":
                 install_fn(defn, sig, owner, grant)
             except SystemExit as ex:
                 print("restore-fn-failed", sig, ex, flush=True)
+        try:
+            sudo_psql("""
+DROP TRIGGER IF EXISTS admin_assignment_last_sa ON auth.admin_assignment;
+CREATE TRIGGER admin_assignment_last_sa
+  BEFORE UPDATE OR DELETE ON auth.admin_assignment
+  FOR EACH ROW EXECUTE FUNCTION auth._last_sa_guard();
+""")
+        except SystemExit as ex:
+            print("restore-trigger-failed", ex, flush=True)
         print("restored", flush=True)
         print("MUTANTS_EXIT:" + str(exit_code), flush=True)
     raise SystemExit(exit_code)

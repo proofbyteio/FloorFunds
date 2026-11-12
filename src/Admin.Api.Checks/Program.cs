@@ -2686,14 +2686,48 @@ finally
     // always prints (never exit 134 from an unhandled cleanup exception).
     try
     {
-        // Truncate always exercises the last-SA guard regardless of how many
+        // Truncate always exercises the truncate guard regardless of how many
         // fixture SAs remain after the checks (seeded DBs keep more than U_SA).
-        var state = KitAdmin.SqlState("last-active-sa-truncate", "TRUNCATE auth.admin_assignment");
-        Ok("cleanup: last-SA guard still fires (P0001); A1.3 no table delete", state == "P0001", state);
+        var trunc = KitAdmin.SqlState("last-active-sa-truncate", "TRUNCATE auth.admin_assignment");
+        Ok("cleanup: last-SA truncate guard still fires (P0001); A1.3 no table delete", trunc == "P0001", trunc);
     }
     catch (Exception ex)
     {
-        Ok("cleanup: last-SA guard still fires (P0001); A1.3 no table delete", false,
+        Ok("cleanup: last-SA truncate guard still fires (P0001); A1.3 no table delete", false,
+            ex.GetType().Name + ": " + ex.Message);
+    }
+    // SSE2 MEDIUM-2: reduce to exactly one active global SA, then DELETE it.
+    // Must hit auth._last_sa_guard (row DELETE), not the truncate guard.
+    try
+    {
+        var del = KitAdmin.SqlState("admin-checks-last-sa-delete", """
+UPDATE auth.admin_assignment SET status = 'disabled'
+WHERE role_id = 'super_admin' AND scope_kind = 'global'
+  AND status = 'active' AND revoked_at IS NULL
+  AND partner_id IS NULL AND location_id IS NULL
+  AND assignment_id <> (
+    SELECT assignment_id FROM auth.admin_assignment
+    WHERE role_id = 'super_admin' AND scope_kind = 'global'
+      AND status = 'active' AND revoked_at IS NULL
+      AND partner_id IS NULL AND location_id IS NULL
+    ORDER BY assignment_id
+    LIMIT 1
+  );
+DELETE FROM auth.admin_assignment
+WHERE assignment_id = (
+  SELECT assignment_id FROM auth.admin_assignment
+  WHERE role_id = 'super_admin' AND scope_kind = 'global'
+    AND status = 'active' AND revoked_at IS NULL
+    AND partner_id IS NULL AND location_id IS NULL
+  ORDER BY assignment_id
+  LIMIT 1
+)
+""");
+        Ok("cleanup: last-SA delete guard still fires (P0001)", del == "P0001", del);
+    }
+    catch (Exception ex)
+    {
+        Ok("cleanup: last-SA delete guard still fires (P0001)", false,
             ex.GetType().Name + ": " + ex.Message);
     }
 }

@@ -33,6 +33,7 @@ public static class KitAdmin
         "last-active-sa-delete|Req064Suite|last-active-sa-delete|admin_assignment|DELETE|trigger check; no API deletes this row",
         "last-active-sa-user-delete|Req064Suite|last-active-sa-user-delete|app_user|DELETE|trigger check; no API deletes this row",
         "last-active-sa-truncate|Req064Suite|last-active-sa-truncate|admin_assignment|TRUNCATE|trigger check; the migrator truncate is a separate 42501",
+        "admin-checks-last-sa-delete|Admin.Api.Checks|cleanup: last-SA delete guard still fires (P0001)|admin_assignment|DELETE|MEDIUM-2; reduce to one active global SA then DELETE; no product delete API",
         "last-active-sa-user-truncate|Req064Suite|last-active-sa-user-truncate|app_user|TRUNCATE|trigger check; the migrator truncate is a separate 42501",
         "disable-one-of-two-super-admins-succeeds|Req064Suite|disable-one-of-two-super-admins-succeeds|admin_assignment|status|no API; the trigger must allow disabling one of two",
         "delete-partner-admin-while-sa-remains|Req064Suite|delete-partner-admin-while-sa-remains|admin_assignment|DELETE|no API; the trigger must allow deleting a partner admin",
