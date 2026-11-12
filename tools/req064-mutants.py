@@ -7,12 +7,12 @@ Auth.Data.Checks mutants use --seed so fixtures.json users are present.
 """
 import os, re, subprocess, pathlib, textwrap
 
-ROOT = pathlib.Path("/agent/repos/FloorFunds")
+ROOT = pathlib.Path(os.environ.get("MUTANTS_ROOT", str(pathlib.Path(__file__).resolve().parents[1])))
 OUT = pathlib.Path(os.environ.get("MUTANTS_OUT", "/opt/cursor/artifacts/mutants-run23"))
 OUT.mkdir(parents=True, exist_ok=True)
-DB = "ff_kit_req064"
-DEFINER = "ff_kit_req064_auth_definer"
-OWNER = "ff_kit_req064"
+DB = os.environ.get("MUTANTS_DB", "ff_kit_req064")
+DEFINER = DB + "_auth_definer"
+OWNER = DB
 WARNINGS = []
 
 def load_env():
@@ -46,7 +46,7 @@ ENV["FF_ADMIN_API_PASSWORD"] = password_of(ENV["ADMIN_API_CONNECTION_STRING"])
 ENV["FF_LOGIN_PASSWORD"] = password_of(ENV["LOGIN_CONNECTION_STRING"])
 pw = ENV.get("FF_ISSUER_PASSWORD", "")
 ENV["ISSUER_CONNECTION_STRING"] = (
-    "Host=127.0.0.1;Port=5432;Database=ff_kit_req064;Username=ff_kit_req064_issuer;Password=" + pw)
+    "Host=127.0.0.1;Port=5432;Database=" + DB + ";Username=" + DB + "_issuer;Password=" + pw)
 
 def sudo_psql(sql, file=False):
     cmd = ["sudo", "-u", "postgres", "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", DB]
@@ -847,15 +847,15 @@ CREATE TRIGGER admin_assignment_last_sa
     HELPERS = ["dotnet", "run", "--project", "src/Admin.Api.Checks/Admin.Api.Checks.csproj", "--no-build", "--", "--helpers"]
 
     def last_sa_owner():
-        sudo_psql("ALTER FUNCTION auth._last_sa_guard() OWNER TO ff_kit_req064;")
+        sudo_psql("ALTER FUNCTION auth._last_sa_guard() OWNER TO " + OWNER + ";")
     def last_sa_definer():
-        sudo_psql("ALTER FUNCTION auth._last_sa_guard() OWNER TO ff_kit_req064_auth_definer;")
+        sudo_psql("ALTER FUNCTION auth._last_sa_guard() OWNER TO " + DEFINER + ";")
     cycle("owner-can-replace-last-sa-guard", last_sa_owner, last_sa_definer, HELPERS)
 
     def location_owner():
-        sudo_psql("ALTER FUNCTION auth.location_partner(uuid) OWNER TO ff_kit_req064;")
+        sudo_psql("ALTER FUNCTION auth.location_partner(uuid) OWNER TO " + OWNER + ";")
     def location_definer():
-        sudo_psql("ALTER FUNCTION auth.location_partner(uuid) OWNER TO ff_kit_req064_auth_definer;")
+        sudo_psql("ALTER FUNCTION auth.location_partner(uuid) OWNER TO " + DEFINER + ";")
     cycle("owner-can-replace-location-partner", location_owner, location_definer, HELPERS)
 
     def unlisted_apply():
@@ -863,8 +863,8 @@ CREATE TRIGGER admin_assignment_last_sa
 CREATE FUNCTION auth.zz_unlisted_definer() RETURNS void
   LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
 AS $$ BEGIN NULL; END $$;
-ALTER FUNCTION auth.zz_unlisted_definer() OWNER TO ff_kit_req064;
-""")
+ALTER FUNCTION auth.zz_unlisted_definer() OWNER TO %s;
+""" % OWNER)
     def unlisted_drop():
         sudo_psql("DROP FUNCTION IF EXISTS auth.zz_unlisted_definer();")
     cycle("unlisted-owner-definer", unlisted_apply, unlisted_drop, HELPERS)
