@@ -4773,3 +4773,49 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261112060000_Req064SessionSubject') THEN
+CREATE OR REPLACE FUNCTION auth.session_subject() RETURNS text
+  LANGUAGE sql
+  STABLE
+  PARALLEL RESTRICTED
+  SECURITY DEFINER
+  SET search_path = pg_catalog, auth
+AS $fn$
+  SELECT s.sub
+    FROM auth.request_binding b
+    JOIN auth.request_session s ON s.token_hash = b.token_hash
+   WHERE b.backend_pid = pg_backend_pid()
+     AND b.xact_id = pg_current_xact_id()
+     AND s.revoked_at IS NULL
+     AND s.expires_at > clock_timestamp()
+$fn$;
+
+REVOKE ALL ON FUNCTION auth.session_subject() FROM PUBLIC;
+
+DO $subj$
+DECLARE
+  a text := current_database() || '_admin_api';
+BEGIN
+  EXECUTE 'GRANT EXECUTE ON FUNCTION auth.session_subject() TO CURRENT_USER';
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+    EXECUTE format('GRANT EXECUTE ON FUNCTION auth.session_subject() TO %I', a);
+  END IF;
+END
+$subj$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261112060000_Req064SessionSubject') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261112060000_Req064SessionSubject', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;

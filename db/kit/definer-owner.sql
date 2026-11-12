@@ -26,6 +26,7 @@ DECLARE
     'auth.begin_request(text)',
     'auth.current_principal()',
     'auth.session_issuer()',
+    'auth.session_subject()',
     'auth.revoke_session(text)',
     'auth.revoke_on_principal_change()',
     'auth.revoke_login(text, text)',
@@ -49,7 +50,7 @@ BEGIN
   -- with the issuer role only. The owner keeps the read and revoke functions.
   SELECT pg_get_userbyid(datdba)::text INTO owner_name
     FROM pg_database WHERE datname = current_database();
-  EXECUTE format('GRANT EXECUTE ON FUNCTION auth.begin_request(text), auth.current_principal(), auth.session_issuer(), auth.revoke_session(text) TO %I', owner_name);
+  EXECUTE format('GRANT EXECUTE ON FUNCTION auth.begin_request(text), auth.current_principal(), auth.session_issuer(), auth.session_subject(), auth.revoke_session(text) TO %I', owner_name);
   EXECUTE format('REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz, timestamptz) FROM %I', owner_name);
   -- The migration user keeps SELECT on login_cutoff. Writes stay on the definer,
   -- which owns revoke_login after this step. Scratch databases skip this file,

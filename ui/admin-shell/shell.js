@@ -430,9 +430,9 @@ async function draw() {
   if (productName) document.title = productName;
   const signedIn = document.querySelector("#signed-in");
   if (signedIn) {
-    const screens = me.body?.screens ?? [];
-    const role = screens.includes("create_client") ? "Super Admin" : screens.includes("create_location") ? "Partner Admin" : "";
-    signedIn.textContent = role ? "Role: " + role : "";
+    const who = typeof me.body?.signed_in_as === "string" ? me.body.signed_in_as : "";
+    const role = typeof me.body?.role === "string" ? me.body.role : "";
+    signedIn.textContent = who && role ? "Signed in as " + who + " · Role: " + role : "";
   }
   grant = me.status === 200 ? (me.body.screens ?? []) : [];
   const name = route();

@@ -855,7 +855,19 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             screens.Add("config");
         }
         if (CatalogNav.Includes(who.Id.UserId, who.Grant)) screens.Add("catalog");
-        return Json(200, new JsonObject { ["screens"] = screens, ["product_name"] = opt.ProductName });
+        string signedInAs = "";
+        await using (var sub = new NpgsqlCommand("SELECT auth.session_subject()", c, tx))
+        {
+            var value = await sub.ExecuteScalarAsync();
+            if (value is string s) signedInAs = s;
+        }
+        return Json(200, new JsonObject
+        {
+            ["screens"] = screens,
+            ["product_name"] = opt.ProductName,
+            ["signed_in_as"] = signedInAs,
+            ["role"] = SignedInCopy.Role(who.Grant.Role),
+        });
     });
 
     /// <summary>Catalog stays read-only in this shell. The screen is granted to an admin; the write is not performed.</summary>

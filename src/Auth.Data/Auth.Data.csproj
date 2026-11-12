@@ -49,5 +49,6 @@
     <EmbeddedResource Include="Migrations\Req064Actor.sql" />
     <EmbeddedResource Include="Migrations\Req064SessionClose.sql" />
     <EmbeddedResource Include="Migrations\Req064LocationAddress.sql" />
+    <EmbeddedResource Include="Migrations\Req064SessionSubject.sql" />
   </ItemGroup>
 </Project>
