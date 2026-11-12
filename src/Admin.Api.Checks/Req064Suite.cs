@@ -2673,6 +2673,7 @@ static class Req064Suite
         Check("wrong-caller-secret-rejected",
             await PostRevoke(issuer.Url, "not-the-secret", Issuer, Sa2.ToString("D")) == 401 && await BeginOk(admin, live));
         Check("admin-api-cannot-revoke-login", await Denied(admin, "SELECT auth.revoke_login($1, $2)", Issuer, Sa.ToString("D")));
+        Check("admin-api-cannot-revoke-session", await Denied(admin, "SELECT auth.revoke_session($1)", "not-a-session-token"));
         var oauth = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Login.StandIn", "OAuth.cs"));
         Check("sign-out-notifies-the-issuer", oauth.Contains("RequestSessionRevoker.NotifyAsync(", StringComparison.Ordinal));
         Check("non-loopback-listen-refused", await ListenRefusal("http://192.0.2.1:9", allow: false));
