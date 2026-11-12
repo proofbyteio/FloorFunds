@@ -1741,6 +1741,26 @@ static class Req064Suite
         Check("owner-cannot-replace-location-helpers", replaced == "42501 42501 42501 42501", replaced);
         var sweep = await SecurityDefinerSweep(owner);
         Check("security-definer-owner-is-the-definer-role", sweep == "", sweep);
+        var subject = await ScalarText(owner, """
+            SELECT CASE
+              WHEN to_regprocedure('auth.session_subject()') IS NULL THEN 'missing'
+              WHEN NOT EXISTS (
+                SELECT 1 FROM pg_proc p
+                JOIN pg_namespace n ON n.oid = p.pronamespace
+                JOIN pg_roles r ON r.oid = p.proowner
+                WHERE p.oid = 'auth.session_subject()'::regprocedure
+                  AND r.rolname = current_database() || '_auth_definer'
+                  AND p.prosecdef
+              ) THEN 'owner'
+              WHEN has_function_privilege(current_database() || '_admin_api', 'auth.session_subject()', 'EXECUTE')
+                   <> has_function_privilege(current_database() || '_admin_api', 'auth.session_issuer()', 'EXECUTE')
+                OR has_function_privilege((SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()), 'auth.session_subject()', 'EXECUTE')
+                   <> has_function_privilege((SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()), 'auth.session_issuer()', 'EXECUTE')
+                THEN 'grant'
+              ELSE ''
+            END
+            """);
+        Check("session-subject-matches-session-issuer-ownership-and-grants", subject == "", subject);
         await Run14PolicySweep(owner);
 
         // The same statements LoginConfigApi sends. admin_api has no resolved GUCs,

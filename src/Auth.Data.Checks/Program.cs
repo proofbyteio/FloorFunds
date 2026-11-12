@@ -787,7 +787,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
            '_request_user','actor_is_global','actor_is_any_admin','actor_has_any_location','actor_can_partner',
            'actor_location_sees_partner','actor_has_location','actor_can_location','actor_sees_change',
            'list_existing_partners','resolve_grant','read_partner_bounds','save_partner_bounds','record_login_write',
-           'save_location_login_config','open_session','begin_request','current_principal','session_issuer',
+           'save_location_login_config','open_session','begin_request','current_principal','session_issuer','session_subject',
            'revoke_session','revoke_on_principal_change','revoke_login','_lock_login','_login_cutoff_user_delete',
            'session_still_open','_last_sa_guard','_last_sa_truncate_guard','location_partner','tenant_bound_elsewhere')
         """);
