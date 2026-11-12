@@ -1653,10 +1653,20 @@ async function finish(code) {
   try { ws?.close(); } catch { }
   chrome.kill("SIGTERM");
   const hostCode = await new Promise(r => { if (host.exitCode !== null) r(host.exitCode); else { host.once("exit", r); setTimeout(() => { host.kill(); r(-1); }, 30000); } });
-  const tail = hostOut.trim().split("\n").slice(-2).join(" | ");
-  ok("ui-host exited 0 after cleanup (last-SA guard; A1.3 no table delete)", hostCode === 0
-    && /PASS cleanup: last-SA truncate guard still fires \(P0001\); A1\.3 no table delete/.test(hostOut)
-    && /PASS cleanup: last-SA delete guard still fires \(P0001\)/.test(hostOut), [hostCode, tail]);
+  const hostLines = hostOut.trim().split("\n");
+  const summaryLine = [...hostLines].reverse().find((ln) => /^\d+ passed, \d+ failed$/.test(ln)) || "";
+  const tail = hostLines.slice(-3).join(" | ");
+  // MEDIUM-2: truncate path keeps A1.3 wording on its own PASS line.
+  ok("cleanup A1.3 truncate guard still fires",
+    /PASS cleanup: last-SA truncate guard still fires \(P0001\); A1\.3 no table delete/.test(hostOut),
+    tail);
+  // MEDIUM-2: row DELETE must hit _last_sa_guard (exact wording).
+  ok("cleanup last-SA delete guard still fires (P0001)",
+    /PASS cleanup: last-SA delete guard still fires \(P0001\)$/m.test(hostOut),
+    tail);
+  ok("ui-host exited 0 with zero failed checks",
+    hostCode === 0 && /^\d+ passed, 0 failed$/.test(summaryLine),
+    [hostCode, summaryLine || tail]);
   await sleep(300);
   rmSync(profile, { recursive: true, force: true });
   console.log(`${pass} passed, ${fail} failed`);

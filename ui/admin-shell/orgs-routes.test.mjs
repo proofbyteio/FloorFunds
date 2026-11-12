@@ -1,8 +1,9 @@
 // F-20. /orgs create and sign-in paths are served by the shell; Create location
  // appears in empty and non-empty list states; every in-shell href is served.
-import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import http from "node:http";
+import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -14,13 +15,92 @@ function check(name, ok, detail) {
   else { failed += 1; console.log("FAIL " + name + (detail ? " :: " + detail : "")); }
 }
 
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = createServer();
+    s.listen(0, "127.0.0.1", () => {
+      const { port } = s.address();
+      s.close((err) => err ? reject(err) : resolve(port));
+    });
+    s.on("error", reject);
+  });
+}
+
+async function startShellServer() {
+  const port = await freePort();
+  const child = spawn(process.execPath, [join(root, "server.mjs")], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      ADMIN_DEV_SHELL: "1",
+      ASPNETCORE_ENVIRONMENT: "Development",
+      ADMIN_SHELL_PORT: String(port),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let boot = "";
+  await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("admin shell start timeout: " + boot)), 10000);
+    const onData = (buf) => {
+      boot += buf.toString();
+      if (boot.includes("admin shell http://127.0.0.1:" + port)) {
+        clearTimeout(t);
+        child.stdout.off("data", onData);
+        resolve();
+      }
+    };
+    child.stdout.on("data", onData);
+    child.stderr.on("data", (buf) => { boot += buf.toString(); });
+    child.on("exit", (code) => {
+      clearTimeout(t);
+      reject(new Error("admin shell exited " + code + ": " + boot));
+    });
+  });
+  return { port, child, base: `http://127.0.0.1:${port}` };
+}
+
+function httpGet(base, path) {
+  // Use node:http — global fetch is mocked below for shell.js.
+  return new Promise((resolve, reject) => {
+    const url = new URL(path, base);
+    http.get(url, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        resolve({
+          status: res.statusCode || 0,
+          body: Buffer.concat(chunks).toString("utf8"),
+          contentType: String(res.headers["content-type"] || ""),
+        });
+      });
+    }).on("error", reject);
+  });
+}
+
+function isShellHtml(res) {
+  return res.status === 200 && /text\/html/i.test(res.contentType) && /<!doctype html|<html/i.test(res.body);
+}
+
 const shellSrc = readFileSync(join(root, "shell.js"), "utf8");
 const serverSrc = readFileSync(join(root, "server.mjs"), "utf8");
-check("server-serves-orgs-new", serverSrc.includes("orgsNew") && /locations\\\/new/.test(serverSrc));
-check("server-serves-orgs-sign-in", serverSrc.includes("orgsSignIn") && serverSrc.includes("sign-in"));
 check("server-serves-catalog", serverSrc.includes('url.pathname === "/catalog"') && serverSrc.includes("catalog-presentation"));
 check("create-control-uses-orgs-path", shellSrc.includes('a.href = "/orgs/" + id + "/locations/new"'));
 check("create-control-helper-exists", shellSrc.includes("createLocationControl"));
+
+const partner = "11111111-1111-4111-8111-111111111111";
+const locationId = "22222222-2222-4222-8222-222222222222";
+const shellServer = await startShellServer();
+try {
+  const newPath = `/orgs/${partner}/locations/new`;
+  const signInPath = `/orgs/${partner}/locations/${locationId}/sign-in`;
+  const newRes = await httpGet(shellServer.base, newPath);
+  const signInRes = await httpGet(shellServer.base, signInPath);
+  check("server-serves-orgs-new", isShellHtml(newRes), `status=${newRes.status}`);
+  check("server-serves-orgs-sign-in", isShellHtml(signInRes), `status=${signInRes.status}`);
+} catch (e) {
+  check("server-serves-orgs-new", false, String(e));
+  check("server-serves-orgs-sign-in", false, String(e));
+}
 
 function el(tag) {
   const node = {
@@ -55,8 +135,6 @@ function el(tag) {
   return node;
 }
 
-const partner = "11111111-1111-4111-8111-111111111111";
-const locationId = "22222222-2222-4222-8222-222222222222";
 const locations = [];
 const posts = [];
 const main = el("main");
@@ -175,14 +253,19 @@ const orgsPathOk = hrefs.every((h) =>
   || /^\/orgs\/[0-9a-fA-F-]{36}\/locations\/[0-9a-fA-F-]{36}\/sign-in$/.test(h));
 check("every-orgs-href-matches-served-shape", orgsPathOk && hrefs.length > 0, hrefs.join(" | "));
 
-// Mutant: drop the server /orgs routes.
-const file = join(root, "server.mjs");
-const src = readFileSync(file, "utf8");
-const mutated = src.replace("if (orgsNew || orgsSignIn || url.pathname === \"/\")", "if (url.pathname === \"/\" && false && (orgsNew || orgsSignIn))");
-check("orgs-route-mutant-applied", mutated !== src);
-writeFileSync(file, mutated);
-const killed = !mutated.includes("if (orgsNew || orgsSignIn || url.pathname === \"/\")");
-writeFileSync(file, src);
-check("mutant-orgs-server-route-removed-killed", killed);
+// Live server confirmation: each in-shell /orgs href must be served as the shell HTML.
+// Under f20 (server.mjs routes removed) or href-* mutants (broken path), these fail.
+const liveHrefFails = [];
+for (const h of [...new Set(hrefs)]) {
+  try {
+    const res = await httpGet(shellServer.base, h);
+    if (!isShellHtml(res)) liveHrefFails.push(`${h} status=${res.status}`);
+  } catch (e) {
+    liveHrefFails.push(`${h} ${e}`);
+  }
+}
+check("every-orgs-href-served-by-live-server", liveHrefFails.length === 0 && hrefs.length > 0, liveHrefFails.join(" | "));
+
+try { shellServer.child.kill("SIGTERM"); } catch { }
 
 if (failed !== 0) process.exit(1);

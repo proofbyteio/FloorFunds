@@ -981,14 +981,15 @@ ALTER FUNCTION auth.zz_unlisted_definer() OWNER TO %s;
     expect("m7-no-nextval", "FAIL resolver-store-is-read")
 
     expect("m4b-last-sa-delete-trigger-removed", "FAIL last-active-sa-delete")
-    expect("f20-orgs-server-routes-removed", "FAIL orgs-route-mutant-applied")
+    expect("f20-orgs-server-routes-removed", "FAIL server-serves-orgs-new")
+    expect("f20-orgs-server-routes-removed", "FAIL server-serves-orgs-sign-in")
     expect("f21-create-gate-removed", "FAIL pages-has-create-gated-by-create_location")
     expect("f21-config-gate-removed", "FAIL pages-has-config-gated-by-config")
     expect("f23-catalog-family-route-broken", "FAIL server-serves-catalog")
     expect("ftlb-drop-expiry-sentence", "FAIL expiry-sentence-mutant-applied")
     expect("f24-client-utf16-length", "FAIL utf16-mutant-applied")
-    expect("href-create-not-served", "FAIL every-orgs-href-matches-served-shape")
-    expect("href-signin-not-served", "FAIL every-orgs-href-matches-served-shape")
+    expect("href-create-not-served", "FAIL every-orgs-href-served-by-live-server")
+    expect("href-signin-not-served", "FAIL every-orgs-href-served-by-live-server")
 
     print("MUTANTS_DONE")
     if WARNINGS:
