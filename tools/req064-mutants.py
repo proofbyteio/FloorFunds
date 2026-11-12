@@ -478,7 +478,7 @@ CREATE TRIGGER admin_assignment_last_sa
               "    WHEN current_setting('app.resolved_global_admin', true) = 'on' THEN true",
               "    WHEN current_setting('app.admin_type', true) = 'super' THEN true")
     cycle("m5-admin-type-branch", m5_apply,
-          lambda: git_checkout("src/Auth.Data/Migrations/CatalogMasterData.Grants.sql"), QUERY)
+          lambda: git_checkout("src/Auth.Data/Migrations/CatalogMasterData.Grants.sql"), QUERY, QUERY_BUILD)
 
 
     # The binding is ignored and the GUC is the principal.
@@ -576,7 +576,7 @@ CREATE TRIGGER admin_assignment_last_sa
 
     cycle("r-public-temp",
           lambda: sudo_psql("GRANT TEMP ON DATABASE ff_kit_req064 TO PUBLIC"),
-          lambda: sudo_psql("REVOKE TEMP ON DATABASE ff_kit_req064 FROM PUBLIC"), AUTH,
+          lambda: sudo_psql("REVOKE TEMP ON DATABASE ff_kit_req064 FROM PUBLIC"), AUTH, AUTH_BUILD,
           seeded=True)
 
     def skip_revoke():
@@ -981,7 +981,7 @@ ALTER FUNCTION auth.zz_unlisted_definer() OWNER TO %s;
     expect("m7-no-nextval", "FAIL resolver-store-is-read")
 
     expect("m4b-last-sa-delete-trigger-removed", "FAIL last-active-sa-delete")
-    expect("f20-orgs-server-routes-removed", "FAIL server-serves-orgs-new")
+    expect("f20-orgs-server-routes-removed", "FAIL orgs-route-mutant-applied")
     expect("f21-create-gate-removed", "FAIL pages-has-create-gated-by-create_location")
     expect("f21-config-gate-removed", "FAIL pages-has-config-gated-by-config")
     expect("f23-catalog-family-route-broken", "FAIL server-serves-catalog")

@@ -9,8 +9,8 @@ const here = fileURLToPath(import.meta.url);
 const cites = [
   ["db/kit/definer-owner.sql", 54, "REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz, timestamptz)"],
   ["db/kit/definer-owner.sql", 58, "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE auth.login_cutoff"],
-  ["db/kit/definer-owner.sql", 77, "CREATE POLICY login_cutoff_owner"],
-  ["db/kit/definer-owner.sql", 80, "GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid)"],
+  ["db/kit/definer-owner.sql", 78, "CREATE POLICY login_cutoff_owner"],
+  ["db/kit/definer-owner.sql", 81, "GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid)"],
   ["db/kit/definer-owner.sql", 34, "auth._last_sa_guard()"],
   ["db/kit/definer-owner.sql", 36, "auth.location_partner(uuid)"],
   ["src/Auth.Data/Migrations/Req064Session.sql", 407, "auth.open_session(text, text, uuid, timestamptz)"],

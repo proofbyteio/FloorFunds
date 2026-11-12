@@ -14,7 +14,7 @@ function check(name, ok, detail) {
 const signin = readFileSync(join(repo, "ui/admin-shell/server.mjs"), "utf8");
 check("shell-signin-hands-off-to-authorize", signin.includes('url.pathname === "/signin"') && signin.includes('location: "/standin/connect/authorize?"'));
 const oauth = readFileSync(join(repo, "src/Login.StandIn/OAuth.cs"), "utf8");
-check("authorize-hands-off-to-admin-sign-in", oauth.includes('return Results.Redirect(issuerPath + "/admin?ret="'));
+check("authorize-hands-off-to-admin-sign-in", oauth.includes('issuerPath + "/admin?ret="') && oauth.includes("return Results.Redirect(admin)"));
 
 if (!process.argv.includes("--child")) {
   const run = () => {
