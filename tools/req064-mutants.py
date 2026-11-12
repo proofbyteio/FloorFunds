@@ -834,6 +834,9 @@ ALTER FUNCTION auth.zz_unlisted_definer() OWNER TO ff_kit_req064;
     cycle("unlisted-owner-definer", unlisted_apply, unlisted_drop, HELPERS)
 
     def expect(name, text):
+        only = os.environ.get("MUTANT_ONLY", "")
+        if only and name not in only.split(","):
+            return
         path = OUT / f"{name}-fail.log"
         if not path.exists():
             print("WARNING", name, "log missing", flush=True)
