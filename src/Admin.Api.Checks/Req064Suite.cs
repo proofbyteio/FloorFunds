@@ -1699,6 +1699,7 @@ static class Req064Suite
         Check("owner-cannot-replace-location-helpers", replaced == "42501 42501 42501 42501", replaced);
         var sweep = await SecurityDefinerSweep(owner);
         Check("security-definer-owner-is-the-definer-role", sweep == "", sweep);
+        await Run14PolicySweep(owner);
 
         // The same statements LoginConfigApi sends. admin_api has no resolved GUCs,
         // so RLS hides the rows. The definer functions still see them.
@@ -1746,13 +1747,14 @@ static class Req064Suite
 
     static async Task<string> SecurityDefinerSweep(NpgsqlDataSource owner)
     {
-        // REQ-065 owns a catalog definer role. Until then this exact set is the residual:
-        // every SECURITY DEFINER in auth and catalog is the auth definer, or one of these,
-        // owned by the database owner. A new one or a missing one fails the build.
+        // The 22-function pin is gone. Every SECURITY DEFINER is owned by
+        // _auth_definer or _catalog_definer. A migrator-owned definer fails.
         var raw = await ScalarText(owner, """
             WITH definers AS (
               SELECT n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' AS sig,
-                     r.rolname = current_database() || '_auth_definer' AS definer_owned,
+                     r.rolname AS owner_name,
+                     r.rolname = current_database() || '_auth_definer' AS auth_owned,
+                     r.rolname = current_database() || '_catalog_definer' AS catalog_owned,
                      r.rolname = (
                        SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()
                      ) AS migration_owned
@@ -1760,7 +1762,6 @@ static class Req064Suite
                 JOIN pg_namespace n ON n.oid = p.pronamespace
                 JOIN pg_roles r ON r.oid = p.proowner
                WHERE p.prosecdef
-                 AND n.nspname IN ('auth', 'catalog')
             ),
             pinned(sig) AS (
               VALUES
@@ -1788,19 +1789,143 @@ static class Req064Suite
                 ('catalog.tg_tx_marker_stmt()')
             )
             SELECT CASE
-              WHEN (SELECT count(*) FROM pinned) <> 22 THEN 'pin count'
-              ELSE coalesce((
-                     SELECT string_agg(sig, ', ' ORDER BY sig) FROM definers
-                      WHERE NOT definer_owned AND sig NOT IN (SELECT sig FROM pinned)
-                   ), '')
-                   || '|' ||
-                   coalesce((
-                     SELECT string_agg(sig, ', ' ORDER BY sig) FROM pinned
-                      WHERE sig NOT IN (SELECT sig FROM definers WHERE migration_owned AND NOT definer_owned)
-                   ), '')
+              WHEN EXISTS (SELECT 1 FROM definers WHERE migration_owned) THEN
+                'migrator-owned ' || (SELECT string_agg(sig, ', ' ORDER BY sig) FROM definers WHERE migration_owned)
+              WHEN (SELECT count(*) FROM pinned p JOIN definers d ON d.sig = p.sig WHERE d.catalog_owned) <> 22 THEN
+                'catalog-definer count'
+              WHEN EXISTS (SELECT 1 FROM definers WHERE NOT auth_owned AND NOT catalog_owned) THEN
+                'other-owner ' || (SELECT string_agg(sig, ', ' ORDER BY sig) FROM definers WHERE NOT auth_owned AND NOT catalog_owned)
+              ELSE ''
             END
             """);
-        return raw == "|" ? "" : raw;
+        return raw ?? "null";
+    }
+
+    static async Task Run14PolicySweep(NpgsqlDataSource owner)
+    {
+        var migrator = await ScalarText(owner, "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()");
+        var forAll = await ScalarText(owner, """
+            SELECT coalesce(string_agg(schemaname || '.' || tablename || '.' || policyname, ', ' ORDER BY 1), '')
+              FROM pg_policies
+             WHERE cmd = 'ALL'
+            """);
+        Check("no-owner-for-all-policy", forAll == "", forAll);
+        var forced = await ScalarText(owner, """
+            SELECT coalesce(string_agg(n.nspname || '.' || c.relname, ', ' ORDER BY 1), '')
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.relkind = 'r'
+               AND (
+                    (n.nspname IN ('auth', 'catalog'))
+                    OR (n.nspname = 'public' AND c.relname = '__EFMigrationsHistory')
+               )
+               AND (
+                    NOT c.relrowsecurity
+                    OR NOT c.relforcerowsecurity
+                    OR pg_get_userbyid(c.relowner) = (
+                         SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()
+                       )
+               )
+            """);
+        Check("a2-tables-are-forced-and-not-migrator-owned", forced == "", forced);
+        var dml = await ScalarText(owner, """
+            SELECT coalesce(string_agg(table_schema || '.' || table_name || ':' || privilege_type, ', ' ORDER BY 1), '')
+              FROM information_schema.role_table_grants
+             WHERE grantee = current_user
+               AND privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')
+               AND NOT (
+                    table_schema = 'public' AND table_name = '__EFMigrationsHistory'
+                    AND privilege_type IN ('INSERT', 'UPDATE', 'DELETE')
+               )
+            """);
+        Check("migrator-dml-is-history-only", dml == "", dml + " migrator " + migrator);
+        var seed = await ScalarText(owner, """
+            WITH expected(schema_name, table_name) AS (
+              VALUES
+                ('catalog','registered_entry'),
+                ('catalog','catalog_release'), ('catalog','transaction_type'), ('catalog','channel'),
+                ('catalog','device_category'), ('catalog','manufacturer'), ('catalog','device_model'),
+                ('catalog','hardware_capability_kind'), ('catalog','model_hardware_claim'),
+                ('catalog','card_network'), ('catalog','card_funding_class'), ('catalog','payment_rail'),
+                ('catalog','check_instrument_kind'), ('catalog','check_drawer_class'), ('catalog','check_purpose'),
+                ('catalog','processor'), ('catalog','transaction_status'), ('catalog','reason_code'),
+                ('catalog','id_document_type'), ('catalog','currency'), ('catalog','fee_type'),
+                ('auth','app_user'), ('auth','admin_assignment'), ('auth','user_issuer'), ('auth','location'),
+                ('auth','location_login_config'), ('auth','location_login_config_change'),
+                ('auth','external_login'), ('auth','user_location'), ('auth','partner_reason_bounds')
+            ),
+            grants AS (
+              SELECT table_schema, table_name, privilege_type
+                FROM information_schema.role_table_grants
+               WHERE grantee = current_database() || '_test_seed'
+            )
+            SELECT CASE
+              WHEN NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_database() || '_test_seed') THEN 'missing-role'
+              WHEN EXISTS (
+                SELECT 1 FROM pg_auth_members m
+                  JOIN pg_roles r ON r.oid IN (m.roleid, m.member)
+                 WHERE r.rolname = current_database() || '_test_seed'
+              ) THEN 'membership'
+              WHEN EXISTS (SELECT 1 FROM grants WHERE privilege_type NOT IN ('SELECT', 'INSERT')) THEN 'extra-privilege'
+              WHEN EXISTS (
+                SELECT 1 FROM grants g
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM expected e WHERE e.schema_name = g.table_schema AND e.table_name = g.table_name
+                 )
+              ) THEN 'extra-table'
+              WHEN EXISTS (
+                SELECT 1 FROM expected e
+                 WHERE (
+                   SELECT count(DISTINCT privilege_type) FROM grants g
+                    WHERE g.table_schema = e.schema_name AND g.table_name = e.table_name
+                      AND g.privilege_type IN ('SELECT', 'INSERT')
+                 ) <> 2
+              ) THEN 'missing-grant'
+              WHEN EXISTS (
+                SELECT 1 FROM grants
+                 WHERE table_schema = 'auth'
+                   AND table_name IN ('login_cutoff', 'request_session', 'request_binding')
+              ) THEN 'session-grant'
+              ELSE ''
+            END
+            """);
+        Check("test-seed-grants-are-insert-select-only", seed == "", seed);
+        var path = await ScalarText(owner, """
+            SELECT coalesce(string_agg(p.proname, ', ' ORDER BY p.proname), '')
+              FROM pg_proc p
+              JOIN pg_namespace n ON n.oid = p.pronamespace
+             WHERE n.nspname = 'catalog'
+               AND (p.prosecdef OR p.proname IN (
+                    '_actor','_err','_keys_ok','_req_text','_opt_text','_req_bool','_opt_uuid',
+                    '_req_uuid','_req_timestamptz','_req_smallint','history_partner'))
+               AND NOT (p.proconfig @> ARRAY['search_path=pg_catalog'])
+            """);
+        Check("catalog-definer-search-path-is-pg-catalog", path == "", path);
+        var exec = await ScalarText(owner, """
+            SELECT coalesce(string_agg(p.proname, ', ' ORDER BY p.proname), '')
+              FROM pg_proc p
+              JOIN pg_namespace n ON n.oid = p.pronamespace
+             WHERE n.nspname = 'catalog'
+               AND (p.prosecdef OR p.proname IN (
+                    '_actor','_err','_keys_ok','_req_text','_opt_text','_req_bool','_opt_uuid',
+                    '_req_uuid','_req_timestamptz','_req_smallint','history_partner'))
+               AND (
+                    p.proacl IS NULL
+                    OR EXISTS (
+                      SELECT 1 FROM aclexplode(p.proacl) e
+                       WHERE e.privilege_type = 'EXECUTE' AND e.grantee = 0
+                    )
+                    OR EXISTS (
+                      SELECT 1 FROM aclexplode(p.proacl) e
+                        JOIN pg_roles r ON r.oid = e.grantee
+                       WHERE e.privilege_type = 'EXECUTE' AND r.rolcanlogin
+                    )
+               )
+            """);
+        Check("catalog-definer-has-no-public-or-login-execute", exec == "", exec);
+        var alter = await OwnerDdl(owner, "ALTER POLICY location_owner ON auth.location USING (false)");
+        var drop = await OwnerDdl(owner, "DROP TRIGGER app_user_last_sa ON auth.app_user");
+        Check("owner-cannot-alter-policy-or-drop-trigger", alter == "42501" && drop == "42501", alter + " " + drop);
     }
 
     static async Task LoginConfigHttp(HttpClient http, string saTok, NpgsqlDataSource owner)
