@@ -113,13 +113,16 @@ public static class KitAdmin
             if (Regex.IsMatch(text, @"Exec\(\s*seed\b[^;]{0,500}?(UPDATE |DELETE )", RegexOptions.Singleline))
                 failures.Add("test-seed-update-or-delete " + Path.GetRelativePath(repo, file));
         }
-        var allowed = CallSites.Select(s => s.Split('|')[0]).ToHashSet(StringComparer.Ordinal);
+        var listed = DecisionsReasons();
+        var coded = CallSites.Select(s => s.Split('|')[0]).ToHashSet(StringComparer.Ordinal);
+        if (!listed.SetEquals(coded))
+            failures.Add("kit-admin-list-does-not-match-decisions");
         foreach (var reason in calls)
         {
-            if (!allowed.Contains(reason))
+            if (!listed.Contains(reason))
                 failures.Add("kit-admin-call-not-on-the-list " + reason);
         }
-        foreach (var reason in allowed)
+        foreach (var reason in listed)
         {
             if (!calls.Contains(reason))
                 failures.Add("kit-admin-list-without-call " + reason);
@@ -133,6 +136,31 @@ public static class KitAdmin
         foreach (var f in failures)
             Console.WriteLine("FAIL " + f);
         return 1;
+    }
+
+    static HashSet<string> DecisionsReasons()
+    {
+        var path = File.Exists("/opt/cursor/artifacts/DECISIONS.md")
+            ? "/opt/cursor/artifacts/DECISIONS.md"
+            : "/cursor/stores/self/artifacts/DECISIONS.md";
+        if (!File.Exists(path))
+            throw new InvalidOperationException("kit admin sweep: DECISIONS.md is missing");
+        var text = File.ReadAllText(path);
+        var start = text.IndexOf("## KitAdmin call sites", StringComparison.Ordinal);
+        if (start < 0)
+            throw new InvalidOperationException("kit admin sweep: DECISIONS has no KitAdmin call sites");
+        var reasons = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var raw in text[start..].Split('\n'))
+        {
+            if (raw.StartsWith("## ", StringComparison.Ordinal) && !raw.StartsWith("## KitAdmin call sites", StringComparison.Ordinal))
+                break;
+            if (!raw.StartsWith("| `", StringComparison.Ordinal))
+                continue;
+            var reason = raw.Split('|')[1].Trim().Trim('`');
+            if (reason.Length > 0 && reason != "Reason")
+                reasons.Add(reason);
+        }
+        return reasons;
     }
 
     static void Run(string db, string sql)
