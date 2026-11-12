@@ -541,7 +541,7 @@ try
             await c50.StopAsync();
         }
         finally { await c50.DisposeAsync(); }
-        goto uiHostDone; // leaves the try: the finally below stops the API and empties the tables
+        goto uiHostDone; // leaves the try: the finally below stops the API and asserts last-SA (A1.3: no DELETE cleanup)
     }
     var missing = Guid.Parse("5f0c3e1a-0bad-4000-8000-00000000dead");
 
@@ -2679,19 +2679,22 @@ finally
 {
     await app.StopAsync();
     await app.DisposeAsync();
-    // The migrator has no DELETE. The same statements run as the kit superuser.
-    var ids = string.Join(", ", new[] { U_SA, U_PA, U_PB, U_RD, U_NO, U_CU }.Select(id => "'" + id.ToString("D") + "'::uuid"));
-    KitAdmin.Exec("admin-checks-cleanup",
-        "DELETE FROM auth.request_binding WHERE user_id = ANY(ARRAY[" + ids + "]); " +
-        "DELETE FROM auth.request_session WHERE user_id = ANY(ARRAY[" + ids + "]); " +
-        "DELETE FROM auth.admin_assignment WHERE user_id = ANY(ARRAY[" + ids + "]); " +
-        "DELETE FROM auth.login_write_principal; " +
-        string.Join(" ", Tables.Select(t => "DELETE FROM auth." + t + ";")) + " " +
-        "DELETE FROM auth.user_issuer WHERE user_id = ANY(ARRAY[" + ids + "]); " +
-        "DELETE FROM auth.app_user WHERE user_id = ANY(ARRAY[" + ids + "]);");
-    var left = 0L;
-    foreach (var t in Tables) left += await Count(t);
-    Ok("cleanup: auth.audit_outbox, change, llc, location, partner_reason_bounds empty again", left == 0);
+    // SSE2 MEDIUM-2 / A1.3: do not DELETE the last Super Admin (or any seeded
+    // rows) in cleanup. A fresh AUTH_CHECKS_DB recreate replaces emptied tables.
+    // Keep asserting the last-SA guard still fires so a missing trigger cannot
+    // hide behind a silent cleanup. Catch any kit failure so the summary line
+    // always prints (never exit 134 from an unhandled cleanup exception).
+    try
+    {
+        var state = KitAdmin.SqlState("last-active-sa-delete",
+            "DELETE FROM auth.admin_assignment WHERE user_id = '" + U_SA.ToString("D") + "'::uuid");
+        Ok("cleanup: last-SA guard still fires (P0001); A1.3 no table delete", state == "P0001");
+    }
+    catch (Exception ex)
+    {
+        Ok("cleanup: last-SA guard still fires (P0001); A1.3 no table delete", false,
+            ex.GetType().Name + ": " + ex.Message);
+    }
 }
 uiHostDone:
 Console.WriteLine($"{pass} passed, {fail} failed");

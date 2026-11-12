@@ -212,7 +212,7 @@ await step("DEC-107 limits and config 50/200", async () => {
 });
 // v1.1 Slice A [TLD 08:00 Q3]: the create page asks limits?partner_id=<URL partner>; a partner with its own
 // partner_reason_bounds row gets its numbers, another partner the config. Fresh test-only partner ids; the row is
-// written through the API (SA PUT, If-Match "1") and removed by the ui-host cleanup. Nothing else is saved here.
+// written through the API (SA PUT, If-Match "1"). A1.3: ui-host does not DELETE rows; fresh DB recreate replaces them.
 await step("Slice A per-partner limits on Create", async () => {
   const PX = "5f0c3e1a-0007-4000-8000-000000000007", PY = "5f0c3e1a-0008-4000-8000-000000000008";
   const HINT = (a, b) => `${a} to ${b} characters. Saved in the audit log. Required only if you turn off the second step or turn on backup sign-in.`;
@@ -1654,7 +1654,7 @@ async function finish(code) {
   chrome.kill("SIGTERM");
   const hostCode = await new Promise(r => { if (host.exitCode !== null) r(host.exitCode); else { host.once("exit", r); setTimeout(() => { host.kill(); r(-1); }, 30000); } });
   const tail = hostOut.trim().split("\n").slice(-2).join(" | ");
-  ok("ui-host exited 0 after cleanup (tables empty again)", hostCode === 0 && /PASS cleanup: auth.audit_outbox, change, llc, location, partner_reason_bounds empty again/.test(hostOut), [hostCode, tail]);
+  ok("ui-host exited 0 after cleanup (last-SA guard; A1.3 no table delete)", hostCode === 0 && /PASS cleanup: last-SA guard still fires \(P0001\); A1\.3 no table delete/.test(hostOut), [hostCode, tail]);
   await sleep(300);
   rmSync(profile, { recursive: true, force: true });
   console.log(`${pass} passed, ${fail} failed`);

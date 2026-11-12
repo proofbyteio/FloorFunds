@@ -50,7 +50,6 @@ public static class KitAdmin
         "auth-data-cleanup|Auth.Data.Checks|K3 cleanup returns the post-seed state|auth|DELETE|the migrator has no DELETE; the checks remove the rows they created",
         "reader-location-grant|Admin.Api.Checks|org viewer location assignment|admin_assignment|INSERT|no assignment API; row security reads the location assignment",
         "reader-location-revoke|Admin.Api.Checks|org viewer location assignment|admin_assignment|DELETE|no assignment API; the assignment is removed after the reader assertion",
-        "admin-checks-cleanup|Admin.Api.Checks|cleanup|auth|DELETE|the migrator has no DELETE; the checks remove the rows they created",
         "prb-parallel-row-lock|Admin.Api.Checks|Slice A parallel update|partner_reason_bounds|FOR UPDATE|the migrator has no UPDATE; the lock is held until both API requests are waiting",
         "req064-test-trigger|Req064Suite|bounds-retry-closed-session-is-401|partner_reason_bounds|TRIGGER|the migrator does not own the table; the trigger is the test double",
         "req064-user-lock|Req064Suite|open-blocked-behind-a-lock|app_user|locked_until|the migrator has no UPDATE; the check locks the user while open_session waits",

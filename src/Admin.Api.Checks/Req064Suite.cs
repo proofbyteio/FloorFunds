@@ -233,6 +233,10 @@ static class Req064Suite
                 schemeIss && slashIss && prefixIss && exactIss.Length == 64,
                 $"scheme {schemeIss} slash {slashIss} prefix {prefixIss} exact {exactIss.Length}");
             Check("login-write-records-the-request-principal", await LoginWritePrincipal(admin, owner));
+            // A1.3 / L-2: Dec111 uses ephemeral partner ids so it does not collide
+            // with Pa/Pb rows planted by BoundsRead / TokenPrincipal. No fixture-delete.
+            await Dec111BoundsWrite(http, admin, owner, paTok);
+            Check("reason-bounds-read-stays-inside-the-actor-partner", await BoundsRead(admin, owner));
             Check("token-admin-type-does-not-choose-the-principal", await TokenPrincipalRowCount(http, admin, owner, paTok));
             var bareRows = await ScalarLong(admin, """
                 SELECT count(*) FROM auth.location
@@ -254,8 +258,6 @@ static class Req064Suite
                 """, "SELECT count(*) FROM auth.location");
             Check("flags-without-a-principal-see-nothing", bareRows == 0 && forgedFlags == 0 && noAssignment == 0,
                 $"bare {bareRows} flags {forgedFlags} none {noAssignment}");
-            Check("reason-bounds-read-stays-inside-the-actor-partner", await BoundsRead(admin, owner));
-            await Dec111BoundsWrite(http, admin, owner, paTok);
             Check("location-only-assignment-sees-that-location", await LocationOnly(admin, owner));
 
             _ = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", paTok);
@@ -291,7 +293,7 @@ static class Req064Suite
             var peers = KitAdmin.At("resolver-store-is-read",
                 "SELECT count(*)::text FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()");
             var called = KitAdmin.At("resolver-store-is-read",
-                "SELECT is_called::text FROM auth.resolver_read_seq");
+                "SELECT CASE WHEN is_called THEN 't' ELSE 'f' END FROM auth.resolver_read_seq");
             var seq0Text = KitAdmin.At("resolver-store-is-read",
                 "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM auth.resolver_read_seq");
             _ = await Send(http, HttpMethod.Get, "/api/nav", saTok);
@@ -1067,8 +1069,10 @@ static class Req064Suite
         {
             Hold("history-partner-function-follows-the-record");
             var database = new NpgsqlConnectionStringBuilder(owner.ConnectionString).Database ?? "";
+            // Partner Admin at both Pa and Pb plants under Pb; history_partner
+            // must store the record partner (Pb), not the actor's first partner.
             var planted = Kit("req064-history-label-fixture", KitAdmin.SessionThen(
-                database + "_issuer", Issuer, Sa.ToString("D"), "req064-history-label", "history label",
+                database + "_issuer", Issuer, Both.ToString("D"), "req064-history-label", "history label",
                 ApplyFeeCreate(hist, Pb, code)));
             if (planted != "ok")
             {
@@ -1167,27 +1171,35 @@ static class Req064Suite
 
     static async Task Dec111BoundsWrite(HttpClient http, NpgsqlDataSource admin, NpgsqlDataSource owner, string paTok)
     {
+        // A1.3: ephemeral partner ids so these writes never collide with Pa/Pb
+        // fixtures and need no fixture-delete cleanup.
         var locGrant = Guid.NewGuid();
+        var nonePartner = Guid.NewGuid();
+        var locPartnerA = Guid.NewGuid();
+        var locPartnerB = Guid.NewGuid();
+        var flagPartner = Guid.NewGuid();
+        var crossPartner = Guid.NewGuid();
         try
         {
-            var none = await TrySaveBounds(admin, None, Pa);
-            var noneRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1", Pa);
+            var none = await TrySaveBounds(admin, None, nonePartner);
+            var noneRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1", nonePartner);
             Check("dec-111-no-assignment-cannot-write-bounds", none.Denied && none.Version is null && noneRows == 0,
                 $"denied {none.Denied} version {none.Version} rows {noneRows} {none.Detail}");
             await SeedExec(owner, """
                 INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, location_id, status, version, granted_by, granted_at)
                 VALUES ($1, $2, 'cashier', 'location', $3, 'active', 1, $4, now())
                 """, locGrant, None, La, Sa);
-            var loc = await TrySaveBounds(admin, None, Pa);
-            var locB = await TrySaveBounds(admin, None, Pb);
-            var locRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
+            var loc = await TrySaveBounds(admin, None, locPartnerA);
+            var locB = await TrySaveBounds(admin, None, locPartnerB);
+            var locRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { locPartnerA, locPartnerB });
             Check("dec-111-location-only-cannot-write-bounds", loc.Denied && locB.Denied && locRows == 0,
                 $"a {loc.Denied} {loc.Detail} b {locB.Denied} {locB.Detail} rows {locRows}");
-            var flags = await TrySaveBounds(admin, null, Pa, flags: true);
-            var flagRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1", Pa);
+            var flags = await TrySaveBounds(admin, null, flagPartner, flags: true);
+            var flagRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1", flagPartner);
             Check("dec-111-flags-without-principal-cannot-write-bounds", flags.Denied && flagRows == 0,
                 $"denied {flags.Denied} version {flags.Version} rows {flagRows} {flags.Detail}");
-            var put = new HttpRequestMessage(HttpMethod.Put, $"/api/orgs/partners/{Pb:D}/login-config/reason-bounds");
+            // DEC-111: Partner Admin of A may write any partner's bounds (project-plan L163).
+            var put = new HttpRequestMessage(HttpMethod.Put, $"/api/orgs/partners/{crossPartner:D}/login-config/reason-bounds");
             put.Headers.TryAddWithoutValidation("Authorization", "Bearer " + paTok);
             put.Headers.TryAddWithoutValidation("If-Match", "\"0\"");
             put.Content = new StringContent("""{"reason_min_length":12,"reason_max_length":24}""", Encoding.UTF8, "application/json");
@@ -1195,7 +1207,7 @@ static class Req064Suite
             var stored = await ScalarLong(owner, """
                 SELECT count(*) FROM auth.partner_reason_bounds
                  WHERE partner_id = $1 AND reason_min_length = 12 AND reason_max_length = 24
-                """, Pb);
+                """, crossPartner);
             Check("dec-111-pa-of-a-writes-partner-b", wrote.Status == 200 && stored == 1,
                 $"put {wrote.Status} {Clip(wrote.Body)} stored {stored}");
         }
@@ -1280,15 +1292,12 @@ static class Req064Suite
         Guid? created = null;
         try
         {
-            await SeedExec(owner, """
-                INSERT INTO auth.partner_reason_bounds
-                  (partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version)
-                VALUES ($1, 11, 22, $2, now(), 1)
-                """, Pb, Sa);
+            // BoundsRead already planted Pa/Pb at row_version 1. A1.3: no DELETE;
+            // update Pa (If-Match "1") so login_write_principal records the actor.
             var put = new HttpRequestMessage(HttpMethod.Put, $"/api/orgs/partners/{Pa:D}/login-config/reason-bounds");
             put.Headers.TryAddWithoutValidation("Authorization", "Bearer " + paTok);
-            put.Headers.TryAddWithoutValidation("If-Match", "\"0\"");
-            put.Content = new StringContent("""{"reason_min_length":10,"reason_max_length":20}""", Encoding.UTF8, "application/json");
+            put.Headers.TryAddWithoutValidation("If-Match", "\"1\"");
+            put.Content = new StringContent("""{"reason_min_length":11,"reason_max_length":22}""", Encoding.UTF8, "application/json");
             var wrote = await Read(await http.SendAsync(put));
             var post = new HttpRequestMessage(HttpMethod.Post, "/api/orgs/locations");
             post.Headers.TryAddWithoutValidation("Authorization", "Bearer " + paTok);
@@ -2808,19 +2817,13 @@ static class Req064Suite
 
     static string ActorPrincipalGucSweep(string repo)
     {
-        // Functions that feed the catalog actor principal or resolve_grant. current_setting
-        // of correlation_id/reason on _actor is the write label, not the principal.
+        // Live tip bodies that feed catalog._actor / auth.resolve_grant (UPDATE 32).
+        // Earlier migrations still contain replaced GUC bodies; only the tip
+        // definitions are swept here (same set as KitAdmin.Check).
         var files = new[]
         {
             "src/Auth.Data/Migrations/Req064Actor.sql",
-            "src/Auth.Data/Migrations/Req064Assignment.sql",
-            "src/Auth.Data/Migrations/Req064Issuer.sql",
-            "src/Auth.Data/Migrations/Req064RoleScope.sql",
             "src/Auth.Data/Migrations/Req064Session.sql",
-            "src/Auth.Data/Migrations/Req064HistoryPartner.sql",
-            "src/Auth.Data/Migrations/CatalogMasterData.Functions.sql",
-            "src/Auth.Data/Migrations/CatalogMasterData.Behavior.sql",
-            "src/Auth.Data/Migrations/CatalogMasterData.Triggers.sql",
         };
         var banned = new[]
         {
