@@ -207,13 +207,32 @@ have_history=0
 if owner_psql -tA -c "SELECT to_regclass('public.\"__EFMigrationsHistory\"') IS NOT NULL" 2>/dev/null | grep -q t; then
   have_history=1
 fi
+# Kit SQL transfers ownership of functions the migrator has already installed.
+# A history stub, or a main schema from before those functions, is kept by
+# database.sql and is not a failure here. The migrator runs, then kit SQL.
+auth_ready=0
+catalog_ready=0
 if [[ "$have_history" -eq 1 ]]; then
+  if owner_psql -tA -c "SELECT to_regprocedure('auth._request_user()') IS NOT NULL" 2>/dev/null | grep -q t; then
+    auth_ready=1
+  fi
+  if owner_psql -tA -c "SELECT to_regnamespace('catalog') IS NOT NULL" 2>/dev/null | grep -q t; then
+    catalog_ready=1
+  fi
+fi
+if [[ "$auth_ready" -eq 1 ]]; then
   echo "Definer owner: NOLOGIN role (superuser step)..."
   { printf '\\c %s\n' "$DB"; cat "$KIT/definer-owner.sql"; } | run_psql -f - \
     || { echo "Definer owner step failed (see the psql error above)" >&2; exit 4; }
+else
+  echo "Definer owner: skipped, auth._request_user is not installed yet."
+fi
+if [[ "$catalog_ready" -eq 1 ]]; then
   echo "Catalog definer owner: NOLOGIN role (superuser step)..."
   { printf '\\c %s\n' "$DB"; cat "$KIT/catalog-definer-owner.sql"; } | run_psql -f - \
     || { echo "Catalog definer owner step failed (see the psql error above)" >&2; exit 4; }
+else
+  echo "Catalog definer owner: skipped, schema catalog is not installed yet."
 fi
 if [[ "$SEED" -eq 1 ]]; then
   # TEST-ONLY role. The password stays in a mode-0600 file and is not printed.
