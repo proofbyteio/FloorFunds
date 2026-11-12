@@ -107,3 +107,8 @@ COMMIT;
 -- It is not a kit role: no marker, no membership, no password. Preflight does not list it.
 SELECT format('CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION', :'db' || '_auth_definer')
  WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'db' || '_auth_definer') \gexec
+-- DEC-221. Not kit-marked. No password, no membership. Preflight does not list them.
+SELECT format('CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION', :'db' || '_catalog_definer')
+ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'db' || '_catalog_definer') \gexec
+SELECT format('CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION', :'db' || '_auth_owner')
+ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'db' || '_auth_owner') \gexec

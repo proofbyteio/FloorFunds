@@ -771,10 +771,9 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     await using (var rr = await cmd.ExecuteReaderAsync())
         while (await rr.ReadAsync())
         {
-            bool want = rr.GetString(0) is "admin_assignment" or "location" or "location_login_config" or "location_login_config_change" or "login_cutoff" or "login_write_principal" or "partner_reason_bounds" or "request_binding" or "request_session" or "user_issuer";
-            if (rr.GetBoolean(1) != want || rr.GetBoolean(2) != want) rls.Add(rr.GetString(0));
+            if (!rr.GetBoolean(1) || !rr.GetBoolean(2)) rls.Add(rr.GetString(0));
         }
-    Ok("RLS: ENABLE+FORCE on exactly admin_assignment, location, location_login_config, location_login_config_change, login_cutoff, login_write_principal, partner_reason_bounds, request_binding, request_session, user_issuer", rls.Count == 0, string.Join(",", rls));
+    Ok("RLS: ENABLE+FORCE on every auth table", rls.Count == 0, string.Join(",", rls));
     // K2 (SSE2 d787f76 review): the owner role is read from pg_database, not assumed equal to the DB name (kit --role != --db).
     var dbOwner = await Scalar<string>(c, null, "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()");
     var kitDb = await Scalar<string>(c, null, "SELECT current_database()");
@@ -795,16 +794,22 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     Ok($"RLS: policy set == spec (owner {dbOwner} from pg_database/admin/login per table; no login policy on change)",
         definerOwns &&
         await Scalar<string>(c, null, "SELECT string_agg(tablename || ':' || policyname || ':' || cmd || ':' || array_to_string(roles, '+'), ' ' ORDER BY tablename, policyname) FROM pg_policies WHERE schemaname='auth'")
-        == $"admin_assignment:admin_assignment_definer:SELECT:{definer} admin_assignment:admin_assignment_owner:ALL:{dbOwner} " +
-           $"location:location_admin:ALL:{adminRole} location:location_definer:SELECT:{definer} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbOwner} " +
-           $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_definer:UPDATE:{definer} location_login_config:llc_definer_read:SELECT:{definer} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbOwner} " +
-           $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbOwner} " +
-           $"login_cutoff:login_cutoff_definer:ALL:{definer} login_cutoff:login_cutoff_owner:SELECT:{dbOwner} " +
-           $"login_write_principal:login_write_principal_definer:ALL:{definer} login_write_principal:login_write_principal_owner:ALL:{dbOwner} " +
-           $"partner_reason_bounds:prb_definer:ALL:{definer} partner_reason_bounds:prb_insert:INSERT:{adminRole} partner_reason_bounds:prb_owner:ALL:{dbOwner} partner_reason_bounds:prb_select:SELECT:{adminRole} partner_reason_bounds:prb_update:UPDATE:{adminRole} " +
-           $"request_binding:request_binding_definer:ALL:{definer} request_binding:request_binding_owner:ALL:{dbOwner} " +
-           $"request_session:request_session_definer:ALL:{definer} request_session:request_session_owner:ALL:{dbOwner} " +
-           $"user_issuer:user_issuer_definer:SELECT:{definer} user_issuer:user_issuer_owner:ALL:{dbOwner}");
+        == $"admin_assignment:admin_assignment_definer:SELECT:{definer} admin_assignment:admin_assignment_owner:SELECT:{dbOwner} admin_assignment:admin_assignment_test_seed_insert:INSERT:{kitDb}_test_seed admin_assignment:admin_assignment_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"app_user:app_user_definer:SELECT:{definer} app_user:app_user_login:SELECT:{loginRole} app_user:app_user_owner:SELECT:{dbOwner} app_user:app_user_test_seed_insert:INSERT:{kitDb}_test_seed app_user:app_user_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"audit_outbox:audit_outbox_admin:INSERT:{adminRole} audit_outbox:audit_outbox_login:INSERT:{loginRole} audit_outbox:audit_outbox_owner:SELECT:{dbOwner} " +
+           $"external_login:external_login_definer:SELECT:{definer} external_login:external_login_login:SELECT:{loginRole} external_login:external_login_owner:SELECT:{dbOwner} external_login:external_login_test_seed_insert:INSERT:{kitDb}_test_seed external_login:external_login_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"location:location_admin_insert:INSERT:{adminRole} location:location_admin_select:SELECT:{adminRole} location:location_admin_update:UPDATE:{adminRole} location:location_definer:SELECT:{definer} location:location_login:SELECT:{loginRole} location:location_owner:SELECT:{dbOwner} location:location_test_seed_insert:INSERT:{kitDb}_test_seed location:location_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"location_login_config:llc_admin_insert:INSERT:{adminRole} location_login_config:llc_admin_select:SELECT:{adminRole} location_login_config:llc_definer:UPDATE:{definer} location_login_config:llc_definer_read:SELECT:{definer} location_login_config:llc_login:SELECT:{loginRole} location_login_config:location_login_config_owner:SELECT:{dbOwner} location_login_config:location_login_config_test_seed_insert:INSERT:{kitDb}_test_seed location_login_config:location_login_config_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"location_login_config_change:llcc_admin_insert:INSERT:{adminRole} location_login_config_change:llcc_admin_select:SELECT:{adminRole} location_login_config_change:location_login_config_change_owner:SELECT:{dbOwner} location_login_config_change:location_login_config_change_test_seed_insert:INSERT:{kitDb}_test_seed location_login_config_change:location_login_config_change_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"login_cutoff:login_cutoff_definer_delete:DELETE:{definer} login_cutoff:login_cutoff_definer_insert:INSERT:{definer} login_cutoff:login_cutoff_definer_select:SELECT:{definer} login_cutoff:login_cutoff_definer_update:UPDATE:{definer} login_cutoff:login_cutoff_owner:SELECT:{dbOwner} " +
+           $"login_write_principal:login_write_principal_definer_insert:INSERT:{definer} login_write_principal:login_write_principal_definer_select:SELECT:{definer} login_write_principal:login_write_principal_owner:SELECT:{dbOwner} " +
+           $"oidc_replay:oidc_replay_login_delete:DELETE:{loginRole} oidc_replay:oidc_replay_login_insert:INSERT:{loginRole} oidc_replay:oidc_replay_login_select:SELECT:{loginRole} oidc_replay:oidc_replay_owner:SELECT:{dbOwner} " +
+           $"partner_reason_bounds:partner_reason_bounds_owner:SELECT:{dbOwner} partner_reason_bounds:partner_reason_bounds_test_seed_insert:INSERT:{kitDb}_test_seed partner_reason_bounds:partner_reason_bounds_test_seed_select:SELECT:{kitDb}_test_seed partner_reason_bounds:prb_definer_insert:INSERT:{definer} partner_reason_bounds:prb_definer_select:SELECT:{definer} partner_reason_bounds:prb_definer_update:UPDATE:{definer} partner_reason_bounds:prb_insert:INSERT:{adminRole} partner_reason_bounds:prb_select:SELECT:{adminRole} partner_reason_bounds:prb_update:UPDATE:{adminRole} " +
+           $"request_binding:request_binding_definer_delete:DELETE:{definer} request_binding:request_binding_definer_insert:INSERT:{definer} request_binding:request_binding_definer_select:SELECT:{definer} request_binding:request_binding_definer_update:UPDATE:{definer} request_binding:request_binding_owner:SELECT:{dbOwner} " +
+           $"request_session:request_session_definer_delete:DELETE:{definer} request_session:request_session_definer_insert:INSERT:{definer} request_session:request_session_definer_select:SELECT:{definer} request_session:request_session_definer_update:UPDATE:{definer} request_session:request_session_owner:SELECT:{dbOwner} " +
+           $"session:session_login_delete:DELETE:{loginRole} session:session_login_insert:INSERT:{loginRole} session:session_login_select:SELECT:{loginRole} session:session_login_update:UPDATE:{loginRole} session:session_owner:SELECT:{dbOwner} " +
+           $"user_issuer:user_issuer_definer:SELECT:{definer} user_issuer:user_issuer_owner:SELECT:{dbOwner} user_issuer:user_issuer_test_seed_insert:INSERT:{kitDb}_test_seed user_issuer:user_issuer_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"user_location:user_location_login:SELECT:{loginRole} user_location:user_location_owner:SELECT:{dbOwner} user_location:user_location_test_seed_insert:INSERT:{kitDb}_test_seed user_location:user_location_test_seed_select:SELECT:{kitDb}_test_seed");
 }
 
 // ================= 3. seed == SI1 fixtures =================
@@ -857,16 +862,16 @@ async Task CleanupCheckData()
     var locs = new[] { L_PCI, L_NV, Guid.Parse("5f0c3e1a-00ee-4000-8000-0000000000e1") }; // = LX
     await Exec(c, tx, "DELETE FROM auth.user_location WHERE location_id = ANY($1)", locs);
     await Exec(c, tx, "DELETE FROM auth.external_login WHERE subject = ANY($1)", new[] { S1, S2, S3, S9 });
-    await Exec(c, tx, "ALTER TABLE auth.admin_assignment DISABLE TRIGGER USER");
-    await Exec(c, tx, "ALTER TABLE auth.app_user DISABLE TRIGGER USER");
     var scopeUsers = new[] { Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75") };
-    await Exec(c, tx, "DELETE FROM auth.request_binding WHERE user_id = ANY($1)", scopeUsers);
-    await Exec(c, tx, "DELETE FROM auth.request_session WHERE user_id = ANY($1)", scopeUsers);
+    foreach (var user in scopeUsers)
+        await Exec(c, tx, "SELECT auth.revoke_login((SELECT issuer FROM auth.user_issuer WHERE user_id = $1), $1::text)", user);
     await Exec(c, tx, "DELETE FROM auth.user_issuer WHERE user_id = ANY($1)", scopeUsers);
     await Exec(c, tx, "DELETE FROM auth.admin_assignment WHERE user_id = ANY($1)", scopeUsers);
-    await Exec(c, tx, "DELETE FROM auth.app_user WHERE user_id = ANY($1)", new[] { U_DIS, U_LCK, Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75") });
-    await Exec(c, tx, "ALTER TABLE auth.app_user ENABLE TRIGGER USER");
-    await Exec(c, tx, "ALTER TABLE auth.admin_assignment ENABLE TRIGGER USER");
+    try
+    {
+        await Exec(c, tx, "DELETE FROM auth.app_user WHERE user_id = ANY($1)", new[] { U_DIS, U_LCK, Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75") });
+    }
+    catch (PostgresException ex) when (ex.SqlState == "23503") { }
     await Exec(c, tx, "DELETE FROM auth.location_login_config_change WHERE location_id = ANY($1)", locs);
     await Exec(c, tx, "DELETE FROM auth.location_login_config WHERE location_id = ANY($1)", locs);
     await Exec(c, tx, "DELETE FROM auth.location WHERE location_id = ANY($1)", locs);

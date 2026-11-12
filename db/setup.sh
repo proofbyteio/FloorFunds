@@ -202,15 +202,42 @@ if [[ "$MIGRATE" -eq 1 ]]; then
   # client_min_messages=warning hides the expected "__EFMigrationsHistory already exists" NOTICE on re-runs.
   PGOPTIONS='-c client_min_messages=warning' owner_psql -f "$MIGRATIONS" || { echo "Migrations failed (see the psql error above)" >&2; exit 4; }
   echo "Applied migrations: $(owner_psql -tA -c 'SELECT string_agg("MigrationId", '"', '"' ORDER BY "MigrationId") FROM public."__EFMigrationsHistory"')"
-  echo "Definer owner: NOLOGIN role (superuser step, after migrate)..."
+fi
+have_history=0
+if owner_psql -tA -c "SELECT to_regclass('public.\"__EFMigrationsHistory\"') IS NOT NULL" 2>/dev/null | grep -q t; then
+  have_history=1
+fi
+if [[ "$have_history" -eq 1 ]]; then
+  echo "Definer owner: NOLOGIN role (superuser step)..."
   { printf '\\c %s\n' "$DB"; cat "$KIT/definer-owner.sql"; } | run_psql -f - \
     || { echo "Definer owner step failed (see the psql error above)" >&2; exit 4; }
+  echo "Catalog definer owner: NOLOGIN role (superuser step)..."
+  { printf '\\c %s\n' "$DB"; cat "$KIT/catalog-definer-owner.sql"; } | run_psql -f - \
+    || { echo "Catalog definer owner step failed (see the psql error above)" >&2; exit 4; }
 fi
 if [[ "$SEED" -eq 1 ]]; then
+  # TEST-ONLY role. The password stays in a mode-0600 file and is not printed.
+  install -d -m 0700 /tmp/ff-db
+  seed_env="/tmp/ff-db/${DB}_test_seed.env"
+  if [[ -f "$seed_env" ]]; then
+    test_seed_password="$(sed -n 's/^TEST_SEED_PASSWORD=//p' "$seed_env")"
+  else
+    test_seed_password="$(openssl rand -hex 24)"
+    umask 077
+    printf 'TEST_SEED_PASSWORD=%s\n' "$test_seed_password" > "${seed_env}.tmp"
+    chmod 0600 "${seed_env}.tmp"
+    mv "${seed_env}.tmp" "$seed_env"
+  fi
+  echo "Test seed role: LOGIN, no memberships (superuser step, test mode only)..."
+  { printf '\\set test_seed_password %s\n' "'$test_seed_password'"; printf '\\c %s\n' "$DB"; cat "$KIT/test-seed-role.sql"; } | run_psql -f - \
+    || { echo "Test seed role step failed (see the psql error above)" >&2; exit 4; }
+  # A2: seed SQL runs as _test_seed. The migrator has no INSERT on these tables.
+  seed_pw="$(sed -n 's/^TEST_SEED_PASSWORD=//p' "$seed_env")"
   for f in "$HERE"/seed/*.sql; do
-    echo "Seed (TEST-ONLY): $(basename "$f")..."
-    owner_psql -f "$f"
+    echo "Seed (TEST-ONLY): $(basename "$f") as ${DB}_test_seed..."
+    PGPASSWORD="$seed_pw" psql -X -q -v ON_ERROR_STOP=1 -h "$HOST" -p "$PORT" -U "${DB}_test_seed" -d "$DB" -f "$f"
   done
+  unset test_seed_password seed_pw
 fi
 
 cat <<DONE
