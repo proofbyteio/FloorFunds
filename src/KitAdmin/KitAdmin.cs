@@ -43,6 +43,52 @@ public static class KitAdmin
         (db.StartsWith("ff_kit_", StringComparison.Ordinal) && db.Length > "ff_kit_".Length)
         || (db.StartsWith("ff_scratch_", StringComparison.Ordinal) && db.Length > "ff_scratch_".Length);
 
+    /// <summary>Runs db/kit/test-seed-role.sql as the bootstrap role. Returns the password written to the env file.</summary>
+    public static async Task<string> InstallTestSeed(string host, int port, string bootstrapUser, string database, string scriptPath)
+    {
+        if (!IsScratchDatabase(database))
+            throw new InvalidOperationException("kit admin refused: database is not a scratch database");
+        var password = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        Directory.CreateDirectory("/tmp/ff-db");
+        var envPath = "/tmp/ff-db/" + database + "_test_seed.env";
+        await File.WriteAllTextAsync(envPath, "TEST_SEED_PASSWORD=" + password + "\n");
+        using (var chmod = Process.Start(new ProcessStartInfo("chmod", ["600", envPath]) { UseShellExecute = false }))
+        {
+            chmod?.WaitForExit();
+        }
+        var script = await File.ReadAllTextAsync(scriptPath);
+        var psi = new ProcessStartInfo
+        {
+            FileName = "psql",
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        psi.ArgumentList.Add("-h");
+        psi.ArgumentList.Add(host);
+        psi.ArgumentList.Add("-p");
+        psi.ArgumentList.Add(port.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        psi.ArgumentList.Add("-U");
+        psi.ArgumentList.Add(bootstrapUser);
+        psi.ArgumentList.Add("-d");
+        psi.ArgumentList.Add(database);
+        psi.ArgumentList.Add("-v");
+        psi.ArgumentList.Add("ON_ERROR_STOP=1");
+        psi.ArgumentList.Add("-f");
+        psi.ArgumentList.Add("-");
+        using var process = Process.Start(psi) ?? throw new InvalidOperationException("test seed role script did not start");
+        await process.StandardInput.WriteAsync("\\set test_seed_password '" + password + "'\n");
+        await process.StandardInput.WriteAsync(script);
+        process.StandardInput.Close();
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        var stderr = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException("test seed role script failed: " + FirstError(stderr + stdout));
+        return password;
+    }
+
     public static void Arm(string database, int port)
     {
         Environment.SetEnvironmentVariable(ModeVariable, IsScratchDatabase(database) ? "1" : null);

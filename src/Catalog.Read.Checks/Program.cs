@@ -150,8 +150,10 @@ try
     await using (var bootDb = NpgsqlDataSource.Create(Cs(BootstrapRole, DbName, false)))
         await Exec(bootDb, await File.ReadAllTextAsync(Path.Combine(repo, "db", "kit", "definer-owner.sql")));
 
+    var seedPassword = await KitAdmin.InstallTestSeed(Host, Port, BootstrapRole, DbName, Path.Combine(repo, "db", "kit", "test-seed-role.sql"));
     await using var owner = NpgsqlDataSource.Create(Cs(OwnerRole, DbName, false));
-    await Exec(owner, CatalogPrincipalSeed);
+    await using var seed = NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder(Cs(DbName + "_test_seed", DbName, false)) { Password = seedPassword }.ConnectionString);
+    await Exec(seed, CatalogPrincipalSeed);
     await using var issuer = NpgsqlDataSource.Create(Cs(DbName + "_issuer", DbName, false));
     async Task<string> OpenCatalogSession(Guid user)
     {
