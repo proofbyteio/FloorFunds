@@ -1773,18 +1773,21 @@ static class Req064Suite
         var actor = Guid.NewGuid();
         try
         {
-            await Exec(owner, "INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ($1, $2, $3, $4)",
-                loc, partner, slug, "Req064 helper");
-            await Exec(owner, """
-                INSERT INTO auth.location_login_config (
-                  location_id, provider_kind, display_name, entra_allowed_tenant_ids,
-                  oidc_authority, oidc_client_id, secret_ref, allow_db_fallback, mfa_required,
-                  created_by, created_at, updated_by, updated_at)
-                VALUES ($1, 'entra', 'Req064 helper', ARRAY[$2]::uuid[],
-                        'https://login.microsoftonline.com', '5f0c3e1a-00cc-4000-8000-0000000000cc',
-                        'arn:aws:secretsmanager:us-west-2:000000000000:secret:FAKE-test-only/req064-AbCdEf',
-                        false, true, $3, clock_timestamp(), $3, clock_timestamp())
-                """, loc, tenant, actor);
+            await using (var seed = await OpenTestSeed(owner))
+            {
+                await Exec(seed, "INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ($1, $2, $3, $4)",
+                    loc, partner, slug, "Req064 helper");
+                await Exec(seed, """
+                    INSERT INTO auth.location_login_config (
+                      location_id, provider_kind, display_name, entra_allowed_tenant_ids,
+                      oidc_authority, oidc_client_id, secret_ref, allow_db_fallback, mfa_required,
+                      created_by, created_at, updated_by, updated_at)
+                    VALUES ($1, 'entra', 'Req064 helper', ARRAY[$2]::uuid[],
+                            'https://login.microsoftonline.com', '5f0c3e1a-00cc-4000-8000-0000000000cc',
+                            'arn:aws:secretsmanager:us-west-2:000000000000:secret:FAKE-test-only/req064-AbCdEf',
+                            false, true, $3, clock_timestamp(), $3, clock_timestamp())
+                    """, loc, tenant, actor);
+            }
             var hidden = await ScalarLong(admin, "SELECT count(*) FROM auth.location WHERE location_id = $1", loc);
             var seen = await ScalarText(admin, "SELECT auth.location_partner($1)::text", loc);
             var elsewhere = await ScalarBool(admin, "SELECT auth.tenant_bound_elsewhere($1, $2)", tenant, otherPartner);
@@ -1917,9 +1920,12 @@ static class Req064Suite
                 ('auth','external_login'), ('auth','user_location'), ('auth','partner_reason_bounds')
             ),
             grants AS (
-              SELECT table_schema, table_name, privilege_type
-                FROM information_schema.role_table_grants
-               WHERE grantee = current_database() || '_test_seed'
+              SELECT n.nspname AS table_schema, c.relname AS table_name, a.privilege_type
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN LATERAL aclexplode(c.relacl) a ON true
+                JOIN pg_roles r ON r.oid = a.grantee
+               WHERE r.rolname = current_database() || '_test_seed'
             )
             SELECT CASE
               WHEN NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_database() || '_test_seed') THEN 'missing-role'
