@@ -325,6 +325,13 @@ static class Req064Suite
             var options = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Admin.Api", "AdminApiOptions.cs"));
             var auth = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Admin.Api", "AdminAuth.cs"));
             var api = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Admin.Api", "LoginConfigApi.cs"));
+            var outbox = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Admin.Api", "AuditOutbox.cs"));
+            Check("admin-api-create-inserts-location", api.Contains("INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ($1, $2, $3, $4)", StringComparison.Ordinal));
+            Check("admin-api-create-inserts-location-login-config", api.Contains("INSERT INTO auth.location_login_config (", StringComparison.Ordinal));
+            Check("admin-api-inserts-config-change", api.Contains("INSERT INTO auth.location_login_config_change (", StringComparison.Ordinal));
+            Check("admin-api-update-uses-save-location-login-config", api.Contains("SELECT auth.save_location_login_config(", StringComparison.Ordinal));
+            Check("admin-api-bounds-use-save-partner-bounds", api.Contains("SELECT auth.save_partner_bounds(", StringComparison.Ordinal));
+            Check("admin-api-writes-the-audit-outbox", outbox.Contains("INSERT INTO auth.audit_outbox (", StringComparison.Ordinal));
             Check("host-does-not-read-issuer-credentials",
                 !host.Contains("ISSUER_CONNECTION_STRING", StringComparison.Ordinal)
                 && !options.Contains("ISSUER_CONNECTION_STRING", StringComparison.Ordinal)
