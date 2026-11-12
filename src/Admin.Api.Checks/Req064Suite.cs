@@ -161,17 +161,21 @@ static class Req064Suite
                 $"nav {navSa.Status} {Clip(navSa.Body)} held {held.Status} write {write.Status} seeB {seeB.Status} {Clip(seeB.Body)}");
 
             var before = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", paTok);
-            await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = $1", Apa);
+            KitAdmin.Exec("T6-revoke-takes-effect-on-next-request",
+                "UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = " + SqlText(Apa.ToString("D")));
             var after = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", paTok);
-            await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = NULL WHERE assignment_id = $1", Apa);
+            KitAdmin.Exec("T6-revoke-takes-effect-on-next-request",
+                "UPDATE auth.admin_assignment SET revoked_at = NULL WHERE assignment_id = " + SqlText(Apa.ToString("D")));
             paTok = Mint(sign, Upa, "super", null);
             Check("T6 revoke-takes-effect-on-next-request",
                 before.Status == 200 && after.Status == 401 && after.Body == "{\"error\":\"session_expired\"}",
                 $"before {before.Status} {Clip(before.Body)} after {after.Status} {Clip(after.Body)}");
-            await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = $1", Apa);
+            KitAdmin.Exec("revoked-assignment-denies-a-new-session",
+                "UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = " + SqlText(Apa.ToString("D")));
             var freshRevoked = Mint(sign, Upa, "super", null);
             var stillDenied = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{La}/login-config", freshRevoked);
-            await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = NULL WHERE assignment_id = $1", Apa);
+            KitAdmin.Exec("revoked-assignment-denies-a-new-session",
+                "UPDATE auth.admin_assignment SET revoked_at = NULL WHERE assignment_id = " + SqlText(Apa.ToString("D")));
             paTok = Mint(sign, Upa, "super", null);
             Check("revoked-assignment-denies-a-new-session", stillDenied.Status == 403, $"status {stillDenied.Status}");
 
@@ -276,18 +280,19 @@ static class Req064Suite
             var dup = Payload(Sa, "super", null).Replace("\"sub\":", "\"sub\":\"" + Sa2.ToString("D") + "\",\"sub\":", StringComparison.Ordinal);
             Check("duplicate-sub-401", (await Send(http, HttpMethod.Get, "/api/nav", Sign(rsa, "req064", dup))).Status == 401);
 
-            await GuardPaths(owner);
+            await GuardPaths(owner, admin);
             await Concurrency(owner);
             await SessionProofs(owner, admin);
-            var extraUser = await ExecOk(owner,
-                "INSERT INTO auth.app_user (user_id, partner_id, status) VALUES ('5f0c3e1a-0064-4000-8000-000000000037', NULL, 'active')");
-            var extra = extraUser && await ExecOk(owner, """
-                INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, status, version, granted_by, granted_at)
-                VALUES ('5f0c3e1a-0064-4000-8000-0000000000a7', '5f0c3e1a-0064-4000-8000-000000000037', 'super_admin', 'global', 'active', 1, $1, now())
-                """, Sa);
-            await Exec(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = '5f0c3e1a-0064-4000-8000-0000000000a7'");
-            await Exec(owner, "DELETE FROM auth.app_user WHERE user_id = '5f0c3e1a-0064-4000-8000-000000000037'");
-            Check("insert-another-super-admin-succeeds", extra);
+            await using (var extraSeed = await OpenTestSeed(owner))
+            {
+                var extraUser = await ExecOk(extraSeed,
+                    "INSERT INTO auth.app_user (user_id, partner_id, status) VALUES ('5f0c3e1a-0064-4000-8000-000000000037', NULL, 'active')");
+                var extra = extraUser && await ExecOk(extraSeed, """
+                    INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, status, version, granted_by, granted_at)
+                    VALUES ('5f0c3e1a-0064-4000-8000-0000000000a7', '5f0c3e1a-0064-4000-8000-000000000037', 'super_admin', 'global', 'active', 1, $1, now())
+                    """, Sa);
+                Check("insert-another-super-admin-succeeds", extra);
+            }
 
             var principal = Admin.Api.AssignmentPrincipal.TryFromGrant(Sa, new Admin.Api.AdminGrant(Admin.Api.BuiltInRole.SuperAdmin, true, true, new HashSet<Guid>(), true));
             var denied = Admin.Api.AssignmentPrincipal.TryFromGrant(None, Admin.Api.AdminGrant.Nothing);
@@ -463,9 +468,11 @@ static class Req064Suite
         Check("expired-session-rejected-by-begin-request", await Denied(admin, "SELECT auth.begin_request($1)", stale));
 
         var live = await Mint(Upa);
-        await Exec(owner, "UPDATE auth.admin_assignment SET status = 'disabled' WHERE user_id = $1 AND role_id = 'partner_admin'", Upa);
+        KitAdmin.Exec("revocation-applies-on-the-next-action",
+            "UPDATE auth.admin_assignment SET status = 'disabled' WHERE user_id = " + SqlText(Upa.ToString("D")) + " AND role_id = 'partner_admin'");
         var nextDenied = await Denied(admin, "SELECT auth.begin_request($1)", live);
-        await Exec(owner, "UPDATE auth.admin_assignment SET status = 'active' WHERE user_id = $1 AND role_id = 'partner_admin'", Upa);
+        KitAdmin.Exec("revocation-applies-on-the-next-action",
+            "UPDATE auth.admin_assignment SET status = 'active' WHERE user_id = " + SqlText(Upa.ToString("D")) + " AND role_id = 'partner_admin'");
         Check("revocation-applies-on-the-next-action", nextDenied);
         Check("host-password-cannot-log-in-as-issuer", await HostPasswordRejected());
         var fresh = await Mint(Sa);
@@ -670,32 +677,73 @@ static class Req064Suite
         return value is null or DBNull ? "" : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "";
     }
 
-    static async Task GuardPaths(NpgsqlDataSource owner)
+    static async Task GuardPaths(NpgsqlDataSource owner, NpgsqlDataSource admin)
     {
-        Check("last-active-sa-revoke", await FailsLast(owner, "UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = $1", Asa));
-        Check("last-active-sa-assignment-disable", await FailsLast(owner, "UPDATE auth.admin_assignment SET status = 'disabled' WHERE assignment_id = $1", Asa));
-        Check("last-active-sa-disable", await FailsLast(owner, "UPDATE auth.app_user SET status = 'disabled' WHERE user_id = $1", Sa));
-        Check("last-active-sa-lock", await FailsLast(owner, "UPDATE auth.app_user SET locked_until = now() + interval '1 hour' WHERE user_id = $1", Sa));
-        Check("last-active-sa-scope-change", await FailsLast(owner,
+        Check("last-active-sa-revoke", KitFailsLast("last-active-sa-revoke", "UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = $1", Asa));
+        Check("last-active-sa-assignment-disable", KitFailsLast("last-active-sa-assignment-disable", "UPDATE auth.admin_assignment SET status = 'disabled' WHERE assignment_id = $1", Asa));
+        Check("last-active-sa-disable", KitFailsLast("last-active-sa-disable", "UPDATE auth.app_user SET status = 'disabled' WHERE user_id = $1", Sa));
+        Check("last-active-sa-lock", KitFailsLast("last-active-sa-lock", "UPDATE auth.app_user SET locked_until = now() + interval '1 hour' WHERE user_id = $1", Sa));
+        Check("last-active-sa-scope-change", KitFailsLast("last-active-sa-scope-change",
             "UPDATE auth.admin_assignment SET role_id = 'cashier', scope_kind = 'partner', partner_id = '5f0c3e1a-0064-4000-8000-000000000011' WHERE assignment_id = $1", Asa));
-        Check("last-active-sa-role-change", await FailsLast(owner,
+        Check("last-active-sa-role-change", KitFailsLast("last-active-sa-role-change",
             "UPDATE auth.admin_assignment SET role_id = 'partner_admin', scope_kind = 'partner', partner_id = '5f0c3e1a-0064-4000-8000-000000000011' WHERE assignment_id = $1", Asa));
-        Check("last-active-sa-delete", await FailsLast(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", Asa));
-        Check("last-active-sa-user-delete", await FailsLast(owner, "DELETE FROM auth.app_user WHERE user_id = $1", Sa));
-        Check("last-active-sa-truncate", await FailsStatement(owner, "TRUNCATE auth.admin_assignment"));
-        Check("last-active-sa-user-truncate", await FailsStatement(owner, "TRUNCATE auth.app_user CASCADE"));
+        Check("last-active-sa-delete", KitFailsLast("last-active-sa-delete", "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", Asa));
+        Check("last-active-sa-user-delete", KitFailsLast("last-active-sa-user-delete", "DELETE FROM auth.app_user WHERE user_id = $1", Sa));
+        Check("last-active-sa-truncate", KitRaisesLast("last-active-sa-truncate", "TRUNCATE auth.admin_assignment"));
+        Check("last-active-sa-user-truncate", KitRaisesLast("last-active-sa-user-truncate", "TRUNCATE auth.app_user CASCADE"));
         Check("last-active-sa-truncate-guard", await TruncateGuard(owner));
-        var disabledOne = await ExecOk(owner, "UPDATE auth.admin_assignment SET status = 'disabled' WHERE assignment_id = $1", Asa2);
+        Check("admin-api-cannot-update-assignment", await Denied(admin, "UPDATE auth.admin_assignment SET status = status WHERE assignment_id = $1", Asa));
+        Check("admin-api-cannot-delete-assignment", await Denied(admin, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", Asa));
+        Check("migrator-cannot-update-assignment", await Denied(owner, "UPDATE auth.admin_assignment SET status = status WHERE assignment_id = $1", Asa));
+        Check("migrator-cannot-delete-assignment", await Denied(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", Asa));
+        Check("admin-api-cannot-update-app-user", await Denied(admin, "UPDATE auth.app_user SET status = status WHERE user_id = $1", Sa));
+        Check("admin-api-cannot-delete-app-user", await Denied(admin, "DELETE FROM auth.app_user WHERE user_id = $1", Sa));
+        Check("migrator-cannot-update-app-user", await Denied(owner, "UPDATE auth.app_user SET status = status WHERE user_id = $1", Sa));
+        Check("migrator-cannot-delete-app-user", await Denied(owner, "DELETE FROM auth.app_user WHERE user_id = $1", Sa));
+        var disabledOne = Kit("disable-one-of-two-super-admins-succeeds",
+            "UPDATE auth.admin_assignment SET status = 'disabled' WHERE assignment_id = " + SqlText(Asa2.ToString("D"))) == "ok";
         if (disabledOne)
-            await Exec(owner, "UPDATE auth.admin_assignment SET status = 'active' WHERE assignment_id = $1", Asa2);
+            Kit("disable-one-of-two-super-admins-succeeds",
+                "UPDATE auth.admin_assignment SET status = 'active' WHERE assignment_id = " + SqlText(Asa2.ToString("D")));
         Check("disable-one-of-two-super-admins-succeeds", disabledOne);
-        var paDelete = await ExecOk(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", Apa);
+        var paDelete = Kit("delete-partner-admin-while-sa-remains",
+            "DELETE FROM auth.admin_assignment WHERE assignment_id = " + SqlText(Apa.ToString("D"))) == "ok";
         if (paDelete)
-            await Exec(owner, """
+        {
+            await using var seed = await OpenTestSeed(owner);
+            await Exec(seed, """
                 INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at)
                 VALUES ($1, $2, 'partner_admin', 'partner', $3, 'active', 1, $4, now())
                 """, Apa, Upa, Pa, Sa);
+        }
         Check("delete-partner-admin-while-sa-remains", paDelete);
+    }
+
+    static string Kit(string reason, string sql)
+    {
+        try
+        {
+            KitAdmin.Exec(reason, sql);
+            return "ok";
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    static bool KitRaisesLast(string reason, string sql)
+    {
+        var detail = Kit(reason, "BEGIN; " + sql + "; COMMIT;");
+        return detail.Contains("P0001", StringComparison.Ordinal) && detail.Contains("last_active_super_admin", StringComparison.Ordinal);
+    }
+
+    static bool KitFailsLast(string reason, string sql, Guid id)
+    {
+        var script = "BEGIN; UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = "
+            + SqlText(Asa2.ToString("D")) + "; " + sql.Replace("$1", SqlText(id.ToString("D")), StringComparison.Ordinal) + "; COMMIT;";
+        var detail = Kit(reason, script);
+        return detail.Contains("P0001", StringComparison.Ordinal) && detail.Contains("last_active_super_admin", StringComparison.Ordinal);
     }
 
     static async Task<bool> PartnerPredicate(NpgsqlDataSource admin)
@@ -920,47 +968,14 @@ static class Req064Suite
         // check. Session 2 then revokes the other Super Admin. The advisory lock makes
         // session 2 wait, so it sees the committed revoke and refuses. Without the lock
         // both revokes pass.
-        var holding = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        async Task<string> First()
-        {
-            await using var c = await owner.OpenConnectionAsync();
-            await using var tx = await c.BeginTransactionAsync();
-            try
-            {
-                await using var cmd = new NpgsqlCommand("UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = $1 AND revoked_at IS NULL", c, tx);
-                cmd.Parameters.Add(new() { Value = Asa });
-                var n = await cmd.ExecuteNonQueryAsync();
-                holding.TrySetResult();
-                await Task.Delay(TimeSpan.FromMilliseconds(400));
-                await tx.CommitAsync();
-                return n == 1 ? "ok" : "miss";
-            }
-            catch (PostgresException ex)
-            {
-                holding.TrySetResult();
-                return ex.SqlState + ":" + ex.MessageText;
-            }
-        }
-        async Task<string> Second()
-        {
-            await holding.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            await using var c = await owner.OpenConnectionAsync();
-            await using var tx = await c.BeginTransactionAsync();
-            try
-            {
-                await using var cmd = new NpgsqlCommand("UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = $1 AND revoked_at IS NULL", c, tx);
-                cmd.Parameters.Add(new() { Value = Asa2 });
-                using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                var n = await cmd.ExecuteNonQueryAsync(cancel.Token);
-                await tx.CommitAsync(cancel.Token);
-                return n == 1 ? "ok" : "miss";
-            }
-            catch (PostgresException ex)
-            {
-                return ex.SqlState + ":" + ex.MessageText;
-            }
-        }
-        var results = await Task.WhenAll(First(), Second());
+        var first = Task.Run(() => Kit("last-active-sa-concurrency",
+            "BEGIN; UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = " + SqlText(Asa.ToString("D"))
+            + " AND revoked_at IS NULL; SELECT pg_sleep(1.2); COMMIT;"));
+        await Task.Delay(TimeSpan.FromMilliseconds(400));
+        var second = Task.Run(() => Kit("last-active-sa-concurrency",
+            "BEGIN; UPDATE auth.admin_assignment SET revoked_at = now() WHERE assignment_id = " + SqlText(Asa2.ToString("D"))
+            + " AND revoked_at IS NULL; COMMIT;"));
+        var results = await Task.WhenAll(first, second);
         var left = await ScalarLong(owner, """
             SELECT count(*) FROM auth.admin_assignment a
             JOIN auth.app_user u ON u.user_id = a.user_id
@@ -968,9 +983,10 @@ static class Req064Suite
               AND u.status = 'active'
             """);
         var oks = results.Count(r => r == "ok");
-        var fails = results.Count(r => r == "P0001:last_active_super_admin");
+        var fails = results.Count(r => r.Contains("P0001", StringComparison.Ordinal) && r.Contains("last_active_super_admin", StringComparison.Ordinal));
         Check("last-active-sa-concurrency", oks == 1 && fails == 1 && left >= 1, string.Join(" | ", results) + $" left {left}");
-        await Exec(owner, "UPDATE auth.admin_assignment SET revoked_at = NULL WHERE assignment_id = ANY($1)", new[] { Asa, Asa2 });
+        Kit("last-active-sa-concurrency",
+            "UPDATE auth.admin_assignment SET revoked_at = NULL WHERE assignment_id IN (" + SqlText(Asa.ToString("D")) + ", " + SqlText(Asa2.ToString("D")) + ")");
     }
 
     static async Task<bool> HistoryLabel(NpgsqlDataSource owner, NpgsqlDataSource admin)

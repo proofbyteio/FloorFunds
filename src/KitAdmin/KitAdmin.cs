@@ -2,8 +2,8 @@ using System.Diagnostics;
 using System.Text.RegularExpressions;
 
 /// <summary>
-/// Scratch-only superuser SQL for the cases with no product path: expires_at time travel,
-/// request_binding tamper, and secret_ref only when no login-config API can write it.
+/// Scratch-only superuser SQL for setup that has no product path. The assertion after
+/// the statement still runs as admin_api, the issuer, or begin_request.
 /// Refuses unless kit mode is on and the database name has a scratch prefix.
 /// </summary>
 public static class KitAdmin
@@ -21,6 +21,22 @@ public static class KitAdmin
         "session-still-open-closes-when-expired|Req064Suite|session-still-open-closes-when-expired|request_session|expires_at|no product clock; session_still_open is read as the issuer",
         "bounds-retry-closed-session-is-401|Req064Suite|bounds-retry-closed-session-is-401|request_session|expires_at|no product clock; the row must expire while the request is in flight",
         "catalog-closed-sessions-are-one-exception|Catalog.Read.Checks|catalog-closed-sessions-are-one-exception|request_session|expires_at|no product clock; the reader is then called as the catalog role",
+        "T6-revoke-takes-effect-on-next-request|Req064Suite|T6 revoke-takes-effect-on-next-request|admin_assignment|revoked_at|no assignment revoke API; the next HTTP request is the assertion",
+        "revoked-assignment-denies-a-new-session|Req064Suite|revoked-assignment-denies-a-new-session|admin_assignment|revoked_at|no assignment revoke API; a newly minted session is the assertion",
+        "revocation-applies-on-the-next-action|Req064Suite|revocation-applies-on-the-next-action|admin_assignment|status|no assignment change API; begin_request as admin_api is the assertion",
+        "last-active-sa-revoke|Req064Suite|last-active-sa-revoke|admin_assignment|revoked_at|trigger check; no API writes this column",
+        "last-active-sa-assignment-disable|Req064Suite|last-active-sa-assignment-disable|admin_assignment|status|trigger check; no API writes this column",
+        "last-active-sa-disable|Req064Suite|last-active-sa-disable|app_user|status|trigger check; no API writes this column",
+        "last-active-sa-lock|Req064Suite|last-active-sa-lock|app_user|locked_until|trigger check; no API writes this column",
+        "last-active-sa-scope-change|Req064Suite|last-active-sa-scope-change|admin_assignment|scope_kind|trigger check; no API writes this column",
+        "last-active-sa-role-change|Req064Suite|last-active-sa-role-change|admin_assignment|role_id|trigger check; no API writes this column",
+        "last-active-sa-delete|Req064Suite|last-active-sa-delete|admin_assignment|DELETE|trigger check; no API deletes this row",
+        "last-active-sa-user-delete|Req064Suite|last-active-sa-user-delete|app_user|DELETE|trigger check; no API deletes this row",
+        "last-active-sa-truncate|Req064Suite|last-active-sa-truncate|admin_assignment|TRUNCATE|trigger check; the migrator truncate is a separate 42501",
+        "last-active-sa-user-truncate|Req064Suite|last-active-sa-user-truncate|app_user|TRUNCATE|trigger check; the migrator truncate is a separate 42501",
+        "disable-one-of-two-super-admins-succeeds|Req064Suite|disable-one-of-two-super-admins-succeeds|admin_assignment|status|no API; the trigger must allow disabling one of two",
+        "delete-partner-admin-while-sa-remains|Req064Suite|delete-partner-admin-while-sa-remains|admin_assignment|DELETE|no API; the trigger must allow deleting a partner admin",
+        "last-active-sa-concurrency|Req064Suite|last-active-sa-concurrency|admin_assignment|revoked_at|no API; two sessions must overlap on the advisory lock",
     ];
 
     public static void Exec(string reason, string sql)
@@ -178,6 +194,8 @@ public static class KitAdmin
         psi.ArgumentList.Add("psql");
         psi.ArgumentList.Add("-v");
         psi.ArgumentList.Add("ON_ERROR_STOP=1");
+        psi.ArgumentList.Add("-v");
+        psi.ArgumentList.Add("VERBOSITY=verbose");
         psi.ArgumentList.Add("-X");
         psi.ArgumentList.Add("-d");
         psi.ArgumentList.Add(db);
