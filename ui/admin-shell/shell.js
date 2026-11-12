@@ -185,18 +185,7 @@ async function showCreate(state) {
   partner.name = "partner_id";
   partner.required = true;
   partner.setAttribute("aria-describedby", "partner-hint");
-  const display = document.createElement("input");
-  display.className = "field__input";
-  display.name = "display_name";
-  display.required = true;
-  display.value = "Staff sign-in";
-  const reason = document.createElement("input");
-  reason.className = "field__input";
-  reason.name = "reason";
-  reason.required = true;
-  reason.minLength = 10;
-  reason.value = "Opening this location for staff.";
-  for (const [label, control] of [["Location name", name], ["Partner", partner], ["Sign-in name", display], ["Reason", reason]]) {
+  for (const [label, control] of [["Location name", name], ["Partner", partner]]) {
     const field = h("label");
     field.className = "field";
     field.append(h("span", label), control);
@@ -222,14 +211,6 @@ async function showCreate(state) {
     const body = {
       partner_id: partner.value,
       name: name.value.trim(),
-      login_config: {
-        provider_kind: "database",
-        display_name: display.value.trim(),
-        entra_allowed_tenant_ids: [],
-        allow_db_fallback: false,
-        mfa_required: true,
-        reason: reason.value.trim(),
-      },
     };
     let res;
     try {
