@@ -309,6 +309,7 @@ static class Req064Suite
             await LoginConfigHttp(http, Mint(sign, Sa, "super", null), owner);
             await LoginSerialization(owner, admin);
             await BoundsRetry(http, sign, owner, Sa);
+            await SessionDeniedArm(http, sign, owner, Sa);
             var signedIn = await StandInSignIn.Run(ownerCs, adminCs, issuerCs);
             Check("stand-in-sign-in-opens-session-nav-locations-catalog", signedIn.Ok, signedIn.Detail);
             var shell = await NodeScript("session-closed.test.mjs", "PASS shell-goes-to-signin-on-closed-session");
@@ -1460,7 +1461,7 @@ static class Req064Suite
         var rows = await ScalarLong(owner, "SELECT count(*) FROM auth.request_session WHERE jti = $1", jti);
         var live = await ScalarLong(owner, "SELECT count(*) FROM auth.request_session WHERE jti = $1 AND revoked_at IS NULL AND expires_at > clock_timestamp()", jti);
         Check("expired-session-is-the-unified-401", SameClosed(expired), expired.Status + " " + expired.Authenticate + " " + Clip(expired.Body));
-        Check("expired-session-is-not-replaced", again == 200 && SameClosed(expired) && rows == 1 && live == 0,
+        Check("expired-session-is-not-replaced", again == 401 && SameClosed(expired) && rows == 1 && live == 0,
             $"issuer {again} rows {rows} live {live}");
         await Exec(owner, "UPDATE auth.request_session SET revoked_at = clock_timestamp() WHERE jti = $1", jti);
         var revived = await IssuerStatus(issuerUrl, jwt);
@@ -2041,6 +2042,133 @@ static class Req064Suite
         }
     }
 
+    static async Task SessionDeniedArm(HttpClient http, RsaSecurityKey sign, NpgsqlDataSource owner, Guid user)
+    {
+        // The issuer has already returned this session. The retry calls begin_request
+        // directly, so AdminAuth's session_expired body and Run's SessionClosedException
+        // catch are not on this path. Revoking the row, while leaving it unexpired,
+        // makes begin_request raise session_denied. Only the session_denied arm of
+        // IsClosedSession maps that to the closed-session 401.
+        var partner = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000ef");
+        var jwt = Mint(sign, user, "super", null);
+        try
+        {
+            await Exec(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = $1", partner);
+            await Exec(owner, """
+                CREATE OR REPLACE FUNCTION auth._test_session_denied_dup() RETURNS trigger
+                LANGUAGE plpgsql
+                SET search_path = pg_catalog, auth
+                AS $fn$
+                BEGIN
+                  IF pg_trigger_depth() > 1 THEN
+                    RETURN NEW;
+                  END IF;
+                  PERFORM pg_sleep(2);
+                  INSERT INTO auth.partner_reason_bounds (
+                    partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version)
+                  VALUES (NEW.partner_id, NEW.reason_min_length, NEW.reason_max_length, NEW.updated_by, NEW.updated_at, NEW.row_version);
+                  RETURN NEW;
+                END
+                $fn$
+                """);
+            await Exec(owner, """
+                DO $g$
+                BEGIN
+                  EXECUTE format('GRANT EXECUTE ON FUNCTION auth._test_session_denied_dup() TO %I', current_database() || '_auth_definer');
+                END
+                $g$
+                """);
+            await Exec(owner, """
+                CREATE TRIGGER test_session_denied_dup
+                  BEFORE INSERT ON auth.partner_reason_bounds
+                  FOR EACH ROW EXECUTE FUNCTION auth._test_session_denied_dup()
+                """);
+            var put = new HttpRequestMessage(HttpMethod.Put, $"/api/orgs/partners/{partner:D}/login-config/reason-bounds");
+            put.Headers.TryAddWithoutValidation("Authorization", "Bearer " + jwt);
+            put.Headers.TryAddWithoutValidation("If-Match", "\"0\"");
+            put.Content = new StringContent("""{"reason_min_length":10,"reason_max_length":20}""", Encoding.UTF8, "application/json");
+            var send = http.SendAsync(put);
+            await Task.Delay(400);
+            var held = !send.IsCompleted;
+            if (held)
+                await Exec(owner, "UPDATE auth.request_session SET revoked_at = clock_timestamp() WHERE jti = $1 AND expires_at > clock_timestamp()", JtiOf(jwt));
+            using var res = await send.WaitAsync(TimeSpan.FromSeconds(10));
+            var body = await res.Content.ReadAsStringAsync();
+            var authn = res.Headers.WwwAuthenticate.ToString();
+            var deniedRow = await ScalarBool(owner, """
+                SELECT EXISTS (
+                  SELECT 1 FROM auth.request_session
+                   WHERE jti = $1 AND revoked_at IS NOT NULL AND expires_at > clock_timestamp()
+                )
+                """, JtiOf(jwt));
+            Check("session-denied-is-the-closed-session-401",
+                held && deniedRow && (int)res.StatusCode == 401
+                && body == "{\"error\":\"session_expired\"}" && authn == "Bearer",
+                $"held {held} denied-row {deniedRow} status {(int)res.StatusCode} auth [{authn}] body {Clip(body)}");
+        }
+        finally
+        {
+            await Exec(owner, "DROP TRIGGER IF EXISTS test_session_denied_dup ON auth.partner_reason_bounds");
+            await Exec(owner, "DROP FUNCTION IF EXISTS auth._test_session_denied_dup()");
+            await Exec(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = $1", partner);
+        }
+    }
+
+    static async Task SessionStillOpenRules(NpgsqlDataSource owner)
+    {
+        var user = Guid.NewGuid();
+        await EnsureUser(owner, user);
+        try
+        {
+            await ClearSessions(owner, user);
+            var token = await Mint(user);
+            var open = await IssuerBool("SELECT auth.session_still_open($1, clock_timestamp())", token);
+            await Exec(owner, """
+                UPDATE auth.request_session
+                   SET expires_at = clock_timestamp()
+                 WHERE token_hash = sha256(convert_to($1, 'UTF8'))
+                """, token);
+            var expired = await IssuerBool("SELECT auth.session_still_open($1, clock_timestamp())", token);
+            Check("session-still-open-closes-when-expired", open == true && expired == false, $"open {open} expired {expired}");
+
+            var live = await Mint(user);
+            var nullIat = await IssuerCall("SELECT auth.session_still_open($1, NULL::timestamptz)", live);
+            var still = await IssuerBool("SELECT auth.session_still_open($1, clock_timestamp())", live);
+            Check("session-still-open-denies-null-iat",
+                nullIat == "42501:session_denied" && still == true, $"null {nullIat} live {still}");
+        }
+        finally
+        {
+            await ExecQuiet(owner, "DELETE FROM auth.request_binding WHERE user_id = $1", user);
+            await ExecQuiet(owner, "DELETE FROM auth.request_session WHERE user_id = $1", user);
+            await ExecQuiet(owner, "DELETE FROM auth.login_cutoff WHERE user_id = $1", user);
+            await ExecQuiet(owner, "DELETE FROM auth.user_issuer WHERE user_id = $1", user);
+            await ExecQuiet(owner, "DELETE FROM auth.app_user WHERE user_id = $1", user);
+        }
+    }
+
+    static async Task<bool?> IssuerBool(string sql, params object?[] ps)
+    {
+        var text = await IssuerCall(sql, ps);
+        return text == "true" ? true : text == "false" ? false : null;
+    }
+
+    static async Task<string> IssuerCall(string sql, params object?[] ps)
+    {
+        await using var c = await (await IssuerDs()).OpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand(sql, c);
+        foreach (var p in ps) cmd.Parameters.Add(new() { Value = p ?? DBNull.Value });
+        try
+        {
+            var value = await cmd.ExecuteScalarAsync();
+            return value is bool b ? (b ? "true" : "false") : "other";
+        }
+        catch (PostgresException ex)
+        {
+            return ex.SqlState + ":" + ex.MessageText;
+        }
+    }
+
     static Guid JtiOf(string jwt)
     {
         using var claims = JsonDocument.Parse(Base64UrlEncoder.Decode(jwt.Split('.')[1]));
@@ -2496,13 +2624,12 @@ static class Req064Suite
         Check("non-loopback-listen-refused", await ListenRefusal("http://192.0.2.1:9", allow: false));
         Check("non-loopback-listen-allowed-when-opted-in", await ListenRefusal("http://192.0.2.1:9", allow: true));
         await using var issuerDs = NpgsqlDataSource.Create(issuerCs);
-        var guard = false;
+        var guardMessage = "";
         try { await Admin.Api.AdminApiHost.GuardRoleAsync(issuerDs); }
-        catch (InvalidOperationException ex)
-        {
-            guard = ex.Message.Contains("issuer role", StringComparison.Ordinal) || ex.Message.Contains("open or revoke", StringComparison.Ordinal);
-        }
-        Check("guard-refuses-the-issuer-role", guard);
+        catch (InvalidOperationException ex) { guardMessage = ex.Message; }
+        Check("guard-refuses-the-issuer-role",
+            guardMessage == "startup guard: the API role is the issuer role", guardMessage);
+        await SessionStillOpenRules(owner);
         Check("admin-api-cannot-set-log-statement", await Denied(admin, "SET log_statement = 'all'"));
         Check("host-refuses-log-statement-all", await LoggingRefusal(opt, admin, "log_statement", "all"));
         Check("host-refuses-duration-zero-with-parameter-logging", await LoggingRefusal(opt, admin, "log_min_duration_statement", "0"));

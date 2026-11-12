@@ -4660,24 +4660,30 @@ END
 $fn$;
 
 -- A cached issuer session is replayed only while this is still true. A revoked
--- row or an iat at or before login_cutoff is not served from the cache.
+-- row, an expired row, or an iat at or before login_cutoff is not served from
+-- the cache. A null iat is denied: NULL <= revoked_before is unknown, so the
+-- cutoff comparison would otherwise treat a logged-out user as still open.
 CREATE OR REPLACE FUNCTION auth.session_still_open(p_token text, p_iat timestamptz) RETURNS boolean
-  LANGUAGE sql
+  LANGUAGE plpgsql
   STABLE
   SECURITY DEFINER
   SET search_path = pg_catalog, auth
 AS $fn$
-  SELECT EXISTS (
+BEGIN
+  IF p_iat IS NULL THEN RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501'; END IF;
+  RETURN EXISTS (
     SELECT 1
       FROM auth.request_session s
      WHERE s.token_hash = sha256(convert_to(p_token, 'UTF8'))
        AND s.revoked_at IS NULL
+       AND s.expires_at > clock_timestamp()
        AND NOT EXISTS (
          SELECT 1 FROM auth.login_cutoff c
           WHERE c.user_id = s.user_id
             AND p_iat <= c.revoked_before
        )
   );
+END
 $fn$;
 
 REVOKE ALL ON FUNCTION auth.session_still_open(text, timestamptz) FROM PUBLIC;
