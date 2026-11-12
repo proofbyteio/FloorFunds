@@ -444,21 +444,21 @@ static class Req064Suite
         Check("revoked-session-denied-on-next-action", await Denied(admin, "SELECT auth.begin_request($1)", revoked));
 
         var bound = await Mint(Sa);
-        await using (var c = await owner.OpenConnectionAsync())
+        await using (var a = await admin.OpenConnectionAsync())
         {
-            await using var tx = await c.BeginTransactionAsync();
-            await using (var b = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx))
+            await using var tx = await a.BeginTransactionAsync();
+            await using (var b = new NpgsqlCommand("SELECT auth.begin_request($1)", a, tx))
             {
                 b.Parameters.Add(new() { Value = bound });
                 await b.ExecuteNonQueryAsync();
             }
-            await using (var rev = new NpgsqlCommand("SELECT auth.revoke_session($1)", c, tx))
-            {
-                rev.Parameters.Add(new() { Value = bound });
-                await rev.ExecuteNonQueryAsync();
-            }
-            var cleared = await ScalarOn(c, tx, "SELECT auth.current_principal() IS NULL");
-            Check("revoked-binding-clears-current-principal", cleared);
+            var saw = await ScalarOn(a, tx, "SELECT auth.current_principal() IS NOT NULL");
+            var revokeDetail = "ok";
+            try { await RevokeSession(bound); }
+            catch (Exception ex) { revokeDetail = ex.GetType().Name + " " + ex.Message; }
+            var cleared = revokeDetail == "ok" && await ScalarOn(a, tx, "SELECT auth.current_principal() IS NULL");
+            Check("revoked-binding-clears-current-principal", saw && cleared,
+                revokeDetail == "ok" ? "principal stayed set after the committed revoke" : revokeDetail);
             await tx.RollbackAsync();
         }
 
@@ -580,17 +580,13 @@ static class Req064Suite
         catch (PostgresException ex) when (ex.SqlState == "42501") { return true; }
     }
 
-    static async Task<bool> TtlRejected(NpgsqlDataSource owner)
+    static Task<bool> TtlRejected(NpgsqlDataSource owner)
     {
-        try
-        {
-            await Exec(owner, """
-                INSERT INTO auth.request_session (token_hash, jti, iss, sub, user_id, created_at, expires_at)
-                VALUES (sha256(convert_to('ttl-over', 'UTF8')), gen_random_uuid(), $2, $3, $1, clock_timestamp(), clock_timestamp() + interval '16 minutes')
-                """, Upa, Issuer, Upa.ToString("D"));
-            return false;
-        }
-        catch (PostgresException ex) when (ex.SqlState == "23514") { return true; }
+        _ = owner;
+        var detail = Kit("ttl-over-15-minutes-rejected",
+            "INSERT INTO auth.request_session (token_hash, jti, iss, sub, user_id, created_at, expires_at) VALUES (sha256(convert_to('ttl-over', 'UTF8')), gen_random_uuid(), "
+            + SqlText(Issuer) + ", " + SqlText(Upa.ToString("D")) + ", '" + Upa.ToString("D") + "'::uuid, clock_timestamp(), clock_timestamp() + interval '16 minutes')");
+        return Task.FromResult(detail.Contains("23514", StringComparison.Ordinal) || detail.Contains("request_session_ttl", StringComparison.Ordinal));
     }
 
     static async Task<bool> LiveCap(NpgsqlDataSource owner)
@@ -618,24 +614,22 @@ static class Req064Suite
 
     static async Task<bool> OpenRate(NpgsqlDataSource owner)
     {
-        await Exec(owner, """
-            INSERT INTO auth.request_session (token_hash, jti, iss, sub, user_id, created_at, expires_at, revoked_at)
-            SELECT sha256(convert_to('rate-' || g::text, 'UTF8')), gen_random_uuid(), $2, $3, $1,
-                   clock_timestamp(), clock_timestamp() + interval '5 minutes', clock_timestamp()
-              FROM generate_series(1, 600) g
-            """, Sa2, Issuer, Sa2.ToString("D"));
+        var rateUser = Guid.NewGuid();
+        await EnsureUser(owner, rateUser);
+        var setup = Kit("session-rate-setup",
+            "INSERT INTO auth.request_session (token_hash, jti, iss, sub, user_id, created_at, expires_at, revoked_at) "
+            + "SELECT sha256(convert_to('rate-' || g::text, 'UTF8')), gen_random_uuid(), " + SqlText(Issuer) + ", "
+            + SqlText(rateUser.ToString("D")) + ", '" + rateUser.ToString("D") + "'::uuid, clock_timestamp(), clock_timestamp() + interval '5 minutes', clock_timestamp() "
+            + "FROM generate_series(1, 600) g");
+        if (setup != "ok") return false;
         try
         {
-            await Mint(Sa2);
+            await Mint(rateUser);
             return false;
         }
         catch (PostgresException ex) when (ex.SqlState == "54000" && ex.MessageText == "session_rate")
         {
             return true;
-        }
-        finally
-        {
-            await RevokeLogin(Sa2);
         }
     }
 

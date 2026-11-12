@@ -64,6 +64,8 @@ if (!(dbName == "ff_sse" || System.Text.RegularExpressions.Regex.IsMatch(dbName,
 { Console.Error.WriteLine("refuse: AUTH_CHECKS_DB must be ff_sse or ff_kit_<name> (never ff_sse2, postgres or a template)"); return 2; }
 var ownerCs = Env("CONNECTION_STRING");
 var adminCs = Env("ADMIN_API_CONNECTION_STRING");
+var ownerPort = new NpgsqlConnectionStringBuilder(ownerCs).Port;
+KitAdmin.Arm(dbName, ownerPort == 0 ? 5432 : ownerPort);
 if (args is ["--req064"])
     return await Req064Suite.RunAsync(ownerCs, adminCs);
 if (args is ["--race"])
@@ -88,13 +90,6 @@ async Task<T> OScalar<T>(string sql, params object?[] ps)
     await using var cmd = new NpgsqlCommand(sql, c);
     foreach (var p in ps) cmd.Parameters.Add(new NpgsqlParameter { Value = p ?? DBNull.Value });
     return (T)(await cmd.ExecuteScalarAsync())!;
-}
-async Task OExec(string sql, params object?[] ps) // owner-side fixture edit (test rows only)
-{
-    await using var c = await ownerDs.OpenConnectionAsync();
-    await using var cmd = new NpgsqlCommand(sql, c);
-    foreach (var p in ps) cmd.Parameters.Add(new NpgsqlParameter { Value = p ?? DBNull.Value });
-    if (await cmd.ExecuteNonQueryAsync() != 1) throw new InvalidOperationException("fixture edit hit != 1 row");
 }
 async Task<long> Count(string table) => await OScalar<long>($"SELECT count(*) FROM auth.{table}");
 string[] Tables = ["audit_outbox", "location_login_config_change", "location_login_config", "location", "partner_reason_bounds"]; // Slice A: + partner_reason_bounds (no FK)
@@ -881,14 +876,21 @@ try
         await NewEvents();
 
         // Entra -> Entra keeps the stored secret_ref (A-21 analogue, TLD 9:49) even if the row differs from Entra:SecretRef; and no-op.
-        await OExec("UPDATE auth.location_login_config SET secret_ref = $2 WHERE location_id = $1", A1, Arn("llc/pre-d51-row"));
+        KitAdmin.Exec("login-config-plant-secret-ref",
+            "UPDATE auth.location_login_config SET secret_ref = $kit$"+ Arn("llc/pre-d51-row") + "$kit$ WHERE location_id = '" + A1.ToString("D") + "'::uuid");
+        r = await Put(A1, PA, With(EntraCfg(T3, display: "Riverbend Casino North"), "secret_ref", Arn("llc/client-supplied")), "\"7\"");
+        Ok("put: login-config cannot set an arbitrary secret_ref",
+            HasField(r, "secret_ref", "field_not_writable")
+            && await OScalar<string>("SELECT secret_ref FROM auth.location_login_config WHERE location_id=$1", A1) == Arn("llc/pre-d51-row")
+            && !r.Body.Contains("client-supplied", StringComparison.Ordinal), r.Body);
         r = await Put(A1, PA, EntraCfg(T3, display: "Riverbend Casino North"), "\"7\"");
         ev = await NewEvents();
         Ok("put: entra -> entra edit -> changed_fields [display_name] only, stored secret_ref kept, SA view still secret {set: true} only", r.Status == 200 && ev.Count == 1
             && ev[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["display_name"])
             && !Obj(r.Body).ContainsKey("secret") && Obj((await Get(Cfg(A1), SA)).Body)["secret"] is JsonObject ks && ks.Count == 1 && (bool)ks["set"]!
             && await OScalar<string>("SELECT secret_ref FROM auth.location_login_config WHERE location_id=$1", A1) == Arn("llc/pre-d51-row"), r.Body);
-        await OExec("UPDATE auth.location_login_config SET secret_ref = $2 WHERE location_id = $1", A1, DeployArn);
+        KitAdmin.Exec("login-config-restore-secret-ref",
+            "UPDATE auth.location_login_config SET secret_ref = $kit$" + DeployArn + "$kit$ WHERE location_id = '" + A1.ToString("D") + "'::uuid");
         r = await Put(A1, PA, EntraCfg(T3, display: "  Riverbend Casino North  "), "\"8\"");
         Ok("put: no-op (trimmed same values) -> 200, row_version unchanged, no event (OQ-P3-6)", r.Status == 200 && r.ETag == "\"8\"" && Rv(A1) == 8 && (await NewEvents()).Count == 0);
 

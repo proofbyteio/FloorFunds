@@ -37,6 +37,10 @@ public static class KitAdmin
         "disable-one-of-two-super-admins-succeeds|Req064Suite|disable-one-of-two-super-admins-succeeds|admin_assignment|status|no API; the trigger must allow disabling one of two",
         "delete-partner-admin-while-sa-remains|Req064Suite|delete-partner-admin-while-sa-remains|admin_assignment|DELETE|no API; the trigger must allow deleting a partner admin",
         "last-active-sa-concurrency|Req064Suite|last-active-sa-concurrency|admin_assignment|revoked_at|no API; two sessions must overlap on the advisory lock",
+        "login-config-plant-secret-ref|Admin.Api.Checks|put: entra -> entra keeps planted secret_ref|location_login_config|secret_ref|client secret_ref is field_not_writable; the plant is not the deployment value",
+        "login-config-restore-secret-ref|Admin.Api.Checks|put: entra -> entra keeps planted secret_ref|location_login_config|secret_ref|restore the deployment value after the entra-to-entra assertion",
+        "ttl-over-15-minutes-rejected|Req064Suite|ttl-over-15-minutes-rejected|request_session|expires_at|open_session caps at 15 minutes; the check constraint is the behaviour under test",
+        "session-rate-setup|Req064Suite|six-hundred-first-open-rejected|request_session|created_at|historical revoked rows; the assertion is open_session as the issuer",
     ];
 
     public static void Exec(string reason, string sql)
