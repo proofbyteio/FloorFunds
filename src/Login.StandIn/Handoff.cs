@@ -123,7 +123,7 @@ public static class Handoff
 {RetField(ret)}
 <label>Username <input data-testid="field-admin-username" name="username"></label>
 <label>Password <input data-testid="field-admin-password" name="password" type="password"></label>
-<button data-testid="admin-signin-submit" type="submit">Sign in</button></form>
+<div class="admin-cta group"><button class="button button--primary button--block btn-primary" data-testid="admin-signin-submit" type="submit"><span class="btn-primary__press">Sign in</span></button><span class="btn-primary-halo" aria-hidden="true"></span></div></form>
 """ : $"""
 <form method="post" action="{issuerPath}/admin/mfa"><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
 <label>Code <input data-testid="field-admin-totp" name="totp_code" inputmode="numeric"></label>
@@ -132,7 +132,7 @@ public static class Handoff
 <label>Recovery code <input data-testid="field-admin-recovery-code" name="recovery_code"></label>
 <button data-testid="admin-recovery-submit" type="submit">Use recovery code</button></form>
 """);
-        IResult Admin(HttpContext c, string? err, int step, string? ret = null) => SignIn.Html("page-admin-sign-in", Page(err, step, af.GetAndStoreTokens(c).RequestToken!, ret));
+        IResult Admin(HttpContext c, string? err, int step, string? ret = null) => SignIn.Html("page-admin-sign-in", Page(err, step, af.GetAndStoreTokens(c).RequestToken!, ret), productLockup: step == 1);
         void Cookie(HttpContext c, string n, string v) => c.Response.Cookies.Append(n, v, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Lax, Path = issuerPath, Secure = c.Request.IsHttps });
 
         app.MapGet(issuerPath + "/admin", (HttpContext c) => { SignIn.Headers(c, ports.Control); var ret = AdminRet(c.Request.Query["ret"].ToString()); lock (st.Gate) return Admin(c, null, 1, ret); });

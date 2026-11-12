@@ -29,6 +29,58 @@ public static class Ui
             if (!File.Exists(p)) throw new InvalidOperationException($"ui template missing: {p}");
             T[n] = File.ReadAllText(p);
         }
+        LoadProductName();
+    }
+
+    /// <summary>Branding:ProductName. Environment wins, then the API appsettings.json. No name is compiled in.</summary>
+    public static string ProductName { get; private set; } = "";
+
+    public static void LoadProductName()
+    {
+        var env = Environment.GetEnvironmentVariable("Branding__ProductName");
+        if (!string.IsNullOrWhiteSpace(env)) { ProductName = env.Trim(); return; }
+        foreach (var start in new[] { Dir, AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+        {
+            var dir = start;
+            for (var i = 0; i < 8 && !string.IsNullOrEmpty(dir); i++)
+            {
+                foreach (var rel in new[] { Path.Combine("src", "Admin.Api", "appsettings.json"), "appsettings.json" })
+                {
+                    var candidate = Path.Combine(dir, rel);
+                    if (File.Exists(candidate) && TryReadProductName(candidate, out var name)) { ProductName = name; return; }
+                }
+                dir = Path.GetDirectoryName(dir);
+            }
+        }
+    }
+
+    static bool TryReadProductName(string path, out string name)
+    {
+        name = "";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+            if (!doc.RootElement.TryGetProperty("Branding", out var branding)) return false;
+            if (!branding.TryGetProperty("ProductName", out var value) || value.ValueKind != System.Text.Json.JsonValueKind.String) return false;
+            name = (value.GetString() ?? "").Trim();
+            return name.Length > 0;
+        }
+        catch (System.Text.Json.JsonException) { return false; }
+        catch (IOException) { return false; }
+    }
+
+    public static string MarkOnly()
+    {
+        var src = WebUtility.HtmlEncode(IssuerPath + "/ui/logo-1.svg");
+        return $"""<img class="admin-lockup__mark" src="{src}" alt="">""";
+    }
+
+    public static string ProductLockup(string? productName = null)
+    {
+        var name = productName ?? ProductName;
+        var enc = WebUtility.HtmlEncode(name);
+        var src = WebUtility.HtmlEncode(IssuerPath + "/ui/logo-1.svg");
+        return $"""<span class="admin-lockup admin-lockup--signin"><img class="admin-lockup__mark" src="{src}" alt=""><span class="admin-lockup__name" title="{enc}">{enc}</span></span>""";
     }
 
     static readonly Regex Slot = new(@"\{\{\{(\w+)\}\}\}|\{\{(\w+)\}\}", RegexOptions.Compiled);
@@ -44,8 +96,9 @@ public static class Ui
         Render("error-banner", ("message", msg ?? ""), ("hidden", msg is null ? " hidden" : ""));
 
     // js: name of a ui/login-hub/js file (no inline script, so the CSP needs no 'unsafe-inline' or nonce).
-    public static IResult Page(string title, string content, string? js = null, int status = 200) => new PageResult(
+    public static IResult Page(string title, string content, string? js = null, int status = 200, bool productLockup = false) => new PageResult(
         Render("layout", ("title", title), ("base", IssuerPath), ("content", content),
+            ("brand", productLockup ? ProductLockup() : MarkOnly()),
             ("scripts", js is null ? "" : $"<script src=\"{WebUtility.HtmlEncode(IssuerPath)}/ui/js/{js}.js\"></script>")), status);
 
     sealed class PageResult(string html, int status) : IResult
@@ -63,10 +116,25 @@ public static class Ui
     public static void MapAssets(WebApplication app)
     {
         app.MapGet(IssuerPath + "/ui/theme.css", (HttpContext c) => Asset(c, "theme.css", "text/css; charset=utf-8"));
+        app.MapGet(IssuerPath + "/ui/theme-tokens.css", (HttpContext c) => ThemeAsset(c, "theme-tokens.css", "text/css; charset=utf-8"));
+        app.MapGet(IssuerPath + "/ui/logo-1.svg", (HttpContext c) => ThemeAsset(c, "logo-1.svg", "image/svg+xml"));
         app.MapGet(IssuerPath + "/ui/js/{name}", (string name, HttpContext c) =>
             name is "signin.js" or "handoff.js" ? Asset(c, "js/" + name, "text/javascript; charset=utf-8") : Results.NotFound());
-        app.MapGet(IssuerPath + "/ui/fonts/{name}", (string name, HttpContext c) =>
-            name is "Poppins-Regular.ttf" or "Poppins-Medium.ttf" or "Poppins-SemiBold.ttf" ? Asset(c, "fonts/" + name, "font/ttf") : Results.NotFound());
+        app.MapGet(IssuerPath + "/ui/fonts/{name}", (string name, HttpContext c) => name switch
+        {
+            "InterVariable.woff2" or "InterVariable-Italic.woff2" => ThemeAsset(c, "fonts/" + name, "font/woff2"),
+            "Poppins-Regular.ttf" or "Poppins-Medium.ttf" or "Poppins-SemiBold.ttf" => Asset(c, "fonts/" + name, "font/ttf"),
+            _ => Results.NotFound(),
+        });
+    }
+    static string ThemeRoot => Path.GetFullPath(Path.Combine(string.IsNullOrEmpty(Dir) ? Directory.GetCurrentDirectory() : Dir, "..", "theme"));
+    static IResult ThemeAsset(HttpContext c, string rel, string type)
+    {
+        var root = ThemeRoot;
+        var full = Path.GetFullPath(Path.Combine(root, rel));
+        if (!full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal) || !File.Exists(full)) return Results.NotFound();
+        c.Response.Headers.ContentSecurityPolicy = DefaultCsp;
+        return Results.File(full, type);
     }
     static IResult Asset(HttpContext c, string rel, string type)
     {

@@ -261,7 +261,7 @@ try {
     const style = getComputedStyle(el);
     return { disabled: el.disabled, bg: style.backgroundColor, color: style.color };
   })()`);
-  check("disabled claim fields are muted", claimField.disabled && claimField.bg === "rgb(243, 245, 248)" && claimField.color === "rgb(91, 100, 114)", JSON.stringify(claimField));
+  check("disabled claim fields are muted", claimField.disabled && claimField.bg === "rgb(20, 20, 20)" && claimField.color === "rgb(156, 163, 175)", JSON.stringify(claimField));
   await evaluate("document.getElementById('claim-availability')?.scrollIntoView({block:'center'})");
   report.shots.push(await shot("claim-edit-refused-1600"));
   await resize(768, 1000);
@@ -311,7 +311,7 @@ try {
     const style = getComputedStyle(el);
     return { disabled: el.disabled, bg: style.backgroundColor };
   })()`);
-  check("closed create fields look disabled", closedField.disabled && closedField.bg === "rgb(243, 245, 248)", JSON.stringify(closedField));
+  check("closed create fields look disabled", closedField.disabled && closedField.bg === "rgb(20, 20, 20)", JSON.stringify(closedField));
   await evaluate("document.getElementById('closed-code')?.scrollIntoView({block:'center'})");
   report.shots.push(await shot("closed-create-disabled-1600"));
   await evaluate("document.getElementById('closed-create').click()");

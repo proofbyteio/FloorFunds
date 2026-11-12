@@ -114,7 +114,7 @@ async function exchange(code, verifier) {
 }
 
 function serveFile(res, file) {
-  const types = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".ttf": "font/ttf", ".txt": "text/plain; charset=utf-8" };
+  const types = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".ttf": "font/ttf", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".txt": "text/plain; charset=utf-8" };
   const raw = fs.readFileSync(file);
   res.writeHead(200, { "content-type": types[path.extname(file)] || "application/octet-stream", "content-length": raw.length, "cache-control": "no-store" });
   res.end(raw);
@@ -179,6 +179,16 @@ const server = http.createServer(async (req, res) => {
         if (refused) { sendJson(res, refused.status, { error: refused.error }); return; }
       }
       await proxy(req, res, apiOrigin + url.pathname + url.search, body, { authorization: "Bearer " + session.token });
+      return;
+    }
+    if (url.pathname.startsWith("/theme/")) {
+      const themeRoot = path.resolve(root, "../theme");
+      const file = path.resolve(themeRoot, url.pathname.slice("/theme/".length));
+      if (!file.startsWith(themeRoot + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+        sendJson(res, 404, { error: "not_found" });
+        return;
+      }
+      serveFile(res, file);
       return;
     }
     const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);

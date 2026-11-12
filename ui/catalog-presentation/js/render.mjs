@@ -238,7 +238,7 @@ function feeForm(state) {
         <textarea id="fee-description" name="description" maxlength="2000">${esc(state.form.description)}</textarea>
       </div>
       <p class="field-help" id="fee-help">Recording a names-only fee here adds a synthetic session row. Refresh discards it. The audit intent is not emitted and is not durable acceptance.</p>
-      <button type="button" class="primary" id="fee-save" data-action="submit-fee" aria-describedby="fee-help">Record names-only fee in this synthetic session</button>
+      <button type="button" class="primary btn-primary" id="fee-save" data-action="submit-fee" aria-describedby="fee-help"><span class="btn-primary__press">Record names-only fee in this synthetic session</span></button>
     </form>`;
 }
 

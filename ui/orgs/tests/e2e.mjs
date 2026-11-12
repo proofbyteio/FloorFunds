@@ -87,7 +87,7 @@ const RID = /^Request ID: [0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}
 // [DEC-144] provisional create copy. The sign-in sentence is only for an authoritative 401 on the permission read.
 const CREATE_UNKNOWN_TEXT = "We couldn\u2019t confirm whether the location was created. Check whether it exists before trying again. The original request may still finish, so trying again could create a duplicate.";
 const CREATE_UNKNOWN_SESSION_TEXT = CREATE_UNKNOWN_TEXT + " Sign in again, then check whether the location exists.";
-// D-102 Request ID line: own last line of the banner, muted #6b6b7b, selectable, never truncated, hidden without an id.
+// D-102 Request ID line: own last line of the banner, muted banner text, selectable, never truncated, hidden without an id.
 const ridInfo = (sel) => ev(`(() => { const b = document.querySelector(${JSON.stringify(sel)}); const r = b.querySelector("[data-request-id]"); if (!r) return null;
   const cs = getComputedStyle(r); const t = b.querySelector(".banner__title"); const sel = getSelection(); sel.removeAllRanges(); sel.selectAllChildren(r);
   const selected = sel.toString(); sel.removeAllRanges();
@@ -95,7 +95,7 @@ const ridInfo = (sel) => ev(`(() => { const b = document.querySelector(${JSON.st
     whiteSpace: cs.whiteSpace, color: cs.color, last: r === r.parentElement.lastElementChild, ownLine: r.getBoundingClientRect().top >= t.getBoundingClientRect().bottom - 1,
     fits: r.scrollWidth <= r.clientWidth + 1, selected }; })()`);
 const ridOk = (i) => !!i && i.vis && RID.test(i.text) && i.display === "block" && i.userSelect !== "none" && i.textOverflow !== "ellipsis" && !/nowrap/.test(i.whiteSpace)
-  && i.color === "rgb(107, 107, 123)" && i.last && i.ownLine && i.fits && i.selected === i.text;
+  && i.color === "rgb(91, 100, 114)" && i.last && i.ownLine && i.fits && i.selected === i.text;
 const noRidOnFields = () => ev(`[...document.querySelectorAll(".field__error")].every(e => !e.querySelector("[data-request-id]") && !/Request ID/.test(e.textContent))`);
 async function save() { await click("#btn-save"); await until(`document.querySelector("#btn-save").getAttribute("aria-disabled") !== "true"`); await sleep(100); }
 const step = async (name, f) => { try { await f(); } catch (e) { ok(`${name}: ran`, false, String(e && e.stack || e)); } };
@@ -138,7 +138,7 @@ await step("PB other partner", async () => {
   ok("Partner Admin of another partner: 404 not_found banner + request id", e.length === 1 && e[0].code === "not_found" && RID.test(e[0].rid), e);
   ok("D-102 #1: not_found text", await txt("#banner-error-text") === "It may have been removed, or you may not have access to it.", await txt("#banner-error-text"));
   const ri = await ridInfo("#banner-error");
-  ok("D-102 Request ID line on the top-level banner: own last line, #6b6b7b, selectable, not truncated", ridOk(ri), ri);
+  ok("D-102 Request ID line on the top-level banner: own last line, muted banner text, selectable, not truncated", ridOk(ri), ri);
   await open(`/as/sa/orgs/not-a-partner/locations/x/sign-in`);
   const rn = await ridInfo("#banner-error");
   ok("D-102 Request ID line absent when there is no id (route error, no request made)", await vis("#banner-error") && rn && !rn.vis && rn.text === "", rn);

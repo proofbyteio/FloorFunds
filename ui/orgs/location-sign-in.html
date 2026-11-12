@@ -49,7 +49,7 @@
 <dt>Backup sign-in</dt><dd id="cur-fallback" data-testid="cur-fallback"></dd>
 <dt>Last changed</dt><dd id="cur-changed" data-testid="cur-changed"></dd>
 </dl>
-<p class="action-row" id="row-change" hidden><button class="button button--primary" type="button" id="btn-change" data-testid="btn-change">Change sign-in method</button></p>
+<p class="action-row" id="row-change" hidden><button class="button button--primary btn-primary" type="button" id="btn-change" data-testid="btn-change"><span class="btn-primary__press">Change sign-in method</span></button></p>
 </section>
 
 <section class="card" aria-labelledby="conn-h" id="card-connection" data-testid="card-connection" hidden>
@@ -80,7 +80,7 @@
 <div class="field" id="f-reason" hidden><label class="field__label" for="reason">Reason for lowering security<span class="field__required" aria-hidden="true">*</span><span class="visually-hidden"> (required)</span></label><div class="field__hint" id="reason-hint">Saved in the audit log.</div><textarea class="field__input" id="reason" name="reason" rows="3" aria-describedby="reason-hint"></textarea><div class="field__error" id="reason-err" hidden></div></div>
 
 <p class="action-row">
-<button class="button button--primary" type="submit" id="btn-save" data-testid="btn-save">Save</button>
+<button class="button button--primary btn-primary" type="submit" id="btn-save" data-testid="btn-save"><span class="btn-primary__press">Save</span></button>
 <button class="button button--secondary" type="button" id="btn-cancel" data-testid="btn-cancel">Cancel</button>
 </p>
 </form>
@@ -89,7 +89,7 @@
 <h2 id="create-recovery-h">Before you create again</h2>
 <div class="choice"><input type="checkbox" id="ack-missing" data-testid="ack-missing"><label for="ack-missing" class="choice__text">I checked and couldn’t find the location.</label></div>
 <p class="action-row">
-<button class="button button--primary" type="button" id="btn-enable-create" data-testid="btn-enable-create">Enable Create again</button>
+<button class="button button--primary btn-primary" type="button" id="btn-enable-create" data-testid="btn-enable-create"><span class="btn-primary__press">Enable Create again</span></button>
 <button class="button button--secondary" type="button" id="btn-found" data-testid="btn-found">I found the location</button>
 </p>
 <p id="create-recovery-note" data-testid="create-recovery-note" hidden></p>

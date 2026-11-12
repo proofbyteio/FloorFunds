@@ -4,6 +4,7 @@
 // GET /api/screens/location-partners. There is no text field for a partner id.
 // Swap this default by replacing fillPartners() and the select below together
 // with enforceExistingPartner in server.mjs.
+import { applyProductName, productNameFromConfig } from "./branding.mjs";
 
 const main = document.querySelector("#main");
 const navEl = document.querySelector("#nav");
@@ -60,6 +61,15 @@ function h(tag, text) {
   return el;
 }
 
+function primaryControl(tag, text) {
+  const el = h(tag);
+  el.className = "button button--primary btn-primary";
+  const press = h("span", text);
+  press.className = "btn-primary__press";
+  el.append(press);
+  return el;
+}
+
 function banner(kind, title, text) {
   const b = h("div");
   b.className = "banner banner--" + kind;
@@ -92,9 +102,8 @@ async function showHome() {
   if (rows.length === 0) {
     main.append(banner("info", "No locations yet", "Create a location when you are ready. The partner comes from the server list."));
     if (grant.includes("create_location")) {
-      const a = h("a", "Create a location");
+      const a = primaryControl("a", "Create a location");
       a.href = "#/create";
-      a.className = "button button--primary";
       main.append(a);
     }
     return;
@@ -127,9 +136,8 @@ async function showLocations() {
   if (rows.length === 0) {
     main.replaceChildren(h("h1", "Locations"), banner("info", "No locations", "There are no locations for this grant yet."));
     if (grant.includes("create_location")) {
-      const a = h("a", "Create a location");
+      const a = primaryControl("a", "Create a location");
       a.href = "#/create";
-      a.className = "button button--primary";
       main.append(a);
     }
     return;
@@ -186,8 +194,7 @@ async function showCreate(state) {
     field.querySelector("span").className = "field__label";
     form.append(field);
   }
-  const submit = h("button", "Create location");
-  submit.className = "button button--primary";
+  const submit = primaryControl("button", "Create location");
   submit.type = "submit";
   form.append(submit);
   const hint = h("p", "Choose an existing partner from the server list. A partner id cannot be typed. PQ-284 reversible default.");
@@ -300,6 +307,9 @@ async function showClients() {
 async function draw() {
   const me = await api("/api/nav");
   if (me.status === 401) { goSignIn(); return; }
+  const productName = productNameFromConfig(me.body);
+  applyProductName(document.querySelector(".admin-lockup__name"), productName);
+  if (productName) document.title = productName;
   grant = me.status === 200 ? (me.body.screens ?? []) : [];
   const name = route();
   renderNav(name === "denied" ? "" : name);

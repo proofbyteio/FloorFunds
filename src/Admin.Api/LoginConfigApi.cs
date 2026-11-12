@@ -854,7 +854,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             screens.Add("create_location");
             screens.Add("config");
         }
-        return Json(200, new JsonObject { ["screens"] = screens });
+        return Json(200, new JsonObject { ["screens"] = screens, ["product_name"] = opt.ProductName });
     });
 
     /// <summary>Catalog stays read-only in this shell. The screen is granted to an admin; the write is not performed.</summary>

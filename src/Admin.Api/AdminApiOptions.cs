@@ -56,6 +56,9 @@ public sealed record AdminApiOptions
     public int ReasonMinLength { get; init; } = DefaultReasonMinLength;
     public int ReasonMaxLength { get; init; } = DefaultReasonMaxLength;
 
+    /// <summary>Branding:ProductName (DEC-228). The default lives in appsettings.json. Empty when the key is absent.</summary>
+    public string ProductName { get; init; } = "";
+
     public static AdminApiOptions FromConfiguration(IConfiguration c)
     {
         string Req(string k) => c[k] is { Length: > 0 } v ? v : throw new InvalidOperationException($"config {k} is required");
@@ -81,6 +84,7 @@ public sealed record AdminApiOptions
             Urls = c["Urls"] ?? "",
             ReasonMinLength = Int("LoginConfig:ReasonMinLength", DefaultReasonMinLength),
             ReasonMaxLength = Int("LoginConfig:ReasonMaxLength", DefaultReasonMaxLength),
+            ProductName = c["Branding:ProductName"] ?? "",
         };
     }
 

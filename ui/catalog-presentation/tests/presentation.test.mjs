@@ -532,8 +532,8 @@ test("narrow layout keeps the proof token and shows script focus", () => {
   assert.match(html, /synthetic_fixture_projection_not_the_dotnet_double_api_or_database/);
   assert.match(html, /role="alert"|role="status"|<h1 id="screen-title"/);
   const css = readFileSync(join(here, "..", "css", "catalog.css"), "utf8");
-  assert.match(css, /:focus-visible \{ outline: 3px solid var\(--focus\); outline-offset: 2px; \}/);
-  assert.match(css, /\.program-focus \{ outline: 3px solid var\(--focus\); outline-offset: 2px; \}/);
+  assert.match(css, /:focus-visible \{ outline: var\(--focus-ring-width\) solid var\(--focus-ring\); outline-offset: var\(--focus-ring-offset\); \}/);
+  assert.match(css, /\.program-focus \{ outline: var\(--focus-ring-width\) solid var\(--focus-ring\); outline-offset: var\(--focus-ring-offset\); \}/);
   assert.match(css, /\.page-foot, \.fine \{ overflow-wrap: anywhere; \}/);
   assert.match(css, /\.actor-bar > \* \{ min-width: 0; max-width: 100%; \}/);
   assert.match(css, /td, th, caption \{ overflow-wrap: anywhere; \}/);

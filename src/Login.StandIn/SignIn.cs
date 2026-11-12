@@ -38,8 +38,8 @@ public static class SignIn
 
     static string E(string s) => WebUtility.HtmlEncode(s);
     // Generic ui/ card (hub, admin, sign-out confirm): layout.html + card.html.
-    public static IResult Html(string testid, string body, int status = 200) =>
-        Ui.Page("Sign in", Ui.Render("card", ("testid", testid), ("body", body)), null, status);
+    public static IResult Html(string testid, string body, int status = 200, bool productLockup = false) =>
+        Ui.Page("Sign in", Ui.Render("card", ("testid", testid), ("body", body)), null, status, productLockup);
 
     // OQ-11 (TL 9:42): an unknown user still runs one PBKDF2 hash against this dummy, so timing matches a known user.
     public static readonly (byte[] Salt, byte[] Hash) DummyCred = StandInUser.Hash(Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)));
@@ -82,9 +82,9 @@ public static class SignIn
         if (resign) // 5.3 re-prompt (UX 07 #u2/#p2). [ASSUMPTION A44] after attestation_invalid (5.5) it is wrapped in screen 8B (UX 08 agentdown).
         {
             var r = Ui.Render("resign-in", ("action", slugBase), ("agent", agent), ("af", t), ("error", error is null ? "" : Ui.Error(error)));
-            return Ui.Page("Sign in to Cash Advance", agentDown ? Ui.Render("screen-8b", ("resign", r)) : r, "signin", status);
+            return Ui.Page("Sign in to Cash Advance", agentDown ? Ui.Render("screen-8b", ("resign", r)) : r, "signin", status, productLockup: true);
         }
-        return Ui.Page("Sign in", Ui.Render("signin", ("action", slugBase), ("agent", agent), ("af", t), ("error", Ui.Error(error))), "signin", status);
+        return Ui.Page("Sign in", Ui.Render("signin", ("action", slugBase), ("agent", agent), ("af", t), ("error", Ui.Error(error))), "signin", status, productLockup: true);
     }
 
     static IResult TotpPage(HttpContext c, IAntiforgery af, string slugBase, string? error)
