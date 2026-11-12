@@ -139,31 +139,12 @@ static class StandInSignIn
         await cmd.ExecuteNonQueryAsync();
     }
 
-    static async Task Restore(string ownerCs, Dictionary<string, string> previous)
+    static Task Restore(string ownerCs, Dictionary<string, string> previous)
     {
-        try
-        {
-            await using var c = await Open(ownerCs);
-            foreach (var user in new[] { Sa, Pa })
-            {
-                await Exec(c, "DELETE FROM auth.request_binding WHERE user_id = $1", Guid.Parse(user));
-                await Exec(c, "DELETE FROM auth.request_session WHERE user_id = $1", Guid.Parse(user));
-            }
-            await using var drop = new NpgsqlCommand("DELETE FROM auth.admin_assignment WHERE assignment_id = $1", c);
-            drop.Parameters.Add(new() { Value = Guid.Parse(SaAssignment) });
-            await drop.ExecuteNonQueryAsync();
-            foreach (var user in new[] { Sa, Pa })
-            {
-                if (previous.TryGetValue(user, out var iss))
-                {
-                    await using var put = new NpgsqlCommand("UPDATE auth.user_issuer SET issuer = $2 WHERE user_id = $1", c);
-                    put.Parameters.Add(new() { Value = Guid.Parse(user) });
-                    put.Parameters.Add(new() { Value = iss });
-                    await put.ExecuteNonQueryAsync();
-                }
-            }
-        }
-        catch { }
+        // The runner recreates the scratch database. Do not delete or update the rows.
+        _ = ownerCs;
+        _ = previous;
+        return Task.CompletedTask;
     }
 
     static Process StartStandIn(string dll, int front, string state, string issuer, string redirect)

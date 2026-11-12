@@ -855,28 +855,10 @@ await using (var c = await ownerDs.OpenConnectionAsync())
         return 3;
     }
 }
-async Task CleanupCheckData()
+Task CleanupCheckData()
 {
-    await using var c = await ownerDs.OpenConnectionAsync();
-    await using var tx = await c.BeginTransactionAsync();
-    var locs = new[] { L_PCI, L_NV, Guid.Parse("5f0c3e1a-00ee-4000-8000-0000000000e1") }; // = LX
-    await Exec(c, tx, "DELETE FROM auth.user_location WHERE location_id = ANY($1)", locs);
-    await Exec(c, tx, "DELETE FROM auth.external_login WHERE subject = ANY($1)", new[] { S1, S2, S3, S9 });
-    var scopeUsers = new[] { Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75") };
-    foreach (var user in scopeUsers)
-        await Exec(c, tx, "SELECT auth.revoke_login((SELECT issuer FROM auth.user_issuer WHERE user_id = $1), $1::text)", user);
-    await Exec(c, tx, "DELETE FROM auth.user_issuer WHERE user_id = ANY($1)", scopeUsers);
-    await Exec(c, tx, "DELETE FROM auth.admin_assignment WHERE user_id = ANY($1)", scopeUsers);
-    try
-    {
-        await Exec(c, tx, "DELETE FROM auth.app_user WHERE user_id = ANY($1)", new[] { U_DIS, U_LCK, Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"), Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75") });
-    }
-    catch (PostgresException ex) when (ex.SqlState == "23503") { }
-    await Exec(c, tx, "DELETE FROM auth.location_login_config_change WHERE location_id = ANY($1)", locs);
-    await Exec(c, tx, "DELETE FROM auth.location_login_config WHERE location_id = ANY($1)", locs);
-    await Exec(c, tx, "DELETE FROM auth.location WHERE location_id = ANY($1)", locs);
-    await Exec(c, tx, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { P_PCI, P_NV });
-    await tx.CommitAsync();
+    // The runner recreates the scratch database. These checks do not delete their rows.
+    return Task.CompletedTask;
 }
 // [TLD 2026-11-04 11:21 Q2b] scratch DB for the N3/N1 probes: start-up sweep of leftover MARKED scratch DBs (crashed runs),
 // then create + mark this run's ff_scratch_<runid>; it is migrated in the try and dropped in the finally (also on failure).

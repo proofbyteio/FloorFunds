@@ -470,8 +470,6 @@ static class Req064Suite
         KitAdmin.Exec("expired-session-rejected-by-begin-request",
             "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE token_hash = sha256(convert_to(" + SqlText(stale) + ", 'UTF8'))");
         Check("expired-session-rejected-by-begin-request", await Denied(admin, "SELECT auth.begin_request($1)", stale));
-        await Exec(owner, "DELETE FROM auth.request_binding WHERE token_hash = sha256(convert_to($1, 'UTF8'))", stale);
-        await Exec(owner, "DELETE FROM auth.request_session WHERE token_hash = sha256(convert_to($1, 'UTF8'))", stale);
 
         var live = await Mint(Upa);
         await Exec(owner, "UPDATE auth.admin_assignment SET status = 'disabled' WHERE user_id = $1 AND role_id = 'partner_admin'", Upa);
@@ -599,8 +597,7 @@ static class Req064Suite
 
     static async Task<bool> LiveCap(NpgsqlDataSource owner)
     {
-        await Exec(owner, "DELETE FROM auth.request_binding WHERE user_id = $1", Sa2);
-        await Exec(owner, "DELETE FROM auth.request_session WHERE user_id = $1", Sa2);
+        await RevokeLogin(Sa2);
         var opened = 0;
         try
         {
@@ -617,8 +614,7 @@ static class Req064Suite
         }
         finally
         {
-            await Exec(owner, "DELETE FROM auth.request_binding WHERE user_id = $1", Sa2);
-            await Exec(owner, "DELETE FROM auth.request_session WHERE user_id = $1", Sa2);
+            await RevokeLogin(Sa2);
         }
     }
 
@@ -641,7 +637,7 @@ static class Req064Suite
         }
         finally
         {
-            await Exec(owner, "DELETE FROM auth.request_session WHERE user_id = $1 AND revoked_at IS NOT NULL", Sa2);
+            await RevokeLogin(Sa2);
         }
     }
 
@@ -1445,27 +1441,11 @@ static class Req064Suite
         }
     }
 
-    static async Task Cleanup(NpgsqlDataSource owner)
+    static Task Cleanup(NpgsqlDataSource owner)
     {
-        // A1: no DISABLE TRIGGER. Session rows stay revoked. Catalog rows stay.
-        // The next --force setup recreates the database. Unique ids isolate a run.
-        await ExecQuiet(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
-        await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000aa"));
-        await ExecQuiet(owner, "DELETE FROM auth.login_write_principal");
-        await ExecQuiet(owner, "DELETE FROM auth.location_login_config_change WHERE location_id = ANY($1)", new[] { La, Lb });
-        await ExecQuiet(owner, "DELETE FROM auth.location_login_config WHERE location_id = ANY($1)", new[] { La, Lb });
-        await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000ab"));
-        await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = $1", Guid.Parse("5f0c3e1a-0064-4000-8000-000000000023"));
-        await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = ANY($1)", new[] { La, Lb });
-        var reqUsers = new[] { Sa, Sa2, Upa, Both, None, Cash, Mix, Guid.Parse("5f0c3e1a-0064-4000-8000-000000000037") };
-        foreach (var user in reqUsers)
-            await ExecQuiet(owner, "SELECT auth.revoke_login($1, $2::text)", Issuer, user);
-        await ExecQuiet(owner, "DELETE FROM auth.user_issuer WHERE user_id = ANY($1)", reqUsers);
-        await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE user_id = ANY($1) OR assignment_id = ANY($2)",
-            reqUsers,
-            new[] { Asa, Asa2, Apa, AbothA, AbothB, Acash, AmixA, AmixB, Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000a7") });
-        await ExecQuiet(owner, "DELETE FROM auth.app_user WHERE user_id = ANY($1)",
-            new[] { Sa, Sa2, Upa, Both, None, Cash, Mix, Guid.Parse("5f0c3e1a-0064-4000-8000-000000000037") });
+        // The runner recreates the scratch database. This suite does not delete its rows.
+        _ = owner;
+        return Task.CompletedTask;
     }
 
     static string Clip(string body) => body.Length <= 180 ? body : body[..180];
@@ -2383,11 +2363,7 @@ static class Req064Suite
         }
         finally
         {
-            await ExecQuiet(owner, "DELETE FROM auth.request_binding WHERE user_id = $1", user);
-            await ExecQuiet(owner, "DELETE FROM auth.request_session WHERE user_id = $1", user);
-            await ExecQuiet(owner, "DELETE FROM auth.login_cutoff WHERE user_id = $1", user);
-            await ExecQuiet(owner, "DELETE FROM auth.user_issuer WHERE user_id = $1", user);
-            await ExecQuiet(owner, "DELETE FROM auth.app_user WHERE user_id = $1", user);
+            await RevokeLogin(user);
         }
     }
 
@@ -2898,10 +2874,7 @@ static class Req064Suite
         Check("host-refuses-log-statement-all", await LoggingRefusal(opt, admin, "log_statement", "all"));
         Check("host-refuses-duration-zero-with-parameter-logging", await LoggingRefusal(opt, admin, "log_min_duration_statement", "0"));
         foreach (var user in new[] { Sa, Sa2, Upa })
-        {
-            await Exec(owner, "DELETE FROM auth.request_binding WHERE user_id = $1", user);
-            await Exec(owner, "DELETE FROM auth.request_session WHERE user_id = $1", user);
-        }
+            await RevokeLogin(user);
         await IssuerRejectsFutureIat(issuer, sign, owner);
         await RevokedTokenIsNotCached(issuer, sign, owner);
     }
