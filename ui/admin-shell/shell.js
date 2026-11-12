@@ -19,6 +19,16 @@ const pages = {
 
 let grant = [];
 
+// DEC-237. The only client checks are required, and the limit already in
+// LoginConfigValidator.ValidateCreate: a name of more than 200 Unicode scalars
+// is name_invalid. No placeholder, no helper, and no extra character rule.
+export function locationNameClientError(value) {
+  const name = String(value ?? "").trim();
+  if (name.length === 0) return "required";
+  if ([...name].length > 200) return "name_invalid";
+  return "";
+}
+
 function goSignIn() {
   leaving = true;
   location.assign("/signin");
@@ -172,7 +182,7 @@ async function fillPartners(select) {
   return select.options.length > 0;
 }
 
-async function showCreate(state) {
+export async function showCreate(state) {
   const probe = await api("/api/screens/location-partners");
   if (probe.status === 403) return denied();
   main.replaceChildren(h("h1", "Create location"));
@@ -182,9 +192,17 @@ async function showCreate(state) {
   form.className = "card";
   const name = document.createElement("input");
   name.className = "field__input";
+  name.id = "location-name";
   name.name = "name";
   name.required = true;
   name.maxLength = 200;
+  const nameField = h("label");
+  nameField.className = "field";
+  nameField.htmlFor = "location-name";
+  const nameLabel = h("span", "Location name");
+  nameLabel.className = "field__label";
+  nameField.append(nameLabel, name);
+  form.append(nameField);
   const partner = document.createElement("select");
   partner.className = "field__input";
   partner.name = "partner_id";
@@ -223,7 +241,7 @@ async function showCreate(state) {
     textField("Primary contact email (optional)", "email", false),
     textField("Time zone *", "time_zone", true),
   ]) form.append(field);
-  for (const [label, control] of [["Location name", name], ["Partner", partner]]) {
+  for (const [label, control] of [["Partner", partner]]) {
     const field = h("label");
     field.className = "field";
     field.append(h("span", label), control);
@@ -268,6 +286,13 @@ async function showCreate(state) {
   }
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
+    const nameError = locationNameClientError(name.value);
+    if (nameError) {
+      main.querySelector(".banner--error")?.remove();
+      form.prepend(banner("error", "Location name", ""));
+      submit.disabled = false;
+      return;
+    }
     submit.disabled = true;
     const body = {
       partner_id: partner.value,
@@ -424,6 +449,6 @@ async function draw() {
 
 export let started = Promise.resolve();
 if (main) {
-  window.addEventListener("hashchange", () => { draw(); });
+  window.addEventListener("hashchange", () => { started = draw(); });
   started = draw();
 }

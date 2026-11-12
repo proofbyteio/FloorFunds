@@ -1,5 +1,7 @@
 using Admin.Api;
 
+if (args.Contains("--name-required-check")) return LocationNameProbe.Run();
+
 // Config: appsettings.json (optional), environment (Entra__Authority, ...), command line. Refuses to start on any invalid value.
 var cfg = new ConfigurationBuilder()
     .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true)
