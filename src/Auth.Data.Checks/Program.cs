@@ -489,6 +489,18 @@ if (args is ["--scratch-selftest", var crashedOld, var crashedYoung, var crashed
     return fail == 0 ? 0 : 1;
 }
 
+static NpgsqlDataSource OpenTestSeed(string ownerCs)
+{
+    var builder = new NpgsqlConnectionStringBuilder(ownerCs);
+    var line = File.ReadAllText("/tmp/ff-db/" + builder.Database + "_test_seed.env").Trim();
+    const string prefix = "TEST_SEED_PASSWORD=";
+    if (!line.StartsWith(prefix, StringComparison.Ordinal) || line.Length <= prefix.Length)
+        throw new InvalidOperationException("test seed password file is missing a password");
+    builder.Username = builder.Database + "_test_seed";
+    builder.Password = line[prefix.Length..];
+    return NpgsqlDataSource.Create(builder.ConnectionString);
+}
+
 string Env(string k) => Environment.GetEnvironmentVariable(k) is { Length: > 0 } v ? v : throw new InvalidOperationException($"{k} not set");
 var ownerCs = Env("CONNECTION_STRING");
 var adminCs = Env("ADMIN_API_CONNECTION_STRING");
@@ -509,6 +521,8 @@ if (ScratchLock.Refusal(ownerCs) is { } lockRefusedMain) { Console.Error.WriteLi
 await using var scratchLock = await ScratchLock.TryAcquireAsync(ownerCs);
 if (scratchLock is null) { Console.WriteLine(ScratchLock.BusyMessage(ownerCs)); return 5; }
 string adminRole = dbName + "_admin_api", loginRole = dbName + "_login";
+var ownerPort = new NpgsqlConnectionStringBuilder(ownerCs).Port;
+KitAdmin.Arm(dbName, ownerPort == 0 ? 5432 : ownerPort);
 await using var ownerDs = NpgsqlDataSource.Create(ownerCs);
 await using var adminDs = NpgsqlDataSource.Create(adminCs);
 await using var loginDs = NpgsqlDataSource.Create(loginCs);
@@ -857,7 +871,25 @@ await using (var c = await ownerDs.OpenConnectionAsync())
 }
 Task CleanupCheckData()
 {
-    // The runner recreates the scratch database. These checks do not delete their rows.
+    // The migrator has no DELETE. Remove the rows these checks committed so the database is back
+    // at the post-seed state. Seeded app users are not in the c7_ id range.
+    KitAdmin.Exec("auth-data-cleanup", """
+        DELETE FROM auth.user_location;
+        DELETE FROM auth.external_login;
+        DELETE FROM auth.session;
+        DELETE FROM auth.oidc_replay;
+        DELETE FROM auth.audit_outbox;
+        DELETE FROM auth.location_login_config_change;
+        DELETE FROM auth.location_login_config;
+        DELETE FROM auth.location;
+        DELETE FROM auth.partner_reason_bounds;
+        DELETE FROM auth.request_binding WHERE user_id::text LIKE '%-000000000c7_';
+        DELETE FROM auth.request_session WHERE user_id::text LIKE '%-000000000c7_';
+        DELETE FROM auth.login_cutoff WHERE user_id::text LIKE '%-000000000c7_';
+        DELETE FROM auth.admin_assignment WHERE user_id::text LIKE '%-000000000c7_';
+        DELETE FROM auth.user_issuer WHERE user_id::text LIKE '%-000000000c7_';
+        DELETE FROM auth.app_user WHERE user_id::text LIKE '%-000000000c7_';
+        """);
     return Task.CompletedTask;
 }
 // [TLD 2026-11-04 11:21 Q2b] scratch DB for the N3/N1 probes: start-up sweep of leftover MARKED scratch DBs (crashed runs),
@@ -883,7 +915,8 @@ try
 catch (Exception e) { scratchErr = $"{e.GetType().Name}: {e.Message}"; Console.WriteLine($"FATAL scratch: setup failed ({scratchErr}); the N3/N1 probes and Q2 will FAIL"); }
 try
 {
-await using (var c = await ownerDs.OpenConnectionAsync())
+await using var seedDs = OpenTestSeed(ownerCs);
+await using (var c = await seedDs.OpenConnectionAsync())
 await using (var tx = await c.BeginTransactionAsync())
 {
     await Exec(c, tx, "INSERT INTO auth.location VALUES ($1,$2,'pci-main','PCI main (SSE2-FAKE-TEST-ONLY)'),($3,$4,'nevada-main','Nevada main (SSE2-FAKE-TEST-ONLY)')", L_PCI, P_PCI, L_NV, P_NV);
@@ -1121,7 +1154,7 @@ var sessCases = new (string, string, string)[]
 };
 foreach (var (name, sql, state) in cases.Concat(sessCases))
 {
-    var got = await Try(ownerDs, sql);
+    var got = KitAdmin.SqlState("auth-data-constraint-probe", sql);
     Ok($"constraint: {name} -> {state}", got == state, got);
 }
 
@@ -1213,12 +1246,12 @@ await Check("reader config: GetBySlugAsync(\" PCI-Main \") normalises -> pci-mai
 await Check("reader config: GetBySlugAsync(unknown) -> null", async () => await cfgReader.GetBySlugAsync("zz-none", default) is null);
 await Check("reader config: location without config row -> null (inner join)", async () =>
 {
-    await using var c = await ownerDs.OpenConnectionAsync();
+    await using var c = await seedDs.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
     await Exec(c, tx, $"INSERT INTO auth.location VALUES ('{LX}', '{P_PCI}', 'zz-noconfig', 'x')");
     await tx.CommitAsync();
     var r = await cfgReader.GetAsync(Guid.Parse(LX), default) is null && await cfgReader.GetBySlugAsync("zz-noconfig", default) is null;
-    await Exec(c, null, $"DELETE FROM auth.location WHERE location_id = '{LX}'");
+    KitAdmin.Exec("auth-data-temp-location", $"DELETE FROM auth.location WHERE location_id = '{LX}'");
     return r;
 });
 

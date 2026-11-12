@@ -213,10 +213,12 @@ fi
 auth_ready=0
 catalog_ready=0
 if [[ "$have_history" -eq 1 ]]; then
-  if owner_psql -tA -c "SELECT to_regprocedure('auth._request_user()') IS NOT NULL" 2>/dev/null | grep -q t; then
+  # Schema must exist. A history-only stub (future main id) has no auth objects;
+  # to_regprocedure alone is not enough to decide the kit SQL step.
+  if owner_psql -tA -c "SELECT to_regnamespace('auth') IS NOT NULL AND to_regprocedure('auth._request_user()') IS NOT NULL" 2>/dev/null | grep -qx t; then
     auth_ready=1
   fi
-  if owner_psql -tA -c "SELECT to_regnamespace('catalog') IS NOT NULL" 2>/dev/null | grep -q t; then
+  if owner_psql -tA -c "SELECT to_regnamespace('catalog') IS NOT NULL" 2>/dev/null | grep -qx t; then
     catalog_ready=1
   fi
 fi
@@ -236,7 +238,7 @@ else
 fi
 if [[ "$SEED" -eq 1 ]]; then
   # TEST-ONLY role. The password stays in a mode-0600 file and is not printed.
-  install -d -m 0700 /tmp/ff-db
+  install -d -m 1733 /tmp/ff-db
   seed_env="/tmp/ff-db/${DB}_test_seed.env"
   if [[ -f "$seed_env" ]]; then
     test_seed_password="$(sed -n 's/^TEST_SEED_PASSWORD=//p' "$seed_env")"

@@ -102,6 +102,18 @@ if ($AdminHost -and -not $adminPw) {
 
 $psqlCmd = Get-Command psql -ErrorAction SilentlyContinue
 if (-not $psqlCmd) { Write-Error 'psql not found on PATH (Windows: add e.g. C:\Program Files\PostgreSQL\17\bin)' -ErrorAction Continue; exit 3 }
+# The kit test stub stands in for the superuser client only. Owner TCP uses a real psql,
+# the same split as setup.sh --superuser-cmd. A stub that reads stdin would wait forever.
+function Get-OwnerPsql {
+  foreach ($c in @(Get-Command psql -All -ErrorAction SilentlyContinue)) {
+    if (-not $c.Source) { continue }
+    $head = ""
+    try { $head = (Get-Content -LiteralPath $c.Source -TotalCount 3 -ErrorAction Stop) -join "`n" } catch { $head = "" }
+    if ($head -notmatch 'TEST-ONLY stand-in') { return $c.Source }
+  }
+  return $psqlCmd.Source
+}
+$ownerPsql = Get-OwnerPsql
 
 function Invoke-Psql([string]$sql, [string[]]$extra = @(), [switch]$Capture, [int]$FailCode = 0) {
   # Values go in as psql variables (argv holds only names, never the password);
@@ -178,18 +190,26 @@ Set-AppRole $IssuerRole $issuerPw
 $apiPw = $null; $loginPw = $null; $issuerPw = $null
 
 # As the owner over TCP; the owner password goes in the child's env, never argv.
-function Invoke-OwnerPsql([string[]]$extra) {
-  $psi = [System.Diagnostics.ProcessStartInfo]::new($psqlCmd.Source)
+function Invoke-OwnerPsql([string[]]$extra, [switch]$AllowFail) {
+  $psi = [System.Diagnostics.ProcessStartInfo]::new($ownerPsql)
   foreach ($a in @('-X','-q','-v','ON_ERROR_STOP=1','-h',$DbHost,'-p',"$Port",'-U',$Role,'-d',$Db) + $extra) { $psi.ArgumentList.Add($a) }
   $psi.Environment['PGPASSWORD'] = $pw
   # Hides the expected "__EFMigrationsHistory already exists" NOTICE on re-runs.
   $psi.Environment['PGOPTIONS'] = '-c client_min_messages=warning'
   $psi.UseShellExecute = $false
+  $psi.RedirectStandardInput = $true
   $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
   $p = [System.Diagnostics.Process]::Start($psi)
+  $p.StandardInput.Close()
   $out = $p.StandardOutput.ReadToEnd()
+  $err = $p.StandardError.ReadToEnd()
   $p.WaitForExit()
-  if ($p.ExitCode -ne 0) { Write-Error "psql (owner) failed (exit $($p.ExitCode)); see the error above" -ErrorAction Continue; exit 4 }
+  if ($p.ExitCode -ne 0) {
+    if ($AllowFail) { return "" }
+    if ($err) { [Console]::Error.WriteLine($err) }
+    Write-Error "psql (owner) failed (exit $($p.ExitCode)); see the error above" -ErrorAction Continue; exit 4
+  }
   $out
 }
 if (-not $NoMigrate) {
@@ -197,14 +217,105 @@ if (-not $NoMigrate) {
   [void](Invoke-OwnerPsql @('-f', $Migrations))
   $applied = Invoke-OwnerPsql @('-tA','-c','SELECT string_agg("MigrationId", '', '' ORDER BY "MigrationId") FROM public."__EFMigrationsHistory"')
   Write-Host "Applied migrations: $($applied.Trim())"
-  Write-Host "Definer owner: NOLOGIN role (superuser step, after migrate)..."
+}
+function Test-OwnerTrue([string]$sql) {
+  # A missing database, or history not installed yet, is "not ready", as in setup.sh.
+  return (Invoke-OwnerPsql @('-tA','-c',$sql) -AllowFail).Trim() -ceq 't'
+}
+$authReady = $false
+$catalogReady = $false
+if (Test-OwnerTrue 'SELECT to_regclass(''public."__EFMigrationsHistory"'') IS NOT NULL') {
+  if (Test-OwnerTrue "SELECT to_regnamespace('auth') IS NOT NULL AND to_regprocedure('auth._request_user()') IS NOT NULL") { $authReady = $true }
+  if (Test-OwnerTrue "SELECT to_regnamespace('catalog') IS NOT NULL") { $catalogReady = $true }
+}
+if ($authReady) {
+  Write-Host "Definer owner: NOLOGIN role (superuser step)..."
   [void](Invoke-Psql ("\c $Db`n" + (Get-KitSql 'definer-owner.sql')) -FailCode 4)
+} else {
+  Write-Host "Definer owner: skipped, auth._request_user is not installed yet."
+}
+if ($catalogReady) {
+  Write-Host "Catalog definer owner: NOLOGIN role (superuser step)..."
+  [void](Invoke-Psql ("\c $Db`n" + (Get-KitSql 'catalog-definer-owner.sql')) -FailCode 4)
+} else {
+  Write-Host "Catalog definer owner: skipped, schema catalog is not installed yet."
+}
+function Set-TestSeedFileMode([string]$path) {
+  # Mode 0600 first. When this process was started with sudo -u postgres, the
+  # file is owned by postgres and the invoking user (SUDO_USER) cannot read it.
+  # That user is not root, so chown is EPERM. A named-user ACL grants SUDO_USER
+  # read. The mask lives in the group class, so stat shows 0640; the group
+  # object entry is empty, so the owning group cannot read, and other stays 0.
+  # The directory /tmp/ff-db is left at mode 1733.
+  & chmod 0600 $path
+  if ($LASTEXITCODE -ne 0) { Write-Error "chmod 0600 failed on the test seed file" -ErrorAction Continue; exit 4 }
+  $sudoUser = $env:SUDO_USER
+  if ([string]::IsNullOrEmpty($sudoUser) -or $sudoUser -ceq [System.Environment]::UserName) { return }
+  $uidText = $env:SUDO_UID
+  if ([string]::IsNullOrEmpty($uidText) -or $uidText -notmatch '^[0-9]+$') { return }
+  & chown -- $sudoUser -- $path 2>&1 | Out-Null
+  if ($LASTEXITCODE -eq 0) { return }
+  if (-not ('FfSeedAcl' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FfSeedAcl {
+  [DllImport("libc", SetLastError = true)]
+  public static extern int setxattr(string path, string name, byte[] value, UIntPtr size, int flags);
+}
+'@
+  }
+  $uid = [uint32]$uidText
+  $ms = New-Object System.IO.MemoryStream
+  $bw = New-Object System.IO.BinaryWriter $ms
+  $bw.Write([uint32]2)
+  $undef = [uint32]4294967295
+  foreach ($tag in @(1, 2, 4, 16, 32)) {
+    $perm = [uint16]0
+    $id = $undef
+    if ($tag -eq 1) { $perm = [uint16]6 }
+    elseif ($tag -eq 2) { $perm = [uint16]4; $id = $uid }
+    elseif ($tag -eq 16) { $perm = [uint16]4 }
+    $bw.Write([uint16]$tag)
+    $bw.Write($perm)
+    $bw.Write($id)
+  }
+  $bw.Flush()
+  $acl = $ms.ToArray()
+  $rc = [FfSeedAcl]::setxattr($path, 'system.posix_acl_access', $acl, [UIntPtr]::new([uint64]$acl.Length), 0)
+  if ($rc -ne 0) {
+    $err = [System.Runtime.InteropServices.Marshal]::GetLastPInvokeError()
+    Write-Error "test seed file could not be made readable by ${sudoUser} (errno $err)" -ErrorAction Continue
+    exit 4
+  }
 }
 if ($Seed) {
-  foreach ($f in Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'seed') -Filter '*.sql' | Sort-Object Name) {
-    Write-Host "Seed (TEST-ONLY): $($f.Name)..."
-    [void](Invoke-OwnerPsql @('-f', $f.FullName))
+  New-Item -ItemType Directory -Force -Path /tmp/ff-db | Out-Null
+  & chmod 1733 /tmp/ff-db
+  $seedEnv = "/tmp/ff-db/${Db}_test_seed.env"
+  if (Test-Path -LiteralPath $seedEnv) {
+    $seedPw = (Get-Content -LiteralPath $seedEnv | Where-Object { $_.StartsWith('TEST_SEED_PASSWORD=') } | Select-Object -First 1).Substring(19)
+  } else {
+    $seedPw = ([Convert]::ToHexString([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(24))).ToLowerInvariant()
+    $tmp = "$seedEnv.tmp"
+    [System.IO.File]::WriteAllText($tmp, "TEST_SEED_PASSWORD=$seedPw`n")
+    & chmod 0600 $tmp
+    Move-Item -Force -LiteralPath $tmp -Destination $seedEnv
   }
+  Set-TestSeedFileMode $seedEnv
+  Write-Host "Test seed role: LOGIN, no memberships (superuser step, test mode only)..."
+  [void](Invoke-Psql ("\set test_seed_password '$seedPw'`n\c $Db`n" + (Get-KitSql 'test-seed-role.sql')) -FailCode 4)
+  foreach ($f in Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'seed') -Filter '*.sql' | Sort-Object Name) {
+    Write-Host "Seed (TEST-ONLY): $($f.Name) as ${Db}_test_seed..."
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($psqlCmd.Source)
+    foreach ($a in @('-X','-q','-v','ON_ERROR_STOP=1','-h',$DbHost,'-p',"$Port",'-U',"${Db}_test_seed",'-d',$Db,'-f',$f.FullName)) { $psi.ArgumentList.Add($a) }
+    $psi.Environment['PGPASSWORD'] = $seedPw
+    $psi.UseShellExecute = $false
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $p.WaitForExit()
+    if ($p.ExitCode -ne 0) { Write-Error "psql (test seed) failed (exit $($p.ExitCode)); see the error above" -ErrorAction Continue; exit 4 }
+  }
+  $seedPw = $null
 }
 $pw = $null
 

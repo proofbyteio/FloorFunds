@@ -227,6 +227,8 @@ try
     await Exec(bootstrap, $"CREATE ROLE {AdminRole} LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE ROLE {LoginRole} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE ROLE {DbName}_auth_definer NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
+    await Exec(bootstrap, $"CREATE ROLE {DbName}_auth_owner NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
+    await Exec(bootstrap, $"CREATE ROLE {DbName}_catalog_definer NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE ROLE {DbName}_issuer LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     Note($"scratch-created {DbName} owner {OwnerRole}");
 
@@ -369,7 +371,7 @@ finally
             if (ownerOk is "true" or "True" or "t")
                 await Exec(drop, $"DROP DATABASE {DbName}");
         }
-        foreach (var role in new[] { AdminRole, LoginRole, OwnerRole, DbName + "_auth_definer", DbName + "_issuer" })
+        foreach (var role in new[] { AdminRole, LoginRole, OwnerRole, DbName + "_auth_definer", DbName + "_auth_owner", DbName + "_catalog_definer", DbName + "_issuer", DbName + "_test_seed" })
         {
             var present = await Scalar(drop, $"SELECT count(*) FROM pg_roles WHERE rolname = '{role}'");
             if (present == "1")

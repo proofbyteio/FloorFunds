@@ -266,10 +266,10 @@ Refuses("startup: missing issuer url refused", o => o with { IssuerUrl = "" }, "
 Refuses("startup: signing keys on the host refused", o => o with { SigningKeys = [publicKey] }, "does not hold signing keys");
 Refuses("startup: symmetric signing key refused", o => o with { SigningKeys = [new SymmetricSecurityKey(new byte[32])] }, "does not hold signing keys");
 Refuses("startup: missing audit schema refused", o => o with { AuditSchemaPath = "/nonexistent/audit.json" }, "audit-events");
-await Check("startup: owner role refused by the DB guard (owns auth objects)", async () =>
+await Check("startup: owner role refused by the DB guard (can open or revoke a session)", async () =>
 {
     try { await using var a = await AdminApiHost.BuildAsync(Opts(ownerCs)); return false; }
-    catch (InvalidOperationException e) { return e.Message.Contains("owns auth objects"); }
+    catch (InvalidOperationException e) { return e.Message.Contains("can open or revoke a session"); }
 });
 await Check("startup: schema with an unknown keyword refused", async () =>
 {
@@ -721,7 +721,8 @@ try
         r = await Send(HttpMethod.Post, "/api/orgs/locations", SA, "{\"name\":\"" + bigName + "\"}");
         Ok("create: SA body over 1 MiB -> 413 payload_too_large (handler cap, TLD 9:28 P3-2; never 400/500)", Err(r, 413, "payload_too_large"), $"{r.Status}");
         Ok("create: oversized SA body writes no event", (await NewEvents()).Count == 0);
-        Ok("create: none of the refused creates added a location", await Count("location") == 3);
+        var created = await Count("location");
+        Ok("create: none of the refused creates added a location", created == 4, created.ToString(System.Globalization.CultureInfo.InvariantCulture));
     }
 
     // ================= 3. GET =================
@@ -1034,7 +1035,7 @@ try
             ["allow_db_fallback"] = (bool)a2["allow_db_fallback"]!, ["mfa_required"] = (bool)a2["mfa_required"]!,
         }), $"\"{a2v}\"");
         Ok("K4 crafted: SQL-ish display_name stored literally (parameterised)", r.Status == 200
-            && await OScalar<string>("SELECT display_name FROM auth.location_login_config WHERE location_id=$1", A2) == injected && await Count("location") == 3, r.Body);
+            && await OScalar<string>("SELECT display_name FROM auth.location_login_config WHERE location_id=$1", A2) == injected && await Count("location") == 4, r.Body);
         await NewEvents();
         Ok("K4 crafted: PA still cannot see B after the injected text", Err(await Get(Cfg(B1), PA), 404, "not_found"));
         // GUCs never left on pooled connections: open every idle connection of the API's own pool and read app.*.
@@ -2473,7 +2474,8 @@ try
 
         // ---- deterministic race [TLD 08:00b(1)]: a first PUT blocked on the PK while another "first PUT" commits -> 409 + winner's version ----
         {
-            await using var oc = await ownerDs.OpenConnectionAsync();
+            await using var raceSeed = await Req064Suite.OpenTestSeed(ownerDs);
+            await using var oc = await raceSeed.OpenConnectionAsync();
             await using var otx = await oc.BeginTransactionAsync();
             await using (var ins = new NpgsqlCommand("INSERT INTO auth.partner_reason_bounds (partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version) VALUES ($1, 33, 333, $2, now(), 1)", oc, otx))
             { ins.Parameters.Add(new() { Value = P_D }); ins.Parameters.Add(new() { Value = U_SA }); await ins.ExecuteNonQueryAsync(); }
@@ -2522,10 +2524,8 @@ try
             var c0 = await PrbPut(P_H, SA, B(20, 200), "\"0\"");
             await NewEvents();
             Ok("Slice A parallel update setup: P_H created at v1", c0.Status == 200 && await PrbSnap(P_H) == "20/200/v1", Tg(c0));
-            await using var oc = await ownerDs.OpenConnectionAsync();
-            await using var otx = await oc.BeginTransactionAsync();
-            await using (var lk = new NpgsqlCommand("SELECT 1 FROM auth.partner_reason_bounds WHERE partner_id = $1 FOR UPDATE", oc, otx))
-            { lk.Parameters.Add(new() { Value = P_H }); await lk.ExecuteScalarAsync(); }
+            using var rowLock = KitAdmin.Hold("prb-parallel-row-lock",
+                "SET LOCAL ROLE " + dbName + "_auth_definer; SELECT reason_min_length FROM auth.partner_reason_bounds WHERE partner_id = '" + P_H.ToString("D") + "'::uuid FOR UPDATE");
             var ua = PrbPut(P_H, SA, B(30, 300), "\"1\""); var ub = PrbPut(P_H, PA, B(40, 400), "\"1\"");
             var both = false;
             for (int i = 0; i < 100 && !both; i++)
@@ -2535,7 +2535,7 @@ try
                 if (ua.IsCompleted || ub.IsCompleted) break;
             }
             Ok("Slice A parallel update: both API PUTs are waiting on the row at the same time (2 distinct API-role backends in this database with a NOT granted lock), neither answered yet", both && !ua.IsCompleted && !ub.IsCompleted);
-            await otx.RollbackAsync();
+            rowLock.Dispose();
             var res = await Task.WhenAll(ua, ub);
             var evs = await NewEvents();
             var win = res.Count(x => x.Status == 200) == 1 ? (res[0].Status == 200 ? "30/300/v2" : "40/400/v2") : "?";
@@ -2597,11 +2597,24 @@ try
         });
 
         // ---- DB CHECK stays a hard 10..500 [DEC-114] (owner probe in a rolled-back transaction) ----
-        await Check("Slice A DB: CHECK prb_bounds refuses 9/500 and 10/501 even for the owner (rolled back)", async () =>
+        await Check("Slice A DB: the migrator cannot INSERT partner_reason_bounds (42501)", async () =>
         {
+            await using var oc = await ownerDs.OpenConnectionAsync();
+            try
+            {
+                await using var ins = new NpgsqlCommand("INSERT INTO auth.partner_reason_bounds VALUES ($1, 20, 200, $2, now(), 1)", oc);
+                ins.Parameters.Add(new() { Value = Guid.NewGuid() }); ins.Parameters.Add(new() { Value = U_SA });
+                await ins.ExecuteNonQueryAsync();
+                return false;
+            }
+            catch (PostgresException x) { return x.SqlState == PostgresErrorCodes.InsufficientPrivilege; }
+        });
+        await Check("Slice A DB: CHECK prb_bounds refuses 9/500 and 10/501 (rolled back)", async () =>
+        {
+            await using var seed = await Req064Suite.OpenTestSeed(ownerDs);
             async Task<bool> Refuses(int mn, int mx)
             {
-                await using var oc = await ownerDs.OpenConnectionAsync();
+                await using var oc = await seed.OpenConnectionAsync();
                 await using var otx = await oc.BeginTransactionAsync();
                 try
                 {
@@ -2666,22 +2679,16 @@ finally
 {
     await app.StopAsync();
     await app.DisposeAsync();
-    // Cleanup as the owner, children first (the checks started on empty tables).
-    // Location assignments reference auth.location, so they go before the location delete.
-    await using var c = await ownerDs.OpenConnectionAsync();
-    async Task DropGrant(string sql)
-    {
-        await using var drop = new NpgsqlCommand(sql, c);
-        drop.Parameters.Add(new NpgsqlParameter { Value = new[] { U_SA, U_PA, U_PB, U_RD, U_NO, U_CU } });
-        await drop.ExecuteNonQueryAsync();
-    }
-    await DropGrant("DELETE FROM auth.request_binding WHERE user_id = ANY($1)");
-    await DropGrant("DELETE FROM auth.request_session WHERE user_id = ANY($1)");
-    await DropGrant("DELETE FROM auth.admin_assignment WHERE user_id = ANY($1)");
-    await using (var writes = new NpgsqlCommand("DELETE FROM auth.login_write_principal", c)) await writes.ExecuteNonQueryAsync();
-    foreach (var t in Tables) { await using var d = new NpgsqlCommand($"DELETE FROM auth.{t}", c); await d.ExecuteNonQueryAsync(); }
-    await DropGrant("DELETE FROM auth.user_issuer WHERE user_id = ANY($1)");
-    await DropGrant("DELETE FROM auth.app_user WHERE user_id = ANY($1)");
+    // The migrator has no DELETE. The same statements run as the kit superuser.
+    var ids = string.Join(", ", new[] { U_SA, U_PA, U_PB, U_RD, U_NO, U_CU }.Select(id => "'" + id.ToString("D") + "'::uuid"));
+    KitAdmin.Exec("admin-checks-cleanup",
+        "DELETE FROM auth.request_binding WHERE user_id = ANY(ARRAY[" + ids + "]); " +
+        "DELETE FROM auth.request_session WHERE user_id = ANY(ARRAY[" + ids + "]); " +
+        "DELETE FROM auth.admin_assignment WHERE user_id = ANY(ARRAY[" + ids + "]); " +
+        "DELETE FROM auth.login_write_principal; " +
+        string.Join(" ", Tables.Select(t => "DELETE FROM auth." + t + ";")) + " " +
+        "DELETE FROM auth.user_issuer WHERE user_id = ANY(ARRAY[" + ids + "]); " +
+        "DELETE FROM auth.app_user WHERE user_id = ANY(ARRAY[" + ids + "]);");
     var left = 0L;
     foreach (var t in Tables) left += await Count(t);
     Ok("cleanup: auth.audit_outbox, change, llc, location, partner_reason_bounds empty again", left == 0);

@@ -45,22 +45,144 @@ public static class KitAdmin
         "req064-history-label-fixture|Req064Suite|history-label-uses-the-record-partner|registered_entry|INSERT|admin_api has no EXECUTE on apply_entry_create; the stored label is read as admin_api",
         "catalog-read-fee-fixture|Catalog.Read.Checks|partner-a-fee-definition|registered_entry|INSERT|admin_api has no EXECUTE on apply_entry_create; the reader assertions run as admin_api",
         "catalog-query-fixture|Catalog.Query.Checks|query-sa-fee-list-includes-private|registered_entry|INSERT|admin_api has no EXECUTE on apply_entry_create; the query assertions run as admin_api",
+        "auth-data-constraint-probe|Auth.Data.Checks|constraint probes|auth|INSERT|the migrator has no DML; the probe asserts the constraint SQLSTATE",
+        "auth-data-temp-location|Auth.Data.Checks|reader config location without a config row|location|DELETE|the migrator has no DELETE; the row is removed after the reader assertion",
+        "auth-data-cleanup|Auth.Data.Checks|K3 cleanup returns the post-seed state|auth|DELETE|the migrator has no DELETE; the checks remove the rows they created",
+        "reader-location-grant|Admin.Api.Checks|org viewer location assignment|admin_assignment|INSERT|no assignment API; row security reads the location assignment",
+        "reader-location-revoke|Admin.Api.Checks|org viewer location assignment|admin_assignment|DELETE|no assignment API; the assignment is removed after the reader assertion",
+        "admin-checks-cleanup|Admin.Api.Checks|cleanup|auth|DELETE|the migrator has no DELETE; the checks remove the rows they created",
+        "prb-parallel-row-lock|Admin.Api.Checks|Slice A parallel update|partner_reason_bounds|FOR UPDATE|the migrator has no UPDATE; the lock is held until both API requests are waiting",
+        "req064-fixture-delete|Req064Suite|fixture cleanup|auth|DELETE|the migrator has no DELETE; the checks remove the rows they created",
+        "req064-test-trigger|Req064Suite|bounds-retry-closed-session-is-401|partner_reason_bounds|TRIGGER|the migrator does not own the table; the trigger is the test double",
+        "req064-user-lock|Req064Suite|open-blocked-behind-a-lock|app_user|locked_until|the migrator has no UPDATE; the check locks the user while open_session waits",
     ];
 
     public static void Exec(string reason, string sql)
     {
-        if (string.IsNullOrWhiteSpace(reason) || string.IsNullOrWhiteSpace(sql))
-            throw new InvalidOperationException("kit admin refused: reason and sql are required");
-        if (Environment.GetEnvironmentVariable(ModeVariable) != "1")
-            throw new InvalidOperationException("kit admin refused: kit mode is off");
-        var db = Environment.GetEnvironmentVariable(DatabaseVariable) ?? "";
+        var db = Ready(reason, sql);
         // scratch-guard
         if (!IsScratchDatabase(db))
             throw new InvalidOperationException("kit admin refused: database is not a scratch database");
         // end-scratch-guard
+        var (code, stdout, stderr) = Run(db, sql);
+        if (code != 0)
+            throw new InvalidOperationException("kit admin sql failed: " + FirstError(stderr + stdout));
+    }
+
+    /// <summary>Runs the statement in a transaction that is rolled back. Returns ok, or the SQLSTATE.</summary>
+    public static string SqlState(string reason, string sql)
+    {
+        var db = Ready(reason, sql);
+        if (!IsScratchDatabase(db))
+            throw new InvalidOperationException("kit admin refused: database is not a scratch database");
+        var (code, stdout, stderr) = Run(db, "BEGIN; " + sql + "; ROLLBACK;");
+        if (code == 0)
+            return "ok";
+        var match = Regex.Match(stderr + stdout, @"ERROR:\s+([0-9A-Z]{5}):");
+        return match.Success ? match.Groups[1].Value : "error";
+    }
+
+    /// <summary>
+    /// Starts BEGIN; sql; COMMIT on the scratch superuser and returns before it finishes.
+    /// The caller waits until its lock is visible, then Finish waits for the commit.
+    /// </summary>
+    public static ScratchJob Begin(string reason, string sql)
+    {
+        var db = Ready(reason, sql);
+        if (!IsScratchDatabase(db))
+            throw new InvalidOperationException("kit admin refused: database is not a scratch database");
+        var statement = sql.Trim();
+        if (!statement.EndsWith(';'))
+            statement += ";";
+        var process = Start(db, "BEGIN; " + statement + " COMMIT;", null);
+        return new ScratchJob(process, process.StandardOutput.ReadToEndAsync(), process.StandardError.ReadToEndAsync());
+    }
+
+    public sealed class ScratchJob : IDisposable
+    {
+        readonly Process _process;
+        readonly Task<string> _stdout;
+        readonly Task<string> _stderr;
+        bool _finished;
+
+        internal ScratchJob(Process process, Task<string> stdout, Task<string> stderr)
+        {
+            _process = process;
+            _stdout = stdout;
+            _stderr = stderr;
+        }
+
+        public async Task<string> Finish()
+        {
+            if (_finished)
+                return "ok";
+            var timeout = Task.Delay(20000);
+            if (await Task.WhenAny(_process.WaitForExitAsync(), timeout) == timeout)
+            {
+                try { _process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                _finished = true;
+                return "timeout";
+            }
+            var text = await _stderr + await _stdout;
+            _finished = true;
+            return _process.ExitCode == 0 ? "ok" : "kit admin sql failed: " + FirstError(text);
+        }
+
+        public void Dispose()
+        {
+            if (_finished)
+                return;
+            _finished = true;
+            try { _process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+        }
+    }
+
+    /// <summary>Holds one transaction open until disposed. Disposal cancels the backend, which rolls the transaction back.</summary>
+    public static IDisposable Hold(string reason, string sql)
+    {
+        var db = Ready(reason, sql);
+        if (!IsScratchDatabase(db))
+            throw new InvalidOperationException("kit admin refused: database is not a scratch database");
+        var marker = "kit-hold " + reason;
+        var process = Start(db, "BEGIN; " + sql + "; /* " + marker + " */ SELECT pg_sleep(300); ROLLBACK;", null);
+        var ready = false;
+        var last = "";
+        for (var i = 0; i < 50 && !ready; i++)
+        {
+            if (process.HasExited)
+                throw new InvalidOperationException("kit admin hold ended: " + FirstError(process.StandardError.ReadToEnd() + process.StandardOutput.ReadToEnd()));
+            var probe = "BEGIN; " + sql.Replace(" FOR UPDATE", " FOR UPDATE NOWAIT", StringComparison.Ordinal) + "; ROLLBACK;";
+            var (code, stdout, stderr) = Run(db, probe);
+            last = stderr + stdout;
+            if (last.Contains("55P03", StringComparison.Ordinal))
+                ready = true;
+            else if (code != 0)
+                break;
+            else
+                Thread.Sleep(100);
+        }
+        if (!ready)
+        {
+            try { process.Kill(); } catch (InvalidOperationException) { }
+            throw new InvalidOperationException("kit admin hold did not take the lock: " + FirstError(last));
+        }
+        return new HeldBackend(process, db, marker);
+    }
+
+    static string Ready(string reason, string sql)
+    {
+        if (string.IsNullOrWhiteSpace(reason) || string.IsNullOrWhiteSpace(sql))
+            throw new InvalidOperationException("kit admin refused: reason and sql are required");
+        if (sql.Contains("session_replication_role", StringComparison.Ordinal)
+            || sql.Contains("DISABLE TRIGGER", StringComparison.Ordinal)
+            || sql.Contains("ENABLE TRIGGER", StringComparison.Ordinal))
+            throw new InvalidOperationException("kit admin refused: catalog write bypasses triggers");
+        if (Environment.GetEnvironmentVariable(ModeVariable) != "1")
+            throw new InvalidOperationException("kit admin refused: kit mode is off");
+        var db = Environment.GetEnvironmentVariable(DatabaseVariable) ?? "";
         if (!CallSites.Any(s => s.StartsWith(reason + "|", StringComparison.Ordinal)))
             throw new InvalidOperationException("kit admin refused: reason is not on the decisions list");
-        Run(db, sql);
+        return db;
     }
 
     public static bool IsScratchDatabase(string db) =>
@@ -155,7 +277,7 @@ public static class KitAdmin
             var text = File.ReadAllText(file);
             if (file.EndsWith($"{Path.DirectorySeparatorChar}KitAdmin.cs", StringComparison.Ordinal))
                 continue;
-            foreach (Match m in Regex.Matches(text, @"(?:KitAdmin\.Exec|KitFailsLast|KitRaisesLast|Kit)\(\s*""([^""]+)"""))
+            foreach (Match m in Regex.Matches(text, @"(?:KitAdmin\.Exec|KitAdmin\.SqlState|KitAdmin\.Hold|KitAdmin\.Begin|KitFailsLast|KitRaisesLast|Kit)\(\s*""([^""]+)"""))
                 calls.Add(m.Groups[1].Value);
             if (Regex.IsMatch(text, @"Exec\(\s*seed\b[^;]{0,500}?(UPDATE |DELETE )", RegexOptions.Singleline))
                 failures.Add("test-seed-update-or-delete " + Path.GetRelativePath(repo, file));
@@ -248,7 +370,18 @@ public static class KitAdmin
         return reasons;
     }
 
-    static void Run(string db, string sql)
+    static (int code, string stdout, string stderr) Run(string db, string sql) => Run(db, sql, null);
+
+    static (int code, string stdout, string stderr) Run(string db, string sql, string? applicationName)
+    {
+        using var process = Start(db, sql, applicationName);
+        var stdout = process.StandardOutput.ReadToEnd();
+        var stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        return (process.ExitCode, stdout, stderr);
+    }
+
+    static Process Start(string db, string sql, string? applicationName)
     {
         var port = Environment.GetEnvironmentVariable(PortVariable);
         var psi = new ProcessStartInfo
@@ -275,12 +408,39 @@ public static class KitAdmin
         }
         psi.ArgumentList.Add("-c");
         psi.ArgumentList.Add(sql);
-        using var process = Process.Start(psi) ?? throw new InvalidOperationException("kit admin refused: psql did not start");
-        var stdout = process.StandardOutput.ReadToEnd();
-        var stderr = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException("kit admin sql failed: " + FirstError(stderr + stdout));
+        if (!string.IsNullOrEmpty(applicationName))
+            psi.Environment["PGAPPNAME"] = applicationName;
+        return Process.Start(psi) ?? throw new InvalidOperationException("kit admin refused: psql did not start");
+    }
+
+    sealed class HeldBackend : IDisposable
+    {
+        readonly Process _process;
+        readonly string _database;
+        readonly string _application;
+        bool _released;
+
+        public HeldBackend(Process process, string database, string application)
+        {
+            _process = process;
+            _database = database;
+            _application = application;
+        }
+
+        public void Dispose()
+        {
+            if (_released)
+                return;
+            _released = true;
+            var (code, stdout, stderr) = Run(_database, "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE query LIKE " + Literal("%" + _application + "%") + " AND pid <> pg_backend_pid()");
+            if (!_process.WaitForExit(15000))
+            {
+                try { _process.Kill(); } catch (InvalidOperationException) { }
+                _process.WaitForExit();
+            }
+            if (code != 0)
+                throw new InvalidOperationException("kit admin hold release failed: " + FirstError(stderr + stdout));
+        }
     }
 
     static string FirstError(string text)

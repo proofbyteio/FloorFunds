@@ -34,19 +34,16 @@ static class UiHost
     {
         if (on) locations.Add(location);
         else locations.Remove(location);
-        await using var c = await owner.OpenConnectionAsync();
-        await using var cmd = new NpgsqlCommand(on
-            ? """
-              INSERT INTO auth.admin_assignment
-                (assignment_id, user_id, role_id, scope_kind, location_id, status, version, granted_by, granted_at)
-              VALUES ($1, $2, 'cashier', 'location', $1, 'active', 1, $3, now())
-              ON CONFLICT (assignment_id) DO NOTHING
-              """
-            : "DELETE FROM auth.admin_assignment WHERE assignment_id = $1 AND user_id = $2", c);
-        cmd.Parameters.Add(new NpgsqlParameter { Value = location });
-        cmd.Parameters.Add(new NpgsqlParameter { Value = reader });
-        if (on) cmd.Parameters.Add(new NpgsqlParameter { Value = grantedBy });
-        await cmd.ExecuteNonQueryAsync();
+        var id = location.ToString("D");
+        var user = reader.ToString("D");
+        if (on)
+            KitAdmin.Exec("reader-location-grant",
+                "INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, location_id, status, version, granted_by, granted_at) VALUES ('"
+                + id + "'::uuid, '" + user + "'::uuid, 'cashier', 'location', '" + id + "'::uuid, 'active', 1, '"
+                + grantedBy.ToString("D") + "'::uuid, now()) ON CONFLICT (assignment_id) DO NOTHING");
+        else
+            KitAdmin.Exec("reader-location-revoke",
+                "DELETE FROM auth.admin_assignment WHERE assignment_id = '" + id + "'::uuid AND user_id = '" + user + "'::uuid");
     }
 
     public static async Task<int> RunAsync(string uiDir, int apiPort, int uiPort, IReadOnlyDictionary<string, Persona> personas,
@@ -190,6 +187,18 @@ static class UiHost
         }
         app.MapGet("/as/{persona}/orgs/{**rest}", (string persona, string rest) => Page("as", persona));
         app.MapGet("/c50/{persona}/orgs/{**rest}", (string persona, string rest) => Page("c50", persona));
+        app.MapGet("/ui/theme/theme-tokens.css", () =>
+        {
+            var full = Path.GetFullPath(Path.Combine(uiDir, "..", "theme", "theme-tokens.css"));
+            return File.Exists(full) ? Results.File(full, "text/css; charset=utf-8") : Results.NotFound();
+        });
+        app.MapGet("/ui/theme/fonts/{name}", (string name) =>
+        {
+            if (name is not ("InterVariable.woff2" or "InterVariable-Italic.woff2"))
+                return Results.NotFound();
+            var full = Path.GetFullPath(Path.Combine(uiDir, "..", "theme", "fonts", name));
+            return File.Exists(full) ? Results.File(full, "font/woff2") : Results.NotFound();
+        });
         app.MapGet("/ui/orgs/{**path}", (string path) =>
         {
             var ext = Path.GetExtension(path);

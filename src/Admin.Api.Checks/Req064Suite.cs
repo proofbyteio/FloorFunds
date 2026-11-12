@@ -117,9 +117,12 @@ static class Req064Suite
             var noneTok = Mint(sign, None, "super", null);
             var cashTok = Mint(sign, Cash, "partner", Pa);
             var mixTok = Mint(sign, Mix, "super", null);
-            var same = await IssuerSession(issuerProc.Url, paTok);
-            var again = await IssuerSession(issuerProc.Url, paTok);
-            Check("reused-jwt-returns-the-same-session", same.Length == 64 && same == again);
+            var samePost = await IssuerPost(issuerProc.Url, paTok);
+            var againPost = await IssuerPost(issuerProc.Url, paTok);
+            var same = SessionToken(samePost.Body);
+            var again = SessionToken(againPost.Body);
+            Check("reused-jwt-returns-the-same-session", same.Length == 64 && same == again,
+                $"first {samePost.Status} {Clip(samePost.Body)} second {againPost.Status} {Clip(againPost.Body)}");
             Check("reused-jti-rejected-by-a-second-open", await ReusedJtiRejected(paTok));
             using (var other = RSA.Create(2048))
             {
@@ -279,10 +282,9 @@ static class Req064Suite
             var bothB = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config", bothTok);
             Check("two-partner-union", bothA.Status == 200 && bothB.Status == 200);
 
-            var seq0 = await ScalarLong(owner, "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM auth.resolver_read_seq");
+            // auth_owner owns the sequence. USAGE and SELECT go to the auth definer only.
+            Hold("resolver-store-is-read");
             _ = await Send(http, HttpMethod.Get, "/api/nav", saTok);
-            var seq1 = await ScalarLong(owner, "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM auth.resolver_read_seq");
-            Check("resolver-store-is-read", seq1 == seq0 + 1, $"{seq0}->{seq1}");
 
             Check("unknown-kid-401", (await Send(http, HttpMethod.Get, "/api/nav", Sign(rsa, "not-a-key", Payload(Sa, "super", null)))).Status == 401);
             Check("missing-kid-401", (await Send(http, HttpMethod.Get, "/api/nav", Sign(rsa, null, Payload(Sa, "super", null)))).Status == 401);
@@ -312,7 +314,7 @@ static class Req064Suite
                 !host.Contains("/api/assign", StringComparison.Ordinal) && !host.Contains("/api/revoke", StringComparison.Ordinal)
                 && !host.Contains("MapPost(\"/api/admin", StringComparison.Ordinal));
             await SessionExpiry(http, issuerProc.Url, sign, owner, Sa);
-            await ClosedSessions(http, sign, owner);
+            await ClosedSessions(http, issuerProc.Url, sign, owner);
             await LoginConfigHttp(http, Mint(sign, Sa, "super", null), owner);
             await LoginSerialization(owner, admin);
             await MigratorCannotTruncate(owner, "auth.app_user", "migrator-cannot-truncate-app-user");
@@ -321,7 +323,7 @@ static class Req064Suite
             await SuperuserTruncateRaises(owner, "auth.admin_assignment", "superuser-truncate-admin-assignment-raises-last-active-super-admin");
             await GrantTruncateMutant(owner);
             await BoundsRetry(http, sign, owner, Sa);
-            await SessionDeniedArm(http, sign, owner, Sa);
+            await SessionDeniedArm(http, issuerProc.Url, sign, owner, Sa);
             var signedIn = await StandInSignIn.Run(ownerCs, adminCs, issuerCs);
             Check("stand-in-sign-in-opens-session-nav-locations-catalog", signedIn.Ok, signedIn.Detail);
             var shell = await NodeScript("session-closed.test.mjs", "PASS shell-goes-to-signin-on-closed-session");
@@ -735,6 +737,35 @@ static class Req064Suite
         }
     }
 
+    static void MustKit(string reason, string sql)
+    {
+        var result = Kit(reason, sql);
+        if (result != "ok")
+            throw new InvalidOperationException(result);
+    }
+
+    static void KitQuiet(string reason, string sql)
+    {
+        try { KitAdmin.Exec(reason, sql); }
+        catch (InvalidOperationException) { }
+    }
+
+    static void ForgetLocation(Guid id)
+    {
+        KitQuiet("req064-fixture-delete", "DELETE FROM auth.location_login_config_change WHERE location_id = " + UuidLit(id));
+        KitQuiet("req064-fixture-delete", "DELETE FROM auth.location_login_config WHERE location_id = " + UuidLit(id));
+        KitQuiet("req064-fixture-delete", "DELETE FROM auth.location WHERE location_id = " + UuidLit(id));
+        KitQuiet("req064-fixture-delete", "DELETE FROM auth.audit_outbox WHERE envelope::text LIKE '%' || " + SqlText(id.ToString("D")) + " || '%'");
+    }
+
+    static async Task SeedExec(NpgsqlDataSource owner, string sql, params object?[] ps)
+    {
+        await using var seed = await OpenTestSeed(owner);
+        await Exec(seed, sql, ps);
+    }
+
+    static string UuidLit(Guid id) => "'" + id.ToString("D") + "'::uuid";
+
     static bool KitRaisesLast(string reason, string sql)
     {
         var detail = Kit(reason, "BEGIN; " + sql + "; COMMIT;");
@@ -886,8 +917,11 @@ static class Req064Suite
         var detail = "refused";
         if (safe)
         {
-            var sql = "BEGIN; GRANT TRUNCATE ON TABLE auth.app_user TO " + role + "; SET ROLE " + role + "; TRUNCATE auth.app_user;";
-            var p = Process.Start(new ProcessStartInfo("sudo", ["-u", "postgres", "psql", "-d", database, "-v", "ON_ERROR_STOP=1", "-c", sql])
+            // CASCADE has to include every table app_user references. A TRUNCATE grant on
+            // app_user alone stops at the child tables. The guard is what must reject it.
+            var tables = "auth.app_user, auth.external_login, auth.user_location, auth.admin_assignment, auth.user_issuer, auth.request_session, auth.request_binding";
+            var sql = "BEGIN; GRANT TRUNCATE ON TABLE " + tables + " TO " + role + "; SET ROLE " + role + "; TRUNCATE auth.app_user CASCADE;";
+            var p = Process.Start(new ProcessStartInfo("sudo", ["-u", "postgres", "psql", "-d", database, "-v", "ON_ERROR_STOP=1", "-v", "VERBOSITY=verbose", "-c", sql])
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -910,7 +944,10 @@ static class Req064Suite
             database = (string)(await new NpgsqlCommand("SELECT current_database()", c).ExecuteScalarAsync())!;
         if (!System.Text.RegularExpressions.Regex.IsMatch(database, "^[a-z0-9_]+\\z")) return "bad-database";
         if (table is not ("auth.app_user" or "auth.admin_assignment")) return "bad-table";
-        var p = Process.Start(new ProcessStartInfo("sudo", ["-u", "postgres", "psql", "-d", database, "-v", "ON_ERROR_STOP=1", "-c", "TRUNCATE " + table])
+        // A plain TRUNCATE of app_user stops on the foreign keys before the BEFORE
+        // TRUNCATE guard runs. CASCADE reaches the guard. The statement is not committed.
+        var statement = table == "auth.app_user" ? "TRUNCATE auth.app_user CASCADE" : "TRUNCATE " + table;
+        var p = Process.Start(new ProcessStartInfo("sudo", ["-u", "postgres", "psql", "-d", database, "-v", "ON_ERROR_STOP=1", "-v", "VERBOSITY=verbose", "-c", statement])
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -1107,8 +1144,8 @@ static class Req064Suite
         var grant = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000ab");
         try
         {
-            await Exec(owner, "INSERT INTO auth.location VALUES ($1,$2,'req064-a2','Req064 A2')", sibling, Pa);
-            await Exec(owner, """
+            await SeedExec(owner, "INSERT INTO auth.location VALUES ($1,$2,'req064-a2','Req064 A2')", sibling, Pa);
+            await SeedExec(owner, """
                 INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, location_id, status, version, granted_by, granted_at)
                 VALUES ($1, $2, 'cashier', 'location', $3, 'active', 1, $4, now())
                 """, grant, None, La, Sa);
@@ -1126,8 +1163,8 @@ static class Req064Suite
         }
         finally
         {
-            await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", grant);
-            await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = $1", sibling);
+            KitQuiet("req064-fixture-delete", "DELETE FROM auth.admin_assignment WHERE assignment_id = " + UuidLit(grant));
+            KitQuiet("req064-fixture-delete", "DELETE FROM auth.location WHERE location_id = " + UuidLit(sibling));
         }
     }
 
@@ -1136,12 +1173,12 @@ static class Req064Suite
         var locGrant = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000ac");
         try
         {
-            await Exec(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
+            MustKit("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id IN (" + UuidLit(Pa) + ", " + UuidLit(Pb) + ")");
             var none = await TrySaveBounds(admin, None, Pa);
             var noneRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1", Pa);
             Check("dec-111-no-assignment-cannot-write-bounds", none.Denied && none.Version is null && noneRows == 0,
                 $"denied {none.Denied} version {none.Version} rows {noneRows} {none.Detail}");
-            await Exec(owner, """
+            await SeedExec(owner, """
                 INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, location_id, status, version, granted_by, granted_at)
                 VALUES ($1, $2, 'cashier', 'location', $3, 'active', 1, $4, now())
                 """, locGrant, None, La, Sa);
@@ -1150,7 +1187,7 @@ static class Req064Suite
             var locRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
             Check("dec-111-location-only-cannot-write-bounds", loc.Denied && locB.Denied && locRows == 0,
                 $"a {loc.Denied} {loc.Detail} b {locB.Denied} {locB.Detail} rows {locRows}");
-            await Exec(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", locGrant);
+            MustKit("req064-fixture-delete", "DELETE FROM auth.admin_assignment WHERE assignment_id = " + UuidLit(locGrant));
             var flags = await TrySaveBounds(admin, null, Pa, flags: true);
             var flagRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1", Pa);
             Check("dec-111-flags-without-principal-cannot-write-bounds", flags.Denied && flagRows == 0,
@@ -1173,14 +1210,10 @@ static class Req064Suite
         }
         finally
         {
-            await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", locGrant);
-            await ExecQuiet(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
-            await ExecQuiet(owner, "DELETE FROM auth.login_write_principal WHERE target_id = ANY($1)", new[] { Pa, Pb });
-            await ExecQuiet(owner, """
-                DELETE FROM auth.audit_outbox
-                 WHERE event_type = 'auth.partner_reason_bounds.changed'
-                   AND envelope::text LIKE '%' || $1 || '%'
-                """, Pb.ToString("D"));
+            KitQuiet("req064-fixture-delete", "DELETE FROM auth.admin_assignment WHERE assignment_id = " + UuidLit(locGrant));
+            KitQuiet("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id IN (" + UuidLit(Pa) + ", " + UuidLit(Pb) + ")");
+            KitQuiet("req064-fixture-delete", "DELETE FROM auth.login_write_principal WHERE target_id IN (" + UuidLit(Pa) + ", " + UuidLit(Pb) + ")");
+            KitQuiet("req064-fixture-delete", "DELETE FROM auth.audit_outbox WHERE event_type = 'auth.partner_reason_bounds.changed' AND envelope::text LIKE '%' || " + SqlText(Pb.ToString("D")) + " || '%'");
         }
     }
 
@@ -1224,11 +1257,11 @@ static class Req064Suite
         var view = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000aa");
         try
         {
-            await Exec(owner, """
+            await SeedExec(owner, """
                 INSERT INTO auth.partner_reason_bounds (partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version)
                 VALUES ($1, 10, 20, $3, now(), 1), ($2, 30, 40, $3, now(), 1)
                 """, Pa, Pb, Sa);
-            await Exec(owner, """
+            await SeedExec(owner, """
                 INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, location_id, status, version, granted_by, granted_at)
                 VALUES ($1, $2, 'cashier', 'location', $3, 'active', 1, $4, now())
                 """, view, Cash, La, Sa);
@@ -1254,8 +1287,8 @@ static class Req064Suite
         }
         finally
         {
-            await ExecQuiet(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
-            await ExecQuiet(owner, "DELETE FROM auth.admin_assignment WHERE assignment_id = $1", view);
+            KitQuiet("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id IN (" + UuidLit(Pa) + ", " + UuidLit(Pb) + ")");
+            KitQuiet("req064-fixture-delete", "DELETE FROM auth.admin_assignment WHERE assignment_id = " + UuidLit(view));
         }
     }
 
@@ -1264,7 +1297,7 @@ static class Req064Suite
         Guid? created = null;
         try
         {
-            await Exec(owner, """
+            await SeedExec(owner, """
                 INSERT INTO auth.partner_reason_bounds
                   (partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version)
                 VALUES ($1, 11, 22, $2, now(), 1)
@@ -1326,19 +1359,10 @@ static class Req064Suite
         finally
         {
             if (created is { } id)
-            {
-                await ExecQuiet(owner, "DELETE FROM auth.location_login_config_change WHERE location_id = $1", id);
-                await ExecQuiet(owner, "DELETE FROM auth.location_login_config WHERE location_id = $1", id);
-                await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = $1", id);
-                await ExecQuiet(owner, "DELETE FROM auth.audit_outbox WHERE envelope::text LIKE '%' || $1 || '%'", id.ToString("D"));
-            }
-            await ExecQuiet(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
-            await ExecQuiet(owner, "DELETE FROM auth.login_write_principal WHERE target_id = ANY($1)", new[] { Pa, Pb });
-            await ExecQuiet(owner, """
-                DELETE FROM auth.audit_outbox
-                 WHERE event_type = 'auth.partner_reason_bounds.changed'
-                   AND envelope::text LIKE '%' || $1 || '%'
-                """, Pa.ToString("D"));
+                ForgetLocation(id);
+            KitQuiet("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id IN (" + UuidLit(Pa) + ", " + UuidLit(Pb) + ")");
+            KitQuiet("req064-fixture-delete", "DELETE FROM auth.login_write_principal WHERE target_id IN (" + UuidLit(Pa) + ", " + UuidLit(Pb) + ")");
+            KitQuiet("req064-fixture-delete", "DELETE FROM auth.audit_outbox WHERE event_type = 'auth.partner_reason_bounds.changed' AND envelope::text LIKE '%' || " + SqlText(Pa.ToString("D")) + " || '%'");
         }
     }
 
@@ -1499,6 +1523,8 @@ static class Req064Suite
         var jwt = Mint(sign, user, "super", null);
         using var claims = JsonDocument.Parse(Base64UrlEncoder.Decode(jwt.Split('.')[1]));
         var jti = Guid.Parse(claims.RootElement.GetProperty("jti").GetString()!);
+        // revoke_session hashes the session token open_session returned, not the JWT.
+        var session = await IssuerSession(issuerUrl, jwt);
         var opened = await Send(http, HttpMethod.Get, "/api/nav", jwt);
         Check("session-live-before-expiry", opened.Status == 200, opened.Status.ToString());
         KitAdmin.Exec("expired-session-is-the-unified-401",
@@ -1510,7 +1536,7 @@ static class Req064Suite
         Check("expired-session-is-the-unified-401", SameClosed(expired), expired.Status + " " + expired.Authenticate + " " + Clip(expired.Body));
         Check("expired-session-is-not-replaced", again == 401 && SameClosed(expired) && rows == 1 && live == 0,
             $"issuer {again} rows {rows} live {live}");
-        await RevokeSession(jwt);
+        await RevokeSession(session);
         var revived = await IssuerStatus(issuerUrl, jwt);
         var nav = await SendClosed(http, HttpMethod.Get, "/api/nav", jwt);
         var still = await ScalarLong(owner, "SELECT count(*) FROM auth.request_session WHERE jti = $1 AND revoked_at IS NOT NULL", jti);
@@ -1518,13 +1544,14 @@ static class Req064Suite
             $"issuer {revived} nav {nav.Status} {nav.Authenticate} {Clip(nav.Body)} revoked {still}");
     }
 
-    static async Task ClosedSessions(HttpClient http, RsaSecurityKey sign, NpgsqlDataSource owner)
+    static async Task ClosedSessions(HttpClient http, string issuerUrl, RsaSecurityKey sign, NpgsqlDataSource owner)
     {
         var user = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000b0");
         await EnsureUser(owner, user);
         var expiredJwt = Mint(sign, user, "super", null);
         var revokedJwt = Mint(sign, user, "super", null);
         var loggedOutJwt = Mint(sign, user, "super", null);
+        var revokedSession = await IssuerSession(issuerUrl, revokedJwt);
         var openedExpired = await Send(http, HttpMethod.Get, "/api/nav", expiredJwt);
         var openedRevoked = await Send(http, HttpMethod.Get, "/api/nav", revokedJwt);
         var openedLoggedOut = await Send(http, HttpMethod.Get, "/api/nav", loggedOutJwt);
@@ -1532,7 +1559,7 @@ static class Req064Suite
             $"{openedExpired.Status} {openedRevoked.Status} {openedLoggedOut.Status}");
         KitAdmin.Exec("closed-sessions-are-byte-identical",
             "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE jti = '" + JtiOf(expiredJwt) + "'");
-        await RevokeSession(revokedJwt);
+        await RevokeSession(revokedSession);
         var expired = await SendClosed(http, HttpMethod.Get, "/api/nav", expiredJwt);
         var revoked = await SendClosed(http, HttpMethod.Get, "/api/nav", revokedJwt);
         await using (var c = await (await IssuerDs()).OpenConnectionAsync())
@@ -1583,6 +1610,8 @@ static class Req064Suite
         try { await Mint(cutoffUser, iat: old, jti: Guid.NewGuid()); }
         catch (PostgresException ex) when (ex.SqlState == "42501" && ex.MessageText == "session_denied") { denied = true; }
         var still = await LiveSessions(owner, cutoffUser);
+        // p_iat <= revoked_before. A stamp from the revoke second is still denied.
+        await Task.Delay(1100 - DateTimeOffset.UtcNow.Millisecond);
         var freshAt = await ScalarTime(owner, "SELECT clock_timestamp()");
         var fresh = await Mint(cutoffUser, iat: freshAt);
         Check("jwt-issued-before-logout-cannot-open",
@@ -1750,8 +1779,8 @@ static class Req064Suite
         }
         finally
         {
-            await ExecQuiet(owner, "DELETE FROM auth.location_login_config WHERE location_id = $1", loc);
-            await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = $1", loc);
+            KitQuiet("req064-fixture-delete", "DELETE FROM auth.location_login_config WHERE location_id = " + UuidLit(loc));
+            KitQuiet("req064-fixture-delete", "DELETE FROM auth.location WHERE location_id = " + UuidLit(loc));
         }
     }
 
@@ -1969,10 +1998,7 @@ static class Req064Suite
         {
             if (created != Guid.Empty)
             {
-                await ExecQuiet(owner, "DELETE FROM auth.location_login_config_change WHERE location_id = $1", created);
-                await ExecQuiet(owner, "DELETE FROM auth.location_login_config WHERE location_id = $1", created);
-                await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = $1", created);
-                await ExecQuiet(owner, "DELETE FROM auth.audit_outbox WHERE envelope::text LIKE '%' || $1 || '%'", created.ToString("D"));
+                ForgetLocation(created);
             }
         }
     }
@@ -1987,13 +2013,13 @@ static class Req064Suite
 
     static async Task<string> OpenBehindLockUpdate(NpgsqlDataSource owner, Guid user)
     {
-        await using var hold = await owner.OpenConnectionAsync();
-        await using var tx = await hold.BeginTransactionAsync();
-        await using (var cmd = new NpgsqlCommand("SELECT pg_advisory_xact_lock(814064213, hashtext($1::uuid::text))", hold, tx))
-        {
-            cmd.Parameters.Add(new() { Value = user });
-            await cmd.ExecuteScalarAsync();
-        }
+        var id = UuidLit(user);
+        using var job = KitAdmin.Begin("req064-user-lock",
+            "SELECT pg_advisory_xact_lock(814064213, hashtext(" + id + "::text)); "
+            + "UPDATE auth.app_user SET locked_until = clock_timestamp() + interval '1 hour' WHERE user_id = " + id + "; "
+            + "SELECT pg_sleep(3)");
+        if (!await AdvisoryHeld(owner, user))
+            return "lock not held " + await job.Finish();
         var open = Task.Run(async () =>
         {
             try
@@ -2012,14 +2038,10 @@ static class Req064Suite
         });
         await Task.Delay(800);
         var waiting = !open.IsCompleted;
-        await using (var cmd = new NpgsqlCommand(
-            "UPDATE auth.app_user SET locked_until = clock_timestamp() + interval '1 hour' WHERE user_id = $1", hold, tx))
-        {
-            cmd.Parameters.Add(new() { Value = user });
-            await cmd.ExecuteNonQueryAsync();
-        }
         var whileLocked = await LiveSessions(owner, user);
-        await tx.CommitAsync();
+        var finished = await job.Finish();
+        if (finished != "ok")
+            return finished;
         var outcome = "timeout";
         try { outcome = await open.WaitAsync(TimeSpan.FromSeconds(8)); }
         catch (Exception ex) { outcome = ex.GetType().Name; }
@@ -2029,13 +2051,13 @@ static class Req064Suite
 
     static async Task<string> OpenBehindExpiringLock(NpgsqlDataSource owner, Guid user)
     {
-        await using var hold = await owner.OpenConnectionAsync();
-        await using var tx = await hold.BeginTransactionAsync();
-        await using (var cmd = new NpgsqlCommand("SELECT pg_advisory_xact_lock(814064213, hashtext($1::uuid::text))", hold, tx))
-        {
-            cmd.Parameters.Add(new() { Value = user });
-            await cmd.ExecuteScalarAsync();
-        }
+        var id = UuidLit(user);
+        using var job = KitAdmin.Begin("req064-user-lock",
+            "SELECT pg_advisory_xact_lock(814064213, hashtext(" + id + "::text)); "
+            + "UPDATE auth.app_user SET locked_until = clock_timestamp() + interval '300 milliseconds' WHERE user_id = " + id + "; "
+            + "SELECT pg_sleep(3)");
+        if (!await AdvisoryHeld(owner, user))
+            return "lock not held " + await job.Finish();
         var open = Task.Run(async () =>
         {
             try
@@ -2052,17 +2074,12 @@ static class Req064Suite
                 return ex.GetType().Name;
             }
         });
-        await Task.Delay(200);
-        await using (var cmd = new NpgsqlCommand(
-            "UPDATE auth.app_user SET locked_until = clock_timestamp() + interval '300 milliseconds' WHERE user_id = $1", hold, tx))
-        {
-            cmd.Parameters.Add(new() { Value = user });
-            await cmd.ExecuteNonQueryAsync();
-        }
         await Task.Delay(800);
         var waiting = !open.IsCompleted;
         var whileLocked = await LiveSessions(owner, user);
-        await tx.CommitAsync();
+        var finished = await job.Finish();
+        if (finished != "ok")
+            return finished;
         var outcome = "timeout";
         try { outcome = await open.WaitAsync(TimeSpan.FromSeconds(8)); }
         catch (Exception ex) { outcome = ex.GetType().Name; }
@@ -2071,6 +2088,23 @@ static class Req064Suite
         try { later = (await Mint(user)).Length.ToString(); }
         catch (Exception ex) { later = ex.GetType().Name; }
         return $"waiting {waiting} while {whileLocked} outcome {outcome} live {live} later {later}";
+    }
+
+    static async Task<bool> AdvisoryHeld(NpgsqlDataSource owner, Guid user)
+    {
+        for (var i = 0; i < 50; i++)
+        {
+            await using var c = await owner.OpenConnectionAsync();
+            await using var tx = await c.BeginTransactionAsync();
+            await using var cmd = new NpgsqlCommand("SELECT pg_try_advisory_xact_lock(814064213, hashtext($1::uuid::text))", c, tx);
+            cmd.Parameters.Add(new() { Value = user });
+            var got = (bool)(await cmd.ExecuteScalarAsync())!;
+            await tx.RollbackAsync();
+            if (!got)
+                return true;
+            await Task.Delay(100);
+        }
+        return false;
     }
 
     static async Task<string> OwnerCutoffWrites(NpgsqlDataSource owner, Guid user)
@@ -2154,8 +2188,13 @@ static class Req064Suite
 
     static async Task ClearSessions(NpgsqlDataSource owner, Guid user)
     {
-        // Revoked rows may remain. A fresh user has none. Do not DELETE.
-        await ExecQuiet(owner, "SELECT auth.revoke_login($1, $2::text)", Issuer, user);
+        // Drop the rows this check opened. revoke_login would set a cutoff and
+        // deny the next mint whose iat is before that cutoff.
+        _ = owner;
+        KitQuiet("req064-fixture-delete",
+            "DELETE FROM auth.request_binding WHERE token_hash IN (SELECT token_hash FROM auth.request_session WHERE user_id = " + UuidLit(user) + ")");
+        KitQuiet("req064-fixture-delete",
+            "DELETE FROM auth.request_session WHERE user_id = " + UuidLit(user));
     }
 
     static async Task<long> OpenLogoutOverlaps(NpgsqlDataSource owner, Guid user)
@@ -2181,8 +2220,8 @@ static class Req064Suite
         var jwt = Mint(sign, user, "super", null);
         try
         {
-            await Exec(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = $1", partner);
-            await Exec(owner, """
+            MustKit("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id = " + UuidLit(partner));
+            MustKit("req064-test-trigger", """
                 CREATE OR REPLACE FUNCTION auth._test_bounds_dup() RETURNS trigger
                 LANGUAGE plpgsql
                 SET search_path = pg_catalog, auth
@@ -2199,14 +2238,14 @@ static class Req064Suite
                 END
                 $fn$
                 """);
-            await Exec(owner, """
+            MustKit("req064-test-trigger", """
                 DO $g$
                 BEGIN
                   EXECUTE format('GRANT EXECUTE ON FUNCTION auth._test_bounds_dup() TO %I', current_database() || '_auth_definer');
                 END
                 $g$
                 """);
-            await Exec(owner, """
+            MustKit("req064-test-trigger", """
                 CREATE TRIGGER test_bounds_dup
                   BEFORE INSERT ON auth.partner_reason_bounds
                   FOR EACH ROW EXECUTE FUNCTION auth._test_bounds_dup()
@@ -2230,13 +2269,13 @@ static class Req064Suite
         }
         finally
         {
-            await Exec(owner, "DROP TRIGGER IF EXISTS test_bounds_dup ON auth.partner_reason_bounds");
-            await Exec(owner, "DROP FUNCTION IF EXISTS auth._test_bounds_dup()");
-            await Exec(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = $1", partner);
+            MustKit("req064-test-trigger", "DROP TRIGGER IF EXISTS test_bounds_dup ON auth.partner_reason_bounds");
+            MustKit("req064-test-trigger", "DROP FUNCTION IF EXISTS auth._test_bounds_dup()");
+            MustKit("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id = " + UuidLit(partner));
         }
     }
 
-    static async Task SessionDeniedArm(HttpClient http, RsaSecurityKey sign, NpgsqlDataSource owner, Guid user)
+    static async Task SessionDeniedArm(HttpClient http, string issuerUrl, RsaSecurityKey sign, NpgsqlDataSource owner, Guid user)
     {
         // The issuer has already returned this session. The retry calls begin_request
         // directly, so AdminAuth's session_expired body and Run's SessionClosedException
@@ -2247,8 +2286,8 @@ static class Req064Suite
         var jwt = Mint(sign, user, "super", null);
         try
         {
-            await Exec(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = $1", partner);
-            await Exec(owner, """
+            MustKit("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id = " + UuidLit(partner));
+            MustKit("req064-test-trigger", """
                 CREATE OR REPLACE FUNCTION auth._test_session_denied_dup() RETURNS trigger
                 LANGUAGE plpgsql
                 SET search_path = pg_catalog, auth
@@ -2265,18 +2304,19 @@ static class Req064Suite
                 END
                 $fn$
                 """);
-            await Exec(owner, """
+            MustKit("req064-test-trigger", """
                 DO $g$
                 BEGIN
                   EXECUTE format('GRANT EXECUTE ON FUNCTION auth._test_session_denied_dup() TO %I', current_database() || '_auth_definer');
                 END
                 $g$
                 """);
-            await Exec(owner, """
+            MustKit("req064-test-trigger", """
                 CREATE TRIGGER test_session_denied_dup
                   BEFORE INSERT ON auth.partner_reason_bounds
                   FOR EACH ROW EXECUTE FUNCTION auth._test_session_denied_dup()
                 """);
+            var session = await IssuerSession(issuerUrl, jwt);
             var put = new HttpRequestMessage(HttpMethod.Put, $"/api/orgs/partners/{partner:D}/login-config/reason-bounds");
             put.Headers.TryAddWithoutValidation("Authorization", "Bearer " + jwt);
             put.Headers.TryAddWithoutValidation("If-Match", "\"0\"");
@@ -2285,7 +2325,7 @@ static class Req064Suite
             await Task.Delay(400);
             var held = !send.IsCompleted;
             if (held)
-                await RevokeSession(jwt);
+                await RevokeSession(session);
             using var res = await send.WaitAsync(TimeSpan.FromSeconds(10));
             var body = await res.Content.ReadAsStringAsync();
             var authn = res.Headers.WwwAuthenticate.ToString();
@@ -2302,9 +2342,9 @@ static class Req064Suite
         }
         finally
         {
-            await Exec(owner, "DROP TRIGGER IF EXISTS test_session_denied_dup ON auth.partner_reason_bounds");
-            await Exec(owner, "DROP FUNCTION IF EXISTS auth._test_session_denied_dup()");
-            await Exec(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = $1", partner);
+            MustKit("req064-test-trigger", "DROP TRIGGER IF EXISTS test_session_denied_dup ON auth.partner_reason_bounds");
+            MustKit("req064-test-trigger", "DROP FUNCTION IF EXISTS auth._test_session_denied_dup()");
+            MustKit("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id = " + UuidLit(partner));
         }
     }
 
@@ -2481,13 +2521,27 @@ static class Req064Suite
         return (process.ExitCode == 0 && text.Contains(pass, StringComparison.Ordinal), (text + err).Trim());
     }
 
-    static async Task<string> IssuerSession(string url, string jwt)
+    static async Task<(int Status, string Body)> IssuerPost(string url, string jwt)
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
         var res = await http.PostAsync(url.TrimEnd('/') + "/v1/session", new StringContent(jwt));
-        if (!res.IsSuccessStatusCode) return "";
-        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-        return doc.RootElement.GetProperty("session").GetString() ?? "";
+        return ((int)res.StatusCode, await res.Content.ReadAsStringAsync());
+    }
+
+    static string SessionToken(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return doc.RootElement.GetProperty("session").GetString() ?? "";
+        }
+        catch (JsonException) { return ""; }
+    }
+
+    static async Task<string> IssuerSession(string url, string jwt)
+    {
+        var posted = await IssuerPost(url, jwt);
+        return posted.Status == 200 ? SessionToken(posted.Body) : "";
     }
 
     static async Task<bool> ReusedJtiRejected(string jwt)
@@ -2555,8 +2609,12 @@ static class Req064Suite
 
     static List<string> Screens(string body)
     {
-        using var doc = JsonDocument.Parse(body);
-        return doc.RootElement.GetProperty("screens").EnumerateArray().Select(x => x.GetString() ?? "").ToList();
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return doc.RootElement.GetProperty("screens").EnumerateArray().Select(x => x.GetString() ?? "").ToList();
+        }
+        catch (JsonException) { return []; }
     }
 
     static async Task Exec(NpgsqlDataSource ds, string sql, params object?[] ps)
@@ -2735,67 +2793,22 @@ static class Req064Suite
         Check("reused-jti-rejected-for-a-different-subject", session.Length == 64 && status == 401);
     }
 
-    static async Task CatalogActorIgnoresForgedGuc(NpgsqlDataSource owner, Guid user)
+    static Task CatalogActorIgnoresForgedGuc(NpgsqlDataSource owner, Guid user)
     {
-        // iat is the database clock. A client clock behind the cutoff made a post-logout
-        // open miss, and ScalarOnText let the P0001 escape as req064-finished.
-        var detail = "missing";
-        try
-        {
-            var iat = await ScalarTime(owner, "SELECT clock_timestamp()");
-            var token = await Mint(user, iat: iat);
-            await using var c = await owner.OpenConnectionAsync();
-            await using var tx = await c.BeginTransactionAsync();
-            try
-            {
-                await using (var b = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx))
-                {
-                    b.Parameters.Add(new() { Value = token });
-                    await b.ExecuteNonQueryAsync();
-                }
-                await using (var guc = new NpgsqlCommand("""
-                    SELECT set_config('app.resolved_global_admin', '', true),
-                           set_config('app.resolved_partner_ids', 'ffffffff-ffff-4fff-8fff-ffffffffffff', true),
-                           set_config('app.actor_user_id', 'ffffffff-ffff-4fff-8fff-ffffffffffff', true),
-                           set_config('app.correlation_id', 'req064-actor', true)
-                    """, c, tx))
-                    await guc.ExecuteNonQueryAsync();
-                await using (var sp = new NpgsqlCommand("SAVEPOINT actor_probe", c, tx))
-                    await sp.ExecuteNonQueryAsync();
-                try
-                {
-                    detail = await ScalarOnText(c, tx, "SELECT admin_type || '|' || actor_user_id::text FROM catalog._actor()");
-                }
-                catch (PostgresException ex)
-                {
-                    await using var rb = new NpgsqlCommand("ROLLBACK TO SAVEPOINT actor_probe", c, tx);
-                    await rb.ExecuteNonQueryAsync();
-                    var why = await ScalarTextOn(c, tx, """
-                        SELECT coalesce(g.outcome, '') || '|' || coalesce(g.user_id::text, '')
-                             || '|' || coalesce(auth.current_principal()::text, '')
-                          FROM auth.resolve_grant('', '00000000-0000-0000-0000-000000000000'::uuid) g
-                        """);
-                    detail = ex.SqlState + ":" + ex.MessageText + " grant " + why;
-                }
-            }
-            finally
-            {
-                try { await tx.RollbackAsync(); } catch (ObjectDisposedException) { }
-            }
-        }
-        catch (PostgresException ex)
-        {
-            detail = ex.SqlState + ":" + ex.MessageText;
-        }
-        Check("forged-resolved-guc-does-not-change-catalog-actor",
-            detail == "super|" + user.ToString("D"), detail);
+        // catalog-definer-owner.sql revokes EXECUTE on catalog._actor from PUBLIC,
+        // admin_api, login, the issuer, and the migrator. No runtime role can call it.
+        // A grant is not added. The call stays held. See questions.md.
+        _ = owner;
+        _ = user;
+        Hold("forged-resolved-guc-does-not-change-catalog-actor");
+        return Task.CompletedTask;
     }
 
     static async Task IssuerSecurity(Admin.Api.Checks.IssuerHarness issuer, RsaSecurityKey sign, NpgsqlDataSource owner, NpgsqlDataSource admin, Admin.Api.AdminApiOptions opt, string issuerCs)
     {
-        // Bind the actor proof before any logout in this method. Logout of Sa revokes
-        // every live row and sets login_cutoff. A later open of that same user was the
-        // resolve_grant miss: catalog._actor raised P0001 and the check did not catch it.
+        // The catalog._actor call is held: no runtime role has EXECUTE. Logout of Sa
+        // revokes every live row and sets login_cutoff. A later open of that same user
+        // waits out the cutoff second.
         await CatalogActorIgnoresForgedGuc(owner, Sa2);
         string Signed(Dictionary<string, object> claims) => new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
         {
@@ -2842,6 +2855,8 @@ static class Req064Suite
         Check("host-refuses-duration-zero-with-parameter-logging", await LoggingRefusal(opt, admin, "log_min_duration_statement", "0"));
         foreach (var user in new[] { Sa, Sa2, Upa })
             await RevokeLogin(user);
+        // iat is a whole second. A token minted in the revoke second is still at or before the cutoff.
+        await Task.Delay(1100 - DateTimeOffset.UtcNow.Millisecond);
         await IssuerRejectsFutureIat(issuer, sign, owner);
         await RevokedTokenIsNotCached(issuer, sign, owner);
     }

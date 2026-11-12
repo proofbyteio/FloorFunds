@@ -115,6 +115,11 @@ static class StandInSignIn
         await using var seed = await Req064Suite.OpenTestSeed(NpgsqlDataSource.Create(ownerCs));
         await using var sc = await seed.OpenConnectionAsync();
         await Exec(sc, """
+            INSERT INTO auth.app_user (user_id, partner_id, status)
+            VALUES ($1, NULL, 'active'), ($2, $3, 'active')
+            ON CONFLICT (user_id) DO NOTHING
+            """, Guid.Parse(Sa), Guid.Parse(Pa), Guid.Parse(Partner));
+        await Exec(sc, """
             INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, status, version, granted_by, granted_at)
             SELECT $1, u.user_id, 'super_admin', 'global', 'active', 1, u.user_id, now()
               FROM auth.app_user u
