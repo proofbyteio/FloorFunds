@@ -100,7 +100,7 @@ def run(name, cmd, build=None):
     return r.returncode
 
 REQ = ["dotnet", "run", "--project", "src/Admin.Api.Checks/Admin.Api.Checks.csproj", "--no-build", "--", "--req064"]
-REQ_BUILD = ["dotnet", "build", "src/Admin.Api.Checks/Admin.Api.Checks.csproj", "-v", "q", "--nologo"]
+REQ_BUILD = ["bash", "-c", "dotnet build src/Login.StandIn/Login.StandIn.csproj -v q --nologo -p:IncludeStandIn=true && dotnet build src/Admin.Api.Checks/Admin.Api.Checks.csproj -v q --nologo"]
 READ = ["dotnet", "run", "--project", "src/Catalog.Read.Checks/Catalog.Read.Checks.csproj", "--no-build"]
 READ_BUILD = ["bash", "-c", "dotnet build src/Auth.Data.Migrator/Auth.Data.Migrator.csproj -v q --nologo && dotnet build src/Catalog.Read.Checks/Catalog.Read.Checks.csproj -v q --nologo"]
 QUERY = ["dotnet", "run", "--project", "src/Catalog.Query.Checks/Catalog.Query.Checks.csproj", "--no-build"]
