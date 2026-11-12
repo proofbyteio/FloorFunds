@@ -931,6 +931,16 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             throw Err(403, "not_super_admin");
         }
         if (down.Count > 0 && cfg.Reason is null) throw Err(400, "reason_required");
+        LocationAddress? address = null;
+        if (o.TryGetProperty("address", out var addressEl))
+        {
+            var addressErrors = new List<FieldError>();
+            if (!CountryAddress.TryParse(addressEl, addressErrors, out address))
+            {
+                await tx.RollbackAsync();
+                throw Validation(addressErrors);
+            }
+        }
 
         var entra = cfg.ProviderKind == "entra";
         var location = Guid.NewGuid();
@@ -942,6 +952,27 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             ins.Parameters.Add(new() { Value = NewSlug() });
             ins.Parameters.Add(new() { Value = n.Name });
             await ins.ExecuteNonQueryAsync();
+        }
+        if (address is not null)
+        {
+            await using var addr = new NpgsqlCommand(
+                """
+                UPDATE auth.location
+                   SET address_line_1 = $2, address_line_2 = $3, city = $4, country = $5, region = $6,
+                       postal_code = $7, phone = $8, email = $9, time_zone = $10
+                 WHERE location_id = $1
+                """, c, tx);
+            addr.Parameters.Add(new() { Value = location });
+            addr.Parameters.Add(new() { Value = address.Line1 });
+            addr.Parameters.Add(new() { Value = (object?)address.Line2 ?? DBNull.Value });
+            addr.Parameters.Add(new() { Value = address.City });
+            addr.Parameters.Add(new() { Value = address.Country });
+            addr.Parameters.Add(new() { Value = (object?)address.Region ?? DBNull.Value });
+            addr.Parameters.Add(new() { Value = (object?)address.Postal ?? DBNull.Value });
+            addr.Parameters.Add(new() { Value = address.Phone });
+            addr.Parameters.Add(new() { Value = (object?)address.Email ?? DBNull.Value });
+            addr.Parameters.Add(new() { Value = address.TimeZone });
+            await addr.ExecuteNonQueryAsync();
         }
         await using (var ins = new NpgsqlCommand(
             """

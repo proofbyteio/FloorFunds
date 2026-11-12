@@ -1,0 +1,1204 @@
+{
+  "source": "https://chromium-i18n.appspot.com/ssl-address/data/{country}",
+  "source_note": "The country index is that URL. Each country record is fetched from it and follows the service redirect.",
+  "snapshot": "2026-11-12",
+  "licence": "CC-BY 4.0",
+  "licence_note": "Copyright 2021 Google LLC. Stated on https://chromium-i18n.appspot.com/ssl-address",
+  "rows_sha256": "256bb1e0d42e36e9518bc7c71cd9d0df924e047149b7dffd43f94a651a5a40bb",
+  "rows": [
+    {
+      "country": "AC",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AC"
+    },
+    {
+      "country": "AD",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AD"
+    },
+    {
+      "country": "AE",
+      "state": "required",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AE"
+    },
+    {
+      "country": "AF",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AF"
+    },
+    {
+      "country": "AG",
+      "state": "not_used",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AG"
+    },
+    {
+      "country": "AI",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AI"
+    },
+    {
+      "country": "AL",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AL"
+    },
+    {
+      "country": "AM",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AM"
+    },
+    {
+      "country": "AR",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AR"
+    },
+    {
+      "country": "AS",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AS"
+    },
+    {
+      "country": "AT",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AT"
+    },
+    {
+      "country": "AU",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AU"
+    },
+    {
+      "country": "AX",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AX"
+    },
+    {
+      "country": "AZ",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/AZ"
+    },
+    {
+      "country": "BA",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BA"
+    },
+    {
+      "country": "BB",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BB"
+    },
+    {
+      "country": "BD",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BD"
+    },
+    {
+      "country": "BE",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BE"
+    },
+    {
+      "country": "BF",
+      "state": "not_used",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BF"
+    },
+    {
+      "country": "BG",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BG"
+    },
+    {
+      "country": "BH",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BH"
+    },
+    {
+      "country": "BL",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BL"
+    },
+    {
+      "country": "BM",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BM"
+    },
+    {
+      "country": "BN",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BN"
+    },
+    {
+      "country": "BR",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BR"
+    },
+    {
+      "country": "BS",
+      "state": "optional",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BS"
+    },
+    {
+      "country": "BT",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BT"
+    },
+    {
+      "country": "BY",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/BY"
+    },
+    {
+      "country": "CA",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/CA"
+    },
+    {
+      "country": "CC",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/CC"
+    },
+    {
+      "country": "CH",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/CH"
+    },
+    {
+      "country": "CI",
+      "state": "not_used",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/CI"
+    },
+    {
+      "country": "CL",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/CL"
+    },
+    {
+      "country": "CN",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/CN"
+    },
+    {
+      "country": "CO",
+      "state": "required",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/CO"
+    },
+    {
+      "country": "CR",
+      "state": "required",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/CR"
+    },
+    {
+      "country": "CU",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/CU"
+    },
+    {
+      "country": "CV",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/CV"
+    },
+    {
+      "country": "CX",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/CX"
+    },
+    {
+      "country": "CY",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/CY"
+    },
+    {
+      "country": "CZ",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/CZ"
+    },
+    {
+      "country": "DE",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/DE"
+    },
+    {
+      "country": "DK",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/DK"
+    },
+    {
+      "country": "DO",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/DO"
+    },
+    {
+      "country": "DZ",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/DZ"
+    },
+    {
+      "country": "EC",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/EC"
+    },
+    {
+      "country": "EE",
+      "state": "optional",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/EE"
+    },
+    {
+      "country": "EG",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/EG"
+    },
+    {
+      "country": "EH",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/EH"
+    },
+    {
+      "country": "ES",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/ES"
+    },
+    {
+      "country": "ET",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/ET"
+    },
+    {
+      "country": "FI",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/FI"
+    },
+    {
+      "country": "FK",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/FK"
+    },
+    {
+      "country": "FM",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/FM"
+    },
+    {
+      "country": "FO",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/FO"
+    },
+    {
+      "country": "FR",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/FR"
+    },
+    {
+      "country": "GB",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/GB"
+    },
+    {
+      "country": "GE",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/GE"
+    },
+    {
+      "country": "GF",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/GF"
+    },
+    {
+      "country": "GG",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/GG"
+    },
+    {
+      "country": "GI",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/GI"
+    },
+    {
+      "country": "GL",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/GL"
+    },
+    {
+      "country": "GN",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/GN"
+    },
+    {
+      "country": "GP",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/GP"
+    },
+    {
+      "country": "GR",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/GR"
+    },
+    {
+      "country": "GS",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/GS"
+    },
+    {
+      "country": "GT",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/GT"
+    },
+    {
+      "country": "GU",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/GU"
+    },
+    {
+      "country": "GW",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/GW"
+    },
+    {
+      "country": "HK",
+      "state": "required",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/HK"
+    },
+    {
+      "country": "HM",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/HM"
+    },
+    {
+      "country": "HN",
+      "state": "required",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/HN"
+    },
+    {
+      "country": "HR",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/HR"
+    },
+    {
+      "country": "HT",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/HT"
+    },
+    {
+      "country": "HU",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/HU"
+    },
+    {
+      "country": "ID",
+      "state": "required",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/ID"
+    },
+    {
+      "country": "IE",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/IE"
+    },
+    {
+      "country": "IL",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/IL"
+    },
+    {
+      "country": "IM",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/IM"
+    },
+    {
+      "country": "IN",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/IN"
+    },
+    {
+      "country": "IO",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/IO"
+    },
+    {
+      "country": "IQ",
+      "state": "required",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/IQ"
+    },
+    {
+      "country": "IR",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/IR"
+    },
+    {
+      "country": "IS",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/IS"
+    },
+    {
+      "country": "IT",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/IT"
+    },
+    {
+      "country": "JE",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/JE"
+    },
+    {
+      "country": "JM",
+      "state": "required",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/JM"
+    },
+    {
+      "country": "JO",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/JO"
+    },
+    {
+      "country": "JP",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/JP"
+    },
+    {
+      "country": "KE",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/KE"
+    },
+    {
+      "country": "KG",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/KG"
+    },
+    {
+      "country": "KH",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/KH"
+    },
+    {
+      "country": "KI",
+      "state": "optional",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/KI"
+    },
+    {
+      "country": "KN",
+      "state": "required",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/KN"
+    },
+    {
+      "country": "KP",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/KP"
+    },
+    {
+      "country": "KR",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/KR"
+    },
+    {
+      "country": "KW",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/KW"
+    },
+    {
+      "country": "KY",
+      "state": "required",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/KY"
+    },
+    {
+      "country": "KZ",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/KZ"
+    },
+    {
+      "country": "LA",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/LA"
+    },
+    {
+      "country": "LB",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/LB"
+    },
+    {
+      "country": "LI",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/LI"
+    },
+    {
+      "country": "LK",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/LK"
+    },
+    {
+      "country": "LR",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/LR"
+    },
+    {
+      "country": "LS",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/LS"
+    },
+    {
+      "country": "LT",
+      "state": "optional",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/LT"
+    },
+    {
+      "country": "LU",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/LU"
+    },
+    {
+      "country": "LV",
+      "state": "optional",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/LV"
+    },
+    {
+      "country": "MA",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MA"
+    },
+    {
+      "country": "MC",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MC"
+    },
+    {
+      "country": "MD",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MD"
+    },
+    {
+      "country": "ME",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/ME"
+    },
+    {
+      "country": "MF",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MF"
+    },
+    {
+      "country": "MG",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MG"
+    },
+    {
+      "country": "MH",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MH"
+    },
+    {
+      "country": "MK",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MK"
+    },
+    {
+      "country": "MM",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MM"
+    },
+    {
+      "country": "MN",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MN"
+    },
+    {
+      "country": "MO",
+      "state": "not_used",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MO"
+    },
+    {
+      "country": "MP",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MP"
+    },
+    {
+      "country": "MQ",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MQ"
+    },
+    {
+      "country": "MT",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MT"
+    },
+    {
+      "country": "MU",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MU"
+    },
+    {
+      "country": "MV",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MV"
+    },
+    {
+      "country": "MW",
+      "state": "not_used",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MW"
+    },
+    {
+      "country": "MX",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MX"
+    },
+    {
+      "country": "MY",
+      "state": "optional",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MY"
+    },
+    {
+      "country": "MZ",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/MZ"
+    },
+    {
+      "country": "NA",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/NA"
+    },
+    {
+      "country": "NC",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/NC"
+    },
+    {
+      "country": "NE",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/NE"
+    },
+    {
+      "country": "NF",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/NF"
+    },
+    {
+      "country": "NG",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/NG"
+    },
+    {
+      "country": "NI",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/NI"
+    },
+    {
+      "country": "NL",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/NL"
+    },
+    {
+      "country": "NO",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/NO"
+    },
+    {
+      "country": "NP",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/NP"
+    },
+    {
+      "country": "NR",
+      "state": "required",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/NR"
+    },
+    {
+      "country": "NZ",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/NZ"
+    },
+    {
+      "country": "OM",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/OM"
+    },
+    {
+      "country": "PA",
+      "state": "optional",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/PA"
+    },
+    {
+      "country": "PE",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/PE"
+    },
+    {
+      "country": "PF",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/PF"
+    },
+    {
+      "country": "PG",
+      "state": "required",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/PG"
+    },
+    {
+      "country": "PH",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/PH"
+    },
+    {
+      "country": "PK",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/PK"
+    },
+    {
+      "country": "PL",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/PL"
+    },
+    {
+      "country": "PM",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/PM"
+    },
+    {
+      "country": "PN",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/PN"
+    },
+    {
+      "country": "PR",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/PR"
+    },
+    {
+      "country": "PT",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/PT"
+    },
+    {
+      "country": "PW",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/PW"
+    },
+    {
+      "country": "PY",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/PY"
+    },
+    {
+      "country": "RE",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/RE"
+    },
+    {
+      "country": "RO",
+      "state": "optional",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/RO"
+    },
+    {
+      "country": "RS",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/RS"
+    },
+    {
+      "country": "RU",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/RU"
+    },
+    {
+      "country": "SA",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SA"
+    },
+    {
+      "country": "SC",
+      "state": "optional",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SC"
+    },
+    {
+      "country": "SD",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SD"
+    },
+    {
+      "country": "SE",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SE"
+    },
+    {
+      "country": "SG",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SG"
+    },
+    {
+      "country": "SH",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SH"
+    },
+    {
+      "country": "SI",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SI"
+    },
+    {
+      "country": "SJ",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SJ"
+    },
+    {
+      "country": "SK",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SK"
+    },
+    {
+      "country": "SM",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SM"
+    },
+    {
+      "country": "SN",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SN"
+    },
+    {
+      "country": "SO",
+      "state": "required",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SO"
+    },
+    {
+      "country": "SR",
+      "state": "optional",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SR"
+    },
+    {
+      "country": "SV",
+      "state": "required",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SV"
+    },
+    {
+      "country": "SZ",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/SZ"
+    },
+    {
+      "country": "TA",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/TA"
+    },
+    {
+      "country": "TC",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/TC"
+    },
+    {
+      "country": "TH",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/TH"
+    },
+    {
+      "country": "TJ",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/TJ"
+    },
+    {
+      "country": "TM",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/TM"
+    },
+    {
+      "country": "TN",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/TN"
+    },
+    {
+      "country": "TR",
+      "state": "optional",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/TR"
+    },
+    {
+      "country": "TT",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/TT"
+    },
+    {
+      "country": "TV",
+      "state": "optional",
+      "postal": "not_used",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/TV"
+    },
+    {
+      "country": "TW",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/TW"
+    },
+    {
+      "country": "TZ",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/TZ"
+    },
+    {
+      "country": "UA",
+      "state": "optional",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/UA"
+    },
+    {
+      "country": "UM",
+      "state": "required",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/UM"
+    },
+    {
+      "country": "US",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/US"
+    },
+    {
+      "country": "UY",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/UY"
+    },
+    {
+      "country": "UZ",
+      "state": "optional",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/UZ"
+    },
+    {
+      "country": "VA",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/VA"
+    },
+    {
+      "country": "VC",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/VC"
+    },
+    {
+      "country": "VE",
+      "state": "required",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/VE"
+    },
+    {
+      "country": "VG",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/VG"
+    },
+    {
+      "country": "VI",
+      "state": "required",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/VI"
+    },
+    {
+      "country": "VN",
+      "state": "required",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/VN"
+    },
+    {
+      "country": "WF",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/WF"
+    },
+    {
+      "country": "XK",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/XK"
+    },
+    {
+      "country": "YT",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/YT"
+    },
+    {
+      "country": "ZA",
+      "state": "not_used",
+      "postal": "required",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/ZA"
+    },
+    {
+      "country": "ZM",
+      "state": "not_used",
+      "postal": "optional",
+      "source": "https://chromium-i18n.appspot.com/ssl-address/data/ZM"
+    }
+  ]
+}

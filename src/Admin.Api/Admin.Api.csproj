@@ -22,5 +22,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="../../contract/audit-events.schema.json" Link="contract/audit-events.schema.json" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="../../ui/address/country-rules.json" Link="country-rules.json" LogicalName="Admin.Api.country-rules.json" />
   </ItemGroup>
 </Project>

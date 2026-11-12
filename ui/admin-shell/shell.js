@@ -190,6 +190,39 @@ async function showCreate(state) {
   partner.name = "partner_id";
   partner.required = true;
   partner.setAttribute("aria-describedby", "partner-hint");
+  const address = {};
+  function textField(label, fieldName, required) {
+    const input = document.createElement("input");
+    input.className = "field__input";
+    input.name = fieldName;
+    if (required) input.required = true;
+    const field = h("label");
+    field.className = "field";
+    field.append(h("span", label), input);
+    field.querySelector("span").className = "field__label";
+    address[fieldName] = input;
+    return field;
+  }
+  const country = document.createElement("select");
+  country.className = "field__input";
+  country.name = "country";
+  country.required = true;
+  address.country = country;
+  const countryField = h("label");
+  countryField.className = "field";
+  countryField.append(h("span", "Country *"), country);
+  countryField.querySelector("span").className = "field__label";
+  for (const field of [
+    textField("Address line 1 *", "address_line_1", true),
+    textField("Address line 2 (optional)", "address_line_2", false),
+    textField("City *", "city", true),
+    countryField,
+    textField("State / province / region", "region", false),
+    textField("ZIP / postal code", "postal_code", false),
+    textField("Primary contact phone *", "phone", true),
+    textField("Primary contact email (optional)", "email", false),
+    textField("Time zone *", "time_zone", true),
+  ]) form.append(field);
   for (const [label, control] of [["Location name", name], ["Partner", partner]]) {
     const field = h("label");
     field.className = "field";
@@ -197,6 +230,29 @@ async function showCreate(state) {
     field.querySelector("span").className = "field__label";
     form.append(field);
   }
+  const rules = await api("/address/country-rules.json");
+  const byCountry = new Map();
+  for (const row of rules.body?.rows ?? []) byCountry.set(row.country, row);
+  const blank = document.createElement("option");
+  blank.value = "";
+  country.append(blank);
+  for (const code of byCountry.keys()) {
+    const o = document.createElement("option");
+    o.value = code;
+    o.textContent = code;
+    country.append(o);
+  }
+  function applyCountry() {
+    const row = byCountry.get(country.value);
+    for (const [fieldName, key] of [["region", "state"], ["postal_code", "postal"]]) {
+      const input = address[fieldName];
+      const use = row ? row[key] : "optional";
+      input.required = use === "required";
+      input.disabled = use === "not_used";
+      if (use === "not_used") input.value = "";
+    }
+  }
+  country.addEventListener("change", applyCountry);
   const submit = primaryControl("button", "Create location");
   submit.type = "submit";
   form.append(submit);
@@ -216,6 +272,17 @@ async function showCreate(state) {
     const body = {
       partner_id: partner.value,
       name: name.value.trim(),
+      address: {
+        address_line_1: address.address_line_1.value.trim(),
+        address_line_2: address.address_line_2.value.trim(),
+        city: address.city.value.trim(),
+        country: address.country.value,
+        region: address.region.disabled ? "" : address.region.value.trim(),
+        postal_code: address.postal_code.disabled ? "" : address.postal_code.value.trim(),
+        phone: address.phone.value.trim(),
+        email: address.email.value.trim(),
+        time_zone: address.time_zone.value.trim(),
+      },
     };
     let res;
     try {

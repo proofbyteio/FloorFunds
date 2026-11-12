@@ -4745,3 +4745,31 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261112050000_Req064LocationAddress') THEN
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS address_line_1 text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS address_line_2 text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS city text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS country text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS region text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS postal_code text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS phone text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS time_zone text;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261112050000_Req064LocationAddress') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261112050000_Req064LocationAddress', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;

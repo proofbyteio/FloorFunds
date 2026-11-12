@@ -181,6 +181,12 @@ const server = http.createServer(async (req, res) => {
       await proxy(req, res, apiOrigin + url.pathname + url.search, body, { authorization: "Bearer " + session.token });
       return;
     }
+    if (url.pathname === "/address/country-rules.json") {
+      const file = path.resolve(root, "../address/country-rules.json");
+      if (!fs.existsSync(file)) { sendJson(res, 404, { error: "not_found" }); return; }
+      serveFile(res, file);
+      return;
+    }
     if (url.pathname.startsWith("/theme/")) {
       const themeRoot = path.resolve(root, "../theme");
       const file = path.resolve(themeRoot, url.pathname.slice("/theme/".length));
