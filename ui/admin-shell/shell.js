@@ -13,9 +13,7 @@ let leaving = false;
 const pages = {
   home: { label: "Home", need: null },
   locations: { label: "Locations", need: "create_location" },
-  create: { label: "Create location", need: "create_location" },
-  config: { label: "Sign-in config", need: "config" },
-  catalog: { label: "Catalog", need: "create_location" },
+  catalog: { label: "Catalog", need: null },
   clients: { label: "Clients", need: "create_client" },
 };
 
@@ -73,6 +71,7 @@ function primaryControl(tag, text) {
 function banner(kind, title, text) {
   const b = h("div");
   b.className = "banner banner--" + kind;
+  b.setAttribute("role", kind === "error" ? "alert" : "status");
   b.append(h("span", title));
   if (text) b.append(h("p", text));
   return b;
@@ -105,12 +104,10 @@ async function showHome() {
   const rows = list.body?.locations ?? [];
   main.replaceChildren(h("h1", "Home"));
   if (rows.length === 0) {
-    main.append(banner("info", "No locations yet", "Create a location when you are ready. The partner comes from the server list."));
-    if (grant.includes("create_location")) {
-      const a = primaryControl("a", "Create a location");
-      a.href = "#/create";
-      main.append(a);
-    }
+    main.append(h("h2", "Guided setup"));
+    const steps = document.createElement("ol");
+    steps.append(h("li", "1  Clients"), h("li", "2  Locations"), h("li", "3  Catalog and access"));
+    main.append(steps);
     return;
   }
   main.append(h("p", rows.length + (rows.length === 1 ? " location." : " locations.")));
@@ -124,11 +121,14 @@ function table(rows) {
   const t = document.createElement("table");
   t.className = "shell__table";
   const head = document.createElement("tr");
-  for (const name of ["Name", "Slug", "Partner"]) head.append(h("th", name));
+  for (const name of ["Location", "Client / partner", "Sign-in config", "Actions"]) head.append(h("th", name));
   t.append(head);
   for (const row of rows) {
     const tr = document.createElement("tr");
-    tr.append(h("td", row.name), h("td", row.slug), h("td", row.partner_id));
+    const config = h("a", "/orgs/{partner}/locations/{location}/sign-in".replace("{partner}", row.partner_id).replace("{location}", row.location_id));
+    config.href = "/orgs/" + row.partner_id + "/locations/" + row.location_id + "/sign-in";
+    tr.append(h("td", row.name), h("td", row.partner_id), h("td"), h("td"));
+    tr.children[2].append(config);
     t.append(tr);
   }
   return t;
@@ -141,9 +141,13 @@ async function showLocations() {
   if (rows.length === 0) {
     main.replaceChildren(h("h1", "Locations"), banner("info", "No locations", "There are no locations for this grant yet."));
     if (grant.includes("create_location")) {
-      const a = primaryControl("a", "Create a location");
-      a.href = "#/create";
-      main.append(a);
+      const partners = await api("/api/screens/location-partners");
+      const id = partners.body?.partners?.[0];
+      if (id) {
+        const a = primaryControl("a", "Create location");
+        a.href = "/orgs/" + id + "/locations/new";
+        main.append(a);
+      }
     }
     return;
   }
@@ -293,15 +297,41 @@ async function showConfig() {
   await load();
 }
 
+const catalogNames = [
+  ["01", "Catalog release", "catalog_release"],
+  ["02", "Transaction type", "transaction_type"],
+  ["03", "Channel", "channel"],
+  ["04", "Device category", "device_category"],
+  ["05", "Manufacturer", "manufacturer"],
+  ["06", "Device model", "device_model"],
+  ["07", "Hardware capability kind", "hardware_capability_kind"],
+  ["08", "Model hardware claim", "model_hardware_claim"],
+  ["09", "Card network", "card_network"],
+  ["10", "Card funding class", "card_funding_class"],
+  ["11", "Payment rail", "payment_rail"],
+  ["12", "Check instrument kind", "check_instrument_kind"],
+  ["13", "Check drawer class", "check_drawer_class"],
+  ["14", "Check purpose", "check_purpose"],
+  ["15", "Processor", "processor"],
+  ["16", "Transaction status", "transaction_status"],
+  ["17", "Reason code", "reason_code"],
+  ["18", "ID document type", "id_document_type"],
+  ["19", "Currency", "currency"],
+  ["20", "Fee type", "fee_type"],
+];
+
 async function showCatalog() {
   const res = await api("/api/screens/catalog");
   if (res.status !== 200) return denied();
-  main.replaceChildren(
-    h("h1", "Catalog"),
-    banner("info", "Read only", "Location switch and claim reactivation stay held. This screen does not write."),
-  );
+  main.replaceChildren(h("h1", "Catalog"));
   const ul = document.createElement("ul");
-  for (const name of ["Fee type", "Manufacturer", "Model", "Hardware claim"]) ul.append(h("li", name));
+  for (const [n, title, wire] of catalogNames) {
+    const li = document.createElement("li");
+    const a = h("a", n + " " + title);
+    a.href = "/catalog/#/family/" + wire + "/list";
+    li.append(a);
+    ul.append(li);
+  }
   main.append(ul);
 }
 
@@ -310,7 +340,7 @@ async function showClients() {
   if (res.status === 403) return denied();
   main.replaceChildren(
     h("h1", "Clients"),
-    banner("info", "Placeholder", "Create Client is held. This screen does not write."),
+    h("p", "Placeholder  ·  this screen is not built"),
   );
 }
 
