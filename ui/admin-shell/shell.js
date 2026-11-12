@@ -88,9 +88,13 @@ function denied() {
 
 function noAssignment() {
   if (leaving) return;
+  const signOut = h("a", "Sign out");
+  signOut.href = "/standin/connect/endsession";
+  signOut.className = "button button--secondary";
   main.replaceChildren(
-    h("h1", "No assignment"),
-    banner("warning", "No access", "This sign-in has no active assignment. Nothing on this screen is granted by the token."),
+    h("h1", "No access, contact your administrator"),
+    h("p", "No server-side role or partner assignment was found. Access is denied (DEC-197). This page does not list screens, clients, locations, or catalog values. Nothing here is a grant. The menu is omitted because there is no resolved assignment."),
+    signOut,
   );
 }
 
