@@ -266,10 +266,10 @@ def main():
           lambda: install_fn(noop_mut, "auth._last_sa_guard()", OWNER, False),
           lambda: restore_fn("auth._last_sa_guard()"), REQ)
 
-    # m7 no nextval
+    # m7 no nextval (SSE2 MEDIUM-1 / SA M-1: PERFORM NULL must FAIL resolver-store-is-read)
     cycle("m7-no-nextval",
           lambda: mutate_body("auth.resolve_grant(text, uuid)",
-                              "PERFORM nextval('auth.resolver_read_seq');", "PERFORM 1;", True),
+                              "PERFORM nextval('auth.resolver_read_seq');", "PERFORM NULL;", True),
           lambda: restore_fn("auth.resolve_grant(text, uuid)"), REQ)
 
     # m8 cache the last grant

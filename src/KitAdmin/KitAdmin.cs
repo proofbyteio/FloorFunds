@@ -52,10 +52,10 @@ public static class KitAdmin
         "reader-location-revoke|Admin.Api.Checks|org viewer location assignment|admin_assignment|DELETE|no assignment API; the assignment is removed after the reader assertion",
         "admin-checks-cleanup|Admin.Api.Checks|cleanup|auth|DELETE|the migrator has no DELETE; the checks remove the rows they created",
         "prb-parallel-row-lock|Admin.Api.Checks|Slice A parallel update|partner_reason_bounds|FOR UPDATE|the migrator has no UPDATE; the lock is held until both API requests are waiting",
-        "req064-fixture-delete|Req064Suite|fixture cleanup|auth|DELETE|the migrator has no DELETE; the checks remove the rows they created",
         "req064-test-trigger|Req064Suite|bounds-retry-closed-session-is-401|partner_reason_bounds|TRIGGER|the migrator does not own the table; the trigger is the test double",
         "req064-user-lock|Req064Suite|open-blocked-behind-a-lock|app_user|locked_until|the migrator has no UPDATE; the check locks the user while open_session waits",
-        "resolver-store-is-read|Req064Suite|resolver-store-is-read|resolver_read_seq|last_value|USAGE and SELECT stay on the auth definer; the scratch superuser reads last_value around one resolve_grant",
+        "resolver-store-is-read|Req064Suite|resolver-store-is-read|resolver_read_seq|last_value|USAGE and SELECT stay on the auth definer; SELECT-only on an isolated scratch DB after warm-up",
+        "forged-guc-catalog-create|Req064Suite|forged-resolved-guc-does-not-change-catalog-actor|registered_entry|INSERT|begin_request for the real principal, forge resolved GUCs, then apply_entry_create; runtime reads actor_user_id",
     ];
 
     public static void Exec(string reason, string sql)
@@ -313,6 +313,47 @@ public static class KitAdmin
             + File.ReadAllText(Path.Combine(repo, "src", "Auth.Data", "Migrations", "Req064Session.sql"));
         if (actorBody.Contains("_test_seed", StringComparison.Ordinal) || actorBody.Contains("kit_actor_bypass", StringComparison.Ordinal))
             failures.Add("actor-test-bypass");
+        // M-2. Live tip bodies that feed catalog._actor or auth.resolve_grant must
+        // not read resolved principal GUCs. Enumerate: catalog._actor,
+        // auth.resolve_grant, auth._request_user, auth.current_principal,
+        // auth.begin_request, auth.session_issuer. correlation_id / reason on
+        // _actor are write labels, not the principal.
+        var principalFeedFiles = new[]
+        {
+            Path.Combine(repo, "src", "Auth.Data", "Migrations", "Req064Actor.sql"),
+            Path.Combine(repo, "src", "Auth.Data", "Migrations", "Req064Session.sql"),
+        };
+        var bannedPrincipalGucs = new[]
+        {
+            "current_setting('app.resolved_global_admin'",
+            "current_setting('app.resolved_partner_ids'",
+            "current_setting('app.resolved_location_ids'",
+            "current_setting('app.actor_user_id'",
+            "current_setting('app.admin_type'",
+            "current_setting('app.request_sub'",
+            "current_setting('app.request_iss'",
+            "current_setting(\"app.resolved_global_admin\"",
+            "current_setting(\"app.resolved_partner_ids\"",
+            "current_setting(\"app.resolved_location_ids\"",
+            "current_setting(\"app.actor_user_id\"",
+            "current_setting(\"app.admin_type\"",
+            "current_setting(\"app.request_sub\"",
+            "current_setting(\"app.request_iss\"",
+        };
+        foreach (var path in principalFeedFiles)
+        {
+            var text = File.ReadAllText(path);
+            foreach (var ban in bannedPrincipalGucs)
+            {
+                if (text.Contains(ban, StringComparison.Ordinal))
+                    failures.Add("principal-guc-current-setting " + Path.GetRelativePath(repo, path) + ":" + ban);
+            }
+        }
+        var setupSh = File.ReadAllText(Path.Combine(repo, "db", "setup.sh"));
+        // L-5. Production layout (--force without --seed) must not install _test_seed.
+        if (!setupSh.Contains("if [[ \"$SEED\" -eq 1 ]]; then", StringComparison.Ordinal)
+            || !setupSh.Contains("test-seed-role.sql", StringComparison.Ordinal))
+            failures.Add("production-layout-omits-test-seed-install");
         var seedRole = File.ReadAllText(Path.Combine(repo, "db", "kit", "test-seed-role.sql"));
         if (seedRole.Contains("GRANT SELECT, INSERT ON TABLE catalog.", StringComparison.Ordinal)
             || seedRole.Contains("GRANT INSERT ON TABLE catalog.", StringComparison.Ordinal)
@@ -348,6 +389,8 @@ public static class KitAdmin
             Console.WriteLine("PASS kit-admin-call-sites-match-the-decisions-list");
             Console.WriteLine("PASS no-test-code-updates-or-deletes-as-test-seed");
             Console.WriteLine("PASS actor-body-has-no-test-bypass");
+            Console.WriteLine("PASS principal-feed-helpers-skip-resolved-gucs");
+            Console.WriteLine("PASS production-layout-omits-test-seed-install");
             Console.WriteLine("PASS test-seed-has-no-catalog-insert");
             Console.WriteLine("PASS no-apply-execute-grant");
             Console.WriteLine("PASS no-replication-role-or-disabled-trigger");

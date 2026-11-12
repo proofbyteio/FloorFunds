@@ -83,6 +83,25 @@ try {
   expect("actor-test-bypass", actorOut.includes("FAIL actor-test-bypass"), actorOut);
   writeFileSync(actorSql, originalActor);
 
+  // M-2 mutant: _actor trusts a resolved principal GUC.
+  const gucMutant = originalActor.replace(
+    "  actor_user_id := v_user;",
+    "  actor_user_id := coalesce(nullif(current_setting('app.actor_user_id', true), '')::uuid, v_user);",
+  );
+  expect("principal-guc-mutant-applied", gucMutant !== originalActor);
+  writeFileSync(actorSql, gucMutant);
+  const gucOut = check();
+  expect("mutant-actor-reads-resolved-guc-killed", gucOut.includes("FAIL principal-guc-current-setting"), gucOut);
+  writeFileSync(actorSql, originalActor);
+
+  // L-5 mutant: drop the test-seed-role install marker from setup.sh.
+  const setupPath = join(root, "db", "setup.sh");
+  const originalSetup = readFileSync(setupPath, "utf8");
+  writeFileSync(setupPath, originalSetup.replace("test-seed-role.sql", "test-seed-role.MISSING.sql"));
+  const setupOut2 = check();
+  expect("mutant-production-layout-installs-test-seed-killed", setupOut2.includes("FAIL production-layout-omits-test-seed-install"), setupOut2);
+  writeFileSync(setupPath, originalSetup);
+
   writeFileSync(suite, extra);
   const unlistedOut = check();
   expect("kitadmin-unlisted-callsite", unlistedOut.includes("kitadmin-unlisted-callsite"), unlistedOut);

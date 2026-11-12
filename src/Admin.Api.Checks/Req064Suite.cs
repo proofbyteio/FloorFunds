@@ -283,8 +283,15 @@ static class Req064Suite
             Check("two-partner-union", bothA.Status == 200 && bothB.Status == 200);
 
             // auth_owner owns the sequence. USAGE and SELECT go to the auth definer only.
-            // KitAdmin reads last_value as the scratch superuser; no product grant is added.
-            // Assert: one resolve_grant (via /api/nav) advances resolver_read_seq by exactly 1.
+            // KitAdmin SELECT-only read on the scratch/kit DB (KitAdmin refuses any
+            // other name); no product grant is added. SSE2 MEDIUM-1 / SA M-1:
+            // warm /api/nav, record is_called + seq0, one more /api/nav, assert +1.
+            // Mutant: PERFORM nextval(...) -> PERFORM NULL must FAIL this check.
+            _ = await Send(http, HttpMethod.Get, "/api/nav", saTok);
+            var peers = KitAdmin.At("resolver-store-is-read",
+                "SELECT count(*)::text FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()");
+            var called = KitAdmin.At("resolver-store-is-read",
+                "SELECT is_called::text FROM auth.resolver_read_seq");
             var seq0Text = KitAdmin.At("resolver-store-is-read",
                 "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM auth.resolver_read_seq");
             _ = await Send(http, HttpMethod.Get, "/api/nav", saTok);
@@ -292,7 +299,9 @@ static class Req064Suite
                 "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM auth.resolver_read_seq");
             var seq0 = long.Parse(seq0Text, System.Globalization.CultureInfo.InvariantCulture);
             var seq1 = long.Parse(seq1Text, System.Globalization.CultureInfo.InvariantCulture);
-            Check("resolver-store-is-read", seq1 == seq0 + 1, $"{seq0}->{seq1}");
+            Check("resolver-store-is-read",
+                called == "t" && seq1 == seq0 + 1,
+                $"peers {peers} is_called {called} {seq0}->{seq1}");
 
             Check("unknown-kid-401", (await Send(http, HttpMethod.Get, "/api/nav", Sign(rsa, "not-a-key", Payload(Sa, "super", null)))).Status == 401);
             Check("missing-kid-401", (await Send(http, HttpMethod.Get, "/api/nav", Sign(rsa, null, Payload(Sa, "super", null)))).Status == 401);
@@ -336,6 +345,16 @@ static class Req064Suite
             Check("stand-in-sign-in-opens-session-nav-locations-catalog", signedIn.Ok, signedIn.Detail);
             var shell = await NodeScript("session-closed.test.mjs", "PASS shell-goes-to-signin-on-closed-session");
             Check("shell-goes-to-signin-on-closed-session", shell.Ok, shell.Detail);
+            var expired = await NodeScript("session-expired-reason.test.mjs", "PASS expired-session-goes-to-signin-reason-expired");
+            Check("session-expired-goes-to-signin-reason-expired", expired.Ok, expired.Detail);
+            var orgs = await NodeScript("orgs-routes.test.mjs", "PASS deep-link-create-shows-form");
+            Check("orgs-routes-are-served", orgs.Ok, orgs.Detail);
+            var gates = await NodeScript("route-gates.test.mjs", "PASS permitted-user-reaches-create-form");
+            Check("create-and-config-are-gated", gates.Ok, gates.Detail);
+            var scalars = await NodeScript("location-name-scalars.test.mjs", "PASS client-accepts-200-astral-scalars");
+            Check("location-name-counts-unicode-scalars", scalars.Ok, scalars.Detail);
+            var reach = await NodeScript("browser-reachability.test.mjs", "PASS browser-f20-create-orgs-path-shows-form");
+            Check("browser-reachability-f20-f23", reach.Ok, reach.Detail);
             var listen = await BashScript("own-listener.test.sh", "PASS own-listener-refuses-a-foreign-pid");
             Check("own-listener-refuses-a-foreign-pid", listen.Ok, listen.Detail);
 
@@ -760,10 +779,8 @@ static class Req064Suite
 
     static void ForgetLocation(Guid id)
     {
-        KitQuiet("req064-fixture-delete", "DELETE FROM auth.location_login_config_change WHERE location_id = " + UuidLit(id));
-        KitQuiet("req064-fixture-delete", "DELETE FROM auth.location_login_config WHERE location_id = " + UuidLit(id));
-        KitQuiet("req064-fixture-delete", "DELETE FROM auth.location WHERE location_id = " + UuidLit(id));
-        KitQuiet("req064-fixture-delete", "DELETE FROM auth.audit_outbox WHERE envelope::text LIKE '%' || " + SqlText(id.ToString("D")) + " || '%'");
+        // A1.3: unique per-run ids + fresh DB recreate; no KitAdmin DELETE.
+        _ = id;
     }
 
     static async Task SeedExec(NpgsqlDataSource owner, string sql, params object?[] ps)
@@ -1041,46 +1058,25 @@ static class Req064Suite
 
     static async Task<bool> HistoryLabel(NpgsqlDataSource owner, NpgsqlDataSource admin)
     {
-        // Both is Partner Admin at Pa and at Pb. The actor list is ordered Pa then Pb,
-        // so the old label (the first partner) would store Pa on a row owned by Pb.
-        // catalog.history_partner has no runtime EXECUTE in CatalogMasterData.Grants.sql.
-        // That function call stays held. The stored label is read as admin_api.
-        var hist = Guid.Parse("5f0c3e1a-0064-4000-8000-000000000042");
+        // L-1 / UPDATE 32. history_partner stays HELD (no runtime EXECUTE). This
+        // check (history-label-uses-the-record-partner) covers trigger-written
+        // actor_partner_id as admin_api. No partner-move / reassign path.
+        var hist = Guid.NewGuid();
+        var code = "h" + hist.ToString("N")[..10];
         try
         {
-            await using var grantConn = await admin.OpenConnectionAsync();
-            await using var grantTx = await grantConn.BeginTransactionAsync();
-            await Begin(grantConn, grantTx, Both);
-            await using (var grant = new NpgsqlCommand("""
-                SELECT (SELECT count(*) FROM unnest(partner_ids) x WHERE x = $3) = 1
-                   AND (SELECT count(*) FROM unnest(partner_ids) x WHERE x = $4) = 1
-                   AND role_wire = 'partner_admin' AND NOT global_admin
-                  FROM auth.resolve_grant($1, $2)
-                """, grantConn, grantTx))
-            {
-                grant.Parameters.Add(new() { Value = Issuer });
-                grant.Parameters.Add(new() { Value = Both });
-                grant.Parameters.Add(new() { Value = Pa });
-                grant.Parameters.Add(new() { Value = Pb });
-                if (await grant.ExecuteScalarAsync() is not true)
-                {
-                    Console.WriteLine("FAIL history-label: Both is not Partner Admin at both partners");
-                    return false;
-                }
-            }
-            await grantTx.RollbackAsync();
             Hold("history-partner-function-follows-the-record");
             var database = new NpgsqlConnectionStringBuilder(owner.ConnectionString).Database ?? "";
             var planted = Kit("req064-history-label-fixture", KitAdmin.SessionThen(
-                database + "_issuer", Issuer, Both.ToString("D"), "req064-history-label", "history label",
-                FeeFixture(hist, Pb, "req064hist", Both)));
+                database + "_issuer", Issuer, Sa.ToString("D"), "req064-history-label", "history label",
+                ApplyFeeCreate(hist, Pb, code)));
             if (planted != "ok")
             {
                 Console.WriteLine("FAIL history-label: " + planted);
                 return false;
             }
             var stored = await ScalarBoolAs(admin, Sa,
-                "SELECT actor_partner_id = $2 FROM catalog.entry_change WHERE entry_id = $1 AND change_kind = 'created'",
+                "SELECT actor_partner_id IS NOT DISTINCT FROM $2 FROM catalog.entry_change WHERE entry_id = $1 AND change_kind = 'created'",
                 hist, Pb);
             if (!stored)
             {
@@ -1130,26 +1126,24 @@ static class Req064Suite
         var database = new NpgsqlConnectionStringBuilder(owner.ConnectionString).Database ?? "";
         var planted = Kit("req064-fee-fixture", KitAdmin.SessionThen(
             database + "_issuer", Issuer, Sa.ToString("D"), "req064-fee-fixture", "req064 fee fixture",
-            FeeFixture(Fee, Pb, "req064fee", Sa)));
+            ApplyFeeCreate(Fee, Pb, "req064fee")));
         if (planted != "ok")
             throw new InvalidOperationException("req064 fee fixture " + planted);
     }
 
-    static string FeeFixture(Guid id, Guid ownerPartner, string code, Guid actor)
+    static string ApplyFeeCreate(Guid id, Guid ownerPartner, string code)
     {
         var idSql = "'" + id.ToString("D") + "'::uuid";
         var ownerSql = "'" + ownerPartner.ToString("D") + "'::uuid";
-        var actorSql = "'" + actor.ToString("D") + "'::uuid";
-        return "INSERT INTO catalog.registered_entry (entry_id, family, entry_class, owner_partner_id, code, is_active, row_version, created_by, created_at, updated_by, updated_at) VALUES ("
-            + idSql + ", 'fee_type', 'descriptive', " + ownerSql + ", '" + code + "', true, 1, " + actorSql + ", clock_timestamp(), " + actorSql + ", clock_timestamp());\n"
-            + "INSERT INTO catalog.fee_type (entry_id, family, code, owner_partner_id, definition, display_name) VALUES ("
-            + idSql + ", 'fee_type', '" + code + "', " + ownerSql + ", 'names only fixture', '" + code + "');\n";
+        return "PERFORM catalog.apply_entry_create(" + idSql + ", 'fee_type', 'descriptive', " + ownerSql
+            + ", '" + code + "', true, jsonb_build_object('definition', 'names only fixture', 'display_name', '"
+            + code + "'), 1);\n";
     }
 
     static async Task<bool> LocationOnly(NpgsqlDataSource admin, NpgsqlDataSource owner)
     {
-        var sibling = Guid.Parse("5f0c3e1a-0064-4000-8000-000000000023");
-        var grant = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000ab");
+        var sibling = Guid.NewGuid();
+        var grant = Guid.NewGuid();
         try
         {
             await SeedExec(owner, "INSERT INTO auth.location VALUES ($1,$2,'req064-a2','Req064 A2')", sibling, Pa);
@@ -1169,19 +1163,13 @@ static class Req064Suite
             Console.WriteLine("FAIL location-only: " + ex.GetType().Name + " " + ex.Message);
             return false;
         }
-        finally
-        {
-            KitQuiet("req064-fixture-delete", "DELETE FROM auth.admin_assignment WHERE assignment_id = " + UuidLit(grant));
-            KitQuiet("req064-fixture-delete", "DELETE FROM auth.location WHERE location_id = " + UuidLit(sibling));
-        }
     }
 
     static async Task Dec111BoundsWrite(HttpClient http, NpgsqlDataSource admin, NpgsqlDataSource owner, string paTok)
     {
-        var locGrant = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000ac");
+        var locGrant = Guid.NewGuid();
         try
         {
-            MustKit("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id IN (" + UuidLit(Pa) + ", " + UuidLit(Pb) + ")");
             var none = await TrySaveBounds(admin, None, Pa);
             var noneRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1", Pa);
             Check("dec-111-no-assignment-cannot-write-bounds", none.Denied && none.Version is null && noneRows == 0,
@@ -1195,7 +1183,6 @@ static class Req064Suite
             var locRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
             Check("dec-111-location-only-cannot-write-bounds", loc.Denied && locB.Denied && locRows == 0,
                 $"a {loc.Denied} {loc.Detail} b {locB.Denied} {locB.Detail} rows {locRows}");
-            MustKit("req064-fixture-delete", "DELETE FROM auth.admin_assignment WHERE assignment_id = " + UuidLit(locGrant));
             var flags = await TrySaveBounds(admin, null, Pa, flags: true);
             var flagRows = await ScalarLong(owner, "SELECT count(*) FROM auth.partner_reason_bounds WHERE partner_id = $1", Pa);
             Check("dec-111-flags-without-principal-cannot-write-bounds", flags.Denied && flagRows == 0,
@@ -1215,13 +1202,6 @@ static class Req064Suite
         catch (Exception ex)
         {
             Check("dec-111-pa-of-a-writes-partner-b", false, ex.GetType().Name + " " + ex.Message);
-        }
-        finally
-        {
-            KitQuiet("req064-fixture-delete", "DELETE FROM auth.admin_assignment WHERE assignment_id = " + UuidLit(locGrant));
-            KitQuiet("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id IN (" + UuidLit(Pa) + ", " + UuidLit(Pb) + ")");
-            KitQuiet("req064-fixture-delete", "DELETE FROM auth.login_write_principal WHERE target_id IN (" + UuidLit(Pa) + ", " + UuidLit(Pb) + ")");
-            KitQuiet("req064-fixture-delete", "DELETE FROM auth.audit_outbox WHERE event_type = 'auth.partner_reason_bounds.changed' AND envelope::text LIKE '%' || " + SqlText(Pb.ToString("D")) + " || '%'");
         }
     }
 
@@ -1262,7 +1242,7 @@ static class Req064Suite
 
     static async Task<bool> BoundsRead(NpgsqlDataSource admin, NpgsqlDataSource owner)
     {
-        var view = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000aa");
+        var view = Guid.NewGuid();
         try
         {
             await SeedExec(owner, """
@@ -1292,11 +1272,6 @@ static class Req064Suite
         {
             Console.WriteLine("FAIL bounds-read: " + ex.GetType().Name + " " + ex.Message);
             return false;
-        }
-        finally
-        {
-            KitQuiet("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id IN (" + UuidLit(Pa) + ", " + UuidLit(Pb) + ")");
-            KitQuiet("req064-fixture-delete", "DELETE FROM auth.admin_assignment WHERE assignment_id = " + UuidLit(view));
         }
     }
 
@@ -1368,9 +1343,6 @@ static class Req064Suite
         {
             if (created is { } id)
                 ForgetLocation(id);
-            KitQuiet("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id IN (" + UuidLit(Pa) + ", " + UuidLit(Pb) + ")");
-            KitQuiet("req064-fixture-delete", "DELETE FROM auth.login_write_principal WHERE target_id IN (" + UuidLit(Pa) + ", " + UuidLit(Pb) + ")");
-            KitQuiet("req064-fixture-delete", "DELETE FROM auth.audit_outbox WHERE event_type = 'auth.partner_reason_bounds.changed' AND envelope::text LIKE '%' || " + SqlText(Pa.ToString("D")) + " || '%'");
         }
     }
 
@@ -1760,36 +1732,29 @@ static class Req064Suite
         var tenant = Guid.NewGuid();
         var slug = "h" + loc.ToString("N")[..16];
         var actor = Guid.NewGuid();
-        try
+        // A1.3: unique ids; no KitAdmin DELETE cleanup.
+        await using (var seed = await OpenTestSeed(owner))
         {
-            await using (var seed = await OpenTestSeed(owner))
-            {
-                await Exec(seed, "INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ($1, $2, $3, $4)",
-                    loc, partner, slug, "Req064 helper");
-                await Exec(seed, """
-                    INSERT INTO auth.location_login_config (
-                      location_id, provider_kind, display_name, entra_allowed_tenant_ids,
-                      oidc_authority, oidc_client_id, secret_ref, allow_db_fallback, mfa_required,
-                      created_by, created_at, updated_by, updated_at)
-                    VALUES ($1, 'entra', 'Req064 helper', ARRAY[$2]::uuid[],
-                            'https://login.microsoftonline.com', '5f0c3e1a-00cc-4000-8000-0000000000cc',
-                            'arn:aws:secretsmanager:us-west-2:000000000000:secret:FAKE-test-only/req064-AbCdEf',
-                            false, true, $3, clock_timestamp(), $3, clock_timestamp())
-                    """, loc, tenant, actor);
-            }
-            var hidden = await ScalarLong(admin, "SELECT count(*) FROM auth.location WHERE location_id = $1", loc);
-            var seen = await ScalarText(admin, "SELECT auth.location_partner($1)::text", loc);
-            var elsewhere = await ScalarBool(admin, "SELECT auth.tenant_bound_elsewhere($1, $2)", tenant, otherPartner);
-            var home = await ScalarBool(admin, "SELECT auth.tenant_bound_elsewhere($1, $2)", tenant, partner);
-            Check("login-config-helpers-see-through-the-definer",
-                hidden == 0 && seen == partner.ToString("D") && elsewhere && !home,
-                $"hidden {hidden} seen {seen} elsewhere {elsewhere} home {home}");
+            await Exec(seed, "INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ($1, $2, $3, $4)",
+                loc, partner, slug, "Req064 helper");
+            await Exec(seed, """
+                INSERT INTO auth.location_login_config (
+                  location_id, provider_kind, display_name, entra_allowed_tenant_ids,
+                  oidc_authority, oidc_client_id, secret_ref, allow_db_fallback, mfa_required,
+                  created_by, created_at, updated_by, updated_at)
+                VALUES ($1, 'entra', 'Req064 helper', ARRAY[$2]::uuid[],
+                        'https://login.microsoftonline.com', '5f0c3e1a-00cc-4000-8000-0000000000cc',
+                        'arn:aws:secretsmanager:us-west-2:000000000000:secret:FAKE-test-only/req064-AbCdEf',
+                        false, true, $3, clock_timestamp(), $3, clock_timestamp())
+                """, loc, tenant, actor);
         }
-        finally
-        {
-            KitQuiet("req064-fixture-delete", "DELETE FROM auth.location_login_config WHERE location_id = " + UuidLit(loc));
-            KitQuiet("req064-fixture-delete", "DELETE FROM auth.location WHERE location_id = " + UuidLit(loc));
-        }
+        var hidden = await ScalarLong(admin, "SELECT count(*) FROM auth.location WHERE location_id = $1", loc);
+        var seen = await ScalarText(admin, "SELECT auth.location_partner($1)::text", loc);
+        var elsewhere = await ScalarBool(admin, "SELECT auth.tenant_bound_elsewhere($1, $2)", tenant, otherPartner);
+        var home = await ScalarBool(admin, "SELECT auth.tenant_bound_elsewhere($1, $2)", tenant, partner);
+        Check("login-config-helpers-see-through-the-definer",
+            hidden == 0 && seen == partner.ToString("D") && elsewhere && !home,
+            $"hidden {hidden} seen {seen} elsewhere {elsewhere} home {home}");
     }
 
     static async Task<string> OwnerReplaces(NpgsqlDataSource owner, params string[] sql)
@@ -2194,15 +2159,14 @@ static class Req064Suite
         }
     }
 
-    static async Task ClearSessions(NpgsqlDataSource owner, Guid user)
+    static Task ClearSessions(NpgsqlDataSource owner, Guid user)
     {
-        // Drop the rows this check opened. revoke_login would set a cutoff and
-        // deny the next mint whose iat is before that cutoff.
+        // A1.3 / L-2: no KitAdmin DELETE. revoke_login would set a cutoff and
+        // deny the next mint whose iat is before that cutoff. Ephemeral ids and
+        // a fresh kit DB recreate replace fixture-delete cleanup.
         _ = owner;
-        KitQuiet("req064-fixture-delete",
-            "DELETE FROM auth.request_binding WHERE token_hash IN (SELECT token_hash FROM auth.request_session WHERE user_id = " + UuidLit(user) + ")");
-        KitQuiet("req064-fixture-delete",
-            "DELETE FROM auth.request_session WHERE user_id = " + UuidLit(user));
+        _ = user;
+        return Task.CompletedTask;
     }
 
     static async Task<long> OpenLogoutOverlaps(NpgsqlDataSource owner, Guid user)
@@ -2224,11 +2188,10 @@ static class Req064Suite
 
     static async Task BoundsRetry(HttpClient http, RsaSecurityKey sign, NpgsqlDataSource owner, Guid user)
     {
-        var partner = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000ee");
+        var partner = Guid.NewGuid();
         var jwt = Mint(sign, user, "super", null);
         try
         {
-            MustKit("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id = " + UuidLit(partner));
             MustKit("req064-test-trigger", """
                 CREATE OR REPLACE FUNCTION auth._test_bounds_dup() RETURNS trigger
                 LANGUAGE plpgsql
@@ -2279,7 +2242,6 @@ static class Req064Suite
         {
             MustKit("req064-test-trigger", "DROP TRIGGER IF EXISTS test_bounds_dup ON auth.partner_reason_bounds");
             MustKit("req064-test-trigger", "DROP FUNCTION IF EXISTS auth._test_bounds_dup()");
-            MustKit("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id = " + UuidLit(partner));
         }
     }
 
@@ -2290,11 +2252,10 @@ static class Req064Suite
         // catch are not on this path. Revoking the row, while leaving it unexpired,
         // makes begin_request raise session_denied. Only the session_denied arm of
         // IsClosedSession maps that to the closed-session 401.
-        var partner = Guid.Parse("5f0c3e1a-0064-4000-8000-0000000000ef");
+        var partner = Guid.NewGuid();
         var jwt = Mint(sign, user, "super", null);
         try
         {
-            MustKit("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id = " + UuidLit(partner));
             MustKit("req064-test-trigger", """
                 CREATE OR REPLACE FUNCTION auth._test_session_denied_dup() RETURNS trigger
                 LANGUAGE plpgsql
@@ -2352,7 +2313,6 @@ static class Req064Suite
         {
             MustKit("req064-test-trigger", "DROP TRIGGER IF EXISTS test_session_denied_dup ON auth.partner_reason_bounds");
             MustKit("req064-test-trigger", "DROP FUNCTION IF EXISTS auth._test_session_denied_dup()");
-            MustKit("req064-fixture-delete", "DELETE FROM auth.partner_reason_bounds WHERE partner_id = " + UuidLit(partner));
         }
     }
 
@@ -2712,6 +2672,18 @@ static class Req064Suite
         return value is true;
     }
 
+    static async Task<string> ScalarTextAs(NpgsqlDataSource ds, Guid user, string sql, params object?[] ps)
+    {
+        await using var c = await ds.OpenConnectionAsync();
+        await using var tx = await c.BeginTransactionAsync();
+        await Begin(c, tx, user);
+        await using var cmd = new NpgsqlCommand(sql, c, tx);
+        foreach (var p in ps) cmd.Parameters.Add(new() { Value = p ?? DBNull.Value });
+        var value = await cmd.ExecuteScalarAsync();
+        await tx.RollbackAsync();
+        return value is null or DBNull ? "" : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "";
+    }
+
     static async Task<bool> OpenDenied(string iss, Guid user)
     {
         try { await Mint(user, iss); return false; }
@@ -2801,23 +2773,89 @@ static class Req064Suite
         Check("reused-jti-rejected-for-a-different-subject", session.Length == 64 && status == 401);
     }
 
-    static Task CatalogActorIgnoresForgedGuc(NpgsqlDataSource owner, Guid user)
+    static async Task CatalogActorIgnoresForgedGuc(NpgsqlDataSource owner, NpgsqlDataSource admin, Guid realUser)
     {
-        // catalog-definer-owner.sql revokes EXECUTE on catalog._actor from PUBLIC,
-        // admin_api, login, the issuer, and the migrator. No runtime role can call it.
-        // A grant is not added. The call stays held. See questions.md.
-        _ = owner;
-        _ = user;
-        Hold("forged-resolved-guc-does-not-change-catalog-actor");
-        return Task.CompletedTask;
+        // KitAdmin: real SA session + begin_request, then forge resolved GUCs to a
+        // different principal, then apply_entry_create. Runtime admin_api reads
+        // entry_change.actor_user_id; it must be the real principal. Plus a static
+        // sweep that catalog/auth helpers feeding _actor/resolve_grant do not read
+        // resolved principal GUCs (correlation_id/reason on _actor stay as write labels).
+        var entry = Guid.NewGuid();
+        var code = "g" + entry.ToString("N")[..10];
+        var database = new NpgsqlConnectionStringBuilder(owner.ConnectionString).Database ?? "";
+        var forge = "PERFORM set_config('app.resolved_global_admin', 'off', true);\n"
+            + "PERFORM set_config('app.resolved_partner_ids', " + SqlText(Pa.ToString("D")) + ", true);\n"
+            + "PERFORM set_config('app.resolved_location_ids', '', true);\n"
+            + "PERFORM set_config('app.actor_user_id', " + SqlText(Upa.ToString("D")) + ", true);\n"
+            + "PERFORM set_config('app.admin_type', 'partner', true);\n"
+            + ApplyFeeCreate(entry, Pa, code);
+        var planted = Kit("forged-guc-catalog-create", KitAdmin.SessionThen(
+            database + "_issuer", Issuer, realUser.ToString("D"), "forged-guc-actor", "forged guc actor", forge));
+        if (planted != "ok")
+        {
+            Check("forged-resolved-guc-does-not-change-catalog-actor", false, planted);
+            Check("catalog-auth-helpers-do-not-read-resolved-gucs", false, "create failed");
+            return;
+        }
+        var actor = await ScalarTextAs(admin, realUser,
+            "SELECT actor_user_id::text FROM catalog.entry_change WHERE entry_id = $1 AND change_kind = 'created' ORDER BY at LIMIT 1",
+            entry);
+        Check("forged-resolved-guc-does-not-change-catalog-actor",
+            actor == realUser.ToString("D"), $"actor {actor} want {realUser:D}");
+        var sweep = ActorPrincipalGucSweep(RepoRoot());
+        Check("catalog-auth-helpers-do-not-read-resolved-gucs", sweep == "", sweep);
+    }
+
+    static string ActorPrincipalGucSweep(string repo)
+    {
+        // Functions that feed the catalog actor principal or resolve_grant. current_setting
+        // of correlation_id/reason on _actor is the write label, not the principal.
+        var files = new[]
+        {
+            "src/Auth.Data/Migrations/Req064Actor.sql",
+            "src/Auth.Data/Migrations/Req064Assignment.sql",
+            "src/Auth.Data/Migrations/Req064Issuer.sql",
+            "src/Auth.Data/Migrations/Req064RoleScope.sql",
+            "src/Auth.Data/Migrations/Req064Session.sql",
+            "src/Auth.Data/Migrations/Req064HistoryPartner.sql",
+            "src/Auth.Data/Migrations/CatalogMasterData.Functions.sql",
+            "src/Auth.Data/Migrations/CatalogMasterData.Behavior.sql",
+            "src/Auth.Data/Migrations/CatalogMasterData.Triggers.sql",
+        };
+        var banned = new[]
+        {
+            "current_setting('app.resolved_global_admin'",
+            "current_setting('app.resolved_partner_ids'",
+            "current_setting('app.resolved_location_ids'",
+            "current_setting('app.actor_user_id'",
+            "current_setting('app.admin_type'",
+            "current_setting(\"app.resolved_global_admin\"",
+            "current_setting(\"app.resolved_partner_ids\"",
+            "current_setting(\"app.resolved_location_ids\"",
+            "current_setting(\"app.actor_user_id\"",
+            "current_setting(\"app.admin_type\"",
+        };
+        var hits = new List<string>();
+        foreach (var rel in files)
+        {
+            var path = Path.Combine(repo, rel);
+            if (!File.Exists(path)) continue;
+            var text = File.ReadAllText(path);
+            foreach (var b in banned)
+            {
+                if (text.Contains(b, StringComparison.Ordinal))
+                    hits.Add(rel + ":" + b);
+            }
+        }
+        return string.Join(" | ", hits);
     }
 
     static async Task IssuerSecurity(Admin.Api.Checks.IssuerHarness issuer, RsaSecurityKey sign, NpgsqlDataSource owner, NpgsqlDataSource admin, Admin.Api.AdminApiOptions opt, string issuerCs)
     {
-        // The catalog._actor call is held: no runtime role has EXECUTE. Logout of Sa
+        // Catalog actor ignores forged resolved GUCs (test + sweep). Logout of Sa
         // revokes every live row and sets login_cutoff. A later open of that same user
         // waits out the cutoff second.
-        await CatalogActorIgnoresForgedGuc(owner, Sa2);
+        await CatalogActorIgnoresForgedGuc(owner, admin, Sa);
         string Signed(Dictionary<string, object> claims) => new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
         {
             Claims = claims,
