@@ -98,9 +98,10 @@ public static class OAuth
                     {
                         if (prompt == "none") return Back(redirectUri, issuer, state, ("error", "login_required"));
                         // F-TL-B / DEC-220. Fixed enum only; never echo arbitrary query text.
-                        // Absolute Location: Results.Redirect on a path-relative URL that contains
-                        // '?' path-encodes the query (admin%3Fret=…) and breaks the handoff.
-                        var admin = issuer.TrimEnd('/') + "/admin?ret=" + Uri.EscapeDataString(ret);
+                        // issuerPath comes from cfg StandIn:Issuer (Program.cs), never from Host /
+                        // X-Forwarded-*. Path-relative Location is the real product output
+                        // (curl repro on 96410c75: Location: /standin/admin?ret=… — not admin%3Fret=).
+                        var admin = issuerPath + "/admin?ret=" + Uri.EscapeDataString(ret);
                         if (Q("ff_reason") == "expired") admin += "&reason=expired";
                         return Results.Redirect(admin);
                     }

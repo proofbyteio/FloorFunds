@@ -1,5 +1,7 @@
 // F-09. Admin sign-out ends at /signin. The shell then uses the existing admin handoff.
-// F-TL-B / DEC-220. Authorize for admin_dev_shell with no admin session 302s to /admin?ret=.
+// F-TL-B / DEC-220. Authorize for admin_dev_shell with no admin session 302s to
+// issuerPath + "/admin?ret=" + escaped ret (path-relative; config issuer only).
+// Kill evidence for handoff mutants lives in THIS file's PASS/FAIL lines (not req064-mutants.py).
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -17,7 +19,6 @@ const signin = readFileSync(join(repo, "ui/admin-shell/server.mjs"), "utf8");
 check("shell-signin-hands-off-to-authorize", signin.includes('url.pathname === "/signin"') && signin.includes('location: "/standin/connect/authorize?"'));
 
 function freePortBase() {
-  // Need base, base+1, base+2 free. Probe base only; StandIn binds three consecutive ports.
   return new Promise((resolve, reject) => {
     const s = createServer();
     s.listen(0, "127.0.0.1", () => {
@@ -55,6 +56,11 @@ function runHandoffCheck() {
   })();
 }
 
+function handoffLines(out) {
+  return out.trim().split("\n").filter((l) =>
+    l.startsWith("PASS authorize-") || l.startsWith("FAIL authorize-"));
+}
+
 if (!process.argv.includes("--child")) {
   const runSignout = () => {
     const r = spawnSync("dotnet", ["run", "--project", "src/Login.StandIn/Login.StandIn.csproj", "--no-restore", "-p:IncludeStandIn=true", "--", "--admin-signout-check"], { cwd: repo, encoding: "utf8" });
@@ -66,20 +72,31 @@ if (!process.argv.includes("--child")) {
   const file = join(repo, "src/Login.StandIn/OAuth.cs");
   const src = readFileSync(file, "utf8");
 
-  // Behavioral authorize handoff (replaces brittle source grep of Redirect(admin)).
   const handoffOut = await runHandoffCheck();
-  check("authorize-hands-off-to-admin-sign-in", handoffOut.includes("PASS authorize-hands-off-to-admin-sign-in"), handoffOut.trim().split("\n").filter((l) => l.startsWith("FAIL") || l.startsWith("PASS authorize")).join(" | "));
+  check("authorize-hands-off-to-admin-sign-in", handoffOut.includes("PASS authorize-hands-off-to-admin-sign-in"), handoffLines(handoffOut).join(" | "));
+  check("authorize-handoff-ignores-forged-host", handoffOut.includes("PASS authorize-handoff-ignores-forged-host"), handoffLines(handoffOut).join(" | "));
 
-  // Mutant: break the admin handoff Location so the behavioral check fails.
-  const handoffMutated = src.replace(
-    'var admin = issuer.TrimEnd(\'/\') + "/admin?ret=" + Uri.EscapeDataString(ret);',
-    'var admin = issuer.TrimEnd(\'/\') + "/l/broken?ret=" + Uri.EscapeDataString(ret);',
+  // Mutant 1: break path → /l/broken (killed by exact Location equality).
+  const brokenMutant = src.replace(
+    'var admin = issuerPath + "/admin?ret=" + Uri.EscapeDataString(ret);',
+    'var admin = issuerPath + "/l/broken?ret=" + Uri.EscapeDataString(ret);',
   );
-  check("admin-handoff-mutant-applied", handoffMutated !== src);
-  writeFileSync(file, handoffMutated);
-  const handoffKilled = await runHandoffCheck();
+  check("admin-handoff-broken-path-mutant-applied", brokenMutant !== src);
+  writeFileSync(file, brokenMutant);
+  const brokenKilled = await runHandoffCheck();
   writeFileSync(file, src);
-  check("mutant-admin-handoff-redirect-killed", handoffKilled.includes("FAIL authorize-hands-off-to-admin-sign-in"), handoffKilled.trim().split("\n").filter((l) => l.startsWith("FAIL") || l.startsWith("PASS authorize")).join(" | "));
+  check("mutant-admin-handoff-broken-path-killed", brokenKilled.includes("FAIL authorize-hands-off-to-admin-sign-in"), handoffLines(brokenKilled).join(" | "));
+
+  // Mutant 2: build Location from request Host / X-Forwarded-* (killed by forged-host check).
+  const forgedMutant = src.replace(
+    'var admin = issuerPath + "/admin?ret=" + Uri.EscapeDataString(ret);',
+    'var admin = c.Request.Scheme + "://" + c.Request.Host + issuerPath + "/admin?ret=" + Uri.EscapeDataString(ret);',
+  );
+  check("admin-handoff-forged-host-mutant-applied", forgedMutant !== src);
+  writeFileSync(file, forgedMutant);
+  const forgedKilled = await runHandoffCheck();
+  writeFileSync(file, src);
+  check("mutant-admin-handoff-forged-host-killed", forgedKilled.includes("FAIL authorize-handoff-ignores-forged-host"), handoffLines(forgedKilled).join(" | "));
 
   const mutated = src.replace('adminSession ? "/signin"', 'adminSession ? issuerPath + "/admin"');
   check("direct-redirect-mutant-applied", mutated !== src);

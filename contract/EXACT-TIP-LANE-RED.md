@@ -34,3 +34,21 @@ Parent tip `96410c7537ab61c81f42020b905a7b486a31137e` finished with both lanes r
 ### 6. catalog-nav
 
 - Suite wrapper builds `Catalog.Query.Checks` (and Auth.Data.Checks) so catalog-nav's API checks restore/run on a clean worktree.
+
+## Admin handoff Location repro (2026-11-12 06:31:05 PST) — claimed, not reproduced
+
+**(a) Config-only issuer.** `Program.cs:28-29`: `issuer` from `cfg["StandIn:Issuer"]` or `http://localhost:{ports.Front}/standin`; `issuerPath = new Uri(issuer).AbsolutePath`. Never from `Host`, `X-Forwarded-Host`, or request scheme.
+
+**(b)/(c) Probe.** Exact raw `Location` equality to `issuerPath + "/admin?ret=" + Uri.EscapeDataString(expectedRet)` (path-relative). Forged `Host` / `X-Forwarded-Host: evil.example` + `X-Forwarded-Proto: https` must yield the same Location. Two mutants in `ui/admin-shell/admin-signout.test.mjs` (not the Python runner): `mutant-admin-handoff-broken-path-killed` and `mutant-admin-handoff-forged-host-killed`.
+
+**Repro.** `/tmp/wt-handoff-before` at `96410c75` with `issuerPath + "/admin?ret="` — curl did **not** show `admin%3Fret=`. Product change to absolute `issuer` URL reverted. Prior HttpClient `admin%3Fret=` observation was probe artifact (Uri/PathAndQuery), not Kestrel output.
+
+### before.txt Location
+```
+Location: /standin/admin?ret=%2Fstandin%2Fconnect%2Fauthorize%3Fclient_id%3Dadmin_dev_shell%26redirect_uri%3Dhttp%253A%252F%252F127.0.0.1%253A42075%252Fsignin-oidc%26response_type%3Dcode%26scope%3Dopenid%2520backoffice_api%26state%3Dst1%26code_challenge%3DcdsJ0n5bq8EeKfVOeBDSoiaIy0V1r-aJdXJL0QU7KZI%26code_challenge_method%3DS256
+```
+
+### after.txt Location (reverted path-relative product)
+```
+Location: /standin/admin?ret=%2Fstandin%2Fconnect%2Fauthorize%3Fclient_id%3Dadmin_dev_shell%26redirect_uri%3Dhttp%253A%252F%252F127.0.0.1%253A43673%252Fsignin-oidc%26response_type%3Dcode%26scope%3Dopenid%2520backoffice_api%26state%3Dst1%26code_challenge%3DttpxRVCDa42tfmdTCFzyY3gTe_E6jbXej4GSNJiyXZI%26code_challenge_method%3DS256
+```

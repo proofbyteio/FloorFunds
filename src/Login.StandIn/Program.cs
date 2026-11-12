@@ -53,6 +53,6 @@ Handoff.Map(app, state, issuerPath, issuer, ports);
 Reenroll.Map(app, state, issuerPath, ports, cfg);
 SessionCap.Map(app, state, issuerPath, ports);
 CageStub.Map(app, state, issuerPath, ports);
-if (args.Contains("--admin-handoff-check")) return AdminHandoffAuthorizeProbe.Run(app, issuerPath, ports);
+if (args.Contains("--admin-handoff-check")) return AdminHandoffAuthorizeProbe.Run(app, issuer, issuerPath, ports);
 app.Run();
 return 0;
