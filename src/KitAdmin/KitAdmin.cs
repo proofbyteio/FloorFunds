@@ -55,6 +55,7 @@ public static class KitAdmin
         "req064-fixture-delete|Req064Suite|fixture cleanup|auth|DELETE|the migrator has no DELETE; the checks remove the rows they created",
         "req064-test-trigger|Req064Suite|bounds-retry-closed-session-is-401|partner_reason_bounds|TRIGGER|the migrator does not own the table; the trigger is the test double",
         "req064-user-lock|Req064Suite|open-blocked-behind-a-lock|app_user|locked_until|the migrator has no UPDATE; the check locks the user while open_session waits",
+        "resolver-store-is-read|Req064Suite|resolver-store-is-read|resolver_read_seq|last_value|USAGE and SELECT stay on the auth definer; the scratch superuser reads last_value around one resolve_grant",
     ];
 
     public static void Exec(string reason, string sql)
@@ -67,6 +68,18 @@ public static class KitAdmin
         var (code, stdout, stderr) = Run(db, sql);
         if (code != 0)
             throw new InvalidOperationException("kit admin sql failed: " + FirstError(stderr + stdout));
+    }
+
+    /// <summary>Runs sql as the scratch superuser with -At and returns trimmed stdout. No product grants.</summary>
+    public static string At(string reason, string sql)
+    {
+        var db = Ready(reason, sql);
+        if (!IsScratchDatabase(db))
+            throw new InvalidOperationException("kit admin refused: database is not a scratch database");
+        var (code, stdout, stderr) = Run(db, sql, null, tuplesOnly: true);
+        if (code != 0)
+            throw new InvalidOperationException("kit admin sql failed: " + FirstError(stderr + stdout));
+        return stdout.Trim();
     }
 
     /// <summary>Runs the statement in a transaction that is rolled back. Returns ok, or the SQLSTATE.</summary>
@@ -277,7 +290,7 @@ public static class KitAdmin
             var text = File.ReadAllText(file);
             if (file.EndsWith($"{Path.DirectorySeparatorChar}KitAdmin.cs", StringComparison.Ordinal))
                 continue;
-            foreach (Match m in Regex.Matches(text, @"(?:KitAdmin\.Exec|KitAdmin\.SqlState|KitAdmin\.Hold|KitAdmin\.Begin|KitFailsLast|KitRaisesLast|Kit)\(\s*""([^""]+)"""))
+            foreach (Match m in Regex.Matches(text, @"(?:KitAdmin\.Exec|KitAdmin\.SqlState|KitAdmin\.Hold|KitAdmin\.Begin|KitAdmin\.At|KitFailsLast|KitRaisesLast|Kit)\(\s*""([^""]+)"""))
                 calls.Add(m.Groups[1].Value);
             if (Regex.IsMatch(text, @"Exec\(\s*seed\b[^;]{0,500}?(UPDATE |DELETE )", RegexOptions.Singleline))
                 failures.Add("test-seed-update-or-delete " + Path.GetRelativePath(repo, file));
@@ -373,8 +386,11 @@ public static class KitAdmin
     static (int code, string stdout, string stderr) Run(string db, string sql) => Run(db, sql, null);
 
     static (int code, string stdout, string stderr) Run(string db, string sql, string? applicationName)
+        => Run(db, sql, applicationName, tuplesOnly: false);
+
+    static (int code, string stdout, string stderr) Run(string db, string sql, string? applicationName, bool tuplesOnly)
     {
-        using var process = Start(db, sql, applicationName);
+        using var process = Start(db, sql, applicationName, tuplesOnly);
         var stdout = process.StandardOutput.ReadToEnd();
         var stderr = process.StandardError.ReadToEnd();
         process.WaitForExit();
@@ -382,6 +398,9 @@ public static class KitAdmin
     }
 
     static Process Start(string db, string sql, string? applicationName)
+        => Start(db, sql, applicationName, tuplesOnly: false);
+
+    static Process Start(string db, string sql, string? applicationName, bool tuplesOnly)
     {
         var port = Environment.GetEnvironmentVariable(PortVariable);
         var psi = new ProcessStartInfo
@@ -399,6 +418,8 @@ public static class KitAdmin
         psi.ArgumentList.Add("-v");
         psi.ArgumentList.Add("VERBOSITY=verbose");
         psi.ArgumentList.Add("-X");
+        if (tuplesOnly)
+            psi.ArgumentList.Add("-At");
         psi.ArgumentList.Add("-d");
         psi.ArgumentList.Add(db);
         if (!string.IsNullOrEmpty(port))

@@ -283,8 +283,16 @@ static class Req064Suite
             Check("two-partner-union", bothA.Status == 200 && bothB.Status == 200);
 
             // auth_owner owns the sequence. USAGE and SELECT go to the auth definer only.
-            Hold("resolver-store-is-read");
+            // KitAdmin reads last_value as the scratch superuser; no product grant is added.
+            // Assert: one resolve_grant (via /api/nav) advances resolver_read_seq by exactly 1.
+            var seq0Text = KitAdmin.At("resolver-store-is-read",
+                "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM auth.resolver_read_seq");
             _ = await Send(http, HttpMethod.Get, "/api/nav", saTok);
+            var seq1Text = KitAdmin.At("resolver-store-is-read",
+                "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM auth.resolver_read_seq");
+            var seq0 = long.Parse(seq0Text, System.Globalization.CultureInfo.InvariantCulture);
+            var seq1 = long.Parse(seq1Text, System.Globalization.CultureInfo.InvariantCulture);
+            Check("resolver-store-is-read", seq1 == seq0 + 1, $"{seq0}->{seq1}");
 
             Check("unknown-kid-401", (await Send(http, HttpMethod.Get, "/api/nav", Sign(rsa, "not-a-key", Payload(Sa, "super", null)))).Status == 401);
             Check("missing-kid-401", (await Send(http, HttpMethod.Get, "/api/nav", Sign(rsa, null, Payload(Sa, "super", null)))).Status == 401);
