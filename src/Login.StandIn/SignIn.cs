@@ -38,8 +38,8 @@ public static class SignIn
 
     static string E(string s) => WebUtility.HtmlEncode(s);
     // Generic ui/ card (hub, admin, sign-out confirm): layout.html + card.html.
-    public static IResult Html(string testid, string body, int status = 200, bool productLockup = false) =>
-        Ui.Page("Sign in", Ui.Render("card", ("testid", testid), ("body", body)), null, status, productLockup);
+    public static IResult Html(string testid, string body, int status = 200, bool productLockup = false, string? title = null) =>
+        Ui.Page(title ?? "Sign in", Ui.Render("card", ("testid", testid), ("body", body)), null, status, productLockup);
 
     // OQ-11 (TL 9:42): an unknown user still runs one PBKDF2 hash against this dummy, so timing matches a known user.
     public static readonly (byte[] Salt, byte[] Hash) DummyCred = StandInUser.Hash(Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)));
@@ -81,8 +81,8 @@ public static class SignIn
         var agent = $"http://localhost:{agentPort}/_standin/agent/attest";
         if (resign) // 5.3 re-prompt (UX 07 #u2/#p2). [ASSUMPTION A44] after attestation_invalid (5.5) it is wrapped in screen 8B (UX 08 agentdown).
         {
-            var r = Ui.Render("resign-in", ("action", slugBase), ("agent", agent), ("af", t), ("error", error is null ? "" : Ui.Error(error)));
-            return Ui.Page("Sign in to Cash Advance", agentDown ? Ui.Render("screen-8b", ("resign", r)) : r, "signin", status, productLockup: true);
+            var r = Ui.Render("resign-in", ("action", slugBase), ("agent", agent), ("af", t), ("error", error is null ? "" : Ui.Error(error)), ("product", Ui.ProductName));
+            return Ui.Page("Sign in to " + Ui.ProductName, agentDown ? Ui.Render("screen-8b", ("resign", r)) : r, "signin", status, productLockup: true);
         }
         return Ui.Page("Sign in", Ui.Render("signin", ("action", slugBase), ("agent", agent), ("af", t), ("error", Ui.Error(error))), "signin", status, productLockup: true);
     }
@@ -191,7 +191,7 @@ public static class SignIn
                 if (ok && remote)
                 {
                     Fail("remote_session", user!.UserId);
-                    return Ui.Page("Sign-in is blocked", Ui.Render("screen-8a"));
+                    return Ui.Page("Sign-in is blocked", Ui.Render("screen-8a", ("product", Ui.ProductName)));
                 }
                 // [ASSUMPTION A53] the failure counter is NOT reset by a right password alone (else password+wrong-TOTP never locks); a full sign-in resets it.
                 // 4.11: the pre-session id is reissued after the password step.

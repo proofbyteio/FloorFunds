@@ -14,7 +14,7 @@ export function renderApp(state) {
     <a class="skip-link" href="#main">Skip to content</a>
     <p class="draft-banner">TEST-ONLY presentation. Synthetic fixture projection of the accepted catalog contract. Not the .NET double, not an API, and not a database. Rows are not production seeds.</p>
     <header class="topbar">
-      <p class="crumbs">Cash Advance / Administration / Master data</p>
+      <p class="crumbs">${esc(state.productName || "")} / Administration / Master data</p>
       <p class="context">Synthetic review context: ${esc(actor.label)}. Not authentication.</p>
     </header>
     <div class="actor-bar">

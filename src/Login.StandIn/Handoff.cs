@@ -71,7 +71,7 @@ public static class Handoff
         var t = af.GetAndStoreTokens(c).RequestToken!;
         // [ASSUMPTION A38] ui-driver has no id for this page; the form id is "handoff" and the page has no screen testid (v1.1 UI item).
 
-        return Ui.Page("Opening Cash Advance", Ui.Render("handoff", ("action", issuerPath + "/connect/authorize"), ("agent", $"http://localhost:{agentPort}/_standin/agent/attest"), ("af", t)), "handoff");
+        return Ui.Page("Opening " + Ui.ProductName, Ui.Render("handoff", ("action", issuerPath + "/connect/authorize"), ("agent", $"http://localhost:{agentPort}/_standin/agent/attest"), ("af", t), ("product", Ui.ProductName)), "handoff");
     }
 
     public static void Map(WebApplication app, StandInState st, string issuerPath, string issuer, StandInPorts ports)

@@ -1,5 +1,5 @@
 /* {productName} admin — one theme layer, shipped DARK set (DEC-227).
-   Config default for {productName} is FloorFunds (DEC-228).
+   The visible name comes from Branding:ProductName (DEC-228). The config default is not repeated here.
    DEC-230 updates DEC-226 for the sidebar and sign-in only (mark + name).
    DEC-231: inputs stay 0.375rem.
    DEC-232: CTA gold gradient and glow, AA-readable.
@@ -12,9 +12,6 @@
 */
 
 :root {
-  /* DEC-228: the product name comes from config. Default FloorFunds. */
-  --product-name: FloorFunds;
-
   /* HELD_LOGO (TL choice under DEC-226). logo-1.svg
      sha256 117217d83459f9215cd379a759b7e2e2902111760c2f853de85d9f7ef235165e
      Small icons: matching favicon rasters of the same monogram.

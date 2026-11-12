@@ -234,7 +234,7 @@ public static class OAuth
                     return e;
                 }
                 if (!ok) { st.Emit(Deny("attestation_invalid")); return Results.Redirect(slugRet + "&agent=down"); } // 5.5: password + MFA, then Cash Advance opens
-                if (remote) { st.Emit(Deny("remote_session")); return Ui.Page("Sign-in is blocked", Ui.Render("screen-8a")); } // 5.4
+                if (remote) { st.Emit(Deny("remote_session")); return Ui.Page("Sign-in is blocked", Ui.Render("screen-8a", ("product", Ui.ProductName))); } // 5.4
                 var user = st.Users.Values.First(u => u.UserId == s!.UserId);
                 if (Handoff.RuleFailure(st, s!, user, client, now) is not null) return Results.Redirect(slugRet); // rules re-checked at completion
                 int? maxAge = a.TryGetValue("max_age", out var ma) && int.TryParse(ma, out var m) ? m : null;
@@ -412,10 +412,10 @@ public static class OAuth
                     // 11.2d: no valid hint, so confirm first (logout CSRF).
                     var t = af.GetAndStoreTokens(c).RequestToken!;
                     return SignIn.Html("screen-signout-confirm", $"""
-<p>Sign out of all apps?</p><form method="post" action="{issuerPath}/connect/endsession">
+<h1>Sign out of all apps?</h1><p>Sign out of {System.Net.WebUtility.HtmlEncode(Ui.ProductName)}?</p><form method="post" action="{issuerPath}/connect/endsession">
 <input type="hidden" name="__RequestVerificationToken" value="{System.Net.WebUtility.HtmlEncode(t)}"><input type="hidden" name="confirm" value="yes">
 <button data-testid="signout-confirm" type="submit">Sign out</button></form>
-""");
+""", productLockup: true, title: "Sign out of all apps?");
                 }
                 var slug = s is { AdminType: null } ? s.Slug : (string)st.Fixtures["partners"]![0]!["locations"]![0]!["slug"]!;
                 if (s is not null && !s.Revoked)
@@ -427,7 +427,9 @@ public static class OAuth
                 }
                 c.Response.Cookies.Delete(SignIn.SessionCookie, new CookieOptions { Path = issuerPath });
                 // 11.2c: the end state is always the session's /l/{slug}. [ASSUMPTION A30] post_logout_redirect_uri is never followed.
-                result = Results.Redirect(issuerPath + "/l/" + slug);
+                result = s?.AdminType is not null
+                    ? Results.Redirect(issuerPath + "/admin")
+                    : Results.Redirect(issuerPath + "/l/" + slug);
             }
             if (signedOutUser is not null)
                 await RequestSessionRevoker.NotifyAsync(issuer, signedOutUser);

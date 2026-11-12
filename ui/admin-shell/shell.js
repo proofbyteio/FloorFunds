@@ -257,6 +257,8 @@ async function showConfig() {
   }
   const select = document.createElement("select");
   select.className = "field__input";
+  select.id = "signin-config-location";
+  select.setAttribute("aria-label", "Location");
   for (const row of rows) {
     const o = document.createElement("option");
     o.value = row.location_id;
@@ -279,7 +281,10 @@ async function showConfig() {
     out.append(dl);
   }
   select.addEventListener("change", load);
-  main.append(select, out);
+  const locationLabel = h("label", "Location");
+  locationLabel.htmlFor = select.id;
+  locationLabel.className = "field__label";
+  main.append(locationLabel, select, out);
   await load();
 }
 
