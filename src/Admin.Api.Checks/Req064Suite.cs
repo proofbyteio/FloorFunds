@@ -444,7 +444,7 @@ static class Req064Suite
         }
 
         var revoked = await Mint(Sa2);
-        await Exec(owner, "SELECT auth.revoke_session($1)", revoked);
+        await RevokeSession(revoked);
         Check("revoked-session-denied-on-next-action", await Denied(admin, "SELECT auth.begin_request($1)", revoked));
 
         var bound = await Mint(Sa);
@@ -1578,7 +1578,7 @@ static class Req064Suite
         Check("expired-session-is-the-unified-401", SameClosed(expired), expired.Status + " " + expired.Authenticate + " " + Clip(expired.Body));
         Check("expired-session-is-not-replaced", again == 401 && SameClosed(expired) && rows == 1 && live == 0,
             $"issuer {again} rows {rows} live {live}");
-        await Exec(owner, "UPDATE auth.request_session SET revoked_at = clock_timestamp() WHERE jti = $1", jti);
+        await RevokeSession(jwt);
         var revived = await IssuerStatus(issuerUrl, jwt);
         var nav = await SendClosed(http, HttpMethod.Get, "/api/nav", jwt);
         var still = await ScalarLong(owner, "SELECT count(*) FROM auth.request_session WHERE jti = $1 AND revoked_at IS NOT NULL", jti);
@@ -1600,7 +1600,7 @@ static class Req064Suite
             $"{openedExpired.Status} {openedRevoked.Status} {openedLoggedOut.Status}");
         KitAdmin.Exec("closed-sessions-are-byte-identical",
             "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE jti = '" + JtiOf(expiredJwt) + "'");
-        await Exec(owner, "UPDATE auth.request_session SET revoked_at = clock_timestamp() WHERE jti = $1", JtiOf(revokedJwt));
+        await RevokeSession(revokedJwt);
         var expired = await SendClosed(http, HttpMethod.Get, "/api/nav", expiredJwt);
         var revoked = await SendClosed(http, HttpMethod.Get, "/api/nav", revokedJwt);
         await using (var c = await (await IssuerDs()).OpenConnectionAsync())
@@ -2338,7 +2338,7 @@ static class Req064Suite
             await Task.Delay(400);
             var held = !send.IsCompleted;
             if (held)
-                await Exec(owner, "UPDATE auth.request_session SET revoked_at = clock_timestamp() WHERE jti = $1 AND expires_at > clock_timestamp()", JtiOf(jwt));
+                await RevokeSession(jwt);
             using var res = await send.WaitAsync(TimeSpan.FromSeconds(10));
             var body = await res.Content.ReadAsStringAsync();
             var authn = res.Headers.WwwAuthenticate.ToString();
@@ -2437,6 +2437,14 @@ static class Req064Suite
             VALUES ($1, $2)
             ON CONFLICT (user_id) DO UPDATE SET issuer = EXCLUDED.issuer
             """, user, Issuer);
+    }
+
+    static async Task RevokeSession(string token)
+    {
+        await using var c = await (await IssuerDs()).OpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand("SELECT auth.revoke_session($1)", c);
+        cmd.Parameters.Add(new() { Value = token });
+        await cmd.ExecuteNonQueryAsync();
     }
 
     static async Task RevokeLogin(Guid user)
