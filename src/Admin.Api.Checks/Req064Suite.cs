@@ -309,6 +309,7 @@ static class Req064Suite
             await LoginConfigHttp(http, Mint(sign, Sa, "super", null), owner);
             await LoginSerialization(owner, admin);
             await MigratorCannotTruncate(owner, "auth.app_user", "migrator-cannot-truncate-app-user");
+            await MigratorCannotTruncate(owner, "auth.admin_assignment", "migrator-cannot-truncate-admin-assignment");
             await BoundsRetry(http, sign, owner, Sa);
             await SessionDeniedArm(http, sign, owner, Sa);
             var signedIn = await StandInSignIn.Run(ownerCs, adminCs, issuerCs);
