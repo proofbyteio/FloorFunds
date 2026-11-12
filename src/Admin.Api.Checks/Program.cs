@@ -628,7 +628,9 @@ try
     }
     {
         var r = await Post(SA, new Dictionary<string, object?> { ["partner_id"] = P_A.ToString(), ["name"] = "No provider" });
-        Ok("create: no login_config -> 422 login_config required (a location needs a provider)", HasField(r, "login_config", "required"));
+        var noCfg = r.Status == 201 ? LocOf(r) : Guid.Empty;
+        Ok("create: no login_config -> 201 and no sign-in config row", r.Status == 201 && noCfg != Guid.Empty
+            && await OScalar<long>("SELECT count(*) FROM auth.location_login_config WHERE location_id=$1", noCfg) == 0, r.Body);
         r = await Post(SA, Create(P_A, "x", Without(DbCfg(), "provider_kind")));
         Ok("create: no provider_kind -> 422 login_config/provider_kind required", HasField(r, "login_config/provider_kind", "required"));
         r = await Post(SA, new Dictionary<string, object?> { ["partner_id"] = "nope", ["name"] = "  ", ["login_config"] = DbCfg(), ["slug"] = "aaaa-bbbb-cccc-dddd", ["row_version"] = 5, ["created_by"] = U_SA.ToString() });

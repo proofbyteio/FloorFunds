@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Antiforgery;
 
 namespace Login.StandIn;
 
-public sealed record LocationInfo(string Slug, string LocationId, string PartnerId, string? CachdClientId, string Preset);
+public sealed record LocationInfo(string Slug, string LocationId, string PartnerId, string? CachdClientId, string Preset, bool HasLoginConfig);
 
 // /l/{slug} sign-in, TOTP step, attest-nonce (contract 4.11, 6.1-6.7; ui-driver testids and strings).
 public static class SignIn
@@ -16,8 +16,22 @@ public static class SignIn
 
     public static LocationInfo? Location(JsonObject fx, string slug) =>
         fx["partners"]!.AsArray().SelectMany(p => p!["locations"]!.AsArray().Select(l => new LocationInfo((string)l!["slug"]!,
-            (string)l["location_id"]!, (string)p!["partner_id"]!, (string?)p["cachd_client_id"], (string)p["preset"]!)))
+            (string)l["location_id"]!, (string)p!["partner_id"]!, (string?)p["cachd_client_id"], (string)p["preset"]!,
+            Configured(l!))))
         .FirstOrDefault(l => l.Slug == slug);
+
+    // A fixture location with no login_config member was created when sign-in setup was required.
+    // false or null means there is no config, so sign-in stays closed.
+    static bool Configured(JsonNode location)
+    {
+        if (location is not JsonObject o || !o.ContainsKey("login_config")) return true;
+        var node = o["login_config"];
+        if (node is null) return false;
+        if (node is JsonValue v && v.TryGetValue<bool>(out var on)) return on;
+        return true;
+    }
+
+    public static bool Opens(LocationInfo? loc) => loc is not null && LocationSignIn.Allowed(loc.HasLoginConfig);
 
     public static JsonObject Scope(LocationInfo l)
     {
@@ -127,7 +141,7 @@ public static class SignIn
             Headers(c, ports.Control);
             lock (st.Gate)
             {
-                if (Location(st.Fixtures, slug) is null) return Results.NotFound();
+                if (!Opens(Location(st.Fixtures, slug))) return Results.NotFound();
                 var now = st.Clock.Now;
                 // A ret is only ever our own authorize URL (no open redirect).
                 var tx = new SignInTx { Id = TokenIssuer.NewHandle(), Slug = slug, Nonce = TokenIssuer.NewHandle(), NonceAt = now,
@@ -164,7 +178,7 @@ public static class SignIn
             {
                 var tx = GetTx(st, c, slug);
                 var loc = Location(st.Fixtures, slug);
-                if (tx is null || loc is null || tx.Stage != "password") return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
+                if (tx is null || loc is null || !LocationSignIn.Allowed(loc.HasLoginConfig) || tx.Stage != "password") return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
                 var now = st.Clock.Now;
                 // 6.7 step 1 consumes the nonce before anything else, whatever happens next.
                 var (ok, remote) = Attestation.Check(st, tx, jws, issuer, "signin", now);
@@ -215,7 +229,7 @@ public static class SignIn
                 var loc = Location(st.Fixtures, slug);
                 // G5: pending pre-MFA state older than 5 min is dropped; the user starts a full sign-in (same page as an unknown tx).
                 if (tx is not null && tx.Stage == "totp" && tx.PreMfaExpired(st.Clock.Now)) { st.Auth.Tx.Remove(tx.Id); tx = null; }
-                if (tx is null || loc is null || tx.Stage != "totp" || !st.Users.TryGetValue(tx.Username!, out var user))
+                if (tx is null || loc is null || !LocationSignIn.Allowed(loc.HasLoginConfig) || tx.Stage != "totp" || !st.Users.TryGetValue(tx.Username!, out var user))
                     return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
                 var now = st.Clock.Now;
                 // G1 +-30 s: one 30 s step either side.

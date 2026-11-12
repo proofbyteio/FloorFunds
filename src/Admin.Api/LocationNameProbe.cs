@@ -23,7 +23,14 @@ public static class LocationNameProbe
         var ok = LoginConfigValidator.ValidateCreate(named, bounds, errs, out _);
         var accepted = ok is { Name: "North Desk" };
         Console.WriteLine((accepted ? "PASS " : "FAIL ") + "create-accepts-a-location-name");
-        return rejected && accepted ? 0 : 1;
+        errs.Clear();
+        var bare = Parse("""
+            {"partner_id":"11111111-1111-4111-8111-111111111111","name":"North Desk"}
+            """);
+        var without = LoginConfigValidator.ValidateCreate(bare, bounds, errs, out _);
+        var optional = without is { Name: "North Desk", Config: null } && errs.Count == 0;
+        Console.WriteLine((optional ? "PASS " : "FAIL ") + "create-allows-a-location-without-login-config");
+        return rejected && accepted && optional ? 0 : 1;
     }
 
     static JsonElement Parse(string json)

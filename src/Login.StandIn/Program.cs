@@ -1,6 +1,8 @@
 // Stand-in login service (SI1). Contract: tag contract-v1 (e363090).
 using Login.StandIn;
 
+if (args.Contains("--location-signin-check")) return LocationSignInProbe.Run();
+
 var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration;
 // HO17 (TL 9:42): no request-line logging. ASP.NET Core "Request starting/finished" and routing logs carry raw query strings

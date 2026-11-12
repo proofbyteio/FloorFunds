@@ -923,15 +923,19 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             throw Validation(errs);
         }
         var cfg = n!.Config;
-        // Steps 9-10: on create, vs "none" (A-5).
-        var down = DowngradeFields(true, false, cfg);
-        if (down.Count > 0 && who.IsPartnerAdmin)
+        // Steps 9-10 apply only when sign-in setup is included. A create with no
+        // login_config stores the location and leaves it unable to sign in.
+        if (cfg is not null)
         {
-            await tx.RollbackAsync();
-            await DenyAsync(who, "not_super_admin", n.PartnerId, null, down);
-            throw Err(403, "not_super_admin");
+            var down = DowngradeFields(true, false, cfg);
+            if (down.Count > 0 && who.IsPartnerAdmin)
+            {
+                await tx.RollbackAsync();
+                await DenyAsync(who, "not_super_admin", n.PartnerId, null, down);
+                throw Err(403, "not_super_admin");
+            }
+            if (down.Count > 0 && cfg.Reason is null) throw Err(400, "reason_required");
         }
-        if (down.Count > 0 && cfg.Reason is null) throw Err(400, "reason_required");
         LocationAddress? address = null;
         if (o.TryGetProperty("address", out var addressEl))
         {
@@ -943,14 +947,14 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             }
         }
 
-        var entra = cfg.ProviderKind == "entra";
         var location = Guid.NewGuid();
+        var slug = NewSlug();
         var now = Now();
         await using (var ins = new NpgsqlCommand("INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ($1, $2, $3, $4)", c, tx))
         {
             ins.Parameters.Add(new() { Value = location });
             ins.Parameters.Add(new() { Value = n.PartnerId });
-            ins.Parameters.Add(new() { Value = NewSlug() });
+            ins.Parameters.Add(new() { Value = slug });
             ins.Parameters.Add(new() { Value = n.Name });
             await ins.ExecuteNonQueryAsync();
         }
@@ -975,6 +979,19 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             addr.Parameters.Add(new() { Value = address.TimeZone });
             await addr.ExecuteNonQueryAsync();
         }
+        if (cfg is null)
+        {
+            await tx.CommitAsync();
+            ctx.Response.Headers.Location = $"/api/orgs/locations/{location:D}";
+            return Json(201, new JsonObject
+            {
+                ["location_id"] = location.ToString("D"),
+                ["partner_id"] = n.PartnerId.ToString("D"),
+                ["slug"] = slug,
+                ["name"] = n.Name,
+            });
+        }
+        var entra = cfg.ProviderKind == "entra";
         await using (var ins = new NpgsqlCommand(
             """
             INSERT INTO auth.location_login_config (location_id, provider_kind, display_name, entra_allowed_tenant_ids, oidc_authority, oidc_client_id,
