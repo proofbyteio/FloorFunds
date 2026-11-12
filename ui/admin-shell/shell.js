@@ -80,10 +80,11 @@ function banner(kind, title, text) {
 
 function denied() {
   if (leaving) return;
-  main.replaceChildren(
-    h("h1", "This screen is not available"),
-    banner("error", "Denied", "The server did not grant this screen. The menu only lists screens the grant includes."),
-  );
+  const back = primaryControl("a", "Back to Home");
+  back.href = "#/home";
+  const alert = banner("error", "You cannot open this screen", "This screen is not in the server-resolved grant for the current assignment. The item is hidden from the menu. Reaching it directly does not show catalog rows, names, or any other record.");
+  alert.setAttribute("role", "alert");
+  main.replaceChildren(h("h1", "Access denied"), alert, back);
 }
 
 function noAssignment() {
@@ -322,7 +323,7 @@ async function draw() {
   grant = me.status === 200 ? (me.body.screens ?? []) : [];
   const name = route();
   renderNav(name === "denied" ? "" : name);
-  if (grant.length === 0 && name === "home") return noAssignment();
+  if (grant.length === 0) return noAssignment();
   if (name === "denied") return denied();
   if (name === "home") return showHome();
   if (name === "locations") return showLocations();
