@@ -2675,8 +2675,6 @@ finally
         drop.Parameters.Add(new NpgsqlParameter { Value = new[] { U_SA, U_PA, U_PB, U_RD, U_NO, U_CU } });
         await drop.ExecuteNonQueryAsync();
     }
-    await using (var off = new NpgsqlCommand("ALTER TABLE auth.admin_assignment DISABLE TRIGGER USER", c)) await off.ExecuteNonQueryAsync();
-    await using (var off = new NpgsqlCommand("ALTER TABLE auth.app_user DISABLE TRIGGER USER", c)) await off.ExecuteNonQueryAsync();
     await DropGrant("DELETE FROM auth.request_binding WHERE user_id = ANY($1)");
     await DropGrant("DELETE FROM auth.request_session WHERE user_id = ANY($1)");
     await DropGrant("DELETE FROM auth.admin_assignment WHERE user_id = ANY($1)");
@@ -2684,8 +2682,6 @@ finally
     foreach (var t in Tables) { await using var d = new NpgsqlCommand($"DELETE FROM auth.{t}", c); await d.ExecuteNonQueryAsync(); }
     await DropGrant("DELETE FROM auth.user_issuer WHERE user_id = ANY($1)");
     await DropGrant("DELETE FROM auth.app_user WHERE user_id = ANY($1)");
-    await using (var on = new NpgsqlCommand("ALTER TABLE auth.app_user ENABLE TRIGGER USER", c)) await on.ExecuteNonQueryAsync();
-    await using (var on = new NpgsqlCommand("ALTER TABLE auth.admin_assignment ENABLE TRIGGER USER", c)) await on.ExecuteNonQueryAsync();
     var left = 0L;
     foreach (var t in Tables) left += await Count(t);
     Ok("cleanup: auth.audit_outbox, change, llc, location, partner_reason_bounds empty again", left == 0);

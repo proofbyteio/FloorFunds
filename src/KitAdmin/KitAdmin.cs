@@ -41,6 +41,10 @@ public static class KitAdmin
         "login-config-restore-secret-ref|Admin.Api.Checks|put: entra -> entra keeps planted secret_ref|location_login_config|secret_ref|restore the deployment value after the entra-to-entra assertion",
         "ttl-over-15-minutes-rejected|Req064Suite|ttl-over-15-minutes-rejected|request_session|expires_at|open_session caps at 15 minutes; the check constraint is the behaviour under test",
         "session-rate-setup|Req064Suite|six-hundred-first-open-rejected|request_session|created_at|historical revoked rows; the assertion is open_session as the issuer",
+        "req064-fee-fixture|Req064Suite|T12 flag-does-not-grant-and-principal-does|registered_entry|INSERT|admin_api has no EXECUTE on apply_entry_create; the insert runs with a live issuer session",
+        "req064-history-label-fixture|Req064Suite|history-label-uses-the-record-partner|registered_entry|INSERT|admin_api has no EXECUTE on apply_entry_create; the stored label is read as admin_api",
+        "catalog-read-fee-fixture|Catalog.Read.Checks|partner-a-fee-definition|registered_entry|INSERT|admin_api has no EXECUTE on apply_entry_create; the reader assertions run as admin_api",
+        "catalog-query-fixture|Catalog.Query.Checks|query-sa-fee-list-includes-private|registered_entry|INSERT|admin_api has no EXECUTE on apply_entry_create; the query assertions run as admin_api",
     ];
 
     public static void Exec(string reason, string sql)
@@ -109,6 +113,29 @@ public static class KitAdmin
         return password;
     }
 
+    /// <summary>
+    /// One transaction: the issuer role opens a session, then begin_request, correlation_id,
+    /// and reason, then the catalog writes. Triggers stay enabled.
+    /// </summary>
+    public static string SessionThen(string issuerRole, string iss, string userId, string correlationId, string writeReason, string writes)
+    {
+        if (!Regex.IsMatch(issuerRole, "^[a-z0-9_]+\\z"))
+            throw new InvalidOperationException("kit admin refused: issuer role");
+        if (writes.Contains("$fix$", StringComparison.Ordinal) || writes.Contains("session_replication_role", StringComparison.Ordinal)
+            || writes.Contains("DISABLE TRIGGER", StringComparison.Ordinal) || writes.Contains("ENABLE TRIGGER", StringComparison.Ordinal))
+            throw new InvalidOperationException("kit admin refused: catalog write bypasses triggers");
+        return "DO $fix$\nDECLARE tok text;\nBEGIN\n"
+            + "EXECUTE 'SET LOCAL ROLE " + issuerRole + "';\n"
+            + "SELECT auth.open_session(" + Literal(iss) + ", " + Literal(userId) + ", gen_random_uuid(), clock_timestamp() + interval '5 minutes', clock_timestamp()) INTO tok;\n"
+            + "RESET ROLE;\n"
+            + "PERFORM auth.begin_request(tok);\n"
+            + "PERFORM set_config('app.correlation_id', " + Literal(correlationId) + ", true);\n"
+            + "PERFORM set_config('app.reason', " + Literal(writeReason) + ", true);\n"
+            + writes + "\nEND\n$fix$;";
+    }
+
+    public static string Literal(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
+
     public static void Arm(string database, int port)
     {
         Environment.SetEnvironmentVariable(ModeVariable, IsScratchDatabase(database) ? "1" : null);
@@ -128,7 +155,7 @@ public static class KitAdmin
             var text = File.ReadAllText(file);
             if (file.EndsWith($"{Path.DirectorySeparatorChar}KitAdmin.cs", StringComparison.Ordinal))
                 continue;
-            foreach (Match m in Regex.Matches(text, @"KitAdmin\.Exec\(\s*""([^""]+)"""))
+            foreach (Match m in Regex.Matches(text, @"(?:KitAdmin\.Exec|KitFailsLast|KitRaisesLast|Kit)\(\s*""([^""]+)"""))
                 calls.Add(m.Groups[1].Value);
             if (Regex.IsMatch(text, @"Exec\(\s*seed\b[^;]{0,500}?(UPDATE |DELETE )", RegexOptions.Singleline))
                 failures.Add("test-seed-update-or-delete " + Path.GetRelativePath(repo, file));
@@ -140,17 +167,55 @@ public static class KitAdmin
         foreach (var reason in calls)
         {
             if (!listed.Contains(reason))
-                failures.Add("kit-admin-call-not-on-the-list " + reason);
+                failures.Add("kit-admin-call-not-on-the-list " + reason + " kitadmin-unlisted-callsite");
         }
         foreach (var reason in listed)
         {
             if (!calls.Contains(reason))
                 failures.Add("kit-admin-list-without-call " + reason);
         }
+        var actorBody = File.ReadAllText(Path.Combine(repo, "src", "Auth.Data", "Migrations", "Req064Actor.sql"))
+            + File.ReadAllText(Path.Combine(repo, "src", "Auth.Data", "Migrations", "Req064Session.sql"));
+        if (actorBody.Contains("_test_seed", StringComparison.Ordinal) || actorBody.Contains("kit_actor_bypass", StringComparison.Ordinal))
+            failures.Add("actor-test-bypass");
+        var seedRole = File.ReadAllText(Path.Combine(repo, "db", "kit", "test-seed-role.sql"));
+        if (seedRole.Contains("GRANT SELECT, INSERT ON TABLE catalog.", StringComparison.Ordinal)
+            || seedRole.Contains("GRANT INSERT ON TABLE catalog.", StringComparison.Ordinal)
+            || seedRole.Contains("GRANT INSERT ON catalog.registered_entry", StringComparison.Ordinal))
+            failures.Add("test-seed-insert-registered-entry");
+        foreach (var sqlFile in Directory.EnumerateFiles(repo, "*.sql", SearchOption.AllDirectories))
+        {
+            if (sqlFile.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+                continue;
+            var sql = File.ReadAllText(sqlFile);
+            if (sql.Contains("GRANT EXECUTE ON FUNCTION catalog.apply_entry_create", StringComparison.Ordinal)
+                || sql.Contains("GRANT EXECUTE ON FUNCTION catalog.apply_claim_edit", StringComparison.Ordinal))
+                failures.Add("admin-or-seed-execute-apply " + Path.GetRelativePath(repo, sqlFile));
+        }
+        foreach (var file in Directory.EnumerateFiles(repo, "*.*", SearchOption.AllDirectories))
+        {
+            if (file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                || file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                || file.Contains($"{Path.DirectorySeparatorChar}.git{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+                continue;
+            if (!file.EndsWith(".cs", StringComparison.Ordinal) && !file.EndsWith(".sql", StringComparison.Ordinal))
+                continue;
+            if (file.EndsWith($"{Path.DirectorySeparatorChar}KitAdmin.cs", StringComparison.Ordinal))
+                continue;
+            var body = File.ReadAllText(file);
+            if (body.Contains("session_replication_role", StringComparison.Ordinal)
+                || body.Contains("DISABLE TRIGGER", StringComparison.Ordinal)
+                || body.Contains("ENABLE TRIGGER", StringComparison.Ordinal))
+                failures.Add("kitadmin-replication-role " + Path.GetRelativePath(repo, file));
+        }
         if (failures.Count == 0)
         {
             Console.WriteLine("PASS kit-admin-call-sites-match-the-decisions-list");
             Console.WriteLine("PASS no-test-code-updates-or-deletes-as-test-seed");
+            Console.WriteLine("PASS actor-body-has-no-test-bypass");
+            Console.WriteLine("PASS test-seed-has-no-catalog-insert");
+            Console.WriteLine("PASS no-apply-execute-grant");
+            Console.WriteLine("PASS no-replication-role-or-disabled-trigger");
             return 0;
         }
         foreach (var f in failures)

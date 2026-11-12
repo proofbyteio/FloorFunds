@@ -9,12 +9,12 @@ DECLARE
   pw text := current_setting('floorfunds.test_seed_password');
   t text;
   families text[] := ARRAY[
+    'registered_entry',
     'catalog_release', 'transaction_type', 'channel', 'device_category', 'manufacturer', 'device_model',
     'hardware_capability_kind', 'model_hardware_claim', 'card_network', 'card_funding_class', 'payment_rail',
     'check_instrument_kind', 'check_drawer_class', 'check_purpose', 'processor', 'transaction_status',
     'reason_code', 'id_document_type', 'currency', 'fee_type'
   ];
-  seeded text[] := ARRAY['registered_entry', 'fee_type', 'app_user', 'admin_assignment'];
   auth_tables text[] := ARRAY[
     'app_user', 'admin_assignment', 'user_issuer', 'location', 'location_login_config',
     'location_login_config_change', 'external_login', 'user_location', 'partner_reason_bounds'
@@ -36,31 +36,23 @@ BEGIN
     RAISE EXCEPTION 'test seed role % must have no memberships', s;
   END IF;
   EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), s);
-  EXECUTE format('GRANT USAGE ON SCHEMA auth, catalog TO %I', s);
-  FOREACH t IN ARRAY families || auth_tables LOOP
-    IF NOT (t = ANY (seeded)) THEN
-      seeded := seeded || t;
-    END IF;
+  EXECUTE format('GRANT USAGE ON SCHEMA auth TO %I', s);
+  EXECUTE format('REVOKE USAGE ON SCHEMA catalog FROM %I', s);
+  FOREACH t IN ARRAY auth_tables LOOP
+    EXECUTE format('REVOKE ALL ON TABLE auth.%I FROM %I', t, s);
+    EXECUTE format('GRANT SELECT, INSERT ON TABLE auth.%I TO %I', t, s);
+    EXECUTE format('DROP POLICY IF EXISTS %I ON auth.%I', t || '_test_seed_select', t);
+    EXECUTE format('DROP POLICY IF EXISTS %I ON auth.%I', t || '_test_seed_insert', t);
+    EXECUTE format('CREATE POLICY %I ON auth.%I FOR SELECT TO %I USING (true)', t || '_test_seed_select', t, s);
+    EXECUTE format('CREATE POLICY %I ON auth.%I FOR INSERT TO %I WITH CHECK (true)', t || '_test_seed_insert', t, s);
   END LOOP;
-  FOREACH t IN ARRAY seeded LOOP
-    IF t = ANY (auth_tables) THEN
-      EXECUTE format('REVOKE ALL ON TABLE auth.%I FROM %I', t, s);
-      EXECUTE format('GRANT SELECT, INSERT ON TABLE auth.%I TO %I', t, s);
-      EXECUTE format('DROP POLICY IF EXISTS %I ON auth.%I', t || '_test_seed_select', t);
-      EXECUTE format('DROP POLICY IF EXISTS %I ON auth.%I', t || '_test_seed_insert', t);
-      EXECUTE format('CREATE POLICY %I ON auth.%I FOR SELECT TO %I USING (true)', t || '_test_seed_select', t, s);
-      EXECUTE format('CREATE POLICY %I ON auth.%I FOR INSERT TO %I WITH CHECK (true)', t || '_test_seed_insert', t, s);
-    ELSE
-      EXECUTE format('REVOKE ALL ON TABLE catalog.%I FROM %I', t, s);
-      EXECUTE format('GRANT SELECT, INSERT ON TABLE catalog.%I TO %I', t, s);
-      EXECUTE format('DROP POLICY IF EXISTS %I ON catalog.%I', t || '_test_seed_select', t);
-      EXECUTE format('DROP POLICY IF EXISTS %I ON catalog.%I', t || '_test_seed_insert', t);
-      EXECUTE format('CREATE POLICY %I ON catalog.%I FOR SELECT TO %I USING (true)', t || '_test_seed_select', t, s);
-      EXECUTE format('CREATE POLICY %I ON catalog.%I FOR INSERT TO %I WITH CHECK (true)', t || '_test_seed_insert', t, s);
-    END IF;
+  FOREACH t IN ARRAY families LOOP
+    EXECUTE format('REVOKE ALL ON TABLE catalog.%I FROM %I', t, s);
+    EXECUTE format('DROP POLICY IF EXISTS %I ON catalog.%I', t || '_test_seed_select', t);
+    EXECUTE format('DROP POLICY IF EXISTS %I ON catalog.%I', t || '_test_seed_insert', t);
   END LOOP;
   EXECUTE format('REVOKE ALL ON TABLE catalog.history_pending FROM %I', s);
   EXECUTE 'DROP POLICY IF EXISTS history_pending_test_seed_select ON catalog.history_pending';
-  EXECUTE format('GRANT EXECUTE ON FUNCTION catalog.history_partner(uuid, uuid[], boolean) TO %I', s);
+  EXECUTE format('REVOKE EXECUTE ON FUNCTION catalog.history_partner(uuid, uuid[], boolean) FROM %I', s);
 END
 $seed$;

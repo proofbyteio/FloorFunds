@@ -31,12 +31,20 @@ function expect(name, cond, detail) {
   }
 }
 
+const seedRole = join(root, "db", "kit", "test-seed-role.sql");
+const actorSql = join(root, "src", "Auth.Data", "Migrations", "Req064Actor.sql");
 const originalKit = readFileSync(kit, "utf8");
 const originalSuite = readFileSync(suite, "utf8");
+const originalSeed = readFileSync(seedRole, "utf8");
+const originalActor = readFileSync(actorSql, "utf8");
 try {
   const base = check();
   expect("call-sites-match-before-mutants", base.includes("PASS kit-admin-call-sites-match-the-decisions-list") && !base.includes("FAIL "), base);
   expect("no-test-seed-update-before-mutants", base.includes("PASS no-test-code-updates-or-deletes-as-test-seed"), base);
+  expect("no-catalog-insert-before-mutants", base.includes("PASS test-seed-has-no-catalog-insert"), base);
+  expect("no-actor-bypass-before-mutants", base.includes("PASS actor-body-has-no-test-bypass"), base);
+  expect("no-apply-execute-before-mutants", base.includes("PASS no-apply-execute-grant"), base);
+  expect("no-replication-bypass-before-mutants", base.includes("PASS no-replication-role-or-disabled-trigger"), base);
 
   const extra = originalSuite.replace(
     "static class Req064Suite\n{",
@@ -65,12 +73,45 @@ try {
   expect("mutant-scratch-guard-removed-killed", guardOut.includes("ran") && !guardOut.includes("not a scratch database"), guardOut);
   writeFileSync(kit, originalKit);
 
+  writeFileSync(seedRole, originalSeed + "\nGRANT INSERT ON TABLE catalog.registered_entry TO placeholder;\n");
+  const insertOut = check();
+  expect("test-seed-insert-registered-entry", insertOut.includes("FAIL test-seed-insert-registered-entry"), insertOut);
+  writeFileSync(seedRole, originalSeed);
+
+  writeFileSync(actorSql, originalActor.replace("BEGIN", "BEGIN\n  IF current_user = '_test_seed' THEN RETURN; END IF;"));
+  const actorOut = check();
+  expect("actor-test-bypass", actorOut.includes("FAIL actor-test-bypass"), actorOut);
+  writeFileSync(actorSql, originalActor);
+
+  writeFileSync(suite, extra);
+  const unlistedOut = check();
+  expect("kitadmin-unlisted-callsite", unlistedOut.includes("kitadmin-unlisted-callsite"), unlistedOut);
+  writeFileSync(suite, originalSuite);
+
+  const applySql = join(root, "db", "kit", "test-seed-role.sql");
+  writeFileSync(applySql, originalSeed + "\nGRANT EXECUTE ON FUNCTION catalog.apply_entry_create(uuid, text, text, uuid, text, boolean, jsonb, integer) TO placeholder;\n");
+  const applyOut = check();
+  expect("admin-or-seed-execute-apply", applyOut.includes("FAIL admin-or-seed-execute-apply"), applyOut);
+  writeFileSync(applySql, originalSeed);
+
+  const replicated = originalSuite.replace(
+    "static class Req064Suite\n{",
+    "static class Req064Suite\n{\n    static string ReplicationMutant() => \"SET session_replication_role = replica\";\n",
+  );
+  writeFileSync(suite, replicated);
+  const replOut = check();
+  expect("kitadmin-replication-role", replOut.includes("FAIL kitadmin-replication-role"), replOut);
+  writeFileSync(suite, originalSuite);
+
   const restored = check();
   expect("call-sites-match-after-restore", restored.includes("PASS kit-admin-call-sites-match-the-decisions-list") && !restored.includes("FAIL "), restored);
   const refused = run(["--kit-admin-guard"], { FF_KIT_MODE: "1", FF_KIT_DB: "postgres", FF_KIT_PORT: "5432" });
   expect("scratch-guard-refuses-a-non-scratch-database", refused.includes("kit admin refused: database is not a scratch database"), refused);
+  expect("kitadmin-nonscratch", refused.includes("kit admin refused: database is not a scratch database"), refused);
 } finally {
   writeFileSync(kit, originalKit);
   writeFileSync(suite, originalSuite);
+  writeFileSync(seedRole, originalSeed);
+  writeFileSync(actorSql, originalActor);
 }
 process.exit(failed === 0 ? 0 : 1);

@@ -211,7 +211,7 @@ static class Req064Suite
                 mixGrant && mixA.Status == 200 && mixB.Status == 404 && mixClient.Status == 403
                 && mixScreens.Contains("create_location") && mixScreens.Contains("config") && !mixScreens.Contains("create_client"),
                 $"grant {mixGrant} A {mixA.Status} B {mixB.Status} nav {mixNav.Status} {Clip(mixNav.Body)} client {mixClient.Status}");
-            Hold("history-label-uses-the-record-partner");
+            Check("history-label-uses-the-record-partner", await HistoryLabel(owner, admin));
             var wrongIssuer = await OpenDenied("https://not-the-issuer.example", Mix);
             var ignoredArgs = await ScalarBoolAs(admin, Mix,
                 "SELECT outcome = 'grant' AND role_wire = 'partner_admin' AND partner_ids = ARRAY[$3]::uuid[] FROM auth.resolve_grant($1, $2)",
@@ -261,7 +261,16 @@ static class Req064Suite
             Check("T11 pooled-connection-does-not-inherit-guc", leaked.Count == 0, string.Join(",", leaked));
             Check("reused-connection-does-not-keep-a-principal", await PoolResetsPrincipal(app));
 
-            Hold("T12 flag-does-not-grant-and-principal-does");
+            var forgedCount = await ScalarInTx(admin,
+                "SELECT set_config('app.admin_type','super', true), set_config('app.resolved_global_admin','', true), set_config('app.resolved_partner_ids','', true)",
+                "SELECT (SELECT count(*) FROM catalog.registered_entry WHERE entry_id = $1) + (SELECT count(*) FROM catalog.entry_change WHERE entry_id = $1)",
+                Fee);
+            var resolvedCount = await ScalarInTx(admin,
+                "SELECT set_config('app.resolved_global_admin','on', true)",
+                "SELECT count(*) FROM catalog.registered_entry WHERE entry_id = $1", Fee);
+            var principalCount = await CountAs(admin, Sa, "SELECT count(*) FROM catalog.registered_entry WHERE entry_id = $1", Fee);
+            Check("T12 flag-does-not-grant-and-principal-does", forgedCount == 0 && resolvedCount == 0 && principalCount == 1,
+                $"{forgedCount},{resolvedCount},{principalCount}");
 
             var cross = await Send(http, HttpMethod.Get, $"/api/orgs/locations/{Lb}/login-config", paTok);
             Check("cross-partner-deny", cross.Status == 404);
@@ -816,10 +825,12 @@ static class Req064Suite
         var detail = "refused";
         if (safe)
         {
-            var sql = "BEGIN; GRANT EXECUTE ON FUNCTION catalog.subtype_count(uuid) TO " + database + "_test_seed; "
+            var sql = "BEGIN; GRANT EXECUTE ON FUNCTION catalog.history_partner(uuid, uuid[], boolean) TO " + database + "_test_seed; "
                 + "SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
-                + "WHERE n.nspname = 'catalog' AND p.proname = 'subtype_count' "
-                + "AND has_function_privilege('" + database + "_test_seed', p.oid, 'EXECUTE'); ROLLBACK;";
+                + "JOIN LATERAL aclexplode(p.proacl) e ON e.privilege_type = 'EXECUTE' "
+                + "JOIN pg_roles r ON r.oid = e.grantee "
+                + "WHERE n.nspname = 'catalog' AND p.proname = 'history_partner' "
+                + "AND r.rolname = '" + database + "_test_seed'; ROLLBACK;";
             var p = Process.Start(new ProcessStartInfo("sudo", ["-u", "postgres", "psql", "-d", database, "-v", "ON_ERROR_STOP=1", "-tAc", sql])
             {
                 RedirectStandardOutput = true,
@@ -830,8 +841,8 @@ static class Req064Suite
             await p.WaitForExitAsync();
             detail = "exit " + p.ExitCode + " " + stdout + stderr;
         }
-        Check("mutant-test-seed-execute-on-another-definer-killed",
-            detail.Contains("subtype_count", StringComparison.Ordinal), detail);
+        Check("mutant-test-seed-history-partner-execute-killed",
+            detail.Contains("history_partner", StringComparison.Ordinal), detail);
     }
 
     public static async Task<NpgsqlDataSource> OpenTestSeed(NpgsqlDataSource owner)
@@ -987,8 +998,8 @@ static class Req064Suite
     {
         // Both is Partner Admin at Pa and at Pb. The actor list is ordered Pa then Pb,
         // so the old label (the first partner) would store Pa on a row owned by Pb.
-        await using var c = await owner.OpenConnectionAsync();
-        await using var tx = await c.BeginTransactionAsync();
+        // catalog.history_partner has no runtime EXECUTE in CatalogMasterData.Grants.sql.
+        // That function call stays held. The stored label is read as admin_api.
         var hist = Guid.Parse("5f0c3e1a-0064-4000-8000-000000000042");
         try
         {
@@ -1012,58 +1023,23 @@ static class Req064Suite
                     return false;
                 }
             }
-            await using (var guc = new NpgsqlCommand("""
-                SELECT set_config('app.resolved_global_admin', '', true),
-                       set_config('app.resolved_partner_ids', $1 || ',' || $2, true),
-                       set_config('app.resolved_location_ids', '', true),
-                       set_config('app.actor_user_id', $3, true),
-                       set_config('app.correlation_id', 'req064-history-label', true),
-                       set_config('app.reason', 'history label', true),
-                       set_config('app.admin_type', '', true),
-                       set_config('app.partner_id', '', true)
-                """, c, tx))
+            await grantTx.RollbackAsync();
+            Hold("history-partner-function-follows-the-record");
+            var database = new NpgsqlConnectionStringBuilder(owner.ConnectionString).Database ?? "";
+            var planted = Kit("req064-history-label-fixture", KitAdmin.SessionThen(
+                database + "_issuer", Issuer, Both.ToString("D"), "req064-history-label", "history label",
+                FeeFixture(hist, Pb, "req064hist", Both)));
+            if (planted != "ok")
             {
-                guc.Parameters.Add(new() { Value = Pa.ToString("D") });
-                guc.Parameters.Add(new() { Value = Pb.ToString("D") });
-                guc.Parameters.Add(new() { Value = Both.ToString("D") });
-                await guc.ExecuteNonQueryAsync();
+                Console.WriteLine("FAIL history-label: " + planted);
+                return false;
             }
-            await using (var fn = new NpgsqlCommand("""
-                SELECT catalog.history_partner($1, ARRAY[$2, $3]::uuid[], false) = $1
-                   AND catalog.history_partner($2, ARRAY[$3, $2]::uuid[], false) = $2
-                   AND catalog.history_partner(NULL, ARRAY[$2]::uuid[], false) = $2
-                   AND catalog.history_partner(NULL, ARRAY[$2, $3]::uuid[], true) IS NULL
-                """, c, tx))
+            var stored = await ScalarBoolAs(admin, Sa,
+                "SELECT actor_partner_id = $2 FROM catalog.entry_change WHERE entry_id = $1 AND change_kind = 'created'",
+                hist, Pb);
+            if (!stored)
             {
-                fn.Parameters.Add(new() { Value = Pb });
-                fn.Parameters.Add(new() { Value = Pa });
-                fn.Parameters.Add(new() { Value = Pb });
-                if (await fn.ExecuteScalarAsync() is not true)
-                {
-                    Console.WriteLine("FAIL history-label: history_partner did not follow the record");
-                    return false;
-                }
-            }
-            await Begin(c, tx, Both);
-            await using (var entry = new NpgsqlCommand("""
-                INSERT INTO catalog.registered_entry (
-                  entry_id, family, entry_class, owner_partner_id, code, is_active, row_version,
-                  created_by, created_at, updated_by, updated_at)
-                VALUES ($1, 'fee_type', 'descriptive', $2, 'req064hist', true, 1, $3, clock_timestamp(), $3, clock_timestamp())
-                """, c, tx))
-            {
-                entry.Parameters.Add(new() { Value = hist });
-                entry.Parameters.Add(new() { Value = Pb });
-                entry.Parameters.Add(new() { Value = Both });
-                await entry.ExecuteNonQueryAsync();
-            }
-            await using var label = new NpgsqlCommand(
-                "SELECT actor_partner_id FROM catalog.history_pending WHERE entry_id = $1", c, tx);
-            label.Parameters.Add(new() { Value = hist });
-            var stored = await label.ExecuteScalarAsync();
-            if (stored is not Guid partner || partner != Pb)
-            {
-                Console.WriteLine($"FAIL history-label: stored {stored}");
+                Console.WriteLine("FAIL history-label: stored label is not the record partner");
                 return false;
             }
             return true;
@@ -1072,10 +1048,6 @@ static class Req064Suite
         {
             Console.WriteLine("FAIL history-label :: " + ex.GetType().Name + " " + ex.Message);
             return false;
-        }
-        finally
-        {
-            try { await tx.RollbackAsync(); } catch (ObjectDisposedException) { }
         }
     }
 
@@ -1110,6 +1082,23 @@ static class Req064Suite
             VALUES ($1,'database','A','{}',false,false,$3,now(),$3,now()),
                    ($2,'database','B','{}',false,false,$3,now(),$3,now())
             """, La, Lb, Sa);
+        var database = new NpgsqlConnectionStringBuilder(owner.ConnectionString).Database ?? "";
+        var planted = Kit("req064-fee-fixture", KitAdmin.SessionThen(
+            database + "_issuer", Issuer, Sa.ToString("D"), "req064-fee-fixture", "req064 fee fixture",
+            FeeFixture(Fee, Pb, "req064fee", Sa)));
+        if (planted != "ok")
+            throw new InvalidOperationException("req064 fee fixture " + planted);
+    }
+
+    static string FeeFixture(Guid id, Guid ownerPartner, string code, Guid actor)
+    {
+        var idSql = "'" + id.ToString("D") + "'::uuid";
+        var ownerSql = "'" + ownerPartner.ToString("D") + "'::uuid";
+        var actorSql = "'" + actor.ToString("D") + "'::uuid";
+        return "INSERT INTO catalog.registered_entry (entry_id, family, entry_class, owner_partner_id, code, is_active, row_version, created_by, created_at, updated_by, updated_at) VALUES ("
+            + idSql + ", 'fee_type', 'descriptive', " + ownerSql + ", '" + code + "', true, 1, " + actorSql + ", clock_timestamp(), " + actorSql + ", clock_timestamp());\n"
+            + "INSERT INTO catalog.fee_type (entry_id, family, code, owner_partner_id, definition, display_name) VALUES ("
+            + idSql + ", 'fee_type', '" + code + "', " + ownerSql + ", 'names only fixture', '" + code + "');\n";
     }
 
     static async Task<bool> LocationOnly(NpgsqlDataSource admin, NpgsqlDataSource owner)
@@ -1338,13 +1327,9 @@ static class Req064Suite
         {
             if (created is { } id)
             {
-                await ExecQuiet(owner, "ALTER TABLE auth.location_login_config_change DISABLE TRIGGER USER");
-                await ExecQuiet(owner, "ALTER TABLE auth.location DISABLE TRIGGER USER");
                 await ExecQuiet(owner, "DELETE FROM auth.location_login_config_change WHERE location_id = $1", id);
                 await ExecQuiet(owner, "DELETE FROM auth.location_login_config WHERE location_id = $1", id);
                 await ExecQuiet(owner, "DELETE FROM auth.location WHERE location_id = $1", id);
-                await ExecQuiet(owner, "ALTER TABLE auth.location ENABLE TRIGGER USER");
-                await ExecQuiet(owner, "ALTER TABLE auth.location_login_config_change ENABLE TRIGGER USER");
                 await ExecQuiet(owner, "DELETE FROM auth.audit_outbox WHERE envelope::text LIKE '%' || $1 || '%'", id.ToString("D"));
             }
             await ExecQuiet(owner, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { Pa, Pb });
@@ -1874,14 +1859,6 @@ static class Req064Suite
         var seed = await ScalarText(owner, """
             WITH expected(schema_name, table_name) AS (
               VALUES
-                ('catalog','registered_entry'),
-                ('catalog','catalog_release'), ('catalog','transaction_type'), ('catalog','channel'),
-                ('catalog','device_category'), ('catalog','manufacturer'), ('catalog','device_model'),
-                ('catalog','hardware_capability_kind'), ('catalog','model_hardware_claim'),
-                ('catalog','card_network'), ('catalog','card_funding_class'), ('catalog','payment_rail'),
-                ('catalog','check_instrument_kind'), ('catalog','check_drawer_class'), ('catalog','check_purpose'),
-                ('catalog','processor'), ('catalog','transaction_status'), ('catalog','reason_code'),
-                ('catalog','id_document_type'), ('catalog','currency'), ('catalog','fee_type'),
                 ('auth','app_user'), ('auth','admin_assignment'), ('auth','user_issuer'), ('auth','location'),
                 ('auth','location_login_config'), ('auth','location_login_config_change'),
                 ('auth','external_login'), ('auth','user_location'), ('auth','partner_reason_bounds')
@@ -1921,6 +1898,7 @@ static class Req064Suite
                  WHERE table_schema = 'auth'
                    AND table_name IN ('login_cutoff', 'request_session', 'request_binding')
               ) THEN 'session-grant'
+              WHEN EXISTS (SELECT 1 FROM grants WHERE table_schema = 'catalog') THEN 'catalog-table'
               ELSE ''
             END
             """);
@@ -1954,10 +1932,6 @@ static class Req064Suite
                       SELECT 1 FROM aclexplode(p.proacl) e
                         JOIN pg_roles r ON r.oid = e.grantee
                        WHERE e.privilege_type = 'EXECUTE' AND r.rolcanlogin
-                         AND NOT (
-                           r.rolname = current_database() || '_test_seed'
-                           AND p.proname = 'history_partner'
-                         )
                     )
                )
             """);

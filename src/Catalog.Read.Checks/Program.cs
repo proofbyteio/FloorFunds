@@ -28,6 +28,9 @@ const string CatalogPrincipalSeed = """
     """;
 var partnerA = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
 var partnerB = Guid.Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+var globalId = Guid.Parse("10000000-0000-4000-8000-0000000000a1");
+var feeA = Guid.Parse("10000000-0000-4000-8000-0000000000a2");
+var feeB = Guid.Parse("10000000-0000-4000-8000-0000000000a3");
 var log = new List<string>();
 var passed = 0;
 var failed = 0;
@@ -57,13 +60,6 @@ void Fail(string name, string evidence)
 {
     failed++;
     var line = $"FAIL {name}: {evidence}";
-    log.Add(line);
-    Console.WriteLine(line);
-}
-
-void Hold(string name)
-{
-    var line = "HELD " + name;
     log.Add(line);
     Console.WriteLine(line);
 }
@@ -169,6 +165,17 @@ try
         cmd.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.UtcNow });
         return (string)(await cmd.ExecuteScalarAsync())!;
     }
+    KitAdmin.Arm(DbName, Port);
+    KitAdmin.Exec("catalog-read-fee-fixture", KitAdmin.SessionThen(
+        DbName + "_issuer",
+        CatalogSessionSql.CatalogIssuer,
+        CatalogSessionSql.CatalogSuperUser,
+        "dec192-read-fixture",
+        "read fixture",
+        ReadFee(globalId, null, "surcharge") + ReadFee(feeA, partnerA, "afee") + ReadFee(feeB, partnerB, "bfee")));
+    var loaded = await Scalar(owner, "SELECT count(*) FROM catalog.registered_entry");
+    if (loaded != "3")
+        throw new InvalidOperationException($"fixture row count {loaded}");
     var catalogTokens = new Dictionary<string, string>
     {
         ["super"] = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser)),
@@ -179,8 +186,8 @@ try
         ? catalogTokens["super"]
         : catalogTokens[scope.PartnerId!.Value.ToString("D")]);
     log.Add("SECTION fixture-load");
-    log.Add("HELD catalog fixture: admin_api has no EXECUTE on a catalog write function, so registered_entry is not seeded");
-    Console.WriteLine("HELD catalog fixture: admin_api has no EXECUTE on a catalog write function");
+    log.Add("fixture rows present: " + loaded);
+    Console.WriteLine("fixture rows present: " + loaded);
 
     log.Add("SECTION scratch-role-evidence");
     Console.WriteLine("SECTION scratch-role-evidence");
@@ -252,21 +259,48 @@ try
     var reader = new NpgsqlCatalogReader(pooled);
     var super = CatalogReadScope.Super();
     var scopeA = CatalogReadScope.Partner(partnerA);
+    var scopeB = CatalogReadScope.Partner(partnerB);
 
-    Hold("super-sees-global-and-both-private");
-    Hold("partner-a-mask");
-    Hold("partner-b-mask");
-    Hold("partner-b-does-not-carry-a");
-    Hold("partner-a-fee-definition");
-    Hold("hidden-and-missing-are-empty");
-    Hold("history-mask");
+    var superRows = await reader.ListEntriesAsync(super, CancellationToken.None);
+    ExpectCodes("super-sees-global-and-both-private", superRows.Select(r => r.Code), "afee", "bfee", "surcharge");
+    var rowsA = await reader.ListEntriesAsync(scopeA, CancellationToken.None);
+    ExpectCodes("partner-a-mask", rowsA.Select(r => r.Code), "afee", "surcharge");
+    var rowsB = await reader.ListEntriesAsync(scopeB, CancellationToken.None);
+    ExpectCodes("partner-b-mask", rowsB.Select(r => r.Code), "bfee", "surcharge");
+    if (rowsA.All(r => r.IsActive && r.RowVersion == 1) && rowsB.All(r => r.OwnerPartnerId != partnerA))
+        Pass("partner-b-does-not-carry-a", string.Join(",", rowsB.Select(r => r.OwnerPartnerId?.ToString("D") ?? "null")));
+    else Fail("partner-b-does-not-carry-a", "row shape");
+
+    var feesA = await reader.ListFeeTypesAsync(scopeA, CancellationToken.None);
+    if (feesA.Select(f => f.Code).OrderBy(c => c).SequenceEqual(new[] { "afee", "surcharge" })
+        && feesA.All(f => f.Definition == "names only fixture"))
+        Pass("partner-a-fee-definition", string.Join(",", feesA.Select(f => f.Code + ":" + f.Definition)));
+    else Fail("partner-a-fee-definition", string.Join(",", feesA.Select(f => f.Code)));
+
+    var hidden = await reader.FindEntryAsync(scopeA, feeB, CancellationToken.None);
+    var missing = await reader.FindEntryAsync(scopeA, Guid.Parse("10000000-0000-4000-8000-0000000000ff"), CancellationToken.None);
+    if (hidden is null && missing is null) Pass("hidden-and-missing-are-empty", "null,null");
+    else Fail("hidden-and-missing-are-empty", $"{hidden?.Code},{missing?.Code}");
+
+    var histAGlobal = await reader.ListEntryChangesAsync(scopeA, globalId, CancellationToken.None);
+    var histAA = await reader.ListEntryChangesAsync(scopeA, feeA, CancellationToken.None);
+    var histAB = await reader.ListEntryChangesAsync(scopeA, feeB, CancellationToken.None);
+    var histSuperB = await reader.ListEntryChangesAsync(super, feeB, CancellationToken.None);
+    if (histAGlobal.Count == 1 && histAGlobal[0].ChangeKind == "created"
+        && histAA.Count == 1 && histAA[0].ChangeKind == "created"
+        && histAB.Count == 0 && histSuperB.Count == 1)
+        Pass("history-mask", $"global={histAGlobal.Count} own={histAA.Count} other={histAB.Count} superOther={histSuperB.Count}");
+    else Fail("history-mask", $"global={histAGlobal.Count} own={histAA.Count} other={histAB.Count} superOther={histSuperB.Count}");
 
     var switches = await reader.CountPartnerSwitchesAsync(super, CancellationToken.None);
     var locations = await reader.CountLocationSwitchesAsync(scopeA, CancellationToken.None);
     if (switches == 0 && locations == 0) Pass("scope-tables-readable-empty", $"{switches},{locations}");
     else Fail("scope-tables-readable-empty", $"{switches},{locations}");
 
-    Hold("parameter-does-not-widen");
+    var injected = await reader.ListEntriesAsync(super, "surcharge' OR '1'='1", CancellationToken.None);
+    var still = await reader.ListEntriesAsync(super, CancellationToken.None);
+    if (injected.Count == 0 && still.Count == 3) Pass("parameter-does-not-widen", $"injected={injected.Count} still={still.Count}");
+    else Fail("parameter-does-not-widen", $"injected={injected.Count} still={still.Count}");
 
     await using (var leak = await pooled.OpenConnectionAsync())
     {
@@ -333,8 +367,8 @@ try
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = partnerB.ToString("D") });
         await cmd.ExecuteNonQueryAsync();
     }
-    _ = await reader.ListEntriesAsync(super, CancellationToken.None);
-    Hold("argument-scope-ignores-leftover-session");
+    var forced = await reader.ListEntriesAsync(super, CancellationToken.None);
+    ExpectCodes("argument-scope-ignores-leftover-session", forced.Select(r => r.Code), "afee", "bfee", "surcharge");
     var afterSuper = await PooledGuc(pooled);
     if (afterSuper == "||||0") Pass("successful-read-resets-pool", afterSuper);
     else Fail("successful-read-resets-pool", afterSuper);
@@ -345,6 +379,7 @@ try
         MaxPoolSize = 1,
     };
     await using var noReset = NpgsqlDataSource.Create(noResetBuilder.ConnectionString);
+    var noResetReader = new NpgsqlCatalogReader(noReset);
     await using (var leak = await noReset.OpenConnectionAsync())
     {
         await using var cmd = new NpgsqlCommand("""
@@ -357,7 +392,11 @@ try
         if (Convert.ToString(seen, System.Globalization.CultureInfo.InvariantCulture) != "0")
             throw new InvalidOperationException($"no-reset plant count {seen}");
     }
-    Hold("clear-wipes-principal-when-reset-disabled");
+    var clearedRead = await noResetReader.ListEntriesAsync(super, CancellationToken.None);
+    var afterClear = await PooledGuc(noReset);
+    var issLeft = await Scalar(noReset, "SELECT coalesce(current_setting('app.request_iss', true), '') || '|' || coalesce(current_setting('app.request_sub', true), '')");
+    if (clearedRead.Count == 3 && afterClear == "||||0" && issLeft == "|") Pass("clear-wipes-principal-when-reset-disabled", afterClear);
+    else Fail("clear-wipes-principal-when-reset-disabled", $"rows {clearedRead.Count} guc {afterClear} iss {issLeft}");
 
     await using var ownerReaderDs = NpgsqlDataSource.Create(Cs(OwnerRole, DbName, false));
     var ownerThrew = await ThrowsRole(() => new NpgsqlCatalogReader(ownerReaderDs).ListEntriesAsync(super, CancellationToken.None));
@@ -367,7 +406,10 @@ try
     var loginThrew = await ThrowsRole(() => new NpgsqlCatalogReader(loginReaderDs).ListEntriesAsync(super, CancellationToken.None));
     if (loginThrew) Pass("login-role-refused", "CatalogReadRoleException");
     else Fail("login-role-refused", "no role exception");
-    Hold("refusals-did-not-persist-a-write");
+    var stillThere = await Scalar(adminProbe, "SELECT count(*) FROM catalog.registered_entry");
+    var ownerCount = await Scalar(owner, "SELECT count(*) FROM catalog.registered_entry");
+    if (stillThere == "0" && ownerCount == "3") Pass("refusals-did-not-persist-a-write", $"adminBare={stillThere} owner={ownerCount}");
+    else Fail("refusals-did-not-persist-a-write", $"adminBare={stillThere} owner={ownerCount}");
 
     async Task<string> ClosedShape(string token)
     {
@@ -480,6 +522,25 @@ async Task<string> PooledGuc(NpgsqlDataSource ds)
         """, conn);
     var value = await cmd.ExecuteScalarAsync();
     return Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "";
+}
+
+void ExpectCodes(string name, IEnumerable<string> actual, params string[] expect)
+{
+    var got = actual.OrderBy(c => c, StringComparer.Ordinal).ToArray();
+    var want = expect.OrderBy(c => c, StringComparer.Ordinal).ToArray();
+    if (got.SequenceEqual(want)) Pass(name, string.Join(",", got));
+    else Fail(name, string.Join(",", got));
+}
+
+static string ReadFee(Guid id, Guid? ownerId, string code)
+{
+    var ownerSql = ownerId is Guid owner ? "'" + owner.ToString("D") + "'::uuid" : "NULL";
+    var idSql = "'" + id.ToString("D") + "'::uuid";
+    var by = "'" + CatalogSessionSql.CatalogSuperUser + "'::uuid";
+    return "INSERT INTO catalog.registered_entry (entry_id, family, entry_class, owner_partner_id, code, is_active, row_version, created_by, created_at, updated_by, updated_at) VALUES ("
+        + idSql + ", 'fee_type', 'descriptive', " + ownerSql + ", '" + code + "', true, 1, " + by + ", clock_timestamp(), " + by + ", clock_timestamp());\n"
+        + "INSERT INTO catalog.fee_type (entry_id, family, code, owner_partner_id, definition, display_name, description, release_id) VALUES ("
+        + idSql + ", 'fee_type', '" + code + "', " + ownerSql + ", 'names only fixture', '" + code + "', NULL, NULL);\n";
 }
 
 static string ScanAdapter(string dir)

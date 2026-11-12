@@ -90,13 +90,6 @@ void Fail(string name, string evidence)
     Console.WriteLine(line);
 }
 
-void Hold(string name)
-{
-    var line = "HELD " + name;
-    log.Add(line);
-    Console.WriteLine(line);
-}
-
 void Note(string line)
 {
     log.Add(line);
@@ -272,6 +265,17 @@ try
         cmd.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.UtcNow });
         return (string)(await cmd.ExecuteScalarAsync())!;
     }
+    KitAdmin.Arm(DbName, Port);
+    KitAdmin.Exec("catalog-query-fixture", KitAdmin.SessionThen(
+        DbName + "_issuer",
+        CatalogSessionSql.CatalogIssuer,
+        fixtureActor.ToString("D"),
+        "dec192-query-nonproduct-fixture",
+        "nonproduct synthetic fixture",
+        CatalogFixtureSql(fixtureActor, partnerA, partnerB)));
+    var loaded = await Scalar(ownerDs, "SELECT count(*) FROM catalog.registered_entry");
+    if (loaded != fixtures.Count.ToString())
+        throw new InvalidOperationException($"BLOCKER fixture row count {loaded}, expected {fixtures.Count}");
     var catalogTokens = new Dictionary<string, string>
     {
         ["super"] = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser)),
@@ -282,8 +286,13 @@ try
         ? catalogTokens["super"]
         : catalogTokens[scope.PartnerId!.Value.ToString("D")]);
     Note("SECTION fixture-load");
-    Note("HELD catalog fixture: admin_api has no EXECUTE on a catalog write function, so registered_entry is not seeded");
-    Hold("history-row-stores-actor-that-the-dto-must-omit");
+    Note("nonproduct synthetic fixture");
+    Note($"fixture rows present: {loaded}");
+    var storedActor = await Scalar(ownerDs, $"SELECT actor_user_id::text FROM catalog.entry_change WHERE entry_id = '{Id(20)}'");
+    if (storedActor == fixtureActor.ToString("D"))
+        Pass("history-row-stores-actor-that-the-dto-must-omit", storedActor);
+    else
+        Fail("history-row-stores-actor-that-the-dto-must-omit", storedActor);
 
     await using var adminBare = NpgsqlDataSource.Create(Cs(AdminRole, DbName, false));
     var insertState = await SqlState(adminBare, "INSERT INTO catalog.fee_type (entry_id, family, code, definition, display_name) VALUES ('10000000-0000-4000-8000-0000000000fe','fee_type','x','x','x')");
@@ -294,29 +303,28 @@ try
     else Fail("admin-api-execute-still-denied", executeState);
 
     pooled = NpgsqlDataSource.Create(Cs(AdminRole, DbName, true, 4));
+    var reader = new NpgsqlCatalogReader(pooled);
     var storage = new CountingStorage(new NpgsqlCatalogStorage(pooled));
     var query = new CatalogQuery(storage);
-    Hold("raw-super-still-reads-private-fees");
+    var rawSuper = await reader.ListEntriesAsync(CatalogReadScope.Super(), "g", CancellationToken.None);
+    var rawFees = string.Join(",", rawSuper.Where(row => row.Family == "fee_type").Select(row => row.EntryId).OrderBy(id => id));
+    var rawHasPrivate = rawSuper.Any(row => row.EntryId == Id(26)) && rawSuper.Any(row => row.EntryId == Id(27));
+    if (rawHasPrivate)
+        Pass("raw-super-still-reads-private-fees", rawFees);
+    else
+        Fail("raw-super-still-reads-private-fees", rawFees);
 
     Note("SECTION db-matrix");
-    foreach (var family in CatalogFamilies.All)
-        foreach (var actor in actors)
-            Hold($"DB-matrix {CatalogFamilies.Wire(family)} {actor.Name}");
-    foreach (var name in new[]
-    {
-        "sa-private-nonclaim-read-visible",
-        "sa-private-nonclaim-history-visible",
-        "sa-private-claim-history-visible",
-        "other-partner-private-claim-matches-missing",
-        "version-compared-only-after-visibility",
-        "family-mismatch-matches-missing",
-        "closed-dto-omits-actor-and-counts",
-    })
-        Hold("DB " + name);
-    Hold("query-sa-fee-list-includes-private");
-    Hold("DB stored-image-stays-out-of-history-dto");
-    Hold("DB other-partner-history-matches-missing-with-version");
-    await RunRowFree("DB", query, storage);
+    await RunMatrix("DB", query, storage);
+    await RunFocused("DB", query, storage);
+
+    var saFees = await query.ListAsync(actors[0].Principal, CatalogFamily.FeeType, CancellationToken.None);
+    var saFeeIds = string.Join(",", (saFees.Entries ?? []).Select(entry => entry.EntryId));
+    var saFeeSet = (saFees.Entries ?? []).Select(entry => entry.EntryId).OrderBy(id => id).ToArray();
+    if (saFees.Status == 200 && saFeeSet.SequenceEqual(new[] { Id(20), Id(26), Id(27) }))
+        Pass("query-sa-fee-list-includes-private", saFeeIds);
+    else
+        Fail("query-sa-fee-list-includes-private", $"{saFees.Status} {saFeeIds}");
 
     var guc = await PooledGuc(pooled);
     if (PoolClear(guc)) Pass("pool-after-query", guc);
@@ -518,48 +526,6 @@ async Task StoredImageStaysOutOfDto(CatalogQuery query)
         Pass("DB other-partner-history-matches-missing-with-version", "404");
     else
         Fail("DB other-partner-history-matches-missing-with-version", Json(other));
-}
-
-async Task RunRowFree(string label, CatalogQuery query, ICallCounts counts)
-{
-    var sa = actors[0].Principal;
-    var ownerPrincipal = actors[1].Principal;
-    var cashier = actors[5].Principal;
-    var cashierBefore = counts.Lists + counts.Finds + counts.Histories;
-    var cashierList = await query.ListAsync(cashier, CatalogFamily.FeeType, CancellationToken.None);
-    var cashierRead = await query.ReadAsync(cashier, CatalogFamily.FeeType, Id(20), null, CancellationToken.None);
-    var cashierHistory = await query.HistoryAsync(cashier, CatalogFamily.ModelHardwareClaim, Id(28), null, CancellationToken.None);
-    if (cashierList.Status == 403 && Json(cashierRead) == Json(CatalogQueryResult.NotFound())
-        && Json(cashierHistory) == Json(cashierRead)
-        && counts.Lists + counts.Finds + counts.Histories == cashierBefore)
-        Pass($"{label} non-management-does-not-touch-storage", "403 list, 404 read and history");
-    else
-        Fail($"{label} non-management-does-not-touch-storage", $"{cashierList.Status} {cashierRead.Status}");
-
-    var scopeBefore = counts.ScopeLog.Count;
-    await query.ListAsync(sa, CatalogFamily.FeeType, CancellationToken.None);
-    await query.ListAsync(ownerPrincipal, CatalogFamily.FeeType, CancellationToken.None);
-    var scopes = counts.ScopeLog.Skip(scopeBefore).ToArray();
-    if (scopes.Length == 2 && scopes[0] == "super|" && scopes[1] == "partner|" + partnerA.ToString("D"))
-        Pass($"{label} scope-follows-principal", string.Join(" ", scopes));
-    else
-        Fail($"{label} scope-follows-principal", string.Join(" ", scopes));
-
-    var cancelled = new CancellationToken(true);
-    var cancelThrew = false;
-    var callsBefore = counts.Lists;
-    try { await query.ListAsync(sa, CatalogFamily.FeeType, cancelled); }
-    catch (OperationCanceledException) { cancelThrew = true; }
-    if (cancelThrew && counts.Lists == callsBefore)
-        Pass($"{label} cancellation-before-storage", "OperationCanceledException");
-    else
-        Fail($"{label} cancellation-before-storage", $"threw {cancelThrew}");
-
-    var nullThrew = false;
-    try { await query.ListAsync(null!, CatalogFamily.FeeType, CancellationToken.None); }
-    catch (ArgumentNullException) { nullThrew = true; }
-    if (nullThrew) Pass($"{label} null-principal-rejected", "ArgumentNullException");
-    else Fail($"{label} null-principal-rejected", "no throw");
 }
 
 async Task RunMatrix(string label, CatalogQuery query, ICallCounts counts)
@@ -804,9 +770,8 @@ async Task SessionCleanupProof(Guid feeId)
             && !historyJson.Contains(fixtureActor.ToString("D"), StringComparison.Ordinal)
             && !historyJson.Contains("names only fixture", StringComparison.Ordinal)
             && !historyJson.Contains("actor_user_id", StringComparison.Ordinal);
-        Hold("reset-disabled-history-keeps-fee-allowlist");
-        _ = shape;
-        _ = historyJson;
+        if (shape) Pass("reset-disabled-history-keeps-fee-allowlist", historyJson);
+        else Fail("reset-disabled-history-keeps-fee-allowlist", historyJson);
     }
 
     await ErrorRollbackReuse(feeId);
@@ -1016,6 +981,74 @@ static bool Expected(CheckActor actor, FixtureRow row)
     if (row.Family == "model_hardware_claim")
         return actor.Role == CatalogRole.SuperAdmin || actor.Partner == row.Owner;
     return actor.Role == CatalogRole.SuperAdmin || (actor.Role == CatalogRole.PartnerAdmin && actor.Partner == row.Owner);
+}
+
+static string CatalogFixtureSql(Guid actor, Guid partnerA, Guid partnerB)
+{
+    string U(int n) => $"'10000000-0000-4000-8000-0000000000{n:x2}'::uuid";
+    var by = $"'{actor:D}'::uuid";
+    var a = $"'{partnerA:D}'::uuid";
+    var b = $"'{partnerB:D}'::uuid";
+    string Entry(int n, string family, string entryClass, string owner) =>
+        "INSERT INTO catalog.registered_entry (entry_id, family, entry_class, owner_partner_id, code, is_active, row_version, created_by, created_at, updated_by, updated_at) VALUES ("
+        + $"{U(n)}, '{family}', '{entryClass}', {owner}, 'g', true, 1, {by}, clock_timestamp(), {by}, clock_timestamp());\n";
+    return string.Concat(
+        Entry(1, "catalog_release", "provenance", "NULL"),
+        $"INSERT INTO catalog.catalog_release (entry_id, family, code, release_family, version, imported_at, display_name) VALUES ({U(1)}, 'catalog_release', 'g', 'nonproduct', 'v1', clock_timestamp(), 'nonproduct');\n",
+        Entry(2, "transaction_type", "descriptive", "NULL"),
+        $"INSERT INTO catalog.transaction_type (entry_id, family, code, semantic_key, value_effect, display_name) VALUES ({U(2)}, 'transaction_type', 'g', 'nonproduct', 'none', 'nonproduct');\n",
+        Entry(3, "channel", "descriptive", "NULL"),
+        $"INSERT INTO catalog.channel (entry_id, family, code, attendance, display_name) VALUES ({U(3)}, 'channel', 'g', 'staffed', 'nonproduct');\n",
+        Entry(4, "device_category", "descriptive", "NULL"),
+        $"INSERT INTO catalog.device_category (entry_id, family, code, definition, display_name) VALUES ({U(4)}, 'device_category', 'g', 'nonproduct', 'nonproduct');\n",
+        Entry(5, "manufacturer", "descriptive", "NULL"),
+        $"INSERT INTO catalog.manufacturer (entry_id, family, code, owner_partner_id, legal_name, display_name) VALUES ({U(5)}, 'manufacturer', 'g', NULL, 'nonproduct', 'nonproduct');\n",
+        Entry(6, "device_model", "descriptive", "NULL"),
+        $"INSERT INTO catalog.device_model (entry_id, family, code, owner_partner_id, model_name, manufacturer_global_id, manufacturer_global_family, category_entry_id, display_name) VALUES ({U(6)}, 'device_model', 'g', NULL, 'global-model', {U(5)}, 'manufacturer', {U(4)}, 'nonproduct');\n",
+        Entry(7, "hardware_capability_kind", "descriptive", "NULL"),
+        $"INSERT INTO catalog.hardware_capability_kind (entry_id, family, code, measurement_kind, display_name) VALUES ({U(7)}, 'hardware_capability_kind', 'g', 'boolean', 'nonproduct');\n",
+        Entry(8, "model_hardware_claim", "model_evidence", "NULL"),
+        $"INSERT INTO catalog.model_hardware_claim (entry_id, family, code, derived_owner, model_global_id, model_global_family, capability_entry_id, claim_value, availability, option_key, source_version, checked_at, display_name) VALUES ({U(8)}, 'model_hardware_claim', 'g', NULL, {U(6)}, 'device_model', {U(7)}, 'nonproduct', 'unknown', 'opt', 'v1', clock_timestamp(), 'nonproduct');\n",
+        Entry(9, "card_network", "descriptive", "NULL"),
+        $"INSERT INTO catalog.card_network (entry_id, family, code, official_name, display_name) VALUES ({U(9)}, 'card_network', 'g', 'nonproduct', 'nonproduct');\n",
+        Entry(10, "card_funding_class", "descriptive", "NULL"),
+        $"INSERT INTO catalog.card_funding_class (entry_id, family, code, is_classification_unknown, display_name) VALUES ({U(10)}, 'card_funding_class', 'g', true, 'nonproduct');\n",
+        Entry(11, "payment_rail", "descriptive", "NULL"),
+        $"INSERT INTO catalog.payment_rail (entry_id, family, code, processor_namespace, rail_family, display_name) VALUES ({U(11)}, 'payment_rail', 'g', 'nonproduct', 'nonproduct', 'nonproduct');\n",
+        Entry(12, "check_instrument_kind", "descriptive", "NULL"),
+        $"INSERT INTO catalog.check_instrument_kind (entry_id, family, code, definition, display_name) VALUES ({U(12)}, 'check_instrument_kind', 'g', 'nonproduct', 'nonproduct');\n",
+        Entry(13, "check_drawer_class", "descriptive", "NULL"),
+        $"INSERT INTO catalog.check_drawer_class (entry_id, family, code, definition, display_name) VALUES ({U(13)}, 'check_drawer_class', 'g', 'nonproduct', 'nonproduct');\n",
+        Entry(14, "check_purpose", "descriptive", "NULL"),
+        $"INSERT INTO catalog.check_purpose (entry_id, family, code, definition, display_name) VALUES ({U(14)}, 'check_purpose', 'g', 'nonproduct', 'nonproduct');\n",
+        Entry(15, "processor", "descriptive", "NULL"),
+        $"INSERT INTO catalog.processor (entry_id, family, code, owner_partner_id, provider_name, display_name) VALUES ({U(15)}, 'processor', 'g', NULL, 'nonproduct', 'nonproduct');\n",
+        Entry(16, "transaction_status", "descriptive", "NULL"),
+        $"INSERT INTO catalog.transaction_status (entry_id, family, code, state_dimension, is_terminal, display_name) VALUES ({U(16)}, 'transaction_status', 'g', 'nonproduct', false, 'nonproduct');\n",
+        Entry(17, "reason_code", "descriptive", "NULL"),
+        $"INSERT INTO catalog.reason_code (entry_id, family, code, owner_partner_id, namespace, category, safe_operator_message, requires_note, display_name) VALUES ({U(17)}, 'reason_code', 'g', NULL, 'nonproduct', 'nonproduct', 'nonproduct', false, 'nonproduct');\n",
+        Entry(18, "id_document_type", "descriptive", "NULL"),
+        $"INSERT INTO catalog.id_document_type (entry_id, family, code, owner_partner_id, document_family, capture_method_key, display_name) VALUES ({U(18)}, 'id_document_type', 'g', NULL, 'nonproduct', 'nonproduct', 'nonproduct');\n",
+        Entry(19, "currency", "descriptive", "NULL"),
+        $"INSERT INTO catalog.currency (entry_id, family, code, iso_alpha3, iso_numeric3, minor_unit, display_name) VALUES ({U(19)}, 'currency', 'g', 'XTS', '963', 0, 'nonproduct');\n",
+        Entry(20, "fee_type", "descriptive", "NULL"),
+        $"INSERT INTO catalog.fee_type (entry_id, family, code, owner_partner_id, definition, display_name) VALUES ({U(20)}, 'fee_type', 'g', NULL, 'names only fixture', 'nonproduct');\n",
+        Entry(21, "manufacturer", "descriptive", a),
+        $"INSERT INTO catalog.manufacturer (entry_id, family, code, owner_partner_id, legal_name, display_name) VALUES ({U(21)}, 'manufacturer', 'g', {a}, 'nonproduct', 'nonproduct');\n",
+        Entry(22, "device_model", "descriptive", a),
+        $"INSERT INTO catalog.device_model (entry_id, family, code, owner_partner_id, model_name, manufacturer_private_id, manufacturer_private_family, manufacturer_private_owner, category_entry_id, display_name) VALUES ({U(22)}, 'device_model', 'g', {a}, 'private-model', {U(21)}, 'manufacturer', {a}, {U(4)}, 'nonproduct');\n",
+        Entry(23, "processor", "descriptive", a),
+        $"INSERT INTO catalog.processor (entry_id, family, code, owner_partner_id, provider_name, display_name) VALUES ({U(23)}, 'processor', 'g', {a}, 'nonproduct', 'nonproduct');\n",
+        Entry(24, "reason_code", "descriptive", a),
+        $"INSERT INTO catalog.reason_code (entry_id, family, code, owner_partner_id, namespace, category, safe_operator_message, requires_note, display_name) VALUES ({U(24)}, 'reason_code', 'g', {a}, 'nonproduct', 'nonproduct', 'nonproduct', false, 'nonproduct');\n",
+        Entry(25, "id_document_type", "descriptive", a),
+        $"INSERT INTO catalog.id_document_type (entry_id, family, code, owner_partner_id, document_family, capture_method_key, display_name) VALUES ({U(25)}, 'id_document_type', 'g', {a}, 'nonproduct', 'nonproduct', 'nonproduct');\n",
+        Entry(26, "fee_type", "descriptive", a),
+        $"INSERT INTO catalog.fee_type (entry_id, family, code, owner_partner_id, definition, display_name) VALUES ({U(26)}, 'fee_type', 'g', {a}, 'names only fixture', 'nonproduct');\n",
+        Entry(27, "fee_type", "descriptive", b),
+        $"INSERT INTO catalog.fee_type (entry_id, family, code, owner_partner_id, definition, display_name) VALUES ({U(27)}, 'fee_type', 'g', {b}, 'names only fixture', 'nonproduct');\n",
+        Entry(28, "model_hardware_claim", "model_evidence", a),
+        $"INSERT INTO catalog.model_hardware_claim (entry_id, family, code, derived_owner, model_private_id, model_private_owner, model_private_family, capability_entry_id, claim_value, availability, option_key, source_version, checked_at, display_name) VALUES ({U(28)}, 'model_hardware_claim', 'g', {a}, {U(22)}, {a}, 'device_model', {U(7)}, 'nonproduct', 'unknown', 'opt', 'v1', clock_timestamp(), 'nonproduct');\n");
 }
 
 static List<FixtureRow> BuildFixtures()
