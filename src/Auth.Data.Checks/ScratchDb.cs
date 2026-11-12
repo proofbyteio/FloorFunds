@@ -313,12 +313,20 @@ static class ScratchDb
     }
 
     // o3: cluster-level state that must be identical before and after a run. Read-only catalog queries (no pg_authid).
-    public static async Task<string> ClusterSnapshotAsync(string adminCs)
+    // scopePrefix empty: every ff_scratch_* object is left out. A non-empty prefix keeps that run's own
+    // database and roles and leaves every other ff_scratch_* name out, including shared-description counts.
+    // This run's own database is gone. Another run's marked scratch database does not count.
+    public static bool RunLeftNoMarkedScratch(string after, string before, bool stillExists, IReadOnlyCollection<string> marked, string runName)
+        => after == before && !stillExists && !marked.Contains(runName);
+
+    public static async Task<string> ClusterSnapshotAsync(string adminCs, string scopePrefix = "")
     {
+        if (scopePrefix.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(scopePrefix, "^ff_scratch_[a-z0-9]{6,24}\\z"))
+            throw new ArgumentException("snapshot scope must be empty or one ff_scratch_* prefix");
         await using var c = await OpenMaint(adminCs);
         var sb = new System.Text.StringBuilder();
         foreach (var (what, sql) in MaintSql.Snapshot)
-            foreach (var l in await c.ColumnAsync(sql)) sb.Append(what).Append(' ').Append(l).Append('\n');
+            foreach (var l in await c.ColumnAsync(sql, scopePrefix)) sb.Append(what).Append(' ').Append(l).Append('\n');
         return sb.ToString();
     }
 
@@ -461,13 +469,15 @@ static class MaintSql
     public const string AdminRole = "SELECT rolname||'|'||rolsuper||'|'||rolinherit||'|'||rolcreaterole||'|'||rolcreatedb||'|'||rolcanlogin||'|'||rolreplication||'|'||rolbypassrls||'|'||rolconnlimit||'|'||coalesce(rolvaliduntil::text,'')||'|'||coalesce(shobj_description(oid,'pg_authid'),'') FROM pg_roles WHERE rolname = current_user";
     public const string AdminSettings = "SELECT count(*) FROM pg_db_role_setting WHERE setrole = (SELECT oid FROM pg_roles WHERE rolname = current_user)";
     public const string AdminMembers = "SELECT r.rolname||'|'||m.rolname||'|'||a.admin_option||'|'||a.inherit_option||'|'||a.set_option||'|'||(a.grantor = 10)||'|'||coalesce(shobj_description(r.oid,'pg_authid'),'') FROM pg_auth_members a JOIN pg_roles r ON r.oid = a.roleid JOIN pg_roles m ON m.oid = a.member WHERE current_user IN (r.rolname, m.rolname) ORDER BY 1";
+    // $1 is this run's ff_scratch_* prefix, or '' to leave every such name out. Another run's scratch
+    // database, role, membership, role setting, and shared description does not change the result.
     public static readonly (string what, string sql)[] Snapshot = [
-        ("role", "SELECT rolname||'|'||rolsuper||rolinherit||rolcreaterole||rolcreatedb||rolcanlogin||rolreplication||rolbypassrls||'|'||rolconnlimit||'|'||coalesce(rolvaliduntil::text,'')||'|'||coalesce(shobj_description(oid,'pg_authid'),'') FROM pg_roles ORDER BY 1"),
-        ("member", "SELECT r.rolname||'>'||m.rolname||'|'||a.admin_option||a.inherit_option||a.set_option FROM pg_auth_members a JOIN pg_roles r ON r.oid=a.roleid JOIN pg_roles m ON m.oid=a.member ORDER BY 1"),
-        ("tablespace", "SELECT spcname||'|'||pg_get_userbyid(spcowner)||'|'||coalesce(spcacl::text,'') FROM pg_tablespace ORDER BY 1"),
-        ("database", "SELECT datname||'|'||pg_get_userbyid(datdba)||'|'||datistemplate||datallowconn||'|'||coalesce(datacl::text,'')||'|'||coalesce(shobj_description(oid,'pg_database'),'') FROM pg_database ORDER BY 1"),
-        ("rolesetting", "SELECT setdatabase||'|'||setrole||'|'||array_to_string(setconfig,',') FROM pg_db_role_setting ORDER BY 1"),
-        ("shdesc", "SELECT classoid::regclass::text||'|'||count(*) FROM pg_shdescription GROUP BY classoid ORDER BY 1")];
+        ("role", "SELECT rolname||'|'||rolsuper||rolinherit||rolcreaterole||rolcreatedb||rolcanlogin||rolreplication||rolbypassrls||'|'||rolconnlimit||'|'||coalesce(rolvaliduntil::text,'')||'|'||coalesce(shobj_description(oid,'pg_authid'),'') FROM pg_roles WHERE NOT (rolname LIKE 'ff\\_scratch\\_%' AND ($1 = '' OR NOT starts_with(rolname, $1))) ORDER BY 1"),
+        ("member", "SELECT r.rolname||'>'||m.rolname||'|'||a.admin_option||a.inherit_option||a.set_option FROM pg_auth_members a JOIN pg_roles r ON r.oid=a.roleid JOIN pg_roles m ON m.oid=a.member WHERE NOT (r.rolname LIKE 'ff\\_scratch\\_%' AND ($1 = '' OR NOT starts_with(r.rolname, $1))) AND NOT (m.rolname LIKE 'ff\\_scratch\\_%' AND ($1 = '' OR NOT starts_with(m.rolname, $1))) ORDER BY 1"),
+        ("tablespace", "SELECT spcname||'|'||pg_get_userbyid(spcowner)||'|'||coalesce(spcacl::text,'') FROM pg_tablespace WHERE $1 = $1 ORDER BY 1"),
+        ("database", "SELECT datname||'|'||pg_get_userbyid(datdba)||'|'||datistemplate||datallowconn||'|'||coalesce(datacl::text,'')||'|'||coalesce(shobj_description(oid,'pg_database'),'') FROM pg_database WHERE NOT (datname LIKE 'ff\\_scratch\\_%' AND ($1 = '' OR NOT starts_with(datname, $1))) ORDER BY 1"),
+        ("rolesetting", "SELECT setdatabase||'|'||setrole||'|'||array_to_string(setconfig,',') FROM pg_db_role_setting s WHERE NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.oid = s.setrole AND r.rolname LIKE 'ff\\_scratch\\_%' AND ($1 = '' OR NOT starts_with(r.rolname, $1))) AND NOT EXISTS (SELECT 1 FROM pg_database d WHERE d.oid = s.setdatabase AND d.datname LIKE 'ff\\_scratch\\_%' AND ($1 = '' OR NOT starts_with(d.datname, $1))) ORDER BY 1"),
+        ("shdesc", "SELECT d.classoid::regclass::text||'|'||count(*) FROM pg_shdescription d WHERE NOT EXISTS (SELECT 1 FROM pg_database db WHERE db.oid = d.objoid AND d.classoid = 'pg_database'::regclass AND db.datname LIKE 'ff\\_scratch\\_%' AND ($1 = '' OR NOT starts_with(db.datname, $1))) AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.oid = d.objoid AND d.classoid = 'pg_authid'::regclass AND r.rolname LIKE 'ff\\_scratch\\_%' AND ($1 = '' OR NOT starts_with(r.rolname, $1))) GROUP BY d.classoid ORDER BY 1")];
     public static readonly string[] Reads = [Info, OwnQueries, LogPolicy, DbState, DbOwnedUnmarked, DbList, DbExists, DbConns, RoleList, RoleMarker, RoleSessions, AdminRole, AdminSettings, AdminMembers, .. Snapshot.Select(x => x.sql)];
     // The catalogs the reads may name after FROM / JOIN (the self-test checks every read against this list).
     public static readonly string[] Catalogs = ["pg_database", "pg_roles", "pg_stat_activity", "pg_auth_members", "pg_shdescription", "pg_tablespace", "pg_db_role_setting"];

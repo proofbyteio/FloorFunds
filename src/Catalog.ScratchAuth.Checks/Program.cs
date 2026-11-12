@@ -24,7 +24,10 @@ var root = RepoRoot();
 Check("frozen audit schema hash", Hash(Path.Combine(root, "contract", "audit-events.schema.json")) == "ce0b904fcc5069d9e727e62600efabca311c8a407297ed5dbc96f605ae807b1b");
 Check("frozen errors.md hash", Hash(Path.Combine(root, "contract", "errors.md")) == "dd15977e50be88364fa758c8c8c32618539ddfaed43e31205e4b9b65617cd80b");
 Check("frozen claims schema hash", Hash(Path.Combine(root, "contract", "claims.schema.json")) == "c792c384eebf198db22d61ca241f43bb3efbbfea1c517ea9ccb0f5632a3d6972");
-Check("frozen admin token validator hash", Hash(Path.Combine(root, "src", "Admin.Api", "AdminAuth.cs")) == "00f3432ac2eb6793cd896f28bdf588e98f00c9262f3eb83fce1b590a70b8aa34");
+// REQ-064 moved this pin again. The host recognizes the issuer's closed-session
+// body and still does not verify the JWT. The issuer process does. The behavioral
+// checks below still cover FrozenAdminTokenGate.
+Check("frozen admin token validator hash", Hash(Path.Combine(root, "src", "Admin.Api", "AdminAuth.cs")) == "8319c6e1f0a003f5931c2349a0744bab056dd97183a0c541ae39b1cd5649f5d5");
 Check("accepted catalog transport hash", Hash(Path.Combine(root, "src", "Catalog.Transport", "CatalogHttpTransport.cs")) == "e5004a949dba148706bfdaf525245d429232aff5298e1aac22b66fdf3a07d060");
 
 var scratchText = string.Join("\n", Directory.GetFiles(Path.Combine(root, "src", "Catalog.ScratchAuth"), "*.cs").Select(File.ReadAllText));

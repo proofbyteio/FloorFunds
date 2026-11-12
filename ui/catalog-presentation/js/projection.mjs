@@ -320,7 +320,9 @@ function visible(actor, entry) {
   if (!entry || !isManagement(actor)) return false;
   if (entry.entryClass === "global") return true;
   if (entry.family === "model_hardware_claim") return actor.role === "super_admin" || actor.partnerId === entry.ownerPartnerId;
-  return actor.role === "partner_admin" && actor.partnerId === entry.ownerPartnerId;
+  // DEC-195: super_admin is only produced from a resolved global Super Admin assignment.
+  // Read visibility only. Location switch and claim reactivation stay held below.
+  return actor.role === "super_admin" || (actor.role === "partner_admin" && actor.partnerId === entry.ownerPartnerId);
 }
 
 function canEditClaim(actor, entry) {

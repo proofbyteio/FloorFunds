@@ -123,7 +123,7 @@ public static class Reenroll
                 // DEC-093: back to sign-in of the same kind. [ASSUMPTION A52] the redirect is the page's Continue link, since a 302 would hide the codes.
                 var next = s.AdminType is not null ? issuerPath + "/admin" : issuerPath + "/l/" + s.Slug;
                 var li = string.Concat(codes.Select(x => $"<li><code>{WebUtility.HtmlEncode(x)}</code></li>"));
-                return Ui.Page("Your authenticator is set up", Ui.Render("recovery-codes", ("codes", li), ("next", next), ("sub", Sub(s))));
+                return Ui.Page("Your authenticator is set up", Ui.Render("recovery-codes", ("codes", li), ("next", next), ("sub", Sub(s)), ("product", Ui.ProductName)));
             }
         });
     }

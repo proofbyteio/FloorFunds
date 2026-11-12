@@ -138,13 +138,14 @@ test("visibility hides private non-claims and keeps same-code rows", () => {
   assert.equal(saList.list.pagination, "not_a_cursor_contract");
   assert.equal(saList.list.hiddenCount, undefined);
   const privateFee = findCode(session, "fee_type", "EXAMPLE-20-A", "private");
-  assert.equal(saList.list.entries.some((entry) => entry.entryId === privateFee.entryId), false);
+  assert.equal(saList.list.entries.some((entry) => entry.entryId === privateFee.entryId), true);
   assert.equal(paList.list.entries.filter((entry) => entry.code === "EXAMPLE-20-A").length, 2);
   assert.equal(otherList.list.entries.some((entry) => entry.entryId === privateFee.entryId), false);
-  const hidden = readEntry(session, sa, "fee_type", privateFee.entryId);
+  const seen = readEntry(session, sa, "fee_type", privateFee.entryId);
   const missing = readEntry(session, sa, "fee_type", "00000000-0000-4000-8000-000000000099");
-  assert.equal(sameRefusal(hidden, missing), true);
-  assert.equal(hidden.status, 404);
+  assert.equal(seen.status, 200);
+  assert.equal(seen.entry.code, "EXAMPLE-20-A");
+  assert.equal(sameRefusal(readEntry(session, other, "fee_type", privateFee.entryId), missing), true);
   const makers = listEntries(session, pa, "manufacturer").list.entries.filter((entry) => entry.code === "EXAMPLE-5-A");
   assert.equal(makers.length, 2);
   assert.equal(new Set(makers.map((entry) => entry.entryId)).size, 2);
@@ -386,8 +387,9 @@ test("presentation lows keep the denied list, same-code principal, plain result,
   assert.match(saSame, /value="super_admin" selected>Super Admin/);
   assert.match(saSame, /Selected principal: Super Admin/);
   assert.match(saSame, /11000000-0000-4000-8005-100000000001/);
-  assert.equal(saSame.includes("11000000-0000-4000-8005-200000000001"), false);
-  assert.match(saSame, /same as a missing row/);
+  assert.equal(saSame.includes("11000000-0000-4000-8005-200000000001"), true);
+  assert.match(saSame, /resolved global Super Admin assignment/);
+  assert.equal(/same as a missing row/.test(saSame), false);
   assert.equal(saSame.includes("hidden count:"), false);
   const otherState = freshState("partner_admin_other");
   applyAction(otherState, { type: "navigate", route: parseRoute("#/shared/same-code") });
@@ -471,10 +473,9 @@ test("unavailable create copy matches its detail and same-code copy matches the 
   assert.equal(closed.session.entries.size, before);
 
   const privateId = "11000000-0000-4000-8005-200000000001";
-  const hidden = readEntry(closed.session, sa, "manufacturer", privateId);
+  const seenPrivate = readEntry(closed.session, sa, "manufacturer", privateId);
   const missing = readEntry(closed.session, sa, "manufacturer", "00000000-0000-4000-8000-000000000099");
-  assert.equal(hidden.status, 404);
-  assert.equal(sameRefusal(hidden, missing), true);
+  assert.equal(seenPrivate.status, 200);
   assert.equal(sameRefusal(readEntry(closed.session, other, "manufacturer", privateId), missing), true);
 
   for (const role of ["client_admin", "supervisor", "cashier", "auditor", "accounting", "support", "none"]) {
@@ -531,8 +532,8 @@ test("narrow layout keeps the proof token and shows script focus", () => {
   assert.match(html, /synthetic_fixture_projection_not_the_dotnet_double_api_or_database/);
   assert.match(html, /role="alert"|role="status"|<h1 id="screen-title"/);
   const css = readFileSync(join(here, "..", "css", "catalog.css"), "utf8");
-  assert.match(css, /:focus-visible \{ outline: 3px solid var\(--focus\); outline-offset: 2px; \}/);
-  assert.match(css, /\.program-focus \{ outline: 3px solid var\(--focus\); outline-offset: 2px; \}/);
+  assert.match(css, /:focus-visible \{ outline: var\(--focus-ring-width\) solid var\(--focus-ring\); outline-offset: var\(--focus-ring-offset\); \}/);
+  assert.match(css, /\.program-focus \{ outline: var\(--focus-ring-width\) solid var\(--focus-ring\); outline-offset: var\(--focus-ring-offset\); \}/);
   assert.match(css, /\.page-foot, \.fine \{ overflow-wrap: anywhere; \}/);
   assert.match(css, /\.actor-bar > \* \{ min-width: 0; max-width: 100%; \}/);
   assert.match(css, /td, th, caption \{ overflow-wrap: anywhere; \}/);
@@ -562,11 +563,11 @@ test("imported contract files stay byte-identical", () => {
     "src/Catalog.Contracts/CatalogPrincipal.cs": "7c3df3b9d3288de8c079276ed01e13715431c8bc4126f2524988f75f9f07056e",
     "src/Catalog.Contracts.Checks/Catalog.Contracts.Checks.csproj": "3379645588ddc925aa92e97e367878844c532e7d6ab8b4ba4b67ab194ccd530d",
     "src/Catalog.Contracts.Checks/packages.lock.json": "8f105936eeb4a67e0e5a59bea0345b679bd0fd675f3252fa213f2fee3630f9ad",
-    "src/Catalog.Contracts.Checks/Program.cs": "f800a43d0b9dae051b7ac74f208e988e12174cc008b6e9a6cf95c232c32cfeef",
-    "src/Catalog.Contracts/Doubles/CatalogDomainService.cs": "23a505ebbf888cbcba560c69a6e611dfe21ad39ba240facdf882d8a62b034aa5",
+    "src/Catalog.Contracts.Checks/Program.cs": "c8ac4885cc788eaed676bc567495f44b0c760b0d3fff6001cf7e3f90537d2959",
+    "src/Catalog.Contracts/Doubles/CatalogDomainService.cs": "31f2a8747f37474f71c49d62d11798b0140a3b9b35ff369545313d2fecb598c6",
     "src/Catalog.Contracts/Doubles/InMemoryCatalogRepository.cs": "ab633f65b36af87bc887cf4f5f7fd2322d32e9c3b81684a1bf42c7249170af1a",
     "src/Catalog.Contracts/Doubles/ScopeVersionTable.cs": "b7ba1d860f5a95e3904b8a2287415aa820a7ec3d8c9dd2c2b2a52b9bafb2052c",
-    "src/Catalog.Contracts/ISOLATED-CONTRACT.md": "0d54eb7fa1bac885c93205c934e4c87310551bb2de13037a443eb7808ca8cc7e",
+    "src/Catalog.Contracts/ISOLATED-CONTRACT.md": "18915e60cd54597aac580fd68e51d03a2027f9573093921870e6934324b89135",
     "src/Catalog.Contracts/packages.lock.json": "98540f8c8005e000cc83cffb4598281f61900a13426b470f1d1114c62b54a63d",
     "src/Catalog.Contracts/VersionToken.cs": "3d621c76f0b9fb93711b4f9c7c267ffc928ee6fd07fb7502868309d7c606aafd",
   };

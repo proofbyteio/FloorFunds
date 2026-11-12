@@ -29,8 +29,11 @@ public sealed class TokenIssuer
 
     public (string Token, string Jti, long Exp) Access(LoginSession s, OAuthClient c, string scope, DateTimeOffset now, StandInUser u, JsonLookup org)
     {
-        long iat = now.ToUnixTimeSeconds(), exp = iat + AccessLifetime;
-        var jti = NewHandle();
+        long iat = now.ToUnixTimeSeconds();
+        // The dev shell is a local session a person keeps open. Other clients stay at AccessLifetime.
+        long exp = iat + (c.ClientId == Clients.DevShellClientId ? 3600 : AccessLifetime);
+        // request_session.jti is uuid. The issuer accepts only the "D" form. Other handles stay NewHandle.
+        var jti = Guid.NewGuid().ToString("D");
         var cl = new Dictionary<string, object>
         {
             ["iss"] = _issuer, ["sub"] = s.UserId, ["aud"] = c.Aud ?? throw new InvalidOperationException("openid-only client has no access token"), ["exp"] = exp, ["iat"] = iat, ["jti"] = jti, ["scope"] = scope,
@@ -43,6 +46,13 @@ public sealed class TokenIssuer
             if (org.CachdClientId is not null) cl["cachd_client_id"] = org.CachdClientId;
         }
         if (c.Cachd) cl["perm_version"] = u.PermVersion;
+        // A dev-shell admin session carries the sign-in discriminator only. Authority still comes from the resolver.
+        if (s.AdminType == "super") cl["admin_type"] = "super";
+        else if (s.AdminType == "partner" && s.PartnerId is not null)
+        {
+            cl["admin_type"] = "partner";
+            cl["partner_id"] = s.PartnerId;
+        }
         return (Sign(cl, "at+jwt"), jti, exp);
     }
 

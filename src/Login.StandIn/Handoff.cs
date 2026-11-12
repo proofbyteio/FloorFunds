@@ -71,7 +71,7 @@ public static class Handoff
         var t = af.GetAndStoreTokens(c).RequestToken!;
         // [ASSUMPTION A38] ui-driver has no id for this page; the form id is "handoff" and the page has no screen testid (v1.1 UI item).
 
-        return Ui.Page("Opening Cash Advance", Ui.Render("handoff", ("action", issuerPath + "/connect/authorize"), ("agent", $"http://localhost:{agentPort}/_standin/agent/attest"), ("af", t)), "handoff");
+        return Ui.Page("Opening " + Ui.ProductName, Ui.Render("handoff", ("action", issuerPath + "/connect/authorize"), ("agent", $"http://localhost:{agentPort}/_standin/agent/attest"), ("af", t), ("product", Ui.ProductName)), "handoff");
     }
 
     public static void Map(WebApplication app, StandInState st, string issuerPath, string issuer, StandInPorts ports)
@@ -107,30 +107,58 @@ public static class Handoff
 
         // Minimal /admin sign-in (UX 05 ids): password, then TOTP or a recovery code. [ASSUMPTION A33] no lockout, attestation or
         // re-enrolment flow; a recovery code makes a recovery_reenroll session with amr [pwd] (5.13). Not a full /admin build.
-        string Page(string? err, int step, string t) => $"""
-<div data-testid="error-area" role="alert"><div data-testid="error-admin-sign-in">{(err is null ? "" : E(err))}</div></div>
+        // Only the dev-shell authorize URL may be resumed after admin MFA. Anything else is dropped.
+        string? AdminRet(string? ret)
+        {
+            if (string.IsNullOrEmpty(ret) || ret.Length > 2000) return null;
+            if (!ret.StartsWith(issuerPath + "/connect/authorize?", StringComparison.Ordinal)) return null;
+            if (!ret.Contains("client_id=" + Clients.DevShellClientId, StringComparison.Ordinal)) return null;
+            return ret;
+        }
+        string RetField(string? ret) => ret is null ? "" : $"""<input type="hidden" name="ret" value="{E(ret)}">""";
+        // F-TL-B / DEC-220. reason is a fixed enum (expired). Never echo query text into the page.
+        // ProductName comes from Branding:ProductName via Ui.ProductName.
+        string ExpirySentence(string? reason) =>
+            reason == "expired"
+                ? $"""<p class="card__subtitle" data-testid="session-expired-sentence">For security, {E(Ui.ProductName)} asks for your sign-in again.</p>"""
+                : "";
+        string Page(string? err, int step, string t, string? ret = null, string? reason = null) => $"""
+<div data-testid="error-area" role="alert"{(err is null ? " hidden" : "")}><div data-testid="error-admin-sign-in">{(err is null ? "" : E(err))}</div></div>
 """ + (step == 1 ? $"""
+{ExpirySentence(reason)}
 <form method="post" action="{issuerPath}/admin"><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
-<label>Username <input data-testid="field-admin-username" name="username"></label>
-<label>Password <input data-testid="field-admin-password" name="password" type="password"></label>
-<button data-testid="admin-signin-submit" type="submit">Sign in</button></form>
+{RetField(ret)}
+{(reason == "expired" ? """<input type="hidden" name="reason" value="expired">""" : "")}
+<label for="admin-username">Username <input id="admin-username" data-testid="field-admin-username" name="username" autocomplete="username" required></label>
+<label for="admin-password">Password <input id="admin-password" data-testid="field-admin-password" name="password" type="password" autocomplete="current-password" required></label>
+<div class="admin-cta group"><button class="button button--primary button--block btn-primary" data-testid="admin-signin-submit" type="submit"><span class="btn-primary__press">Sign in</span></button><span class="btn-primary-halo" aria-hidden="true"></span></div></form>
 """ : $"""
 <form method="post" action="{issuerPath}/admin/mfa"><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
-<label>Code <input data-testid="field-admin-totp" name="totp_code" inputmode="numeric"></label>
+<label for="admin-totp">Code <input id="admin-totp" data-testid="field-admin-totp" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label>
 <button data-testid="admin-totp-submit" type="submit">Continue</button></form>
 <form method="post" action="{issuerPath}/admin/mfa"><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
-<label>Recovery code <input data-testid="field-admin-recovery-code" name="recovery_code"></label>
+<label for="admin-recovery">Recovery code <input id="admin-recovery" data-testid="field-admin-recovery-code" name="recovery_code" autocomplete="off" required></label>
 <button data-testid="admin-recovery-submit" type="submit">Use recovery code</button></form>
 """);
-        IResult Admin(HttpContext c, string? err, int step) => SignIn.Html("page-admin-sign-in", Page(err, step, af.GetAndStoreTokens(c).RequestToken!));
+        string? ReasonEnum(string? raw) => raw == "expired" ? "expired" : null;
+        IResult Admin(HttpContext c, string? err, int step, string? ret = null, string? reason = null) =>
+            SignIn.Html("page-admin-sign-in", Page(err, step, af.GetAndStoreTokens(c).RequestToken!, ret, ReasonEnum(reason)), productLockup: step == 1);
         void Cookie(HttpContext c, string n, string v) => c.Response.Cookies.Append(n, v, new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Lax, Path = issuerPath, Secure = c.Request.IsHttps });
 
-        app.MapGet(issuerPath + "/admin", (HttpContext c) => { SignIn.Headers(c, ports.Control); lock (st.Gate) return Admin(c, null, 1); });
+        app.MapGet(issuerPath + "/admin", (HttpContext c) =>
+        {
+            SignIn.Headers(c, ports.Control);
+            var ret = AdminRet(c.Request.Query["ret"].ToString());
+            var reason = ReasonEnum(c.Request.Query["reason"].ToString());
+            lock (st.Gate) return Admin(c, null, 1, ret, reason);
+        });
         app.MapPost(issuerPath + "/admin", async (HttpContext c) =>
         {
             SignIn.Headers(c, ports.Control);
             if (!await Af(af, c)) return Results.BadRequest();
             var f = await c.Request.ReadFormAsync();
+            var ret = AdminRet(f["ret"].ToString());
+            var reason = ReasonEnum(f["reason"].ToString());
             lock (st.Gate)
             {
                 var key = f["username"].ToString().Trim().ToLowerInvariant();
@@ -138,14 +166,14 @@ public static class Handoff
                 var now = st.Clock.Now;
                 bool hashOk = SignIn.PasswordMatches(u, f["password"].ToString()); // OQ-11 dummy hash for unknown users
                 // SEC77 (TL 9:42, F12): /admin gets the lockout too.
-                if (u is not null && SignIn.Locked(u, now)) return Admin(c, SignIn.Generic, 1);
+                if (u is not null && SignIn.Locked(u, now)) return Admin(c, SignIn.Generic, 1, ret, reason);
                 bool ok = hashOk && u!.Status == "active";
                 if (!ok)
                 {
                     if (u is not null) SignIn.CountFailure(st, u, SignIn.Limit(st, u, null), now, AdminScope(u), c.Connection.RemoteIpAddress?.ToString(), null);
-                    return Admin(c, SignIn.Generic, 1);
+                    return Admin(c, SignIn.Generic, 1, ret, reason);
                 }
-                var tx = new SignInTx { Id = TokenIssuer.NewHandle(), Slug = "", Purpose = "admin", Stage = "mfa", Username = u!.Username, NonceAt = st.Clock.Now, PreMfaAt = now };
+                var tx = new SignInTx { Id = TokenIssuer.NewHandle(), Slug = "", Purpose = "admin", Stage = "mfa", Username = u!.Username, NonceAt = st.Clock.Now, PreMfaAt = now, ReturnTo = ret };
                 st.Auth.Tx[tx.Id] = tx; Cookie(c, SignIn.TxCookie, tx.Id);
                 return Admin(c, null, 2);
             }
@@ -184,7 +212,8 @@ public static class Handoff
                 st.Auth.Sessions[s.Sid] = s;
                 c.Response.Cookies.Delete(SignIn.TxCookie, new CookieOptions { Path = issuerPath });
                 Cookie(c, SignIn.SessionCookie, s.Sid);
-                return SignIn.Hub(st, s);
+                var back = AdminRet(tx.ReturnTo);
+                return back is null ? SignIn.Hub(st, s) : Results.Redirect(back);
             }
         });
     }

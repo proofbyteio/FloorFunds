@@ -23,7 +23,7 @@ public sealed class CatalogQuery
     {
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(actor);
-        if (!actor.IsManagementRole)
+        if (!CatalogReadAuthorization.MayRead(actor))
             return CatalogQueryResult.Forbidden();
 
         var scope = ScopeFor(actor);
@@ -87,7 +87,7 @@ public sealed class CatalogQuery
         Guid entryId,
         CancellationToken cancellationToken)
     {
-        if (!actor.IsManagementRole)
+        if (!CatalogReadAuthorization.MayRead(actor))
             return null;
         var scope = ScopeFor(actor);
         var row = await _storage.FindEntryAsync(scope, entryId, cancellationToken);
@@ -104,19 +104,21 @@ public sealed class CatalogQuery
     };
 
     /// <summary>
-    /// Accepted contract Visible. Global rows are visible to management roles.
-    /// A private model_hardware_claim is visible to Super Admin and to the owning Partner Admin.
-    /// Every other private family is visible only to the owning Partner Admin.
+    /// DEC-195 read rule. Global rows are visible to management roles.
+    /// A partner-private row, claim or not, is visible to a Super Admin. That role is produced
+    /// only from a resolved global Super Admin assignment. The owning Partner Admin still sees it.
+    /// Another Partner Admin does not. This predicate does not grant a write.
     /// </summary>
     private static bool Visible(CatalogPrincipal actor, CatalogEntryRow entry)
     {
-        if (!actor.IsManagementRole)
+        if (!CatalogReadAuthorization.MayRead(actor))
             return false;
         if (entry.OwnerPartnerId is null)
             return true;
         if (entry.Family == CatalogFamilies.Wire(CatalogFamily.ModelHardwareClaim))
             return actor.Role == CatalogRole.SuperAdmin || actor.PartnerId == entry.OwnerPartnerId;
-        return actor.Role == CatalogRole.PartnerAdmin && actor.PartnerId == entry.OwnerPartnerId;
+        return actor.Role == CatalogRole.SuperAdmin
+            || (actor.Role == CatalogRole.PartnerAdmin && actor.PartnerId == entry.OwnerPartnerId);
     }
 
     private static CatalogQueryEntry Project(CatalogEntryRow row) => new(

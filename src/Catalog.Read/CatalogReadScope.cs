@@ -9,14 +9,28 @@ public sealed class CatalogReadScope
     private readonly string _adminType;
     private readonly Guid? _partnerId;
 
-    private CatalogReadScope(string adminType, Guid? partnerId)
+    private CatalogReadScope(string adminType, Guid? partnerId, string? sessionToken = null)
     {
         _adminType = adminType;
         _partnerId = partnerId;
+        SessionToken = sessionToken;
     }
 
+    /// <summary>Raw session token for begin_request. Null until the caller or CatalogSessions supplies one.</summary>
+    public string? SessionToken { get; }
+
+    public CatalogReadScope WithSession(string token)
+    {
+        if (string.IsNullOrEmpty(token))
+            throw new CatalogReadContextException("catalog read context is missing or invalid.");
+        return new(_adminType, _partnerId, token);
+    }
+
+    /// <summary>Scope-kind label for logs. It is not written to app.admin_type.</summary>
     public string AdminType => _adminType;
     public Guid? PartnerId => _partnerId;
+    public string ResolvedGlobal => _adminType == "super" ? "on" : "";
+    public string ResolvedPartnerCsv => _partnerId is Guid id ? id.ToString("D") : "";
 
     public bool IsValid =>
         (_adminType == "super" && _partnerId is null)
@@ -61,4 +75,16 @@ public sealed class CatalogReadContextException : InvalidOperationException
 public sealed class CatalogReadRoleException : InvalidOperationException
 {
     public CatalogReadRoleException(string message) : base(message) { }
+}
+
+/// <summary>
+/// Expired, revoked, and logged-out sessions are one result. The SQL texts stay distinct.
+/// </summary>
+public sealed class CatalogSessionClosedException : Exception
+{
+    public const int StatusCode = 401;
+    public const string Body = "{\"error\":\"session_expired\"}";
+    public const string Authenticate = "Bearer";
+
+    public CatalogSessionClosedException() : base("session_expired") { }
 }

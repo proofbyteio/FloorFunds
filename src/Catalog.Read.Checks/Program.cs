@@ -9,12 +9,28 @@ const string LoginRole = "ff_kit_dec192_read1_login";
 const string BootstrapRole = "dec161boot";
 const string Host = "127.0.0.1";
 const int Port = 5433;
+const string CatalogPrincipalSeed = """
+    INSERT INTO auth.app_user (user_id, partner_id, status) VALUES
+      ('5f0c3e1a-00ca-4000-8000-0000000000a1', NULL, 'active'),
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', NULL, 'active'),
+      ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', NULL, 'active')
+    ON CONFLICT (user_id) DO NOTHING;
+    INSERT INTO auth.user_issuer (user_id, issuer) VALUES
+      ('5f0c3e1a-00ca-4000-8000-0000000000a1', 'https://catalog.invalid/scope'),
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'https://catalog.invalid/scope'),
+      ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'https://catalog.invalid/scope')
+    ;
+    INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
+      ('5f0c3e1a-00ca-4000-8000-0000000000a1', '5f0c3e1a-00ca-4000-8000-0000000000a1', 'super_admin', 'global', NULL, 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now()),
+      ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'partner_admin', 'partner', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now()),
+      ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'partner_admin', 'partner', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'active', 1, '5f0c3e1a-00ca-4000-8000-0000000000a1', now())
+    ON CONFLICT (assignment_id) DO NOTHING;
+    """;
 var partnerA = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
 var partnerB = Guid.Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
 var globalId = Guid.Parse("10000000-0000-4000-8000-0000000000a1");
 var feeA = Guid.Parse("10000000-0000-4000-8000-0000000000a2");
 var feeB = Guid.Parse("10000000-0000-4000-8000-0000000000a3");
-var actor = Guid.Parse("44444444-4444-4444-8444-444444444444");
 var log = new List<string>();
 var passed = 0;
 var failed = 0;
@@ -75,10 +91,11 @@ async Task<string> SqlState(NpgsqlDataSource ds, string sql)
     }
 }
 
-async Task Exec(NpgsqlDataSource ds, string sql)
+async Task Exec(NpgsqlDataSource ds, string sql, params object[] ps)
 {
     await using var conn = await ds.OpenConnectionAsync();
     await using var cmd = new NpgsqlCommand(sql, conn);
+    foreach (var p in ps) cmd.Parameters.Add(new NpgsqlParameter { Value = p });
     await cmd.ExecuteNonQueryAsync();
 }
 
@@ -102,8 +119,12 @@ try
     await Exec(bootstrap, $"CREATE ROLE {OwnerRole} LOGIN NOSUPERUSER NOBYPASSRLS CREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE DATABASE {DbName} OWNER {OwnerRole}");
     await Exec(bootstrap, $"COMMENT ON DATABASE {DbName} IS 'floorfunds-scratch-dec192-read'");
-    await Exec(bootstrap, $"CREATE ROLE {AdminRole} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
+    await Exec(bootstrap, $"CREATE ROLE {AdminRole} LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     await Exec(bootstrap, $"CREATE ROLE {LoginRole} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
+    await Exec(bootstrap, $"CREATE ROLE {DbName}_auth_definer NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
+    await Exec(bootstrap, $"CREATE ROLE {DbName}_auth_owner NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
+    await Exec(bootstrap, $"CREATE ROLE {DbName}_catalog_definer NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
+    await Exec(bootstrap, $"CREATE ROLE {DbName}_issuer LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION");
     var ownerName = await Scalar(bootstrap, $"SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_database WHERE datname = '{DbName}'");
     if (ownerName != OwnerRole)
         throw new InvalidOperationException($"scratch owner is {ownerName}");
@@ -127,17 +148,48 @@ try
         throw new InvalidOperationException($"migrate failed ({migrate.ExitCode}) {migErr}");
     log.Add("migrate update: ok");
     Console.WriteLine("migrate update: ok");
+    await using (var bootDb = NpgsqlDataSource.Create(Cs(BootstrapRole, DbName, false)))
+        await Exec(bootDb, await File.ReadAllTextAsync(Path.Combine(repo, "db", "kit", "definer-owner.sql")));
 
+    var seedPassword = await KitAdmin.InstallTestSeed(Host, Port, BootstrapRole, DbName, Path.Combine(repo, "db", "kit", "test-seed-role.sql"));
     await using var owner = NpgsqlDataSource.Create(Cs(OwnerRole, DbName, false));
-    await LoadFee(owner, globalId, null, "surcharge", "super", "");
-    await LoadFee(owner, feeA, partnerA, "afee", "partner", partnerA.ToString("D"));
-    await LoadFee(owner, feeB, partnerB, "bfee", "partner", partnerB.ToString("D"));
+    await using var seed = NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder(Cs(DbName + "_test_seed", DbName, false)) { Password = seedPassword }.ConnectionString);
+    await Exec(seed, CatalogPrincipalSeed);
+    await using var issuer = NpgsqlDataSource.Create(Cs(DbName + "_issuer", DbName, false));
+    async Task<string> OpenCatalogSession(Guid user)
+    {
+        await using var c = await issuer.OpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4, $5)", c);
+        cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = CatalogSessionSql.CatalogIssuer });
+        cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = user.ToString("D") });
+        cmd.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = Guid.NewGuid() });
+        cmd.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.UtcNow.AddMinutes(5) });
+        cmd.Parameters.Add(new NpgsqlParameter<DateTime> { TypedValue = DateTime.UtcNow });
+        return (string)(await cmd.ExecuteScalarAsync())!;
+    }
+    KitAdmin.Arm(DbName, Port);
+    KitAdmin.Exec("catalog-read-fee-fixture", KitAdmin.SessionThen(
+        DbName + "_issuer",
+        CatalogSessionSql.CatalogIssuer,
+        CatalogSessionSql.CatalogSuperUser,
+        "dec192-read-fixture",
+        "read fixture",
+        ReadFee(globalId, null, "surcharge") + ReadFee(feeA, partnerA, "afee") + ReadFee(feeB, partnerB, "bfee")));
     var loaded = await Scalar(owner, "SELECT count(*) FROM catalog.registered_entry");
     if (loaded != "3")
         throw new InvalidOperationException($"fixture row count {loaded}");
+    var catalogTokens = new Dictionary<string, string>
+    {
+        ["super"] = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser)),
+        [partnerA.ToString("D")] = await OpenCatalogSession(partnerA),
+        [partnerB.ToString("D")] = await OpenCatalogSession(partnerB),
+    };
+    CatalogSessions.Use(scope => scope.AdminType == "super"
+        ? catalogTokens["super"]
+        : catalogTokens[scope.PartnerId!.Value.ToString("D")]);
     log.Add("SECTION fixture-load");
-    log.Add("fixture rows present: 3 fee_type. Direct owner INSERT. Not a candidate-function result.");
-    Console.WriteLine("fixture rows present: 3");
+    log.Add("fixture rows present: " + loaded);
+    Console.WriteLine("fixture rows present: " + loaded);
 
     log.Add("SECTION scratch-role-evidence");
     Console.WriteLine("SECTION scratch-role-evidence");
@@ -183,11 +235,17 @@ try
     var bare = await Scalar(adminProbe, "SELECT count(*) FROM catalog.registered_entry");
     if (bare == "0") Pass("rls-missing-context-zero-rows", bare);
     else Fail("rls-missing-context-zero-rows", bare);
-    await Exec(adminProbe, "SELECT set_config('app.admin_type','partner', false), set_config('app.partner_id','not-a-uuid', false)");
+    await Exec(adminProbe, "SELECT set_config('app.resolved_partner_ids','not-a-uuid', false), set_config('app.admin_type','partner', false), set_config('app.partner_id','not-a-uuid', false)");
     var invalid = await Scalar(adminProbe, "SELECT count(*) FROM catalog.registered_entry");
-    await Exec(adminProbe, "SELECT set_config('app.admin_type','', false), set_config('app.partner_id','', false)");
+    await Exec(adminProbe, "SELECT set_config('app.resolved_partner_ids','', false), set_config('app.admin_type','', false), set_config('app.partner_id','', false)");
     if (invalid == "0") Pass("rls-invalid-partner-zero-rows", invalid);
     else Fail("rls-invalid-partner-zero-rows", invalid);
+    await Exec(adminProbe, "SELECT set_config('app.admin_type','super', false), set_config('app.resolved_global_admin','', false)");
+    var forgedRows = await Scalar(adminProbe, "SELECT count(*) FROM catalog.registered_entry");
+    var forgedHist = await Scalar(adminProbe, "SELECT count(*) FROM catalog.entry_change");
+    await Exec(adminProbe, "SELECT set_config('app.admin_type','', false)");
+    if (forgedRows == "0" && forgedHist == "0") Pass("admin-type-super-sees-no-private-rows", $"{forgedRows},{forgedHist}");
+    else Fail("admin-type-super-sees-no-private-rows", $"{forgedRows},{forgedHist}");
     await using var loginProbe = NpgsqlDataSource.Create(Cs(LoginRole, DbName, false));
     var loginState = await SqlState(loginProbe, "SELECT 1 FROM catalog.registered_entry");
     if (loginState == "42501") Pass("login-catalog-select", loginState);
@@ -248,18 +306,24 @@ try
 
     await using (var leak = await pooled.OpenConnectionAsync())
     {
-        await using var cmd = new NpgsqlCommand("SELECT set_config('app.admin_type','partner', false), set_config('app.partner_id', $1, false)", leak);
+        await using var cmd = new NpgsqlCommand("""
+            SELECT set_config('app.request_iss', 'https://catalog.invalid/scope', false),
+                   set_config('app.request_sub', $1, false),
+                   set_config('app.resolved_partner_ids', $1, false),
+                   set_config('app.admin_type', 'partner', false),
+                   set_config('app.partner_id', $1, false)
+            """, leak);
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = partnerA.ToString("D") });
         await cmd.ExecuteNonQueryAsync();
         var seen = await new NpgsqlCommand("SELECT count(*) FROM catalog.registered_entry", leak).ExecuteScalarAsync();
-        if (Convert.ToString(seen, System.Globalization.CultureInfo.InvariantCulture) != "2")
+        if (Convert.ToString(seen, System.Globalization.CultureInfo.InvariantCulture) != "0")
             throw new InvalidOperationException($"pre-leak count {seen}");
     }
     var missingContext = await ThrowsContext(() => reader.ListEntriesAsync(null, CancellationToken.None));
     if (missingContext) Pass("missing-context-throws", "CatalogReadContextException");
     else Fail("missing-context-throws", "no throw");
     var afterMissing = await PooledGuc(pooled);
-    if (afterMissing == "||0") Pass("missing-context-resets-pool", afterMissing);
+    if (afterMissing == "||||0") Pass("missing-context-resets-pool", afterMissing);
     else Fail("missing-context-resets-pool", afterMissing);
 
     try
@@ -301,15 +365,40 @@ try
 
     await using (var leak = await pooled.OpenConnectionAsync())
     {
-        await using var cmd = new NpgsqlCommand("SELECT set_config('app.admin_type','partner', false), set_config('app.partner_id', $1, false)", leak);
+        await using var cmd = new NpgsqlCommand("SELECT set_config('app.resolved_partner_ids', $1, false), set_config('app.admin_type','partner', false), set_config('app.partner_id', $1, false)", leak);
         cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = partnerB.ToString("D") });
         await cmd.ExecuteNonQueryAsync();
     }
     var forced = await reader.ListEntriesAsync(super, CancellationToken.None);
     ExpectCodes("argument-scope-ignores-leftover-session", forced.Select(r => r.Code), "afee", "bfee", "surcharge");
     var afterSuper = await PooledGuc(pooled);
-    if (afterSuper == "||0") Pass("successful-read-resets-pool", afterSuper);
+    if (afterSuper == "||||0") Pass("successful-read-resets-pool", afterSuper);
     else Fail("successful-read-resets-pool", afterSuper);
+
+    var noResetBuilder = new NpgsqlConnectionStringBuilder(Cs(AdminRole, DbName, true))
+    {
+        NoResetOnClose = true,
+        MaxPoolSize = 1,
+    };
+    await using var noReset = NpgsqlDataSource.Create(noResetBuilder.ConnectionString);
+    var noResetReader = new NpgsqlCatalogReader(noReset);
+    await using (var leak = await noReset.OpenConnectionAsync())
+    {
+        await using var cmd = new NpgsqlCommand("""
+            SELECT set_config('app.request_iss', 'https://catalog.invalid/scope', false),
+                   set_config('app.request_sub', $1, false)
+            """, leak);
+        cmd.Parameters.Add(new NpgsqlParameter<string> { TypedValue = partnerA.ToString("D") });
+        await cmd.ExecuteNonQueryAsync();
+        var seen = await new NpgsqlCommand("SELECT count(*) FROM catalog.registered_entry", leak).ExecuteScalarAsync();
+        if (Convert.ToString(seen, System.Globalization.CultureInfo.InvariantCulture) != "0")
+            throw new InvalidOperationException($"no-reset plant count {seen}");
+    }
+    var clearedRead = await noResetReader.ListEntriesAsync(super, CancellationToken.None);
+    var afterClear = await PooledGuc(noReset);
+    var issLeft = await Scalar(noReset, "SELECT coalesce(current_setting('app.request_iss', true), '') || '|' || coalesce(current_setting('app.request_sub', true), '')");
+    if (clearedRead.Count == 3 && afterClear == "||||0" && issLeft == "|") Pass("clear-wipes-principal-when-reset-disabled", afterClear);
+    else Fail("clear-wipes-principal-when-reset-disabled", $"rows {clearedRead.Count} guc {afterClear} iss {issLeft}");
 
     await using var ownerReaderDs = NpgsqlDataSource.Create(Cs(OwnerRole, DbName, false));
     var ownerThrew = await ThrowsRole(() => new NpgsqlCatalogReader(ownerReaderDs).ListEntriesAsync(super, CancellationToken.None));
@@ -320,10 +409,41 @@ try
     if (loginThrew) Pass("login-role-refused", "CatalogReadRoleException");
     else Fail("login-role-refused", "no role exception");
     var stillThere = await Scalar(adminProbe, "SELECT count(*) FROM catalog.registered_entry");
-    // admin probe has no GUC, so RLS count is 0. Confirm rows with the owner.
     var ownerCount = await Scalar(owner, "SELECT count(*) FROM catalog.registered_entry");
     if (stillThere == "0" && ownerCount == "3") Pass("refusals-did-not-persist-a-write", $"adminBare={stillThere} owner={ownerCount}");
     else Fail("refusals-did-not-persist-a-write", $"adminBare={stillThere} owner={ownerCount}");
+
+    async Task<string> ClosedShape(string token)
+    {
+        try
+        {
+            await reader.ListEntriesAsync(CatalogReadScope.Super().WithSession(token), CancellationToken.None);
+            return "opened";
+        }
+        catch (CatalogSessionClosedException)
+        {
+            return CatalogSessionClosedException.StatusCode + "|" + CatalogSessionClosedException.Body + "|" + CatalogSessionClosedException.Authenticate;
+        }
+        catch (Exception ex)
+        {
+            return ex.GetType().Name + " " + ex.Message;
+        }
+    }
+    var closedA = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser));
+    var closedB = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser));
+    var closedC = await OpenCatalogSession(Guid.Parse(CatalogSessionSql.CatalogSuperUser));
+    KitAdmin.Arm(DbName, Port);
+    var tag = "k" + Guid.NewGuid().ToString("N");
+    KitAdmin.Exec("catalog-closed-sessions-are-one-exception",
+        "UPDATE auth.request_session SET expires_at = clock_timestamp() - interval '1 second' WHERE token_hash = sha256(convert_to($" + tag + "$" + closedA + "$" + tag + "$, 'UTF8'))");
+    await Exec(issuer, "SELECT auth.revoke_session($1)", closedB);
+    var shapeA = await ClosedShape(closedA);
+    var shapeB = await ClosedShape(closedB);
+    await Exec(issuer, "SELECT auth.revoke_login($1, $2)", CatalogSessionSql.CatalogIssuer, CatalogSessionSql.CatalogSuperUser);
+    var shapeC = await ClosedShape(closedC);
+    var oneShape = CatalogSessionClosedException.StatusCode + "|" + CatalogSessionClosedException.Body + "|" + CatalogSessionClosedException.Authenticate;
+    if (shapeA == oneShape && shapeA == shapeB && shapeB == shapeC) Pass("catalog-closed-sessions-are-one-exception", shapeA);
+    else Fail("catalog-closed-sessions-are-one-exception", $"a {shapeA} b {shapeB} c {shapeC}");
 
     log.Add("SECTION not-released");
     log.Add("candidate-function tests: not added");
@@ -348,7 +468,7 @@ finally
         if (ownerOk is "true" or "True" or "t")
             await Exec(drop, $"DROP DATABASE {DbName}");
     }
-    foreach (var role in new[] { AdminRole, LoginRole, OwnerRole })
+    foreach (var role in new[] { AdminRole, LoginRole, OwnerRole, DbName + "_auth_definer", DbName + "_auth_owner", DbName + "_catalog_definer", DbName + "_issuer", DbName + "_test_seed" })
     {
         var present = await Scalar(drop, $"SELECT count(*) FROM pg_roles WHERE rolname = '{role}'");
             if (present == "1")
@@ -380,14 +500,6 @@ Directory.CreateDirectory("/opt/cursor/artifacts");
 await File.WriteAllLinesAsync("/opt/cursor/artifacts/dec192-read-adapter-log.txt", log);
 return failed == 0 ? 0 : 1;
 
-void ExpectCodes(string name, IEnumerable<string> actual, params string[] expect)
-{
-    var got = actual.OrderBy(c => c, StringComparer.Ordinal).ToArray();
-    var want = expect.OrderBy(c => c, StringComparer.Ordinal).ToArray();
-    if (got.SequenceEqual(want)) Pass(name, string.Join(",", got));
-    else Fail(name, string.Join(",", got));
-}
-
 static async Task<bool> ThrowsContext(Func<Task> call)
 {
     try { await call(); return false; }
@@ -404,7 +516,9 @@ async Task<string> PooledGuc(NpgsqlDataSource ds)
 {
     await using var conn = await ds.OpenConnectionAsync();
     await using var cmd = new NpgsqlCommand("""
-        SELECT coalesce(current_setting('app.admin_type', true), '') || '|' ||
+        SELECT coalesce(current_setting('app.resolved_global_admin', true), '') || '|' ||
+               coalesce(current_setting('app.resolved_partner_ids', true), '') || '|' ||
+               coalesce(current_setting('app.admin_type', true), '') || '|' ||
                coalesce(current_setting('app.partner_id', true), '') || '|' ||
                (SELECT count(*)::text FROM catalog.registered_entry)
         """, conn);
@@ -412,50 +526,23 @@ async Task<string> PooledGuc(NpgsqlDataSource ds)
     return Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "";
 }
 
-async Task LoadFee(NpgsqlDataSource ds, Guid id, Guid? ownerId, string code, string adminType, string partner)
+void ExpectCodes(string name, IEnumerable<string> actual, params string[] expect)
 {
-    await using var conn = await ds.OpenConnectionAsync();
-    await using var tx = await conn.BeginTransactionAsync();
-    await using (var guc = new NpgsqlCommand("""
-        SELECT set_config('app.admin_type', $1, true),
-               set_config('app.partner_id', $2, true),
-               set_config('app.actor_user_id', $3, true),
-               set_config('app.correlation_id', $4, true),
-               set_config('app.reason', 'read fixture', true)
-        """, conn, tx))
-    {
-        guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = adminType });
-        guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = partner });
-        guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = actor.ToString("D") });
-        guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = "dec192-fixture-" + code });
-        await guc.ExecuteNonQueryAsync();
-    }
-    await using (var entry = new NpgsqlCommand("""
-        INSERT INTO catalog.registered_entry (
-          entry_id, family, entry_class, owner_partner_id, code, is_active, row_version,
-          created_by, created_at, updated_by, updated_at)
-        VALUES ($1, 'fee_type', 'descriptive', $2, $3, true, 1, $4, clock_timestamp(), $4, clock_timestamp())
-        """, conn, tx))
-    {
-        entry.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = id });
-        entry.Parameters.Add(new NpgsqlParameter<Guid?> { TypedValue = ownerId });
-        entry.Parameters.Add(new NpgsqlParameter<string> { TypedValue = code });
-        entry.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = actor });
-        await entry.ExecuteNonQueryAsync();
-    }
-    await using (var fee = new NpgsqlCommand("""
-        INSERT INTO catalog.fee_type (
-          entry_id, family, code, owner_partner_id, definition, display_name, description, release_id)
-        VALUES ($1, 'fee_type', $2, $3, 'names only fixture', $4, NULL, NULL)
-        """, conn, tx))
-    {
-        fee.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = id });
-        fee.Parameters.Add(new NpgsqlParameter<string> { TypedValue = code });
-        fee.Parameters.Add(new NpgsqlParameter<Guid?> { TypedValue = ownerId });
-        fee.Parameters.Add(new NpgsqlParameter<string> { TypedValue = code });
-        await fee.ExecuteNonQueryAsync();
-    }
-    await tx.CommitAsync();
+    var got = actual.OrderBy(c => c, StringComparer.Ordinal).ToArray();
+    var want = expect.OrderBy(c => c, StringComparer.Ordinal).ToArray();
+    if (got.SequenceEqual(want)) Pass(name, string.Join(",", got));
+    else Fail(name, string.Join(",", got));
+}
+
+static string ReadFee(Guid id, Guid? ownerId, string code)
+{
+    var ownerSql = ownerId is Guid owner ? "'" + owner.ToString("D") + "'::uuid" : "NULL";
+    var idSql = "'" + id.ToString("D") + "'::uuid";
+    var by = "'" + CatalogSessionSql.CatalogSuperUser + "'::uuid";
+    return "INSERT INTO catalog.registered_entry (entry_id, family, entry_class, owner_partner_id, code, is_active, row_version, created_by, created_at, updated_by, updated_at) VALUES ("
+        + idSql + ", 'fee_type', 'descriptive', " + ownerSql + ", '" + code + "', true, 1, " + by + ", clock_timestamp(), " + by + ", clock_timestamp());\n"
+        + "INSERT INTO catalog.fee_type (entry_id, family, code, owner_partner_id, definition, display_name, description, release_id) VALUES ("
+        + idSql + ", 'fee_type', '" + code + "', " + ownerSql + ", 'names only fixture', '" + code + "', NULL, NULL);\n";
 }
 
 static string ScanAdapter(string dir)

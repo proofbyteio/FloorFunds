@@ -13,7 +13,7 @@ public sealed record LoginConfigInput(
     string ProviderKind, string DisplayName, Guid[] Tenants,
     bool AllowDbFallback, bool MfaRequired, string? Reason, IReadOnlyList<string> PresentConfigFields);
 
-public sealed record CreateInput(Guid PartnerId, string Name, LoginConfigInput Config);
+public sealed record CreateInput(Guid PartnerId, string Name, LoginConfigInput? Config);
 
 /// <summary>
 /// The reason-length bounds in force for one partner (Slice A, TLD 08:00 Q3): the partner's auth.partner_reason_bounds row when
@@ -155,7 +155,7 @@ public static class LoginConfigValidator
         boundCandidates = [];
         int before = errs.Count;
         foreach (var p in o.EnumerateObject())
-            if (p.Name is not ("partner_id" or "name" or "login_config")) errs.Add(new(KeyName("", p.Name), "unknown_field"));
+            if (p.Name is not ("partner_id" or "name" or "login_config" or "address")) errs.Add(new(KeyName("", p.Name), "unknown_field"));
         Guid partner = default; string? name = null; LoginConfigInput? cfg = null;
         if (!o.TryGetProperty("partner_id", out var pid)) errs.Add(new("partner_id", "required"));
         else if (pid.ValueKind != JsonValueKind.String) errs.Add(new("partner_id", "type"));
@@ -168,10 +168,12 @@ public static class LoginConfigValidator
             if (Runes(t) is < 1 or > 200 || !TrimmedRe.IsMatch(t)) errs.Add(new("name", "name_invalid"));
             else name = t;
         }
-        if (!o.TryGetProperty("login_config", out var lc)) errs.Add(new("login_config", "required"));
-        else if (lc.ValueKind != JsonValueKind.Object) errs.Add(new("login_config", "type"));
-        else cfg = ValidateWrite(lc, "login_config/", null, bounds, errs, out boundCandidates);
-        return errs.Count > before || cfg is null ? null : new CreateInput(partner, name!, cfg);
+        if (o.TryGetProperty("login_config", out var lc))
+        {
+            if (lc.ValueKind != JsonValueKind.Object) errs.Add(new("login_config", "type"));
+            else cfg = ValidateWrite(lc, "login_config/", null, bounds, errs, out boundCandidates);
+        }
+        return errs.Count > before || name is null ? null : new CreateInput(partner, name, cfg);
     }
 
     /// <summary>

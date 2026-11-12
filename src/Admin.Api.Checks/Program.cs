@@ -18,6 +18,35 @@ using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 
+if (args is ["--kit-admin-check"])
+    return KitAdmin.Check(RepoRoot());
+if (args is ["--kit-admin-guard"])
+{
+    try
+    {
+        KitAdmin.Exec("expired-session-rejected-by-begin-request", "SELECT 1");
+        Console.WriteLine("ran");
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine(ex.Message);
+        return 1;
+    }
+}
+
+static string RepoRoot()
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null)
+    {
+        if (File.Exists(Path.Combine(dir.FullName, "src", "KitAdmin", "KitAdmin.cs")))
+            return dir.FullName;
+        dir = dir.Parent;
+    }
+    return Directory.GetCurrentDirectory();
+}
+
 int pass = 0, fail = 0;
 void Ok(string name, bool cond, string? detail = null)
 {
@@ -35,6 +64,18 @@ if (!(dbName == "ff_sse" || System.Text.RegularExpressions.Regex.IsMatch(dbName,
 { Console.Error.WriteLine("refuse: AUTH_CHECKS_DB must be ff_sse or ff_kit_<name> (never ff_sse2, postgres or a template)"); return 2; }
 var ownerCs = Env("CONNECTION_STRING");
 var adminCs = Env("ADMIN_API_CONNECTION_STRING");
+var ownerPort = new NpgsqlConnectionStringBuilder(ownerCs).Port;
+KitAdmin.Arm(dbName, ownerPort == 0 ? 5432 : ownerPort);
+if (args is ["--req064"])
+    return await Req064Suite.RunAsync(ownerCs, adminCs);
+if (args is ["--race"])
+    return await Req064Suite.RunAsync(ownerCs, adminCs, "race");
+if (args is ["--issuer"])
+    return await Req064Suite.RunAsync(ownerCs, adminCs, "issuer");
+if (args is ["--helpers"])
+    return await Req064Suite.RunAsync(ownerCs, adminCs, "helpers");
+if (args is ["--probe"])
+    return await Req064Suite.RunAsync(ownerCs, adminCs, "probe");
 var loginCs = Env("LOGIN_CONNECTION_STRING"); // <db>_login, read-only: the login readers (TLD 10:02 Q1 restart check)
 if (new[] { ownerCs, adminCs, loginCs }.Any(cs => new NpgsqlConnectionStringBuilder(cs).Database != dbName))
 { Console.Error.WriteLine("refuse: every connection string's Database must equal AUTH_CHECKS_DB"); return 2; }
@@ -49,13 +90,6 @@ async Task<T> OScalar<T>(string sql, params object?[] ps)
     await using var cmd = new NpgsqlCommand(sql, c);
     foreach (var p in ps) cmd.Parameters.Add(new NpgsqlParameter { Value = p ?? DBNull.Value });
     return (T)(await cmd.ExecuteScalarAsync())!;
-}
-async Task OExec(string sql, params object?[] ps) // owner-side fixture edit (test rows only)
-{
-    await using var c = await ownerDs.OpenConnectionAsync();
-    await using var cmd = new NpgsqlCommand(sql, c);
-    foreach (var p in ps) cmd.Parameters.Add(new NpgsqlParameter { Value = p ?? DBNull.Value });
-    if (await cmd.ExecuteNonQueryAsync() != 1) throw new InvalidOperationException("fixture edit hit != 1 row");
 }
 async Task<long> Count(string table) => await OScalar<long>($"SELECT count(*) FROM auth.{table}");
 string[] Tables = ["audit_outbox", "location_login_config_change", "location_login_config", "location", "partner_reason_bounds"]; // Slice A: + partner_reason_bounds (no FK)
@@ -79,6 +113,43 @@ const string Issuer = "https://admin-login.test.invalid";
 string Arn(string name, string region = "us-west-2", string acct = "000000000000") => $"arn:aws:secretsmanager:{region}:{acct}:secret:FAKE-test-only/{name}-AbCdEf";
 // The deployment's one app-registration secret reference, Entra:SecretRef [TLD 2026-11-04 9:49, D-51]. Fake account 000000000000.
 string DeployArn = Arn("deploy/app-reg");
+// M-A: resolve_grant matches issuer and subject. Stand-in issuers cannot live in external_login.
+// The 788 checks resolve authority in TestDirectory. Row security reads assignments, so these
+// token subjects need a matching row. A fresh scratch database has none of them yet.
+await using (var seedDs = await Req064Suite.OpenTestSeed(ownerDs))
+{
+    await using (var issuerBind = await seedDs.OpenConnectionAsync())
+    await using (var issuerCmd = new NpgsqlCommand("""
+        INSERT INTO auth.user_issuer (user_id, issuer)
+        SELECT u.user_id, $1 FROM auth.app_user u
+        WHERE NOT EXISTS (SELECT 1 FROM auth.user_issuer i WHERE i.user_id = u.user_id)
+        """, issuerBind))
+    {
+        issuerCmd.Parameters.Add(new NpgsqlParameter { Value = Issuer });
+        await issuerCmd.ExecuteNonQueryAsync();
+    }
+    async Task SeedGrant(string sql, params object[] ps)
+    {
+        await using var c = await seedDs.OpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand(sql, c);
+        foreach (var p in ps) cmd.Parameters.Add(new NpgsqlParameter { Value = p });
+        await cmd.ExecuteNonQueryAsync();
+    }
+    await SeedGrant("""
+        INSERT INTO auth.app_user (user_id, partner_id, status) VALUES
+          ($1, NULL, 'active'), ($2, NULL, 'active'), ($3, NULL, 'active'), ($4, NULL, 'active'),
+          ($5, NULL, 'active'), ($6, NULL, 'active')
+        """, U_SA, U_PA, U_PB, U_RD, U_NO, U_CU);
+    await SeedGrant("""
+        INSERT INTO auth.user_issuer (user_id, issuer) VALUES ($1, $7), ($2, $7), ($3, $7), ($4, $7), ($5, $7), ($6, $7)
+        """, U_SA, U_PA, U_PB, U_RD, U_NO, U_CU, Issuer);
+    await SeedGrant("""
+        INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
+          ($1, $1, 'super_admin', 'global', NULL, 'active', 1, $1, now()),
+          ($2, $2, 'partner_admin', 'partner', $4, 'active', 1, $1, now()),
+          ($3, $3, 'partner_admin', 'partner', $5, 'active', 1, $1, now())
+        """, U_SA, U_PA, U_PB, P_A, P_B);
+}
 
 // ---------- keys, options ----------
 using var rsa = RSA.Create(2048);
@@ -87,11 +158,14 @@ var publicKey = new RsaSecurityKey(rsa.ExportParameters(false)) { KeyId = "p3-te
 using var otherRsa = RSA.Create(2048);
 var otherKey = new RsaSecurityKey(otherRsa) { KeyId = "p3-test" };
 var schemaPath = Path.Combine(AppContext.BaseDirectory, "contract", "audit-events.schema.json");
+var issuerCs = Environment.GetEnvironmentVariable("ISSUER_CONNECTION_STRING");
+if (string.IsNullOrEmpty(issuerCs)) throw new InvalidOperationException("ISSUER_CONNECTION_STRING is not set");
+await using var issuerProc = await Admin.Api.Checks.IssuerHarness.Start(publicKey, Issuer, issuerCs);
 AdminApiOptions Opts(string? cs = null, string? schema = null) => new()
 {
     ConnectionString = cs ?? adminCs, EntraAuthority = Authority, EntraClientId = ClientId.ToUpperInvariant(), EntraSecretRef = DeployArn,
     SecretAccountIds = new HashSet<string> { "000000000000" }, SecretRegions = new HashSet<string> { "us-west-2" },
-    TokenIssuer = Issuer, SigningKeys = [publicKey], AuditSchemaPath = schema ?? schemaPath,
+    TokenIssuer = Issuer, IssuerUrl = issuerProc.Url, SigningKeys = [], AuditSchemaPath = schema ?? schemaPath,
 };
 
 // DEC-107: the default reason bounds, from the one named constant each (never retyped in the tests below).
@@ -188,13 +262,14 @@ foreach (var (n, bad) in new[] { ("empty", ""), ("not an ARN", "my-client-secret
 }
 Ok("startup: Entra:SecretRef in the allowlist accepted (unchanged)", Opts().Validated().EntraSecretRef == DeployArn);
 Ok("startup: AdminApiOptions.ToString prints neither Entra:SecretRef nor the connection string", !Opts().ToString().Contains("arn:") && !Opts().ToString().Contains(adminCs));
-Refuses("startup: no signing keys refused", o => o with { SigningKeys = [] }, "JwksPath");
-Refuses("startup: symmetric signing key refused", o => o with { SigningKeys = [new SymmetricSecurityKey(new byte[32])] }, "JwksPath");
+Refuses("startup: missing issuer url refused", o => o with { IssuerUrl = "" }, "IssuerUrl");
+Refuses("startup: signing keys on the host refused", o => o with { SigningKeys = [publicKey] }, "does not hold signing keys");
+Refuses("startup: symmetric signing key refused", o => o with { SigningKeys = [new SymmetricSecurityKey(new byte[32])] }, "does not hold signing keys");
 Refuses("startup: missing audit schema refused", o => o with { AuditSchemaPath = "/nonexistent/audit.json" }, "audit-events");
-await Check("startup: owner role refused by the DB guard (owns auth objects)", async () =>
+await Check("startup: owner role refused by the DB guard (can open or revoke a session)", async () =>
 {
     try { await using var a = await AdminApiHost.BuildAsync(Opts(ownerCs)); return false; }
-    catch (InvalidOperationException e) { return e.Message.Contains("owns auth objects"); }
+    catch (InvalidOperationException e) { return e.Message.Contains("can open or revoke a session"); }
 });
 await Check("startup: schema with an unknown keyword refused", async () =>
 {
@@ -221,7 +296,13 @@ async Task<(int code, string err)> RunAdminApi(Action<IDictionary<string, string
         psi.Environment["SecretRef__AllowedAccountIds"] = "000000000000";
         psi.Environment["SecretRef__AllowedRegions"] = "us-west-2";
         psi.Environment["BackofficeAuth__Issuer"] = Issuer;
-        psi.Environment["BackofficeAuth__JwksPath"] = jwks;
+        psi.Environment["BackofficeAuth__IssuerUrl"] = "http://127.0.0.1:9";
+        psi.Environment.Remove("BackofficeAuth__JwksPath");
+        psi.Environment.Remove("ISSUER_CONNECTION_STRING");
+        psi.Environment.Remove("FF_ISSUER_PASSWORD");
+        psi.Environment.Remove("ISSUER_CALLER_SECRET");
+        psi.Environment.Remove("STANDIN_CALLER_SECRET");
+        psi.Environment.Remove("STANDIN_ISSUER_URL");
         psi.Environment["Urls"] = "http://127.0.0.1:1"; // never reached
         edit(psi.Environment);
         using var p = Process.Start(psi)!;
@@ -267,7 +348,7 @@ await Check("DEC-107 startup: FromConfiguration reads LoginConfig:ReasonMinLengt
     try
     {
         Dictionary<string, string?> Base() => new() { ["ADMIN_API_CONNECTION_STRING"] = adminCs, ["Entra:Authority"] = Authority, ["Entra:ClientId"] = ClientId, ["Entra:SecretRef"] = DeployArn,
-            ["SecretRef:AllowedAccountIds"] = "000000000000", ["SecretRef:AllowedRegions"] = "us-west-2", ["BackofficeAuth:Issuer"] = Issuer, ["BackofficeAuth:JwksPath"] = jwks };
+            ["SecretRef:AllowedAccountIds"] = "000000000000", ["SecretRef:AllowedRegions"] = "us-west-2", ["BackofficeAuth:Issuer"] = Issuer, ["BackofficeAuth:IssuerUrl"] = issuerProc.Url };
         var o0 = AdminApiOptions.FromConfiguration(new ConfigurationBuilder().AddInMemoryCollection(Base()).Build()).Validated();
         var d = Base(); d["LoginConfig:ReasonMinLength"] = "50"; d["LoginConfig:ReasonMaxLength"] = "200";
         var cfg = new ConfigurationBuilder().AddInMemoryCollection(d).Build();
@@ -456,11 +537,11 @@ try
         try
         {
             await c50.StartAsync();
-            exitCode = await UiHost.RunAsync(uiDir, port, FreePort(port), personas, readerLocations, P_A, P_B, [T1, T2, T3], ownerDs, c50Port);
+            exitCode = await UiHost.RunAsync(uiDir, port, FreePort(port), personas, readerLocations, U_RD, P_A, P_B, [T1, T2, T3], ownerDs, c50Port);
             await c50.StopAsync();
         }
         finally { await c50.DisposeAsync(); }
-        goto uiHostDone; // leaves the try: the finally below stops the API and empties the tables
+        goto uiHostDone; // leaves the try: the finally below stops the API and asserts last-SA (A1.3: no DELETE cleanup)
     }
     var missing = Guid.Parse("5f0c3e1a-0bad-4000-8000-00000000dead");
 
@@ -571,7 +652,9 @@ try
     }
     {
         var r = await Post(SA, new Dictionary<string, object?> { ["partner_id"] = P_A.ToString(), ["name"] = "No provider" });
-        Ok("create: no login_config -> 422 login_config required (a location needs a provider)", HasField(r, "login_config", "required"));
+        var noCfg = r.Status == 201 ? LocOf(r) : Guid.Empty;
+        Ok("create: no login_config -> 201 and no sign-in config row", r.Status == 201 && noCfg != Guid.Empty
+            && await OScalar<long>("SELECT count(*) FROM auth.location_login_config WHERE location_id=$1", noCfg) == 0, r.Body);
         r = await Post(SA, Create(P_A, "x", Without(DbCfg(), "provider_kind")));
         Ok("create: no provider_kind -> 422 login_config/provider_kind required", HasField(r, "login_config/provider_kind", "required"));
         r = await Post(SA, new Dictionary<string, object?> { ["partner_id"] = "nope", ["name"] = "  ", ["login_config"] = DbCfg(), ["slug"] = "aaaa-bbbb-cccc-dddd", ["row_version"] = 5, ["created_by"] = U_SA.ToString() });
@@ -638,11 +721,13 @@ try
         r = await Send(HttpMethod.Post, "/api/orgs/locations", SA, "{\"name\":\"" + bigName + "\"}");
         Ok("create: SA body over 1 MiB -> 413 payload_too_large (handler cap, TLD 9:28 P3-2; never 400/500)", Err(r, 413, "payload_too_large"), $"{r.Status}");
         Ok("create: oversized SA body writes no event", (await NewEvents()).Count == 0);
-        Ok("create: none of the refused creates added a location", await Count("location") == 3);
+        var created = await Count("location");
+        Ok("create: none of the refused creates added a location", created == 4, created.ToString(System.Globalization.CultureInfo.InvariantCulture));
     }
 
     // ================= 3. GET =================
-    readerLocations.Add(A1);
+    await UiHost.AllowReader(ownerDs, readerLocations, U_RD, U_SA, A1, true);
+    RD = Token("partner", U_RD, P_A);
     {
         var r = await Get(Cfg(A1), PA);
         Ok("get: PA own -> 200 restricted view, ETag", r.Status == 200 && r.ETag == "\"1\"" && !Obj(r.Body).ContainsKey("oidc_authority"));
@@ -792,14 +877,21 @@ try
         await NewEvents();
 
         // Entra -> Entra keeps the stored secret_ref (A-21 analogue, TLD 9:49) even if the row differs from Entra:SecretRef; and no-op.
-        await OExec("UPDATE auth.location_login_config SET secret_ref = $2 WHERE location_id = $1", A1, Arn("llc/pre-d51-row"));
+        KitAdmin.Exec("login-config-plant-secret-ref",
+            "UPDATE auth.location_login_config SET secret_ref = $kit$"+ Arn("llc/pre-d51-row") + "$kit$ WHERE location_id = '" + A1.ToString("D") + "'::uuid");
+        r = await Put(A1, PA, With(EntraCfg(T3, display: "Riverbend Casino North"), "secret_ref", Arn("llc/client-supplied")), "\"7\"");
+        Ok("put: login-config cannot set an arbitrary secret_ref",
+            HasField(r, "secret_ref", "field_not_writable")
+            && await OScalar<string>("SELECT secret_ref FROM auth.location_login_config WHERE location_id=$1", A1) == Arn("llc/pre-d51-row")
+            && !r.Body.Contains("client-supplied", StringComparison.Ordinal), r.Body);
         r = await Put(A1, PA, EntraCfg(T3, display: "Riverbend Casino North"), "\"7\"");
         ev = await NewEvents();
         Ok("put: entra -> entra edit -> changed_fields [display_name] only, stored secret_ref kept, SA view still secret {set: true} only", r.Status == 200 && ev.Count == 1
             && ev[0]["details"]!["changed_fields"]!.AsArray().Select(x => (string)x!).SequenceEqual(["display_name"])
             && !Obj(r.Body).ContainsKey("secret") && Obj((await Get(Cfg(A1), SA)).Body)["secret"] is JsonObject ks && ks.Count == 1 && (bool)ks["set"]!
             && await OScalar<string>("SELECT secret_ref FROM auth.location_login_config WHERE location_id=$1", A1) == Arn("llc/pre-d51-row"), r.Body);
-        await OExec("UPDATE auth.location_login_config SET secret_ref = $2 WHERE location_id = $1", A1, DeployArn);
+        KitAdmin.Exec("login-config-restore-secret-ref",
+            "UPDATE auth.location_login_config SET secret_ref = $kit$" + DeployArn + "$kit$ WHERE location_id = '" + A1.ToString("D") + "'::uuid");
         r = await Put(A1, PA, EntraCfg(T3, display: "  Riverbend Casino North  "), "\"8\"");
         Ok("put: no-op (trimmed same values) -> 200, row_version unchanged, no event (OQ-P3-6)", r.Status == 200 && r.ETag == "\"8\"" && Rv(A1) == 8 && (await NewEvents()).Count == 0);
 
@@ -943,7 +1035,7 @@ try
             ["allow_db_fallback"] = (bool)a2["allow_db_fallback"]!, ["mfa_required"] = (bool)a2["mfa_required"]!,
         }), $"\"{a2v}\"");
         Ok("K4 crafted: SQL-ish display_name stored literally (parameterised)", r.Status == 200
-            && await OScalar<string>("SELECT display_name FROM auth.location_login_config WHERE location_id=$1", A2) == injected && await Count("location") == 3, r.Body);
+            && await OScalar<string>("SELECT display_name FROM auth.location_login_config WHERE location_id=$1", A2) == injected && await Count("location") == 4, r.Body);
         await NewEvents();
         Ok("K4 crafted: PA still cannot see B after the injected text", Err(await Get(Cfg(B1), PA), 404, "not_found"));
         // GUCs never left on pooled connections: open every idle connection of the API's own pool and read app.*.
@@ -954,9 +1046,15 @@ try
         {
             var c = await ds.OpenConnectionAsync();
             conns.Add(c);
-            await using var cmd = new NpgsqlCommand("SELECT coalesce(current_setting('app.admin_type', true), '') || '|' || coalesce(current_setting('app.partner_id', true), '')", c);
+            await using var cmd = new NpgsqlCommand("""
+                SELECT coalesce(current_setting('app.resolved_global_admin', true), '') || '|' ||
+                       coalesce(current_setting('app.resolved_partner_ids', true), '') || '|' ||
+                       coalesce(current_setting('app.resolved_location_ids', true), '') || '|' ||
+                       coalesce(current_setting('app.admin_type', true), '') || '|' ||
+                       coalesce(current_setting('app.partner_id', true), '')
+                """, c);
             var v = (string)(await cmd.ExecuteScalarAsync())!;
-            if (v != "|") leaked.Add(v);
+            if (v != "||||") leaked.Add(v);
         }
         foreach (var c in conns) await c.DisposeAsync();
         Ok("K4: no app.* GUC left on any pooled API connection after the run", leaked.Count == 0, string.Join(",", leaked));
@@ -964,16 +1062,39 @@ try
         await using (var c = await ds.OpenConnectionAsync())
         {
             await using var tx = await c.BeginTransactionAsync();
+            async Task<long> CfgCount(Guid id)
+            {
+                await using var q = new NpgsqlCommand("SELECT count(*) FROM auth.location_login_config WHERE location_id = $1", c, tx);
+                q.Parameters.Add(new() { Value = id });
+                return (long)(await q.ExecuteScalarAsync())!;
+            }
             await using var q0 = new NpgsqlCommand("SELECT count(*) FROM auth.location_login_config", c, tx);
             var none = (long)(await q0.ExecuteScalarAsync())!;
-            await using var s = new NpgsqlCommand("SELECT set_config('app.admin_type','partner',true), set_config('app.partner_id',$1,true)", c, tx);
+            await using var s = new NpgsqlCommand("SELECT set_config('app.resolved_partner_ids',$1,true), set_config('app.resolved_global_admin','on',true), set_config('app.admin_type','super',true)", c, tx);
             s.Parameters.Add(new() { Value = P_A.ToString() });
             await s.ExecuteNonQueryAsync();
-            await using var q1 = new NpgsqlCommand("SELECT count(*) FROM auth.location_login_config WHERE location_id = $1", c, tx);
-            q1.Parameters.Add(new() { Value = B1 });
-            var b = (long)(await q1.ExecuteScalarAsync())!;
+            var flagA = await CfgCount(A1);
+            var flagB = await CfgCount(B1);
+            var sessionIssuerCs = Environment.GetEnvironmentVariable("ISSUER_CONNECTION_STRING") ?? throw new InvalidOperationException("ISSUER_CONNECTION_STRING is not set");
+            string sessionToken;
+            await using (var issuer = NpgsqlDataSource.Create(sessionIssuerCs))
+            await using (var ic = await issuer.OpenConnectionAsync())
+            await using (var open = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4, $5)", ic))
+            {
+                open.Parameters.Add(new() { Value = Issuer });
+                open.Parameters.Add(new() { Value = U_PA.ToString("D") });
+                open.Parameters.Add(new() { Value = Guid.NewGuid() });
+                open.Parameters.Add(new() { Value = DateTimeOffset.UtcNow.AddMinutes(5) });
+                open.Parameters.Add(new() { Value = DateTime.UtcNow });
+                sessionToken = (string)(await open.ExecuteScalarAsync())!;
+            }
+            await using var who = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx);
+            who.Parameters.Add(new() { Value = sessionToken });
+            await who.ExecuteNonQueryAsync();
+            var a = await CfgCount(A1);
+            var b = await CfgCount(B1);
             await tx.RollbackAsync();
-            Ok("K4: RLS backstop (no GUC -> 0 rows; partner A GUC -> partner B row invisible)", none == 0 && b == 0, $"{none} {b}");
+            Ok("K4: RLS backstop (no principal -> 0; forged flags stay 0; partner A principal sees A and not B)", none == 0 && flagA == 0 && flagB == 0 && a == 1 && b == 0, $"{none} {flagA} {flagB} {a} {b}");
         }
     }
 
@@ -2239,9 +2360,8 @@ try
             && (bool)ev[0]["details"]!["cross_partner"]! && !ev[0]["details"]!.AsObject().ContainsKey("reason") && IsCorr((string?)ev[0]["correlation_id"])
             && (string?)ev[0]["correlation_id"] == r.Corr, ev.Count > 0 ? ev[0].ToJsonString() : "none");
         g = await Get(Prb(P_C), PB);
-        Ok("Slice A GET set partner (PB reads P_C): 200, ETag \"1\" = row_version, source partner, 20/300, updated_at, NO updated_by (PA cross-partner read, TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"1\"" && (string?)Obj(g.Body)["source"] == "partner"
-            && (long?)Obj(g.Body)["row_version"] == 1 && (int?)Obj(g.Body)["reason_min_length"] == 20 && HasBy(g, null) && (bool?)Obj(g.Body)["bounds_editor"] == false && Obj(g.Body).ContainsKey("updated_at"), Tg(g));
-        if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
+        Ok("Slice A GET set partner (PB reads P_C): 200 default, no ETag (another partner's row is not visible)", g.Status == 200 && g.ETag is null && (string?)Obj(g.Body)["source"] == "default"
+            && (int?)Obj(g.Body)["reason_min_length"] == Mn && (int?)Obj(g.Body)["reason_max_length"] == Mx && !Obj(g.Body).ContainsKey("row_version") && HasBy(g, null), Tg(g));
         g = await Get(Prb(P_C), SA);
         Ok("Slice A GET set partner (SA reads P_C, actor partner null): updated_by U_PA kept (every Super Admin read keeps identity, TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"1\"" && HasBy(g, U_PA) && (bool?)Obj(g.Body)["bounds_editor"] == true, Tg(g));
         if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
@@ -2307,17 +2427,16 @@ try
                 && await PrbSnap(P_A) == "40/120/v3" && (await NewEvents()).Count == 0, $"{Tg(gc)} || {Tg(pc)}");
         }
         g = await Get(Prb(P_A), PB);
-        Ok("Slice A GET (PB reads P_A): bounds 40/120, ETag \"3\", row_version 3, updated_at kept, NO updated_by (TLD 11:23 identity)", g.Status == 200 && g.ETag == "\"3\"" && HasBy(g, null)
-            && (bool?)Obj(g.Body)["bounds_editor"] == false
-            && (long?)Obj(g.Body)["row_version"] == 3 && (int?)Obj(g.Body)["reason_min_length"] == 40 && (int?)Obj(g.Body)["reason_max_length"] == 120 && Obj(g.Body).ContainsKey("updated_at"), Tg(g));
-        if (g.Status == 200) ForSchema("partner_reason_bounds_view", g);
+        Ok("Slice A GET (PB reads P_A): default bounds, no ETag (another partner's row is not visible)", g.Status == 200 && g.ETag is null && (string?)Obj(g.Body)["source"] == "default"
+            && (bool?)Obj(g.Body)["bounds_editor"] == false && !Obj(g.Body).ContainsKey("row_version")
+            && (int?)Obj(g.Body)["reason_min_length"] == Mn && (int?)Obj(g.Body)["reason_max_length"] == Mx, Tg(g));
 
         // ---- the resolver everywhere [TLD 08:00 Q3]: limits, location GET, location PUT reason, POST reason ----
         Ok("Slice A limits: PA (own P_A, no param) -> 40/120 (row)", Lim(await Get(LimitsP, PA), 40, 120));
         Ok($"Slice A limits: PB (own P_B, no row, no param) -> config {Mn}/{Mx}", Lim(await Get(LimitsP, PB), Mn, Mx));
         Ok($"Slice A limits: SA and org:V reader without partner_id -> config {Mn}/{Mx}", Lim(await Get(LimitsP, SA), Mn, Mx) && Lim(await Get(LimitsP, RD), Mn, Mx));
-        Ok("Slice A limits: SA ?partner_id=P_C -> 25/250; PB ?partner_id=P_A -> 40/120 (cross-partner read, LS-OQ-61)", Lim(await Get($"{LimitsP}?partner_id={P_C:D}", SA), 25, 250)
-            && Lim(await Get($"{LimitsP}?partner_id={P_A:D}", PB), 40, 120));
+        Ok($"Slice A limits: SA ?partner_id=P_C -> 25/250; PB ?partner_id=P_A -> config {Mn}/{Mx} (the other partner's row is hidden)", Lim(await Get($"{LimitsP}?partner_id={P_C:D}", SA), 25, 250)
+            && Lim(await Get($"{LimitsP}?partner_id={P_A:D}", PB), Mn, Mx));
         Ok($"Slice A limits: SA ?partner_id=<unset P_F> -> config {Mn}/{Mx}", Lim(await Get($"{LimitsP}?partner_id={P_F:D}", SA), Mn, Mx));
         Ok("Slice A limits: org:V reader ?partner_id=P_A -> 404 not_found (the read check point)", Err(await Get($"{LimitsP}?partner_id={P_A:D}", RD), 404, "not_found"));
         foreach (var q in new[] { "partner_id=nope", "partner_id=", $"partner_id={Guid.Empty:D}", $"partner_id={P_A:D}&partner_id={P_C:D}" })
@@ -2332,10 +2451,11 @@ try
         g = await Get(Cfg(LA), PA);
         Ok("Slice A location GET (P_A location, PA) -> reason_min_length 40, reason_max_length 120 (the partner's row)", g.Status == 200 && (int?)Obj(g.Body)["reason_min_length"] == 40 && (int?)Obj(g.Body)["reason_max_length"] == 120, Tg(g));
         if (g.Status == 200) ForSchema("login_config_get_restricted", g);
-        readerLocations.Add(LA);
+        await UiHost.AllowReader(ownerDs, readerLocations, U_RD, U_SA, LA, true);
+        RD = Token("partner", U_RD, P_A);
         g = await Get(Cfg(LA), RD);
         Ok("Slice A location GET (org:V reader of the P_A location) -> 40/120", g.Status == 200 && (int?)Obj(g.Body)["reason_min_length"] == 40 && (int?)Obj(g.Body)["reason_max_length"] == 120, Tg(g));
-        readerLocations.Remove(LA);
+        await UiHost.AllowReader(ownerDs, readerLocations, U_RD, U_SA, LA, false);
         g = await Get(Cfg(A1), SA);
         Ok("Slice A location GET (SA) of the P_A location A1 -> 40/120 too (resolver keys on the location's partner)", g.Status == 200 && (int?)Obj(g.Body)["reason_min_length"] == 40, Tg(g));
         r = await Put(LA, PA, With(DbCfg(display: "Slice A 1"), "reason", new string('x', 39)), $"\"{Rv(LA)}\"");
@@ -2354,7 +2474,8 @@ try
 
         // ---- deterministic race [TLD 08:00b(1)]: a first PUT blocked on the PK while another "first PUT" commits -> 409 + winner's version ----
         {
-            await using var oc = await ownerDs.OpenConnectionAsync();
+            await using var raceSeed = await Req064Suite.OpenTestSeed(ownerDs);
+            await using var oc = await raceSeed.OpenConnectionAsync();
             await using var otx = await oc.BeginTransactionAsync();
             await using (var ins = new NpgsqlCommand("INSERT INTO auth.partner_reason_bounds (partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version) VALUES ($1, 33, 333, $2, now(), 1)", oc, otx))
             { ins.Parameters.Add(new() { Value = P_D }); ins.Parameters.Add(new() { Value = U_SA }); await ins.ExecuteNonQueryAsync(); }
@@ -2403,10 +2524,8 @@ try
             var c0 = await PrbPut(P_H, SA, B(20, 200), "\"0\"");
             await NewEvents();
             Ok("Slice A parallel update setup: P_H created at v1", c0.Status == 200 && await PrbSnap(P_H) == "20/200/v1", Tg(c0));
-            await using var oc = await ownerDs.OpenConnectionAsync();
-            await using var otx = await oc.BeginTransactionAsync();
-            await using (var lk = new NpgsqlCommand("SELECT 1 FROM auth.partner_reason_bounds WHERE partner_id = $1 FOR UPDATE", oc, otx))
-            { lk.Parameters.Add(new() { Value = P_H }); await lk.ExecuteScalarAsync(); }
+            using var rowLock = KitAdmin.Hold("prb-parallel-row-lock",
+                "SET LOCAL ROLE " + dbName + "_auth_definer; SELECT reason_min_length FROM auth.partner_reason_bounds WHERE partner_id = '" + P_H.ToString("D") + "'::uuid FOR UPDATE");
             var ua = PrbPut(P_H, SA, B(30, 300), "\"1\""); var ub = PrbPut(P_H, PA, B(40, 400), "\"1\"");
             var both = false;
             for (int i = 0; i < 100 && !both; i++)
@@ -2416,7 +2535,7 @@ try
                 if (ua.IsCompleted || ub.IsCompleted) break;
             }
             Ok("Slice A parallel update: both API PUTs are waiting on the row at the same time (2 distinct API-role backends in this database with a NOT granted lock), neither answered yet", both && !ua.IsCompleted && !ub.IsCompleted);
-            await otx.RollbackAsync();
+            rowLock.Dispose();
             var res = await Task.WhenAll(ua, ub);
             var evs = await NewEvents();
             var win = res.Count(x => x.Status == 200) == 1 ? (res[0].Status == 200 ? "30/300/v2" : "40/400/v2") : "?";
@@ -2478,11 +2597,24 @@ try
         });
 
         // ---- DB CHECK stays a hard 10..500 [DEC-114] (owner probe in a rolled-back transaction) ----
-        await Check("Slice A DB: CHECK prb_bounds refuses 9/500 and 10/501 even for the owner (rolled back)", async () =>
+        await Check("Slice A DB: the migrator cannot INSERT partner_reason_bounds (42501)", async () =>
         {
+            await using var oc = await ownerDs.OpenConnectionAsync();
+            try
+            {
+                await using var ins = new NpgsqlCommand("INSERT INTO auth.partner_reason_bounds VALUES ($1, 20, 200, $2, now(), 1)", oc);
+                ins.Parameters.Add(new() { Value = Guid.NewGuid() }); ins.Parameters.Add(new() { Value = U_SA });
+                await ins.ExecuteNonQueryAsync();
+                return false;
+            }
+            catch (PostgresException x) { return x.SqlState == PostgresErrorCodes.InsufficientPrivilege; }
+        });
+        await Check("Slice A DB: CHECK prb_bounds refuses 9/500 and 10/501 (rolled back)", async () =>
+        {
+            await using var seed = await Req064Suite.OpenTestSeed(ownerDs);
             async Task<bool> Refuses(int mn, int mx)
             {
-                await using var oc = await ownerDs.OpenConnectionAsync();
+                await using var oc = await seed.OpenConnectionAsync();
                 await using var otx = await oc.BeginTransactionAsync();
                 try
                 {
@@ -2547,12 +2679,57 @@ finally
 {
     await app.StopAsync();
     await app.DisposeAsync();
-    // Cleanup as the owner, children first (the checks started on empty tables).
-    await using var c = await ownerDs.OpenConnectionAsync();
-    foreach (var t in Tables) { await using var d = new NpgsqlCommand($"DELETE FROM auth.{t}", c); await d.ExecuteNonQueryAsync(); }
-    var left = 0L;
-    foreach (var t in Tables) left += await Count(t);
-    Ok("cleanup: auth.audit_outbox, change, llc, location, partner_reason_bounds empty again", left == 0);
+    // SSE2 MEDIUM-2 / A1.3: do not DELETE the last Super Admin (or any seeded
+    // rows) in cleanup. A fresh AUTH_CHECKS_DB recreate replaces emptied tables.
+    // Keep asserting the last-SA guard still fires so a missing trigger cannot
+    // hide behind a silent cleanup. Catch any kit failure so the summary line
+    // always prints (never exit 134 from an unhandled cleanup exception).
+    try
+    {
+        // Truncate always exercises the truncate guard regardless of how many
+        // fixture SAs remain after the checks (seeded DBs keep more than U_SA).
+        var trunc = KitAdmin.SqlState("last-active-sa-truncate", "TRUNCATE auth.admin_assignment");
+        Ok("cleanup: last-SA truncate guard still fires (P0001); A1.3 no table delete", trunc == "P0001", trunc);
+    }
+    catch (Exception ex)
+    {
+        Ok("cleanup: last-SA truncate guard still fires (P0001); A1.3 no table delete", false,
+            ex.GetType().Name + ": " + ex.Message);
+    }
+    // SSE2 MEDIUM-2: reduce to exactly one active global SA, then DELETE it.
+    // Must hit auth._last_sa_guard (row DELETE), not the truncate guard.
+    try
+    {
+        var del = KitAdmin.SqlState("admin-checks-last-sa-delete", """
+UPDATE auth.admin_assignment SET status = 'disabled'
+WHERE role_id = 'super_admin' AND scope_kind = 'global'
+  AND status = 'active' AND revoked_at IS NULL
+  AND partner_id IS NULL AND location_id IS NULL
+  AND assignment_id <> (
+    SELECT assignment_id FROM auth.admin_assignment
+    WHERE role_id = 'super_admin' AND scope_kind = 'global'
+      AND status = 'active' AND revoked_at IS NULL
+      AND partner_id IS NULL AND location_id IS NULL
+    ORDER BY assignment_id
+    LIMIT 1
+  );
+DELETE FROM auth.admin_assignment
+WHERE assignment_id = (
+  SELECT assignment_id FROM auth.admin_assignment
+  WHERE role_id = 'super_admin' AND scope_kind = 'global'
+    AND status = 'active' AND revoked_at IS NULL
+    AND partner_id IS NULL AND location_id IS NULL
+  ORDER BY assignment_id
+  LIMIT 1
+)
+""");
+        Ok("cleanup: last-SA delete guard still fires (P0001)", del == "P0001", del);
+    }
+    catch (Exception ex)
+    {
+        Ok("cleanup: last-SA delete guard still fires (P0001)", false,
+            ex.GetType().Name + ": " + ex.Message);
+    }
 }
 uiHostDone:
 Console.WriteLine($"{pass} passed, {fail} failed");
@@ -2562,17 +2739,29 @@ static string Base64Url(string s) => Base64UrlEncoder.Encode(s);
 
 sealed record R(int Status, string Body, string? ETag, string? Location, string? WwwAuth, string? CacheControl, string? Server, string? Corr = null);
 
-/// <summary>Interim token roles for admins; injected non-admin callers (org:V reader, no role, custom role) for §6 rows 4-5.</summary>
+/// <summary>
+/// Injected directory for the existing checks. It copies the token's sign-in kind onto the grant so those
+/// checks keep their fixtures. It is not the production directory. Production is <see cref="DbAdminDirectory"/>.
+/// </summary>
 sealed class TestDirectory(HashSet<Guid> readerLocations, Guid reader, Guid nobody, Guid custom) : IAdminDirectory
 {
-    readonly TokenAdminDirectory _interim = new();
-    public Task<AdminGrant> ResolveAsync(AdminIdentity id, CancellationToken ct) =>
-        id.UserId == reader ? Task.FromResult(AdminGrant.Nothing with { OrgViewLocations = readerLocations })
-        : id.UserId == nobody ? Task.FromResult(AdminGrant.Nothing)
-        // A custom role carrying org:location_login_method:write is ignored: only built-in roles count [LD L172].
-        // Slice A: it does not carry PartnerReasonBoundsWrite either; Run's normalisation would clear it anyway (non-built-in role).
-        : id.UserId == custom ? Task.FromResult(AdminGrant.Nothing with { LoginMethodWrite = true, OrgCreateEdit = true })
-        : _interim.ResolveAsync(id, ct);
+    public Task<AdminGrant> ResolveAsync(AdminIdentity id, Npgsql.NpgsqlConnection connection, Npgsql.NpgsqlTransaction transaction, CancellationToken ct)
+    {
+        _ = connection;
+        _ = transaction;
+        _ = ct;
+        if (id.UserId == reader) return Task.FromResult(AdminGrant.Nothing with { OrgViewLocations = readerLocations });
+        if (id.UserId == nobody) return Task.FromResult(AdminGrant.Nothing);
+        if (id.UserId == custom) return Task.FromResult(AdminGrant.Nothing with { LoginMethodWrite = true, OrgCreateEdit = true });
+        var partners = id.AdminType == "partner" && id.PartnerId is { } p && p != Guid.Empty ? new HashSet<Guid> { p } : new HashSet<Guid>();
+        AdminGrant grant = id.AdminType switch
+        {
+            "super" => new AdminGrant(BuiltInRole.SuperAdmin, true, true, new HashSet<Guid>(), true),
+            "partner" when partners.Count == 1 => new AdminGrant(BuiltInRole.PartnerAdmin, true, true, new HashSet<Guid>(), true, partners),
+            _ => AdminGrant.Nothing,
+        };
+        return Task.FromResult(grant);
+    }
 }
 
 /// <summary>Captures the API's own log lines (formatted), so the checks can read the 500 error line [TLD 9:20].

@@ -16,4 +16,7 @@
   <ItemGroup>
     <ProjectReference Include="../Auth.Data/Auth.Data.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../KitAdmin/KitAdmin.cs" Link="KitAdmin.cs" />
+  </ItemGroup>
 </Project>

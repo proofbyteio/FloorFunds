@@ -358,7 +358,9 @@ public sealed class CatalogDomainService
             return true;
         if (entry.Family == CatalogFamily.ModelHardwareClaim)
             return actor.Role == CatalogRole.SuperAdmin || actor.PartnerId == entry.OwnerPartnerId;
-        return actor.Role == CatalogRole.PartnerAdmin && actor.PartnerId == entry.OwnerPartnerId;
+        // DEC-195: a resolved Super Admin reads partner-private non-claim rows. Partner Admin stays owner-only.
+        return actor.Role == CatalogRole.SuperAdmin
+            || (actor.Role == CatalogRole.PartnerAdmin && actor.PartnerId == entry.OwnerPartnerId);
     }
 
     private static bool CanEditClaim(CatalogPrincipal actor, StoredEntry entry) =>

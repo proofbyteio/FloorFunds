@@ -26,8 +26,28 @@ static class UiHost
     static readonly Dictionary<string, string> Types = new(StringComparer.Ordinal)
     { [".css"] = "text/css; charset=utf-8", [".mjs"] = "text/javascript; charset=utf-8", [".ttf"] = "font/ttf" };
 
+    /// <summary>
+    /// The org viewer is a location assignment, which is what row security reads.
+    /// The in-memory set is what the test directory tells the handler.
+    /// </summary>
+    public static async Task AllowReader(NpgsqlDataSource owner, HashSet<Guid> locations, Guid reader, Guid grantedBy, Guid location, bool on)
+    {
+        if (on) locations.Add(location);
+        else locations.Remove(location);
+        var id = location.ToString("D");
+        var user = reader.ToString("D");
+        if (on)
+            KitAdmin.Exec("reader-location-grant",
+                "INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, location_id, status, version, granted_by, granted_at) VALUES ('"
+                + id + "'::uuid, '" + user + "'::uuid, 'cashier', 'location', '" + id + "'::uuid, 'active', 1, '"
+                + grantedBy.ToString("D") + "'::uuid, now()) ON CONFLICT (assignment_id) DO NOTHING");
+        else
+            KitAdmin.Exec("reader-location-revoke",
+                "DELETE FROM auth.admin_assignment WHERE assignment_id = '" + id + "'::uuid AND user_id = '" + user + "'::uuid");
+    }
+
     public static async Task<int> RunAsync(string uiDir, int apiPort, int uiPort, IReadOnlyDictionary<string, Persona> personas,
-        HashSet<Guid> readerLocations, Guid partnerA, Guid partnerB, Guid[] tenants, NpgsqlDataSource ownerDs, int c50Port)
+        HashSet<Guid> readerLocations, Guid readerUser, Guid partnerA, Guid partnerB, Guid[] tenants, NpgsqlDataSource ownerDs, int c50Port)
     {
         uiDir = Path.GetFullPath(uiDir);
         var page = await File.ReadAllTextAsync(Path.Combine(uiDir, "location-sign-in.html"));
@@ -55,7 +75,8 @@ static class UiHost
         var l3 = await Create(partnerB, "UI Cage B", Entra("UI Casino B", tenants[1])); // tenants[1] bound to partner B: tenant-taken
         var l4 = await Create(partnerA, "UI Cage 4", Db("UI Casino A"));            // SA view db (card Not set), conflict
         Guid Id(JsonObject o) => Guid.Parse((string)o["location_id"]!);
-        readerLocations.Add(Id(l1)); readerLocations.Add(Id(l2)); // org:V reader of L1/L2 only
+        await AllowReader(ownerDs, readerLocations, readerUser, readerUser, Id(l1), true);
+        await AllowReader(ownerDs, readerLocations, readerUser, readerUser, Id(l2), true); // org:V reader of L1/L2 only
 
         // ---- hostile API text (SSE2 1ec73d38: live XSS probe; TLD 2026-11-04 14:18 (A)) ----
         // L5 carries the payloads in every free-text field the API accepts (location name, display_name, reason). The probes
@@ -64,7 +85,7 @@ static class UiHost
         string xName = string.Join(" ", xp), xDname = string.Join(" ", xp[..3]), xReason = string.Join(" ", xp[3], xp[0], xp[1], xp[2]);
         var l5 = await Create(partnerA, xName, new { provider_kind = "database", display_name = xDname, entra_allowed_tenant_ids = Array.Empty<string>(),
             allow_db_fallback = false, mfa_required = true, reason = xReason });
-        readerLocations.Add(Id(l5));
+        await AllowReader(ownerDs, readerLocations, readerUser, readerUser, Id(l5), true);
         // SSE2 5842c444 L1-L3: L6 keeps its hostile display_name (nobody saves it), its name STARTS with a javascript: URL (L2), and name,
         // display_name and reason carry typed HTML entities that must be stored and shown as typed (L3).
         string x6Name = "javascript:window.__xss=1 </title><img src=x onerror=window.__xss=1> &lt;b&gt; &amp;amp; ${7*7} `x`",
@@ -72,7 +93,7 @@ static class UiHost
             x6Reason = "javascript:window.__xss=1 &lt;img src=x onerror=window.__xss=1&gt; &#60;svg onload=window.__xss=1&#62; <iframe srcdoc=\"<script>window.__xss=1</script>\"></iframe> <object data=javascript:window.__xss=1>";
         var l6 = await Create(partnerA, x6Name, new { provider_kind = "database", display_name = x6Dname, entra_allowed_tenant_ids = Array.Empty<string>(),
             allow_db_fallback = false, mfa_required = true, reason = x6Reason });
-        readerLocations.Add(Id(l6));
+        await AllowReader(ownerDs, readerLocations, readerUser, readerUser, Id(l6), true);
         async Task<JsonObject> Probe(string label, object body)
         {
             using var req = new HttpRequestMessage(HttpMethod.Post, "/api/orgs/locations")
@@ -166,6 +187,18 @@ static class UiHost
         }
         app.MapGet("/as/{persona}/orgs/{**rest}", (string persona, string rest) => Page("as", persona));
         app.MapGet("/c50/{persona}/orgs/{**rest}", (string persona, string rest) => Page("c50", persona));
+        app.MapGet("/ui/theme/theme-tokens.css", () =>
+        {
+            var full = Path.GetFullPath(Path.Combine(uiDir, "..", "theme", "theme-tokens.css"));
+            return File.Exists(full) ? Results.File(full, "text/css; charset=utf-8") : Results.NotFound();
+        });
+        app.MapGet("/ui/theme/fonts/{name}", (string name) =>
+        {
+            if (name is not ("InterVariable.woff2" or "InterVariable-Italic.woff2"))
+                return Results.NotFound();
+            var full = Path.GetFullPath(Path.Combine(uiDir, "..", "theme", "fonts", name));
+            return File.Exists(full) ? Results.File(full, "font/woff2") : Results.NotFound();
+        });
         app.MapGet("/ui/orgs/{**path}", (string path) =>
         {
             var ext = Path.GetExtension(path);

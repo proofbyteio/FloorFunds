@@ -180,7 +180,8 @@ var paList = Send(http, pa, "GET", "/admin/catalogs/fee_type/entries", null);
 var otherList = Send(http, otherPa, "GET", "/admin/catalogs/fee_type/entries", null);
 var cashierList = Send(http, cashier, "GET", "/admin/catalogs/fee_type/entries", null);
 Check("lists keep both same-code rows for the owner and omit hidden rows without a hidden count",
-    saList.StatusCode == 200 && Json(saList).GetProperty("entries").GetArrayLength() == 2
+    saList.StatusCode == 200 && Json(saList).GetProperty("entries").GetArrayLength() == 3
+    && saList.Body.Contains(privateId.ToString("D"), StringComparison.Ordinal)
     && paList.StatusCode == 200 && Json(paList).GetProperty("entries").GetArrayLength() == 3
     && otherList.StatusCode == 200 && Json(otherList).GetProperty("entries").GetArrayLength() == 2
     && !otherList.Body.Contains(privateId.ToString("D"), StringComparison.Ordinal)
@@ -193,13 +194,15 @@ Check("lists keep both same-code rows for the owner and omit hidden rows without
 var hiddenRead = Send(http, sa, "GET", "/admin/catalogs/fee_type/entries/" + privateId.ToString("D"), null);
 var missingRead = Send(http, sa, "GET", "/admin/catalogs/fee_type/entries/" + G(80).ToString("D"), null);
 var otherRead = Send(http, otherPa, "GET", "/admin/catalogs/fee_type/entries/" + privateId.ToString("D"), null);
-Check("hidden and missing reads are the same HTTP response", hiddenRead.Raw == missingRead.Raw && otherRead.Raw == missingRead.Raw
-    && hiddenRead.StatusCode == 404 && hiddenRead.Body == NotFoundBody());
+Check("SA can read the private fee and another Partner Admin still matches missing", hiddenRead.StatusCode == 200
+    && Json(hiddenRead).GetProperty("entry").GetProperty("code").GetString() == "LATE"
+    && otherRead.Raw == missingRead.Raw && missingRead.StatusCode == 404 && missingRead.Body == NotFoundBody());
 var ownerRead = Send(http, pa, "GET", "/admin/catalogs/fee_type/entries/" + privateId.ToString("D"), null);
 Check("the owner can read the private fee", ownerRead.StatusCode == 200 && Json(ownerRead).GetProperty("entry").GetProperty("code").GetString() == "LATE");
 var hiddenHistory = Send(http, sa, "GET", "/admin/catalogs/fee_type/entries/" + privateId.ToString("D") + "/history", null);
 var missingHistory = Send(http, sa, "GET", "/admin/catalogs/fee_type/entries/" + G(80).ToString("D") + "/history", null);
-Check("hidden and missing history responses match", hiddenHistory.Raw == missingHistory.Raw && hiddenHistory.Raw == missingRead.Raw);
+Check("SA private fee history is visible", hiddenHistory.StatusCode == 200
+    && Json(hiddenHistory).GetProperty("history").GetArrayLength() == 1 && missingHistory.StatusCode == 404);
 var globalHistory = Send(http, sa, "GET", "/admin/catalogs/fee_type/entries/" + globalId.ToString("D") + "/history", null);
 var ownerHistory = Send(http, pa, "GET", "/admin/catalogs/fee_type/entries/" + privateId.ToString("D") + "/history", null);
 var ownerHistoryJson = Json(ownerHistory);
@@ -337,7 +340,9 @@ Check("private partner-switch representation stays unresolved", privateSwitch.St
     && Field(privateSwitch, "detail") == OpenPolicies.PrivatePartnerSwitch && Field(privateSwitch, "wrote") == "false");
 var hiddenLocation = Send(http, sa, "POST", "/admin/catalogs/fee_type/entries/" + privateId.ToString("D") + "/locations/" + G(40).ToString("D") + "/activation", "{\"desired_active\":false,\"reason\":\"stop\"}", ("Idempotency-Key", "hidden-loc"), ("If-Match", "1"));
 var missingLocation = Send(http, sa, "POST", "/admin/catalogs/fee_type/entries/" + G(80).ToString("D") + "/locations/" + G(40).ToString("D") + "/activation", "{\"desired_active\":false,\"reason\":\"stop\"}", ("Idempotency-Key", "missing-loc"), ("If-Match", "1"));
-Check("a hidden location switch matches missing and is not the SA location denial", hiddenLocation.Raw == missingLocation.Raw && hiddenLocation.Body == NotFoundBody());
+Check("SA location switch on a visible private fee stays the held denial", hiddenLocation.StatusCode == 403
+    && Field(hiddenLocation, "code") == "sa_has_no_location_switch" && Field(hiddenLocation, "wrote") == "false"
+    && missingLocation.StatusCode == 404);
 var saLocation = Send(http, sa, "POST", "/admin/catalogs/fee_type/entries/" + globalId.ToString("D") + "/locations/" + G(40).ToString("D") + "/activation", "{\"desired_active\":false,\"reason\":\"stop\"}", ("Idempotency-Key", "sa-loc"), ("If-Match", "ABSENT"));
 Check("SA has no location switch", saLocation.StatusCode == 403 && Field(saLocation, "code") == "sa_has_no_location_switch" && Field(saLocation, "wrote") == "false");
 var paLocation = Send(http, pa, "POST", "/admin/catalogs/fee_type/entries/" + globalId.ToString("D") + "/locations/" + G(40).ToString("D") + "/activation", "{\"desired_active\":true,\"reason\":\"resume\"}", ("Idempotency-Key", "pa-loc"), ("If-Match", "ABSENT"));
@@ -349,7 +354,11 @@ Check("a malformed location id is rejected", Send(http, pa, "POST", "/admin/cata
 var previewCounts = repo.HistoryCount;
 var missingPreview = http.Handle(new CatalogHttpServerContext(sa, "c", "r", GraphView.Default), Message("POST", "/admin/catalogs/fee_type/entries/" + G(82).ToString("D") + "/activation-preview", "{}"));
 var hiddenPreview = http.Handle(new CatalogHttpServerContext(sa, "c", "r", new GraphView.Fixture("rev-empty", [])), Message("POST", "/admin/catalogs/fee_type/entries/" + privateId.ToString("D") + "/activation-preview", "{}"));
-Check("hidden and missing previews match even when one context carries a fixture", missingPreview.Raw == hiddenPreview.Raw && missingPreview.Body == NotFoundBody());
+Check("SA preview of a visible private fee stays a held fixture preview", hiddenPreview.StatusCode == 200 && Field(hiddenPreview, "wrote") == "false"
+    && Json(hiddenPreview).GetProperty("preview").GetProperty("impact").GetString() == "fixture_not_authorization"
+    && Json(hiddenPreview).GetProperty("preview").GetProperty("authorizes_writes").GetBoolean() == false
+    && Json(hiddenPreview).GetProperty("preview").GetProperty("apply_allowed").GetBoolean() == false
+    && missingPreview.StatusCode == 404 && missingPreview.Body == NotFoundBody());
 var unknownPreview = Send(http, sa, "POST", "/admin/catalogs/fee_type/entries/" + globalId.ToString("D") + "/activation-preview", null);
 var unknownPreviewObject = Json(unknownPreview).GetProperty("preview");
 Check("UNCONFIGURED preview impact is unknown and has no count", unknownPreview.StatusCode == 200 && Field(unknownPreview, "wrote") == "false"

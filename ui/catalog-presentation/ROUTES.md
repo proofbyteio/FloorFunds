@@ -15,7 +15,7 @@ Hash routes on `ui/catalog-presentation/index.html`. All data is synthetic and s
 | `#/family/{wire}/partner/{id}` | Partner UUID is syntax only. A private target returns the unresolved partner-switch gate. |
 | `#/family/{wire}/location/{id}` | Super Admin receives no location switch. Partner Admin membership is not verified. |
 | `#/family/{wire}/history/{id}` | History omits the actor user id. Fixture rows have no history. |
-| `#/shared/same-code` | The selected principal's manufacturer list. The owning Partner Admin sees both `EXAMPLE-5-A` identities. Super Admin and the other Partner Admin see the global row; a private read matches a missing row. A principal without a management grant gets 403 and no table. |
+| `#/shared/same-code` | The selected principal's manufacturer list. The owning Partner Admin and a Super Admin see both `EXAMPLE-5-A` identities. The Super Admin read comes from the resolved global assignment (DEC-195). The other Partner Admin sees the global row; a private read matches a missing row. A principal without a management grant gets 403 and no table. |
 | `#/shared/empty` | Search that matches nothing. Clear filters restores the TEST-ONLY rows. |
 | `#/shared/denied` | Cashier list is 403 `no_management_grant`. Add is omitted on that refused list. |
 | `#/shared/graph` | UNCONFIGURED impact is unknown, not zero. A fixture description does not authorize a write. |

@@ -454,13 +454,14 @@ if (args is ["--scratch-selftest", var crashedOld, var crashedYoung, var crashed
         await Throws<InvalidOperationException>("maint-guard: CREATE DATABASE on a protected / non-scratch name refused", () => m.ExecAsync("CREATE DATABASE \"ff_sse3\" TEMPLATE template0 ENCODING 'UTF8'"), e => e.Message.Contains("maint-guard"));
     }
     // o3: the snapshot check catches a created cluster-level role (mutation), and is identical once it is dropped again.
-    var snap0 = await ScratchDb.ClusterSnapshotAsync(acs);
     var mutRole = "ff_scratch_mut" + Guid.NewGuid().ToString("N")[..8] + "_login";
+    var mutPrefix = mutRole[..^"_login".Length];
+    var snap0 = await ScratchDb.ClusterSnapshotAsync(acs, mutPrefix);
     await ScratchDb.CreateMarkedRoleAsync(acs, mutRole);
-    var snap1 = await ScratchDb.ClusterSnapshotAsync(acs);
+    var snap1 = await ScratchDb.ClusterSnapshotAsync(acs, mutPrefix);
     Ok($"o3 mutation: CREATE ROLE {mutRole} -> snapshot differs (caught)", snap1 != snap0 && ScratchDb.Diff(snap0, snap1).Contains(mutRole), ScratchDb.Diff(snap0, snap1));
     await ScratchDb.DropAsync(acs, mutRole[..^"_login".Length]); // no DB of that name; drops the marked role
-    Ok("o3: after DROP ROLE the snapshot is identical again", await ScratchDb.ClusterSnapshotAsync(acs) == snap0);
+    Ok("o3: after DROP ROLE the snapshot is identical again", await ScratchDb.ClusterSnapshotAsync(acs, mutPrefix) == snap0);
     // Cleanup: own via the marked path, young / live via the marked path (the hold has ended or is ignored by DropAsync? no FORCE:
     // the verify script waits for the hold to end first), decoy by exact name.
     await ScratchDb.DropAsync(acs, own);
@@ -488,6 +489,18 @@ if (args is ["--scratch-selftest", var crashedOld, var crashedYoung, var crashed
     return fail == 0 ? 0 : 1;
 }
 
+static NpgsqlDataSource OpenTestSeed(string ownerCs)
+{
+    var builder = new NpgsqlConnectionStringBuilder(ownerCs);
+    var line = File.ReadAllText("/tmp/ff-db/" + builder.Database + "_test_seed.env").Trim();
+    const string prefix = "TEST_SEED_PASSWORD=";
+    if (!line.StartsWith(prefix, StringComparison.Ordinal) || line.Length <= prefix.Length)
+        throw new InvalidOperationException("test seed password file is missing a password");
+    builder.Username = builder.Database + "_test_seed";
+    builder.Password = line[prefix.Length..];
+    return NpgsqlDataSource.Create(builder.ConnectionString);
+}
+
 string Env(string k) => Environment.GetEnvironmentVariable(k) is { Length: > 0 } v ? v : throw new InvalidOperationException($"{k} not set");
 var ownerCs = Env("CONNECTION_STRING");
 var adminCs = Env("ADMIN_API_CONNECTION_STRING");
@@ -508,9 +521,8 @@ if (ScratchLock.Refusal(ownerCs) is { } lockRefusedMain) { Console.Error.WriteLi
 await using var scratchLock = await ScratchLock.TryAcquireAsync(ownerCs);
 if (scratchLock is null) { Console.WriteLine(ScratchLock.BusyMessage(ownerCs)); return 5; }
 string adminRole = dbName + "_admin_api", loginRole = dbName + "_login";
-string[] LlcMutable = ["provider_kind", "display_name", "entra_allowed_tenant_ids", "oidc_authority", "oidc_client_id", "secret_ref",
-                       "allow_db_fallback", "mfa_required", "updated_by", "updated_at", "row_version"];
-
+var ownerPort = new NpgsqlConnectionStringBuilder(ownerCs).Port;
+KitAdmin.Arm(dbName, ownerPort == 0 ? 5432 : ownerPort);
 await using var ownerDs = NpgsqlDataSource.Create(ownerCs);
 await using var adminDs = NpgsqlDataSource.Create(adminCs);
 await using var loginDs = NpgsqlDataSource.Create(loginCs);
@@ -527,6 +539,47 @@ Guid ACTOR = Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c0a");
 string Iss(Guid t) => $"https://login.microsoftonline.com/{t}/v2.0";
 const string FakeArn = "arn:aws:secretsmanager:us-west-2:000000000000:secret:FAKE-test-only/pci-main-AbCdEf"; // SSE2-FAKE-TEST-ONLY
 
+var issuerCs = Environment.GetEnvironmentVariable("ISSUER_CONNECTION_STRING");
+await using var issuerDs = string.IsNullOrEmpty(issuerCs) ? null : NpgsqlDataSource.Create(issuerCs);
+var sessionTokens = new Dictionary<Guid, string>();
+async Task<string> MintSession(Guid user)
+{
+    if (issuerDs is null) throw new InvalidOperationException("ISSUER_CONNECTION_STRING is not set");
+    await using var ic = await issuerDs.OpenConnectionAsync();
+    await using var cmd = new NpgsqlCommand("SELECT auth.open_session($1, $2, $3, $4, $5)", ic);
+    cmd.Parameters.Add(new NpgsqlParameter { Value = "https://auth-data.test.invalid" });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = user.ToString("D") });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = Guid.NewGuid() });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = DateTimeOffset.UtcNow.AddMinutes(5) });
+    cmd.Parameters.Add(new NpgsqlParameter { Value = DateTime.UtcNow });
+    return (string)(await cmd.ExecuteScalarAsync())!;
+}
+async Task BindResolved(NpgsqlConnection c, NpgsqlTransaction? tx, string adminType, Guid? partner)
+{
+    // The flags are cleared. The principal is the session binding, not a GUC.
+    Guid? who = adminType switch
+    {
+        "super" => Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c73"),
+        "partner" when partner == P_PCI => Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c74"),
+        "partner" when partner == P_NV => Guid.Parse("5f0c3e1a-0003-4000-8000-000000000c75"),
+        _ => null,
+    };
+    if (who is Guid id)
+    {
+        if (!sessionTokens.TryGetValue(id, out var token)) sessionTokens[id] = token = await MintSession(id);
+        await Exec(c, tx, "SAVEPOINT session_bind");
+        try { await Exec(c, tx, "SELECT auth.begin_request($1)", token); }
+        catch (PostgresException ex) when (ex.SqlState == "42501")
+        {
+            await Exec(c, tx, "ROLLBACK TO SAVEPOINT session_bind");
+            sessionTokens[id] = token = await MintSession(id);
+            await Exec(c, tx, "SELECT auth.begin_request($1)", token);
+        }
+        await Exec(c, tx, "SELECT set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type','',true), set_config('app.partner_id','',true)");
+    }
+    else
+        await Exec(c, tx, "SELECT set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true), set_config('app.admin_type',$1,true), set_config('app.partner_id','',true)", adminType);
+}
 async Task Exec(NpgsqlConnection c, NpgsqlTransaction? tx, string sql, params object?[] ps)
 {
     await using var cmd = new NpgsqlCommand(sql, c, tx);
@@ -546,7 +599,7 @@ async Task<string> Try(NpgsqlDataSource ds, string sql, string? adminType = null
     await using var tx = await c.BeginTransactionAsync();
     try
     {
-        if (adminType is not null) await Exec(c, tx, "SELECT set_config('app.admin_type', $1, true), set_config('app.partner_id', $2, true)", adminType, partner?.ToString() ?? "");
+        if (adminType is not null) await BindResolved(c, tx, adminType, partner);
         await Exec(c, tx, sql);
         return "ok";
     }
@@ -557,7 +610,7 @@ async Task<long> CountAs(NpgsqlDataSource ds, string sql, string? adminType, Gui
 {
     await using var c = await ds.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
-    if (adminType is not null) await Exec(c, tx, "SELECT set_config('app.admin_type', $1, true), set_config('app.partner_id', $2, true)", adminType, partner?.ToString() ?? "");
+    if (adminType is not null) await BindResolved(c, tx, adminType, partner);
     var n = await Scalar<long>(c, tx, sql);
     await tx.CommitAsync();
     return n;
@@ -576,7 +629,7 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
     Ok("model: snapshot == AuthDbContext (IMigrationsModelDiffer.HasDifferences false)",
         !differ.HasDifferences(snapModel.GetRelationalModel(), designModel.GetRelationalModel()));
     var applied = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
-    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData"]), string.Join(",", applied));
+    Ok("model: applied migrations == [S2aInitial, S2aLlcColumnUpdate, S2aPartnerReasonBounds, CatalogMasterData, Req064AssignmentResolver, Req064RoleScope, Req064HistoryPartner, Req064Issuer, Req064Principal, Req064ReasonRead, Req064Definer, Req064RlsPrincipal, Req064LocationSave, Req064RevokeTemp, Req064Session, Req064RevokeLogin, Req064Actor, Req064SessionClose, Req064LocationAddress, Req064SessionSubject]", applied.SequenceEqual(["20261104160000_S2aInitial", "20261104170000_S2aLlcColumnUpdate", "20261105080000_S2aPartnerReasonBounds", "20261108190000_CatalogMasterData", "20261110160000_Req064AssignmentResolver", "20261110200000_Req064RoleScope", "20261110210000_Req064HistoryPartner", "20261110220000_Req064Issuer", "20261110230000_Req064Principal", "20261110240000_Req064ReasonRead", "20261110250000_Req064Definer", "20261110260000_Req064RlsPrincipal", "20261110270000_Req064LocationSave", "20261110280000_Req064RevokeTemp", "20261110290000_Req064Session", "20261110300000_Req064RevokeLogin", "20261110310000_Req064Actor", "20261111180000_Req064SessionClose", "20261112050000_Req064LocationAddress", "20261112060000_Req064SessionSubject"]), string.Join(",", applied));
     Ok("model: no pending migrations", !(await db.Database.GetPendingMigrationsAsync()).Any());
 
     await using var c = await ownerDs.OpenConnectionAsync();
@@ -604,8 +657,9 @@ await using (var db = new AuthDbContext(AuthDb.Options(ownerCs)))
         bad.AddRange(dbCols.Keys.Select(k => $"{table}.{k} not in EF model"));
     }
     Ok($"schema: {designModel.GetEntityTypes().Count()} EF tables / {cols} columns == pg_catalog (name, type, nullability)", bad.Count == 0, string.Join("; ", bad));
-    Ok("schema: exactly 10 tables in auth (Slice A: + partner_reason_bounds)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='auth'") == 10);
-    Ok("schema: no sequences in auth (F5)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_sequences WHERE schemaname='auth'") == 0);
+    Ok("schema: exactly 16 tables in auth (Slice A: + partner_reason_bounds; REQ-064: + admin_assignment, user_issuer, login_write_principal, request_session, request_binding, login_cutoff)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_tables WHERE schemaname='auth'") == 16);
+    Ok("schema: exactly one sequence auth.resolver_read_seq (REQ-064)", await Scalar<long>(c, null, "SELECT count(*) FROM pg_sequences WHERE schemaname='auth'") == 1
+        && await Scalar<string>(c, null, "SELECT string_agg(sequencename, ',' ORDER BY sequencename) FROM pg_sequences WHERE schemaname='auth'") == "resolver_read_seq");
     Ok("schema: history table in public, not auth", await Scalar<bool>(c, null, "SELECT to_regclass('public.\"__EFMigrationsHistory\"') IS NOT NULL AND to_regclass('auth.\"__EFMigrationsHistory\"') IS NULL"));
     var idx = await Scalar<long>(c, null, "SELECT count(*) FROM pg_indexes WHERE schemaname='auth' AND indexname IN ('location_partner_ix','llc_tenants_gin','llcc_location_at_ix','external_login_user_ix','user_location_location_ix','oidc_replay_expires_ix','session_user_live_ix','session_last_seen_ix','location_slug_key','session_cookie_key_hash_key')");
     Ok("schema: the 10 spec indexes exist", idx == 10, idx.ToString());
@@ -626,6 +680,46 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     }
     Ok("schema auth: no PUBLIC privileges", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_namespace n, aclexplode(n.nspacl) x WHERE n.nspname='auth' AND x.grantee=0)"));
     Ok("database: no PUBLIC CONNECT (ff-db.sh REVOKE)", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_database d, aclexplode(d.datacl) x WHERE d.datname=current_database() AND x.grantee=0 AND x.privilege_type='CONNECT')"));
+    Ok("database: no PUBLIC TEMP (SA L3; aclexplode reports TEMPORARY, and TEMP is accepted too)", await Scalar<bool>(c, null, "SELECT NOT EXISTS (SELECT 1 FROM pg_database d, aclexplode(d.datacl) x WHERE d.datname=current_database() AND x.grantee=0 AND x.privilege_type IN ('TEMP', 'TEMPORARY'))"));
+    var issuerRole = dbName + "_issuer";
+    var definerRole = dbName + "_auth_definer";
+    Ok($"role {issuerRole}: LOGIN NOSUPERUSER NOBYPASSRLS, member of nothing, and nothing is a member of it",
+        await Scalar<bool>(c, null, """
+            SELECT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls AND NOT rolcreatedb AND NOT rolcreaterole
+              FROM pg_roles WHERE rolname = $1
+            """, issuerRole)
+        && await Scalar<long>(c, null, """
+            SELECT count(*) FROM pg_auth_members m
+              JOIN pg_roles a ON a.oid = m.roleid
+              JOIN pg_roles b ON b.oid = m.member
+             WHERE a.rolname = $1 OR b.rolname = $1
+            """, issuerRole) == 0);
+    Ok("admin_api is not a member of the issuer role or the NOLOGIN definer, directly or through another role",
+        await Scalar<long>(c, null, """
+            WITH RECURSIVE m AS (
+              SELECT member, roleid FROM pg_auth_members
+              UNION
+              SELECT m.member, e.roleid FROM m JOIN pg_auth_members e ON e.member = m.roleid
+            )
+            SELECT count(*) FROM m
+              JOIN pg_roles mem ON mem.oid = m.member
+              JOIN pg_roles role ON role.oid = m.roleid
+             WHERE mem.rolname = $1 AND role.rolname = ANY($2)
+            """, adminRole, new[] { issuerRole, definerRole }) == 0);
+    Ok("open_session EXECUTE is granted to the issuer role and not to admin_api, the database owner, or PUBLIC",
+        await Scalar<bool>(c, null, """
+            SELECT has_function_privilege($1, 'auth.open_session(text,text,uuid,timestamptz,timestamptz)', 'EXECUTE')
+               AND NOT has_function_privilege($2, 'auth.open_session(text,text,uuid,timestamptz,timestamptz)', 'EXECUTE')
+               AND NOT has_function_privilege((SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()), 'auth.open_session(text,text,uuid,timestamptz,timestamptz)', 'EXECUTE')
+               AND NOT EXISTS (
+                 SELECT 1 FROM pg_proc p, aclexplode(p.proacl) x
+                  WHERE p.oid = 'auth.open_session(text,text,uuid,timestamptz,timestamptz)'::regprocedure AND x.grantee = 0)
+            """, issuerRole, adminRole));
+    Ok("begin_request EXECUTE is granted to admin_api and not to login",
+        await Scalar<bool>(c, null, """
+            SELECT has_function_privilege($1, 'auth.begin_request(text)', 'EXECUTE')
+               AND NOT has_function_privilege($2, 'auth.begin_request(text)', 'EXECUTE')
+            """, adminRole, loginRole));
 
     // §8.4 matrix: every (table, role, privilege) at table level.
     var privs = new[] { "SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER" };
@@ -654,7 +748,6 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     var updAllowed = new Dictionary<(string, string), string[]>
     {
         [("location", adminRole)] = ["name"],
-        [("location_login_config", adminRole)] = LlcMutable,
         [("partner_reason_bounds", adminRole)] = ["reason_min_length", "reason_max_length", "updated_by", "updated_at", "row_version"],
         [("session", loginRole)] = ["last_seen_at", "revoked_at", "revoked_reason", "interactive_used_at", "handoff_used_at", "cage_consumed_at", "code_issued"],
     };
@@ -666,7 +759,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
         foreach (var r in new[] { adminRole, loginRole })
             if (await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.' || $2, $3, 'UPDATE')", r, t, col)
                 != (updAllowed.TryGetValue((t, r), out var ok) && ok.Contains(col))) colMism.Add($"{t}.{col}/{r}");
-    Ok($"grants: column UPDATE ({cols.Count} columns x 2 roles) = location(name) + location_login_config(11 mutable) + partner_reason_bounds(5 mutable, not partner_id) for admin_api; session(7) for login; nothing else",
+    Ok($"grants: column UPDATE ({cols.Count} columns x 2 roles) = location(name) + partner_reason_bounds(5 mutable, not partner_id) for admin_api; session(7) for login; location_login_config has no direct UPDATE",
         cols.Count > 0 && colMism.Count == 0, string.Join(", ", colMism));
     Ok("grants: admin_api UPDATE on location_login_config location_id/created_at/created_by = none (P2-1)",
         !await Scalar<bool>(c, null, "SELECT has_column_privilege($1, 'auth.location_login_config', 'location_id', 'UPDATE') OR has_column_privilege($1, 'auth.location_login_config', 'created_at', 'UPDATE') OR has_column_privilege($1, 'auth.location_login_config', 'created_by', 'UPDATE')", adminRole));
@@ -692,18 +785,45 @@ await using (var c = await ownerDs.OpenConnectionAsync())
     await using (var rr = await cmd.ExecuteReaderAsync())
         while (await rr.ReadAsync())
         {
-            bool want = rr.GetString(0) is "location" or "location_login_config" or "location_login_config_change" or "partner_reason_bounds";
-            if (rr.GetBoolean(1) != want || rr.GetBoolean(2) != want) rls.Add(rr.GetString(0));
+            if (!rr.GetBoolean(1) || !rr.GetBoolean(2)) rls.Add(rr.GetString(0));
         }
-    Ok("RLS: ENABLE+FORCE on exactly location, location_login_config, location_login_config_change, partner_reason_bounds", rls.Count == 0, string.Join(",", rls));
+    Ok("RLS: ENABLE+FORCE on every auth table", rls.Count == 0, string.Join(",", rls));
     // K2 (SSE2 d787f76 review): the owner role is read from pg_database, not assumed equal to the DB name (kit --role != --db).
     var dbOwner = await Scalar<string>(c, null, "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()");
+    var kitDb = await Scalar<string>(c, null, "SELECT current_database()");
+    var definer = kitDb + "_auth_definer";
+    var definerOwns = await Scalar<bool>(c, null, """
+        SELECT bool_and(r.rolname = current_database() || '_auth_definer' AND NOT r.rolcanlogin AND NOT r.rolinherit)
+          FROM pg_proc p
+          JOIN pg_namespace n ON n.oid = p.pronamespace
+          JOIN pg_roles r ON r.oid = p.proowner
+         WHERE n.nspname = 'auth' AND p.proname IN (
+           '_request_user','actor_is_global','actor_is_any_admin','actor_has_any_location','actor_can_partner',
+           'actor_location_sees_partner','actor_has_location','actor_can_location','actor_sees_change',
+           'list_existing_partners','resolve_grant','read_partner_bounds','save_partner_bounds','record_login_write',
+           'save_location_login_config','open_session','begin_request','current_principal','session_issuer','session_subject',
+           'revoke_session','revoke_on_principal_change','revoke_login','_lock_login','_login_cutoff_user_delete',
+           'session_still_open','_last_sa_guard','_last_sa_truncate_guard','location_partner','tenant_bound_elsewhere')
+        """);
     Ok($"RLS: policy set == spec (owner {dbOwner} from pg_database/admin/login per table; no login policy on change)",
+        definerOwns &&
         await Scalar<string>(c, null, "SELECT string_agg(tablename || ':' || policyname || ':' || cmd || ':' || array_to_string(roles, '+'), ' ' ORDER BY tablename, policyname) FROM pg_policies WHERE schemaname='auth'")
-        == $"location:location_admin:ALL:{adminRole} location:location_login:SELECT:{loginRole} location:location_owner:ALL:{dbOwner} " +
-           $"location_login_config:llc_admin:ALL:{adminRole} location_login_config:llc_login:SELECT:{loginRole} location_login_config:llc_owner:ALL:{dbOwner} " +
-           $"location_login_config_change:llcc_admin:ALL:{adminRole} location_login_config_change:llcc_owner:ALL:{dbOwner} " +
-           $"partner_reason_bounds:prb_admin:ALL:{adminRole} partner_reason_bounds:prb_owner:ALL:{dbOwner}");
+        == $"admin_assignment:admin_assignment_definer:SELECT:{definer} admin_assignment:admin_assignment_owner:SELECT:{dbOwner} admin_assignment:admin_assignment_test_seed_insert:INSERT:{kitDb}_test_seed admin_assignment:admin_assignment_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"app_user:app_user_definer:SELECT:{definer} app_user:app_user_login:SELECT:{loginRole} app_user:app_user_owner:SELECT:{dbOwner} app_user:app_user_test_seed_insert:INSERT:{kitDb}_test_seed app_user:app_user_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"audit_outbox:audit_outbox_admin:INSERT:{adminRole} audit_outbox:audit_outbox_login:INSERT:{loginRole} audit_outbox:audit_outbox_owner:SELECT:{dbOwner} " +
+           $"external_login:external_login_definer:SELECT:{definer} external_login:external_login_login:SELECT:{loginRole} external_login:external_login_owner:SELECT:{dbOwner} external_login:external_login_test_seed_insert:INSERT:{kitDb}_test_seed external_login:external_login_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"location:location_admin_insert:INSERT:{adminRole} location:location_admin_select:SELECT:{adminRole} location:location_admin_update:UPDATE:{adminRole} location:location_definer:SELECT:{definer} location:location_login:SELECT:{loginRole} location:location_owner:SELECT:{dbOwner} location:location_test_seed_insert:INSERT:{kitDb}_test_seed location:location_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"location_login_config:llc_admin_insert:INSERT:{adminRole} location_login_config:llc_admin_select:SELECT:{adminRole} location_login_config:llc_definer:UPDATE:{definer} location_login_config:llc_definer_read:SELECT:{definer} location_login_config:llc_login:SELECT:{loginRole} location_login_config:location_login_config_owner:SELECT:{dbOwner} location_login_config:location_login_config_test_seed_insert:INSERT:{kitDb}_test_seed location_login_config:location_login_config_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"location_login_config_change:llcc_admin_insert:INSERT:{adminRole} location_login_config_change:llcc_admin_select:SELECT:{adminRole} location_login_config_change:location_login_config_change_owner:SELECT:{dbOwner} location_login_config_change:location_login_config_change_test_seed_insert:INSERT:{kitDb}_test_seed location_login_config_change:location_login_config_change_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"login_cutoff:login_cutoff_definer_delete:DELETE:{definer} login_cutoff:login_cutoff_definer_insert:INSERT:{definer} login_cutoff:login_cutoff_definer_select:SELECT:{definer} login_cutoff:login_cutoff_definer_update:UPDATE:{definer} login_cutoff:login_cutoff_owner:SELECT:{dbOwner} " +
+           $"login_write_principal:login_write_principal_definer_insert:INSERT:{definer} login_write_principal:login_write_principal_definer_select:SELECT:{definer} login_write_principal:login_write_principal_owner:SELECT:{dbOwner} " +
+           $"oidc_replay:oidc_replay_login_delete:DELETE:{loginRole} oidc_replay:oidc_replay_login_insert:INSERT:{loginRole} oidc_replay:oidc_replay_login_select:SELECT:{loginRole} oidc_replay:oidc_replay_owner:SELECT:{dbOwner} " +
+           $"partner_reason_bounds:partner_reason_bounds_owner:SELECT:{dbOwner} partner_reason_bounds:partner_reason_bounds_test_seed_insert:INSERT:{kitDb}_test_seed partner_reason_bounds:partner_reason_bounds_test_seed_select:SELECT:{kitDb}_test_seed partner_reason_bounds:prb_definer_insert:INSERT:{definer} partner_reason_bounds:prb_definer_select:SELECT:{definer} partner_reason_bounds:prb_definer_update:UPDATE:{definer} partner_reason_bounds:prb_insert:INSERT:{adminRole} partner_reason_bounds:prb_select:SELECT:{adminRole} partner_reason_bounds:prb_update:UPDATE:{adminRole} " +
+           $"request_binding:request_binding_definer_delete:DELETE:{definer} request_binding:request_binding_definer_insert:INSERT:{definer} request_binding:request_binding_definer_select:SELECT:{definer} request_binding:request_binding_definer_update:UPDATE:{definer} request_binding:request_binding_owner:SELECT:{dbOwner} " +
+           $"request_session:request_session_definer_delete:DELETE:{definer} request_session:request_session_definer_insert:INSERT:{definer} request_session:request_session_definer_select:SELECT:{definer} request_session:request_session_definer_update:UPDATE:{definer} request_session:request_session_owner:SELECT:{dbOwner} " +
+           $"session:session_login_delete:DELETE:{loginRole} session:session_login_insert:INSERT:{loginRole} session:session_login_select:SELECT:{loginRole} session:session_login_update:UPDATE:{loginRole} session:session_owner:SELECT:{dbOwner} " +
+           $"user_issuer:user_issuer_definer:SELECT:{definer} user_issuer:user_issuer_owner:SELECT:{dbOwner} user_issuer:user_issuer_test_seed_insert:INSERT:{kitDb}_test_seed user_issuer:user_issuer_test_seed_select:SELECT:{kitDb}_test_seed " +
+           $"user_location:user_location_login:SELECT:{loginRole} user_location:user_location_owner:SELECT:{dbOwner} user_location:user_location_test_seed_insert:INSERT:{kitDb}_test_seed user_location:user_location_test_seed_select:SELECT:{kitDb}_test_seed");
 }
 
 // ================= 3. seed == SI1 fixtures =================
@@ -723,7 +843,7 @@ await using (var c = await ownerDs.OpenConnectionAsync())
         want.Add($"{u.GetProperty("user_id").GetGuid()}|{partner}|{u.GetProperty("status").GetString()}");
     }
     var got = new SortedSet<string>();
-    await using (var cmd = new NpgsqlCommand("SELECT user_id, partner_id, status FROM auth.app_user WHERE user_id::text NOT LIKE '%-000000000c7_'", c))
+    await using (var cmd = new NpgsqlCommand("SELECT user_id, partner_id, status FROM auth.app_user WHERE user_id::text NOT LIKE '%-000000000c7_' AND user_id::text NOT LIKE '5f0c3e1a-0064-%'", c))
     await using (var r = await cmd.ExecuteReaderAsync())
         while (await r.ReadAsync()) got.Add($"{r.GetGuid(0)}|{(r.IsDBNull(1) ? null : r.GetGuid(1))}|{r.GetString(2)}");
     Ok($"seed: auth.app_user == fixtures.json users ({want.Count}: id, derived partner_id, status)", want.SetEquals(got), $"want {want.Count} got {got.Count}");
@@ -749,19 +869,28 @@ await using (var c = await ownerDs.OpenConnectionAsync())
         return 3;
     }
 }
-async Task CleanupCheckData()
+Task CleanupCheckData()
 {
-    await using var c = await ownerDs.OpenConnectionAsync();
-    await using var tx = await c.BeginTransactionAsync();
-    var locs = new[] { L_PCI, L_NV, Guid.Parse("5f0c3e1a-00ee-4000-8000-0000000000e1") }; // = LX
-    await Exec(c, tx, "DELETE FROM auth.user_location WHERE location_id = ANY($1)", locs);
-    await Exec(c, tx, "DELETE FROM auth.external_login WHERE subject = ANY($1)", new[] { S1, S2, S3, S9 });
-    await Exec(c, tx, "DELETE FROM auth.app_user WHERE user_id = ANY($1)", new[] { U_DIS, U_LCK });
-    await Exec(c, tx, "DELETE FROM auth.location_login_config_change WHERE location_id = ANY($1)", locs);
-    await Exec(c, tx, "DELETE FROM auth.location_login_config WHERE location_id = ANY($1)", locs);
-    await Exec(c, tx, "DELETE FROM auth.location WHERE location_id = ANY($1)", locs);
-    await Exec(c, tx, "DELETE FROM auth.partner_reason_bounds WHERE partner_id = ANY($1)", new[] { P_PCI, P_NV });
-    await tx.CommitAsync();
+    // The migrator has no DELETE. Remove the rows these checks committed so the database is back
+    // at the post-seed state. Seeded app users are not in the c7_ id range.
+    KitAdmin.Exec("auth-data-cleanup", """
+        DELETE FROM auth.user_location;
+        DELETE FROM auth.external_login;
+        DELETE FROM auth.session;
+        DELETE FROM auth.oidc_replay;
+        DELETE FROM auth.audit_outbox;
+        DELETE FROM auth.location_login_config_change;
+        DELETE FROM auth.location_login_config;
+        DELETE FROM auth.location;
+        DELETE FROM auth.partner_reason_bounds;
+        DELETE FROM auth.request_binding WHERE user_id::text LIKE '%-000000000c7_';
+        DELETE FROM auth.request_session WHERE user_id::text LIKE '%-000000000c7_';
+        DELETE FROM auth.login_cutoff WHERE user_id::text LIKE '%-000000000c7_';
+        DELETE FROM auth.admin_assignment WHERE user_id::text LIKE '%-000000000c7_';
+        DELETE FROM auth.user_issuer WHERE user_id::text LIKE '%-000000000c7_';
+        DELETE FROM auth.app_user WHERE user_id::text LIKE '%-000000000c7_';
+        """);
+    return Task.CompletedTask;
 }
 // [TLD 2026-11-04 11:21 Q2b] scratch DB for the N3/N1 probes: start-up sweep of leftover MARKED scratch DBs (crashed runs),
 // then create + mark this run's ff_scratch_<runid>; it is migrated in the try and dropped in the finally (also on failure).
@@ -780,13 +909,14 @@ try
     if (sweep.UnmarkedRoles.Count > 0) throw new InvalidOperationException($"unmarked ff_scratch_* look-alike role(s) present, not dropped: {string.Join(", ", sweep.UnmarkedRoles)} [TLD 12:33]");
     if (await ScratchDb.AdminRoleViolationsAsync(scratchAdminCs) is { Count: > 0 } adminViol)
         throw new InvalidOperationException($"ff_scratchadm differs from the documented kit role: {string.Join("; ", adminViol)} [TLD 12:33]");
-    scratchSnap = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs);
+    scratchSnap = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs, runName);
     scratchName = await ScratchDb.CreateMarkedAsync(scratchAdminCs, runName); // set only once CREATE + mark succeeded
 }
 catch (Exception e) { scratchErr = $"{e.GetType().Name}: {e.Message}"; Console.WriteLine($"FATAL scratch: setup failed ({scratchErr}); the N3/N1 probes and Q2 will FAIL"); }
 try
 {
-await using (var c = await ownerDs.OpenConnectionAsync())
+await using var seedDs = OpenTestSeed(ownerCs);
+await using (var c = await seedDs.OpenConnectionAsync())
 await using (var tx = await c.BeginTransactionAsync())
 {
     await Exec(c, tx, "INSERT INTO auth.location VALUES ($1,$2,'pci-main','PCI main (SSE2-FAKE-TEST-ONLY)'),($3,$4,'nevada-main','Nevada main (SSE2-FAKE-TEST-ONLY)')", L_PCI, P_PCI, L_NV, P_NV);
@@ -805,6 +935,24 @@ await using (var tx = await c.BeginTransactionAsync())
         Iss(T1), T1, S1, U_C01, S2, U_DIS, S3, U_LCK);
     await Exec(c, tx, "INSERT INTO auth.user_location (user_id, location_id) VALUES ($1,$2)", U_C01, L_PCI);
     await Exec(c, tx, "INSERT INTO auth.partner_reason_bounds VALUES ($1, 20, 300, $2, now(), 1)", P_PCI, ACTOR); // Slice A
+    await Exec(c, tx, """
+        INSERT INTO auth.app_user (user_id, partner_id, status) VALUES
+          ('5f0c3e1a-0003-4000-8000-000000000c73', NULL, 'active'),
+          ('5f0c3e1a-0003-4000-8000-000000000c74', NULL, 'active'),
+          ('5f0c3e1a-0003-4000-8000-000000000c75', NULL, 'active')
+        """);
+    await Exec(c, tx, """
+        INSERT INTO auth.user_issuer (user_id, issuer) VALUES
+          ('5f0c3e1a-0003-4000-8000-000000000c73', 'https://auth-data.test.invalid'),
+          ('5f0c3e1a-0003-4000-8000-000000000c74', 'https://auth-data.test.invalid'),
+          ('5f0c3e1a-0003-4000-8000-000000000c75', 'https://auth-data.test.invalid')
+        """);
+    await Exec(c, tx, """
+        INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
+          ('5f0c3e1a-0003-4000-8000-000000000c73', '5f0c3e1a-0003-4000-8000-000000000c73', 'super_admin', 'global', NULL, 'active', 1, '5f0c3e1a-0003-4000-8000-000000000c73', now()),
+          ('5f0c3e1a-0003-4000-8000-000000000c74', '5f0c3e1a-0003-4000-8000-000000000c74', 'partner_admin', 'partner', $1, 'active', 1, '5f0c3e1a-0003-4000-8000-000000000c73', now()),
+          ('5f0c3e1a-0003-4000-8000-000000000c75', '5f0c3e1a-0003-4000-8000-000000000c75', 'partner_admin', 'partner', $2, 'active', 1, '5f0c3e1a-0003-4000-8000-000000000c73', now())
+        """, P_PCI, P_NV);
     await tx.CommitAsync();
 }
 
@@ -812,7 +960,15 @@ await using (var tx = await c.BeginTransactionAsync())
 const string cntLoc = "SELECT count(*) FROM auth.location", cntCfg = "SELECT count(*) FROM auth.location_login_config", cntChg = "SELECT count(*) FROM auth.location_login_config_change";
 await Check("RLS admin_api: no app.admin_type -> 0 locations, 0 configs, 0 changes (fail closed)", async () =>
     await CountAs(adminDs, cntLoc, null, null) == 0 && await CountAs(adminDs, cntCfg, null, null) == 0 && await CountAs(adminDs, cntChg, null, null) == 0);
-await Check("RLS admin_api: admin_type=bogus -> 0 rows", async () => await CountAs(adminDs, cntLoc, "bogus", P_PCI) == 0);
+await Check("RLS admin_api: admin_type=bogus -> 0 rows", async () =>
+    await CountAs(adminDs, cntLoc, "bogus", P_PCI) == 0 && await AdminTypeSuperAlone(cntLoc) == 0);
+async Task<long> AdminTypeSuperAlone(string sql)
+{
+    await using var c = await adminDs.OpenConnectionAsync();
+    await using var tx = await c.BeginTransactionAsync();
+    await Exec(c, tx, "SELECT set_config('app.admin_type','super',true), set_config('app.resolved_global_admin','',true), set_config('app.resolved_partner_ids','',true), set_config('app.resolved_location_ids','',true)");
+    return await Scalar<long>(c, tx, sql);
+}
 await Check("RLS admin_api: partner without app.partner_id -> 0 rows", async () => await CountAs(adminDs, cntLoc, "partner", null) == 0);
 await Check("RLS admin_api: super -> all 2 locations / 2 configs / 2 changes", async () =>
     await CountAs(adminDs, cntLoc, "super", null) == 2 && await CountAs(adminDs, cntCfg, "super", null) == 2 && await CountAs(adminDs, cntChg, "super", null) == 2);
@@ -825,7 +981,7 @@ await Check("RLS admin_api: settings are transaction-local (next tx on same conn
     await using var c = await adminDs.OpenConnectionAsync();
     await using (var tx = await c.BeginTransactionAsync())
     {
-        await Exec(c, tx, "SELECT set_config('app.admin_type','super',true)");
+        await BindResolved(c, tx, "super", null);
         if (await Scalar<long>(c, tx, cntLoc) != 2) return false;
         await tx.CommitAsync();
     }
@@ -833,17 +989,9 @@ await Check("RLS admin_api: settings are transaction-local (next tx on same conn
 });
 await Check("RLS admin_api: partner pci cannot INSERT a nevada location (WITH CHECK, 42501)", async () =>
     await Try(adminDs, $"INSERT INTO auth.location VALUES (gen_random_uuid(), '{P_NV}', 'zz-x', 'x')", "partner", P_PCI) == "42501");
-await Check("RLS admin_api: partner pci UPDATE of nevada config touches 0 rows; own config 1 row", async () =>
-{
-    await using var c = await adminDs.OpenConnectionAsync();
-    await using var tx = await c.BeginTransactionAsync();
-    await Exec(c, tx, "SELECT set_config('app.admin_type','partner',true), set_config('app.partner_id',$1,true)", P_PCI.ToString());
-    await using var u1 = new NpgsqlCommand($"UPDATE auth.location_login_config SET mfa_required = mfa_required WHERE location_id = '{L_NV}'", c, tx);
-    await using var u2 = new NpgsqlCommand($"UPDATE auth.location_login_config SET mfa_required = mfa_required WHERE location_id = '{L_PCI}'", c, tx);
-    var a = await u1.ExecuteNonQueryAsync(); var b = await u2.ExecuteNonQueryAsync();
-    await tx.RollbackAsync();
-    return a == 0 && b == 1;
-});
+await Check("RLS admin_api: direct UPDATE of location_login_config is denied (42501), including the caller's own row", async () =>
+    await Try(adminDs, $"UPDATE auth.location_login_config SET mfa_required = mfa_required WHERE location_id = '{L_NV}'", "partner", P_PCI) == "42501"
+    && await Try(adminDs, $"UPDATE auth.location_login_config SET mfa_required = mfa_required WHERE location_id = '{L_PCI}'", "partner", P_PCI) == "42501");
 await Check("RLS admin_api: partner pci cannot INSERT a change row for nevada (42501)", async () =>
     await Try(adminDs, $"INSERT INTO auth.location_login_config_change VALUES (gen_random_uuid(), '{L_NV}', '{ACTOR}', 'partner', NULL, now(), 'updated', '{{mfa_required}}', '{{}}', '{{}}', 2)", "partner", P_PCI) == "42501");
 await Check("RLS admin_api: partner pci CAN insert own change row", async () =>
@@ -857,8 +1005,8 @@ await Check("P2-1 admin_api: UPDATE location_login_config.created_at denied (425
     await Try(adminDs, $"UPDATE auth.location_login_config SET created_at = now() WHERE location_id = '{L_PCI}'", "super") == "42501");
 await Check("P2-1 admin_api: UPDATE location_login_config.created_by denied (42501)", async () =>
     await Try(adminDs, $"UPDATE auth.location_login_config SET created_by = gen_random_uuid() WHERE location_id = '{L_PCI}'", "super") == "42501");
-await Check("P2-1 admin_api: §8.5 UPDATE of all 11 mutable columns allowed (rolled back)", async () =>
-    await Try(adminDs, $"UPDATE auth.location_login_config SET provider_kind = provider_kind, display_name = display_name, entra_allowed_tenant_ids = entra_allowed_tenant_ids, oidc_authority = oidc_authority, oidc_client_id = oidc_client_id, secret_ref = secret_ref, allow_db_fallback = allow_db_fallback, mfa_required = mfa_required, updated_by = '{ACTOR}', updated_at = now(), row_version = row_version + 1 WHERE location_id = '{L_PCI}'", "super") == "ok");
+await Check("P2-1 admin_api: direct UPDATE of the 11 mutable location_login_config columns is denied (42501)", async () =>
+    await Try(adminDs, $"UPDATE auth.location_login_config SET provider_kind = provider_kind, display_name = display_name, entra_allowed_tenant_ids = entra_allowed_tenant_ids, oidc_authority = oidc_authority, oidc_client_id = oidc_client_id, secret_ref = secret_ref, allow_db_fallback = allow_db_fallback, mfa_required = mfa_required, updated_by = '{ACTOR}', updated_at = now(), row_version = row_version + 1 WHERE location_id = '{L_PCI}'", "super") == "42501");
 await Check("P2-1 admin_api: UPDATE on change table / audit_outbox denied (append-only, 42501)", async () =>
     await Try(adminDs, "UPDATE auth.location_login_config_change SET at = now()", "super") == "42501"
     && await Try(adminDs, "UPDATE auth.audit_outbox SET occurred_at = now()", "super") == "42501");
@@ -869,7 +1017,7 @@ await Check("definer fn: partner pci admin attributes nevada location to its par
 {
     await using var c = await adminDs.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
-    await Exec(c, tx, "SELECT set_config('app.admin_type','partner',true), set_config('app.partner_id',$1,true)", P_PCI.ToString());
+    await BindResolved(c, tx, "partner", P_PCI);
     var p = await Scalar<Guid>(c, tx, "SELECT auth.location_partner($1)", L_NV);
     var none = await Scalar<object>(c, tx, "SELECT auth.location_partner(gen_random_uuid())");
     return p == P_NV && none is DBNull;
@@ -898,17 +1046,17 @@ await Check("admin_api: cannot read app_user/external_login/user_location/sessio
 const string cntPrb = "SELECT count(*) FROM auth.partner_reason_bounds";
 await Check("Slice A RLS prb: no app.admin_type / bogus / partner without app.partner_id -> 0 rows (fail closed)", async () =>
     await CountAs(adminDs, cntPrb, null, null) == 0 && await CountAs(adminDs, cntPrb, "bogus", P_PCI) == 0 && await CountAs(adminDs, cntPrb, "partner", null) == 0);
-await Check("Slice A RLS prb: super -> 1 row; partner nevada sees the pci row (cross-partner read, TO CONFIRM LS-OQ-61)", async () =>
-    await CountAs(adminDs, cntPrb, "super", null) == 1 && await CountAs(adminDs, cntPrb, "partner", P_NV) == 1);
-await Check("Slice A RLS prb: no scope -> INSERT denied (42501); partner nevada CAN insert/update another partner's row (DEC-111, rolled back)", async () =>
+await Check("Slice A RLS prb: super -> 1 row; partner nevada does not see the pci row", async () =>
+    await CountAs(adminDs, cntPrb, "super", null) == 1 && await CountAs(adminDs, cntPrb, "partner", P_NV) == 0);
+await Check("Slice A RLS prb: no scope -> INSERT denied (42501); partner nevada CAN insert another partner's row (DEC-111) and cannot update a row it cannot see", async () =>
     await Try(adminDs, $"INSERT INTO auth.partner_reason_bounds VALUES ('{P_NV}', 10, 500, '{ACTOR}', now(), 1)") == "42501"
     && await Try(adminDs, $"INSERT INTO auth.partner_reason_bounds VALUES (gen_random_uuid(), 10, 500, '{ACTOR}', now(), 1)", "partner", P_NV) == "ok"
-    && await PrbUpdateRows(P_NV) == 1);
+    && await PrbUpdateRows(P_NV) == 0);
 async Task<int> PrbUpdateRows(Guid asPartner)
 {
     await using var c = await adminDs.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
-    await Exec(c, tx, "SELECT set_config('app.admin_type','partner',true), set_config('app.partner_id',$1,true)", asPartner.ToString());
+    await BindResolved(c, tx, "partner", asPartner);
     await using var u = new NpgsqlCommand($"UPDATE auth.partner_reason_bounds SET reason_min_length = 11, reason_max_length = 499, updated_by = '{ACTOR}', updated_at = now(), row_version = row_version + 1 WHERE partner_id = '{P_PCI}'", c, tx);
     var n = await u.ExecuteNonQueryAsync();
     await tx.RollbackAsync();
@@ -1006,50 +1154,67 @@ var sessCases = new (string, string, string)[]
 };
 foreach (var (name, sql, state) in cases.Concat(sessCases))
 {
-    var got = await Try(ownerDs, sql);
+    var got = KitAdmin.SqlState("auth-data-constraint-probe", sql);
     Ok($"constraint: {name} -> {state}", got == state, got);
 }
 
 // ================= 7. optimistic concurrency (§8.5) =================
-await Check("concurrency: two EF contexts (admin_api, super) on row_version 1 -> 2nd SaveChanges throws DbUpdateConcurrencyException; row_version 2", async () =>
+await Check("concurrency: save_location_login_config commits row_version 2; a stale call returns 0; direct EF UPDATE is 42501", async () =>
 {
-    async Task<(AuthDbContext db, NpgsqlConnection c, Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx)> Open()
-    {
-        var c = await adminDs.OpenConnectionAsync();
-        var db = new AuthDbContext(new DbContextOptionsBuilder<AuthDbContext>().UseNpgsql(c).Options);
-        var tx = await db.Database.BeginTransactionAsync();
-        await db.Database.ExecuteSqlRawAsync("SELECT set_config('app.admin_type','super',true)");
-        return (db, c, tx);
-    }
-    var (db1, c1, t1) = await Open();
-    var (db2, c2, t2) = await Open();
+    await using var c1 = await adminDs.OpenConnectionAsync();
+    await using var t1 = await c1.BeginTransactionAsync();
+    await BindResolved(c1, t1, "super", null);
+    await using var save = new NpgsqlCommand(
+        "SELECT auth.save_location_login_config($1, 1, 'database', 'Nevada password', '{}', NULL, NULL, false, NULL, false, true, $2, now())", c1, t1);
+    save.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = L_NV });
+    save.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = ACTOR });
+    if (Convert.ToInt32(await save.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture) != 1) return false;
+    await t1.CommitAsync();
+    await using var c2 = await adminDs.OpenConnectionAsync();
+    await using var t2 = await c2.BeginTransactionAsync();
+    await BindResolved(c2, t2, "super", null);
+    await using var stale = new NpgsqlCommand(
+        "SELECT auth.save_location_login_config($1, 1, 'database', 'stale writer', '{}', NULL, NULL, false, NULL, false, true, $2, now())", c2, t2);
+    stale.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = L_NV });
+    stale.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = ACTOR });
+    var staleRows = Convert.ToInt32(await stale.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+    await t2.RollbackAsync();
+    var efDenied = false;
+    await using var efConn = await adminDs.OpenConnectionAsync();
+    await using var npgTx = await efConn.BeginTransactionAsync();
+    await BindResolved(efConn, npgTx, "super", null);
+    var db = new AuthDbContext(new DbContextOptionsBuilder<AuthDbContext>().UseNpgsql(efConn).Options);
+    await db.Database.UseTransactionAsync(npgTx);
     try
     {
-        var r1 = await db1.LocationLoginConfigRows.SingleAsync(x => x.LocationId == L_NV);
-        var r2 = await db2.LocationLoginConfigRows.SingleAsync(x => x.LocationId == L_NV);
-        if (r1.RowVersion != 1 || r2.RowVersion != 1) return false;
-        r1.MfaRequired = true; r1.RowVersion += 1; r1.UpdatedAt = DateTimeOffset.UtcNow;
-        await db1.SaveChangesAsync(); await t1.CommitAsync();
-        r2.DisplayName = "stale writer"; r2.RowVersion += 1;
-        try { await db2.SaveChangesAsync(); return false; }
-        catch (DbUpdateConcurrencyException) { }
-        await t2.RollbackAsync();
-        await using var oc = await ownerDs.OpenConnectionAsync();
-        return await Scalar<long>(oc, null, $"SELECT row_version FROM auth.location_login_config WHERE location_id = '{L_NV}'") == 2
-            && await Scalar<string>(oc, null, $"SELECT display_name FROM auth.location_login_config WHERE location_id = '{L_NV}'") == "Nevada password";
+        var row = await db.LocationLoginConfigRows.SingleAsync(x => x.LocationId == L_NV);
+        row.DisplayName = "ef writer"; row.RowVersion += 1;
+        try { await db.SaveChangesAsync(); }
+        catch (DbUpdateException ex) when (ex.InnerException is PostgresException pg && pg.SqlState == "42501") { efDenied = true; }
     }
-    finally { await db1.DisposeAsync(); await db2.DisposeAsync(); await c1.DisposeAsync(); await c2.DisposeAsync(); }
+    finally { await db.DisposeAsync(); }
+    await using var oc = await ownerDs.OpenConnectionAsync();
+    return staleRows == 0 && efDenied
+        && await Scalar<long>(oc, null, $"SELECT row_version FROM auth.location_login_config WHERE location_id = '{L_NV}'") == 2
+        && await Scalar<string>(oc, null, $"SELECT display_name FROM auth.location_login_config WHERE location_id = '{L_NV}'") == "Nevada password";
 });
-await Check("concurrency: raw §8.5 UPDATE ... WHERE row_version = stale -> 0 rows; = current -> 1 row", async () =>
+await Check("concurrency: direct UPDATE is 42501; save_location_login_config stale version returns 0 and current version returns 1", async () =>
 {
+    var direct = await Try(adminDs, $"UPDATE auth.location_login_config SET row_version = row_version + 1 WHERE location_id = '{L_NV}' AND row_version = 2", "super");
     await using var c = await adminDs.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
-    await Exec(c, tx, "SELECT set_config('app.admin_type','super',true)");
-    await using var s = new NpgsqlCommand($"UPDATE auth.location_login_config SET row_version = row_version + 1 WHERE location_id = '{L_NV}' AND row_version = 1", c, tx);
-    await using var k = new NpgsqlCommand($"UPDATE auth.location_login_config SET row_version = row_version + 1 WHERE location_id = '{L_NV}' AND row_version = 2", c, tx);
-    var a = await s.ExecuteNonQueryAsync(); var b = await k.ExecuteNonQueryAsync();
+    await BindResolved(c, tx, "super", null);
+    await using var s = new NpgsqlCommand("SELECT auth.save_location_login_config($1, 1, 'database', 'Nevada password', '{}', NULL, NULL, false, NULL, false, true, $2, now())", c, tx);
+    await using var k = new NpgsqlCommand("SELECT auth.save_location_login_config($1, 2, 'database', 'Nevada password', '{}', NULL, NULL, false, NULL, false, true, $2, now())", c, tx);
+    foreach (var cmd in new[] { s, k })
+    {
+        cmd.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = L_NV });
+        cmd.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = ACTOR });
+    }
+    var a = Convert.ToInt32(await s.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+    var b = Convert.ToInt32(await k.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
     await tx.RollbackAsync();
-    return a == 0 && b == 1;
+    return direct == "42501" && a == 0 && b == 1;
 });
 
 // ================= 8. readers (as login) =================
@@ -1081,12 +1246,12 @@ await Check("reader config: GetBySlugAsync(\" PCI-Main \") normalises -> pci-mai
 await Check("reader config: GetBySlugAsync(unknown) -> null", async () => await cfgReader.GetBySlugAsync("zz-none", default) is null);
 await Check("reader config: location without config row -> null (inner join)", async () =>
 {
-    await using var c = await ownerDs.OpenConnectionAsync();
+    await using var c = await seedDs.OpenConnectionAsync();
     await using var tx = await c.BeginTransactionAsync();
     await Exec(c, tx, $"INSERT INTO auth.location VALUES ('{LX}', '{P_PCI}', 'zz-noconfig', 'x')");
     await tx.CommitAsync();
     var r = await cfgReader.GetAsync(Guid.Parse(LX), default) is null && await cfgReader.GetBySlugAsync("zz-noconfig", default) is null;
-    await Exec(c, null, $"DELETE FROM auth.location WHERE location_id = '{LX}'");
+    KitAdmin.Exec("auth-data-temp-location", $"DELETE FROM auth.location WHERE location_id = '{LX}'");
     return r;
 });
 
@@ -1202,11 +1367,50 @@ finally
 await Check("Q2: this run's scratch DB dropped in the finally; no MARKED ff_scratch_* DB left [TLD 11:21]; cluster snapshot (roles, members, tablespaces, DBs) identical before CREATE and after DROP [TLD 11:57 o3]; ff_scratchadm as documented [TLD 12:33]", async () =>
 {
     if (scratchAdminCs is null || scratchName is null || scratchSnap is null) return false;
-    var after = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs);
+    var after = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs, scratchName);
     if (after != scratchSnap) Console.WriteLine($"Q2: cluster snapshot changed: {ScratchDb.Diff(scratchSnap, after)}");
     var adminV = await ScratchDb.AdminRoleViolationsAsync(scratchAdminCs);
     if (adminV.Count > 0) Console.WriteLine($"Q2: ff_scratchadm: {string.Join("; ", adminV)}");
-    return after == scratchSnap && adminV.Count == 0 && !(await ScratchDb.StateAsync(scratchAdminCs, scratchName)).exists && (await ScratchDb.ListAsync(scratchAdminCs, markedOnly: true)).Count == 0;
+    var marked = await ScratchDb.ListAsync(scratchAdminCs, markedOnly: true);
+    var exists = (await ScratchDb.StateAsync(scratchAdminCs, scratchName)).exists;
+    return ScratchDb.RunLeftNoMarkedScratch(after, scratchSnap, exists, marked, scratchName) && adminV.Count == 0;
+});
+await Check("Q2: a marked scratch database from another run does not fail this run's cleanup", async () =>
+{
+    if (scratchAdminCs is null || scratchName is null || scratchSnap is null) return false;
+    var decoy = await ScratchDb.CreateMarkedAsync(scratchAdminCs);
+    try
+    {
+        var after = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs, scratchName);
+        var marked = await ScratchDb.ListAsync(scratchAdminCs, markedOnly: true);
+        var exists = (await ScratchDb.StateAsync(scratchAdminCs, scratchName)).exists;
+        return marked.Contains(decoy) && ScratchDb.RunLeftNoMarkedScratch(after, scratchSnap, exists, marked, scratchName);
+    }
+    finally
+    {
+        try { await ScratchDb.DropAsync(scratchAdminCs, decoy); }
+        catch (Exception e) { Console.WriteLine($"Q2 overlap cleanup: {e.GetType().Name}"); }
+    }
+});
+await Check("Q2: another run's ff_scratch_* database and role do not change this run's scoped snapshot", async () =>
+{
+    if (scratchAdminCs is null || scratchName is null) return false;
+    var before = await ScratchDb.ClusterSnapshotAsync(scratchAdminCs, scratchName);
+    var decoy = ScratchDb.NewName();
+    await ScratchDb.CreateUnmarkedAsync(scratchAdminCs, decoy, role: false);
+    await ScratchDb.CreateUnmarkedAsync(scratchAdminCs, decoy + "_login", role: true);
+    try
+    {
+        await using var m = await ScratchDb.OpenMaint(scratchAdminCs);
+        await m.ExecAsync($"COMMENT ON DATABASE \"{decoy}\" IS 'floorfunds-scratch'");
+        await m.ExecAsync($"COMMENT ON ROLE \"{decoy}_login\" IS 'floorfunds-scratch'");
+        return await ScratchDb.ClusterSnapshotAsync(scratchAdminCs, scratchName) == before;
+    }
+    finally
+    {
+        try { await ScratchDb.DropAsync(scratchAdminCs, decoy); }
+        catch (Exception e) { Console.WriteLine($"Q2 decoy cleanup: {e.GetType().Name}"); }
+    }
 });
 await Check("K3: cleanup -> DB back in the post-seed state (re-runnable)", async () =>
 {

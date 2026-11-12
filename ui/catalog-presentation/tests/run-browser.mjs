@@ -205,7 +205,7 @@ try {
   await evaluate("window.scrollTo(0,0)");
   let sameText = await evaluate("document.body.innerText");
   let sameActor = await evaluate(`document.getElementById("actor-role").value`);
-  check("same code follows super admin", sameActor === "super_admin" && sameText.includes("Selected principal: Super Admin") && sameText.includes("11000000-0000-4000-8005-100000000001") && !sameText.includes("11000000-0000-4000-8005-200000000001") && sameText.includes("same as a missing row"));
+  check("same code follows super admin", sameActor === "super_admin" && sameText.includes("Selected principal: Super Admin") && sameText.includes("11000000-0000-4000-8005-100000000001") && sameText.includes("11000000-0000-4000-8005-200000000001") && sameText.includes("resolved global Super Admin assignment") && !sameText.includes("same as a missing row"));
   report.shots.push(await shot("same-code-super-admin-1600"));
   check("same code selects owning partner admin", await setActor("partner_admin") === "partner_admin");
   await evaluate("window.scrollTo(0,0)");
@@ -261,7 +261,7 @@ try {
     const style = getComputedStyle(el);
     return { disabled: el.disabled, bg: style.backgroundColor, color: style.color };
   })()`);
-  check("disabled claim fields are muted", claimField.disabled && claimField.bg === "rgb(243, 245, 248)" && claimField.color === "rgb(91, 100, 114)", JSON.stringify(claimField));
+  check("disabled claim fields are muted", claimField.disabled && claimField.bg === "rgb(20, 20, 20)" && claimField.color === "rgb(156, 163, 175)", JSON.stringify(claimField));
   await evaluate("document.getElementById('claim-availability')?.scrollIntoView({block:'center'})");
   report.shots.push(await shot("claim-edit-refused-1600"));
   await resize(768, 1000);
@@ -311,7 +311,7 @@ try {
     const style = getComputedStyle(el);
     return { disabled: el.disabled, bg: style.backgroundColor };
   })()`);
-  check("closed create fields look disabled", closedField.disabled && closedField.bg === "rgb(243, 245, 248)", JSON.stringify(closedField));
+  check("closed create fields look disabled", closedField.disabled && closedField.bg === "rgb(20, 20, 20)", JSON.stringify(closedField));
   await evaluate("document.getElementById('closed-code')?.scrollIntoView({block:'center'})");
   report.shots.push(await shot("closed-create-disabled-1600"));
   await evaluate("document.getElementById('closed-create').click()");

@@ -31,7 +31,7 @@ public sealed class CatalogScratchBoundary
         if (!_gate.TryAuthenticate(token, out var userId))
             return InvalidToken();
         var context = new CatalogHttpServerContext(
-            new CatalogPrincipal(userId, CatalogRole.None, null),
+            CatalogPrincipalFactory.Denied(userId),
             Guid.NewGuid().ToString("D"),
             Guid.NewGuid().ToString("D"));
         return _transport.Handle(context, forwarded);

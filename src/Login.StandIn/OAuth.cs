@@ -12,6 +12,11 @@ public static class OAuth
 {
     const int CodeLifetime = 60, RefreshLeeway = 30;
 
+    // Admin sign-out ends at the shell /signin. That route hands off through the
+    // existing dev-shell authorize redirect to /admin. Location sign-out stays on /l/{slug}.
+    public static string SignOutTarget(bool adminSession, string issuerPath, string slug) =>
+        adminSession ? "/signin" : issuerPath + "/l/" + slug;
+
     static IResult BadLink(HttpContext c)
     {
         // 4.8: our own error page, never a redirect, never an echo.
@@ -84,6 +89,25 @@ public static class OAuth
                 HubLaunch? hl = null; bool hlFresh = false;
                 if (hlRaw is not null && st.Auth.HubLaunches.TryGetValue(AuthStore.H(hlRaw), out hl)) { hlFresh = !hl.Used; hl.Used = true; }
                 if (!isHandoffClient) { hlRaw = null; hl = null; hlFresh = false; }
+
+                // Dev shell only. Every other client still refuses an admin session below.
+                if (client.ClientId == Clients.DevShellClientId)
+                {
+                    var ret = QueryHelpers.AddQueryString(issuerPath + "/connect/authorize", keep);
+                    if (s is null || s.Kind == "recovery_reenroll" || s.AdminType is not ("super" or "partner"))
+                    {
+                        if (prompt == "none") return Back(redirectUri, issuer, state, ("error", "login_required"));
+                        // F-TL-B / DEC-220. Fixed enum only; never echo arbitrary query text.
+                        // issuerPath comes from cfg StandIn:Issuer (Program.cs), never from Host /
+                        // X-Forwarded-*. Path-relative Location is the real product output
+                        // (curl repro on 96410c75: Location: /standin/admin?ret=… — not admin%3Fret=).
+                        var admin = issuerPath + "/admin?ret=" + Uri.EscapeDataString(ret);
+                        if (Q("ff_reason") == "expired") admin += "&reason=expired";
+                        return Results.Redirect(admin);
+                    }
+                    if (!st.Users.Values.Any(u => u.UserId == s.UserId)) return Back(redirectUri, issuer, state, ("error", "access_denied"));
+                    return IssueDevShell(c, client, s, redirectUri, state, challenge, Q("nonce"), scopes, now);
+                }
 
                 if (s is not null && (s.Kind == "recovery_reenroll" || s.AdminType is not null))
                 {
@@ -175,6 +199,21 @@ public static class OAuth
             return Back(redirectUri, issuer, state, ("code", code));
         }
 
+        IResult IssueDevShell(HttpContext c, OAuthClient client, LoginSession s, string redirectUri, string? state, string challenge,
+            string? nonce, IEnumerable<string> scopes, DateTimeOffset now)
+        {
+            s.LastSeen = now;
+            var details = new JsonObject { ["method"] = "interactive", ["auth_time"] = s.AuthTime.ToUnixTimeSeconds(), ["amr"] = new JsonArray(s.Amr.Select(a => (JsonNode)a!).ToArray()) };
+            var ev = Audit.Build(now, "auth.app.signed_in", "success", s.UserId, details, Handoff.SessionScope(st, s), Ip(c), null, s.Sid);
+            ev["action"] = "login"; ev["target"] = new JsonObject { ["type"] = "app", ["id"] = client.ClientId }; ev["session_kind"] = s.Kind;
+            if (s.AdminType is not null) ev["admin_type"] = s.AdminType;
+            if (!SignIn.TryEmit(st, ev)) return Back(redirectUri, issuer, state, ("error", "temporarily_unavailable"));
+            var code = TokenIssuer.NewHandle();
+            st.Auth.Codes[AuthStore.H(code)] = new CodeGrant(client.ClientId, redirectUri, challenge, nonce, string.Join(' ', scopes), s.Sid, now);
+            s.CodeIssued = true;
+            return Back(redirectUri, issuer, state, ("code", code));
+        }
+
         // 5.8: the interstitial re-POSTs authorize with device_attestation in the body only.
         app.MapPost(issuerPath + "/connect/authorize", async (HttpContext c) =>
         {
@@ -206,7 +245,7 @@ public static class OAuth
                     return e;
                 }
                 if (!ok) { st.Emit(Deny("attestation_invalid")); return Results.Redirect(slugRet + "&agent=down"); } // 5.5: password + MFA, then Cash Advance opens
-                if (remote) { st.Emit(Deny("remote_session")); return Ui.Page("Sign-in is blocked", Ui.Render("screen-8a")); } // 5.4
+                if (remote) { st.Emit(Deny("remote_session")); return Ui.Page("Sign-in is blocked", Ui.Render("screen-8a", ("product", Ui.ProductName))); } // 5.4
                 var user = st.Users.Values.First(u => u.UserId == s!.UserId);
                 if (Handoff.RuleFailure(st, s!, user, client, now) is not null) return Results.Redirect(slugRet); // rules re-checked at completion
                 int? maxAge = a.TryGetValue("max_age", out var ma) && int.TryParse(ma, out var m) ? m : null;
@@ -286,7 +325,17 @@ public static class OAuth
                 else return TokenError(c, "unsupported_grant_type");
 
                 var u2 = st.Users.Values.First(u => u.UserId == s.UserId);
-                var l2 = SignIn.Location(st.Fixtures, s.Slug)!;
+                JsonLookup org;
+                if (client.ClientId == Clients.DevShellClientId)
+                {
+                    if (s.AdminType is not ("super" or "partner")) return TokenError(c, "invalid_grant");
+                    org = new JsonLookup(s.PartnerId ?? "", null);
+                }
+                else
+                {
+                    var l2 = SignIn.Location(st.Fixtures, s.Slug)!;
+                    org = new JsonLookup(l2.PartnerId, l2.CachdClientId);
+                }
                 var idt = tokens.Id(s, client, now, nonce);
                 st.Auth.IdTokenSid[AuthStore.H(idt)] = s.Sid;
                 JsonObject body;
@@ -294,9 +343,9 @@ public static class OAuth
                 if (client.Aud is null) body = new JsonObject { ["id_token"] = idt, ["scope"] = scope };
                 else
                 {
-                    var (at, jti, _) = tokens.Access(s, client, scope, now, u2, new JsonLookup(l2.PartnerId, l2.CachdClientId));
+                    var (at, jti, exp) = tokens.Access(s, client, scope, now, u2, org);
                     st.Auth.Access[jti] = new AccessRec(jti, client.ClientId, s.Sid, fam.Id);
-                    body = new JsonObject { ["access_token"] = at, ["token_type"] = "Bearer", ["expires_in"] = TokenIssuer.AccessLifetime, ["id_token"] = idt, ["scope"] = scope };
+                    body = new JsonObject { ["access_token"] = at, ["token_type"] = "Bearer", ["expires_in"] = exp - now.ToUnixTimeSeconds(), ["id_token"] = idt, ["scope"] = scope };
                 }
                 if (scope.Split(' ').Contains("offline_access"))
                 {
@@ -360,6 +409,8 @@ public static class OAuth
             string? P(string k) => form is not null && form.ContainsKey(k) ? form[k].ToString() : c.Request.Query.TryGetValue(k, out var v) ? v.ToString() : null;
             var hint = P("id_token_hint");
             var hinted = hint is null ? null : await tokens.Validate(hint, "JWT", false, st.Clock.Now); // 11.2a ignores exp.
+            string? signedOutUser = null;
+            IResult result;
             lock (st.Gate)
             {
                 var now = st.Clock.Now;
@@ -372,22 +423,26 @@ public static class OAuth
                     // 11.2d: no valid hint, so confirm first (logout CSRF).
                     var t = af.GetAndStoreTokens(c).RequestToken!;
                     return SignIn.Html("screen-signout-confirm", $"""
-<p>Sign out of all apps?</p><form method="post" action="{issuerPath}/connect/endsession">
+<h1>Sign out of all apps?</h1><p>Sign out of {System.Net.WebUtility.HtmlEncode(Ui.ProductName)}?</p><form method="post" action="{issuerPath}/connect/endsession">
 <input type="hidden" name="__RequestVerificationToken" value="{System.Net.WebUtility.HtmlEncode(t)}"><input type="hidden" name="confirm" value="yes">
 <button data-testid="signout-confirm" type="submit">Sign out</button></form>
-""");
+""", productLockup: true, title: "Sign out of all apps?");
                 }
                 var slug = s is { AdminType: null } ? s.Slug : (string)st.Fixtures["partners"]![0]!["locations"]![0]!["slug"]!;
                 if (s is not null && !s.Revoked)
                 {
+                    signedOutUser = s.UserId;
                     st.Auth.RevokeSession(s);
                     var e = Audit.Build(now, "auth.session.revoked", "success", s.UserId, new JsonObject { ["reason"] = "sign_out" }, Handoff.SessionScope(st, s), Ip(c), null, s.Sid);
                     e["session_kind"] = s.Kind; if (s.AdminType is not null) e["admin_type"] = s.AdminType; st.Emit(e); // 11.3: one per session.
                 }
                 c.Response.Cookies.Delete(SignIn.SessionCookie, new CookieOptions { Path = issuerPath });
                 // 11.2c: the end state is always the session's /l/{slug}. [ASSUMPTION A30] post_logout_redirect_uri is never followed.
-                return Results.Redirect(issuerPath + "/l/" + slug);
+                result = Results.Redirect(SignOutTarget(s?.AdminType is not null, issuerPath, slug));
             }
+            if (signedOutUser is not null)
+                await RequestSessionRevoker.NotifyAsync(issuer, signedOutUser);
+            return result;
         }
         app.MapGet(issuerPath + "/connect/endsession", (Delegate)EndSession);
         app.MapPost(issuerPath + "/connect/endsession", (Delegate)EndSession);

@@ -5,8 +5,8 @@
 // (TLD 08:00 Q2: first PUT inserts v1, each later PUT bumps it).
 // RLS: ENABLE + FORCE; the owner policy as on every RLS table; the admin_api policy admits a Super Admin or ANY Partner Admin
 // for every partner row: the cross-partner write is DEC-111 (the only cross-partner Partner Admin exception) and the
-// cross-partner read is TO CONFIRM LS-OQ-61. A missing / unknown app.admin_type, or partner without app.partner_id, sees and
-// writes nothing (fail closed, as the other tables). The partner id is not a FK: S2a has no partner table.
+// cross-partner read is TO CONFIRM LS-OQ-61. A missing resolved scope sees and writes nothing
+// (fail closed, as the other tables). The partner id is not a FK: S2a has no partner table.
 // Grants: admin_api SELECT, INSERT, and column UPDATE on the mutable columns only (never partner_id); no DELETE; login none.
 // Valid inside the idempotent script's DO $EF$ wrapper (db/migrations.sql).
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -41,7 +41,7 @@ namespace Auth.Data.Migrations
                 DO $s2a_prb$
                 DECLARE
                   a text := current_database() || '_admin_api';
-                  any_admin text := $p$(current_setting('app.admin_type', true) = 'super' OR (current_setting('app.admin_type', true) = 'partner' AND nullif(current_setting('app.partner_id', true), '') IS NOT NULL))$p$;
+                  any_admin text := $p$(current_setting('app.resolved_global_admin', true) = 'on' OR EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) p(id) WHERE p.id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') OR EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')) loc(id) WHERE loc.id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'))$p$;
                 BEGIN
                   EXECUTE format('CREATE POLICY prb_admin ON auth.partner_reason_bounds FOR ALL TO %I USING %s WITH CHECK %s', a, any_admin, any_admin);
                   EXECUTE format('GRANT SELECT, INSERT ON auth.partner_reason_bounds TO %I', a);

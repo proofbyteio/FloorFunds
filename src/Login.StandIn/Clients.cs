@@ -14,6 +14,7 @@ public sealed record OAuthClient(string ClientId, string? AppCode, string? ApiSc
 public static class Clients
 {
     public static readonly string[] ApiScopes = { "cash_advance_api", "backoffice_api" };
+    public const string DevShellClientId = "admin_dev_shell";
     public const string AssertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 
     // [TL Decision 9:16 PM, B2] FIXTURE client keys: fresh RSA-2048 per client at every start and reset (7.6 allows RS256 only).
@@ -38,7 +39,26 @@ public static class Clients
                 c["post_logout_redirect_uris"]!.AsArray().Select(x => (string)x!).ToArray(),
                 SHA256.HashData(Encoding.UTF8.GetBytes((string)c["secret"]!)), (string?)c["start_url"], (bool?)c["handoff"] ?? false, pub, kid);
         }
+        if (Environment.GetEnvironmentVariable("ADMIN_DEV_SHELL") == "1") d[DevShellClientId] = DevShell();
         return d;
+    }
+
+    // Dev-only client for the single-origin admin shell. The secret is written under /tmp and is not a fixture.
+    static OAuthClient DevShell()
+    {
+        var redirect = Environment.GetEnvironmentVariable("ADMIN_DEV_SHELL_REDIRECT");
+        if (redirect is null || !redirect.StartsWith("http://127.0.0.1:", StringComparison.Ordinal) || !redirect.EndsWith("/signin-oidc", StringComparison.Ordinal))
+            throw new InvalidOperationException("ADMIN_DEV_SHELL_REDIRECT must be http://127.0.0.1:<port>/signin-oidc");
+        var secret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        var secretPath = "/tmp/ff-db/admin-dev-shell.secret";
+        Directory.CreateDirectory("/tmp/ff-db");
+        File.WriteAllText(secretPath, "");
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(secretPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        File.WriteAllText(secretPath, secret);
+        using var rsa = RSA.Create(2048);
+        var pub = RSA.Create(); pub.ImportRSAPublicKey(rsa.ExportRSAPublicKey(), out _);
+        return new OAuthClient(DevShellClientId, null, "backoffice_api", "backoffice-api", false, false, false,
+            new[] { redirect }, new[] { redirect }, SHA256.HashData(Encoding.UTF8.GetBytes(secret)), null, false, pub, "dev-shell");
     }
 
     // RFC 6749 2.3.1 client_secret_basic, or 7.6 private_key_jwt (RFC 7523). Exactly one method per request. Caller holds the gate.

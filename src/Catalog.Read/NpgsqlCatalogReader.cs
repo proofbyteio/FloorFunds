@@ -12,8 +12,7 @@ namespace Catalog.Read;
 /// </summary>
 public sealed class NpgsqlCatalogReader
 {
-    private const string ClearSessionSql =
-        "SELECT set_config('app.admin_type', '', false), set_config('app.partner_id', '', false)";
+    private const string ClearSessionSql = CatalogSessionSql.Clear;
 
     private const string RoleSql = """
         SELECT current_user = current_database() || '_admin_api'
@@ -35,8 +34,7 @@ public sealed class NpgsqlCatalogReader
          WHERE r.rolname = current_user
         """;
 
-    private const string SetScopeSql =
-        "SELECT set_config('app.admin_type', $1, true), set_config('app.partner_id', $2, true)";
+    private const string SetScopeSql = CatalogSessionSql.SetScope;
 
     private const string ListEntriesSql = """
         SELECT entry_id, family, entry_class, owner_partner_id, code, is_active, row_version
@@ -137,14 +135,19 @@ public sealed class NpgsqlCatalogReader
             if (scope is null || !scope.IsValid)
                 throw new CatalogReadContextException("catalog read context is missing or invalid.");
             await AssertProductionRoleAsync(conn, ct);
+            var token = CatalogSessions.TokenFor(scope);
+            if (string.IsNullOrEmpty(token))
+                throw new CatalogReadContextException("catalog read context is missing or invalid.");
             await using var tx = await conn.BeginTransactionAsync(ct);
-            await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY", conn, tx))
-                await readOnly.ExecuteNonQueryAsync(ct);
             await using (var guc = new NpgsqlCommand(SetScopeSql, conn, tx))
             {
-                guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = scope.AdminType });
-                guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = scope.PartnerId?.ToString("D") ?? "" });
-                await guc.ExecuteNonQueryAsync(ct);
+                guc.Parameters.Add(new NpgsqlParameter<string> { TypedValue = token });
+                try { await guc.ExecuteNonQueryAsync(ct); }
+                catch (PostgresException ex) when (ex.SqlState == "42501"
+                    && ex.MessageText is "session_expired" or "session_denied")
+                {
+                    throw new CatalogSessionClosedException();
+                }
             }
             await using var cmd = new NpgsqlCommand(sql, conn, tx);
             bind(cmd);

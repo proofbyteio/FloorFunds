@@ -7,24 +7,43 @@ BEGIN
 END
 $fn$;
 
-CREATE FUNCTION catalog._actor(OUT admin_type text, OUT partner_id uuid, OUT actor_user_id uuid, OUT correlation_id text, OUT reason text)
+-- admin_type / partner_id here are the labels stored on history_pending. They are derived from the
+-- resolver GUCs. This function does not read app.admin_type or app.partner_id.
+CREATE FUNCTION catalog._actor(
+  OUT admin_type text,
+  OUT partner_id uuid,
+  OUT actor_user_id uuid,
+  OUT correlation_id text,
+  OUT reason text,
+  OUT resolved_global boolean,
+  OUT resolved_partner_ids uuid[])
   LANGUAGE plpgsql
   SET search_path = pg_catalog
 AS $fn$
+DECLARE
+  raw text;
+  token text;
 BEGIN
-  admin_type := current_setting('app.admin_type', true);
-  IF admin_type IS NULL OR admin_type NOT IN ('super', 'partner') THEN
-    PERFORM catalog._err('P0001', 'catalog_actor_context');
+  resolved_global := current_setting('app.resolved_global_admin', true) = 'on';
+  resolved_partner_ids := ARRAY[]::uuid[];
+  raw := coalesce(current_setting('app.resolved_partner_ids', true), '');
+  IF raw <> '' THEN
+    FOREACH token IN ARRAY string_to_array(raw, ',') LOOP
+      IF token ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN
+        resolved_partner_ids := resolved_partner_ids || token::uuid;
+      ELSE
+        PERFORM catalog._err('P0001', 'catalog_actor_context');
+      END IF;
+    END LOOP;
   END IF;
-  IF admin_type = 'partner' THEN
-    BEGIN
-      partner_id := nullif(current_setting('app.partner_id', true), '')::uuid;
-    EXCEPTION WHEN invalid_text_representation THEN
-      PERFORM catalog._err('P0001', 'catalog_actor_context');
-    END;
-    IF partner_id IS NULL THEN
-      PERFORM catalog._err('P0001', 'catalog_actor_context');
-    END IF;
+  IF resolved_global THEN
+    admin_type := 'super';
+    partner_id := NULL;
+  ELSIF coalesce(array_length(resolved_partner_ids, 1), 0) >= 1 THEN
+    admin_type := 'partner';
+    partner_id := resolved_partner_ids[1];
+  ELSE
+    PERFORM catalog._err('P0001', 'catalog_actor_context');
   END IF;
   BEGIN
     actor_user_id := nullif(current_setting('app.actor_user_id', true), '')::uuid;

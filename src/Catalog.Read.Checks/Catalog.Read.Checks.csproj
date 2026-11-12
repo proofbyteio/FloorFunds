@@ -16,6 +16,9 @@
     <PackageReference Include="Npgsql" Version="[10.0.3]" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="../KitAdmin/KitAdmin.cs" Link="KitAdmin.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../Catalog.Read/Catalog.Read.csproj" />
   </ItemGroup>
 </Project>

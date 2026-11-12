@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Disposable proofs for the DEC-161 catalog foundation.
 
+Historical scratch proof only. Nothing in the product imports or runs this file.
+The statements below set app.admin_type because that was the DEC-161 scratch
+session. Product authorization does not read that setting. It reads
+app.resolved_global_admin and the resolved partner and location lists from
+auth.resolve_grant.
+
 Refuses every database except ff_kit_dec161_proof1 on 127.0.0.1:5433.
 Harness EXECUTE for the scratch role is issued here, not by the migration.
 """
@@ -76,6 +82,7 @@ def record(name: str, ok: bool, detail: str) -> None:
 
 
 def gucs(who: str, reason: str = "reason one", correlation: str = "corr-1") -> str:
+    # Historical scratch session. app.admin_type here is not a product authorization read.
     if who == "sa":
         return f"""
         SELECT set_config('app.admin_type','super', true);

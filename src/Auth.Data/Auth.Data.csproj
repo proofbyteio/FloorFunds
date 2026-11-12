@@ -34,5 +34,21 @@
     <EmbeddedResource Include="Migrations\CatalogMasterData.Triggers.sql" />
     <EmbeddedResource Include="Migrations\CatalogMasterData.Grants.sql" />
     <EmbeddedResource Include="Migrations\CatalogMasterData.Down.sql" />
+    <EmbeddedResource Include="Migrations\Req064Assignment.sql" />
+    <EmbeddedResource Include="Migrations\Req064RoleScope.sql" />
+    <EmbeddedResource Include="Migrations\Req064HistoryPartner.sql" />
+    <EmbeddedResource Include="Migrations\Req064Issuer.sql" />
+    <EmbeddedResource Include="Migrations\Req064Principal.sql" />
+    <EmbeddedResource Include="Migrations\Req064ReasonRead.sql" />
+    <EmbeddedResource Include="Migrations\Req064Definer.sql" />
+    <EmbeddedResource Include="Migrations\Req064RlsPrincipal.sql" />
+    <EmbeddedResource Include="Migrations\Req064LocationSave.sql" />
+    <EmbeddedResource Include="Migrations\Req064RevokeTemp.sql" />
+    <EmbeddedResource Include="Migrations\Req064Session.sql" />
+    <EmbeddedResource Include="Migrations\Req064RevokeLogin.sql" />
+    <EmbeddedResource Include="Migrations\Req064Actor.sql" />
+    <EmbeddedResource Include="Migrations\Req064SessionClose.sql" />
+    <EmbeddedResource Include="Migrations\Req064LocationAddress.sql" />
+    <EmbeddedResource Include="Migrations\Req064SessionSubject.sql" />
   </ItemGroup>
 </Project>
