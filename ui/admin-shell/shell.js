@@ -31,7 +31,12 @@ export async function api(path, opts) {
   try { body = text ? JSON.parse(text) : null; } catch { body = { raw: text }; }
   // Expired, revoked, and logged-out sessions are one 401. Leave for /signin
   // before the assignment or screen banners can draw.
-  if (res.status === 401) { goSignIn(); return { status: 401, body }; }
+  if (res.status === 401) {
+    const productName = productNameFromConfig(body);
+    if (productName && main) main.replaceChildren(h("p", "For security, " + productName + " asks for your sign-in again."));
+    goSignIn();
+    return { status: 401, body };
+  }
   return { status: res.status, body };
 }
 
@@ -331,6 +336,12 @@ async function draw() {
   const productName = productNameFromConfig(me.body);
   applyProductName(document.querySelector(".admin-lockup__name"), productName);
   if (productName) document.title = productName;
+  const signedIn = document.querySelector("#signed-in");
+  if (signedIn) {
+    const screens = me.body?.screens ?? [];
+    const role = screens.includes("create_client") ? "Super Admin" : screens.includes("create_location") ? "Partner Admin" : "";
+    signedIn.textContent = role ? "Role: " + role : "";
+  }
   grant = me.status === 200 ? (me.body.screens ?? []) : [];
   const name = route();
   renderNav(name === "denied" ? "" : name);
