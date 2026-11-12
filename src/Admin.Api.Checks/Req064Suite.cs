@@ -310,6 +310,8 @@ static class Req064Suite
             await LoginSerialization(owner, admin);
             await MigratorCannotTruncate(owner, "auth.app_user", "migrator-cannot-truncate-app-user");
             await MigratorCannotTruncate(owner, "auth.admin_assignment", "migrator-cannot-truncate-admin-assignment");
+            await SuperuserTruncateRaises(owner, "auth.app_user", "superuser-truncate-app-user-raises-last-active-super-admin");
+            await SuperuserTruncateRaises(owner, "auth.admin_assignment", "superuser-truncate-admin-assignment-raises-last-active-super-admin");
             await BoundsRetry(http, sign, owner, Sa);
             await SessionDeniedArm(http, sign, owner, Sa);
             var signedIn = await StandInSignIn.Run(ownerCs, adminCs, issuerCs);
@@ -752,9 +754,39 @@ static class Req064Suite
                AND (t.tgtype & 32) <> 0
                AND c.relname IN ('admin_assignment', 'app_user')
             """);
-        return triggers == 2
-            && await FailsStatement(owner, "TRUNCATE auth.admin_assignment")
-            && await FailsStatement(owner, "TRUNCATE auth.app_user CASCADE");
+        if (triggers != 2) return false;
+        return await SuperuserTruncateIsLastSa(owner, "auth.admin_assignment")
+            && await SuperuserTruncateIsLastSa(owner, "auth.app_user");
+    }
+
+    static async Task SuperuserTruncateRaises(NpgsqlDataSource owner, string table, string name)
+    {
+        var detail = await SuperuserTruncateDetail(owner, table);
+        Check(name, detail.Contains("P0001", StringComparison.Ordinal) && detail.Contains("last_active_super_admin", StringComparison.Ordinal), detail);
+    }
+
+    static async Task<bool> SuperuserTruncateIsLastSa(NpgsqlDataSource owner, string table)
+    {
+        var detail = await SuperuserTruncateDetail(owner, table);
+        return detail.Contains("P0001", StringComparison.Ordinal) && detail.Contains("last_active_super_admin", StringComparison.Ordinal);
+    }
+
+    static async Task<string> SuperuserTruncateDetail(NpgsqlDataSource owner, string table)
+    {
+        string database;
+        await using (var c = await owner.OpenConnectionAsync())
+            database = (string)(await new NpgsqlCommand("SELECT current_database()", c).ExecuteScalarAsync())!;
+        if (!System.Text.RegularExpressions.Regex.IsMatch(database, "^[a-z0-9_]+\\z")) return "bad-database";
+        if (table is not ("auth.app_user" or "auth.admin_assignment")) return "bad-table";
+        var p = Process.Start(new ProcessStartInfo("sudo", ["-u", "postgres", "psql", "-d", database, "-v", "ON_ERROR_STOP=1", "-c", "TRUNCATE " + table])
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        }) ?? throw new InvalidOperationException("psql did not start");
+        var stdout = await p.StandardOutput.ReadToEndAsync();
+        var stderr = await p.StandardError.ReadToEndAsync();
+        await p.WaitForExitAsync();
+        return "exit " + p.ExitCode + " " + stdout + stderr;
     }
 
     static async Task<bool> FailsStatement(NpgsqlDataSource owner, string sql)
