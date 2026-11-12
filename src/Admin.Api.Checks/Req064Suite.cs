@@ -779,6 +779,60 @@ static class Req064Suite
         return detail.Contains("P0001", StringComparison.Ordinal) && detail.Contains("last_active_super_admin", StringComparison.Ordinal);
     }
 
+    static async Task HistoryPartnerExecuteMutant(NpgsqlDataSource owner)
+    {
+        string database;
+        await using (var c = await owner.OpenConnectionAsync())
+            database = (string)(await new NpgsqlCommand("SELECT current_database()", c).ExecuteScalarAsync())!;
+        var safe = System.Text.RegularExpressions.Regex.IsMatch(database, "^[a-z0-9_]+\\z");
+        var detail = "refused";
+        if (safe)
+        {
+            var sql = "BEGIN; GRANT EXECUTE ON FUNCTION catalog.subtype_count(uuid) TO " + database + "_test_seed; "
+                + "SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                + "WHERE n.nspname = 'catalog' AND p.proname = 'subtype_count' "
+                + "AND has_function_privilege('" + database + "_test_seed', p.oid, 'EXECUTE'); ROLLBACK;";
+            var p = Process.Start(new ProcessStartInfo("sudo", ["-u", "postgres", "psql", "-d", database, "-v", "ON_ERROR_STOP=1", "-tAc", sql])
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            }) ?? throw new InvalidOperationException("psql did not start");
+            var stdout = await p.StandardOutput.ReadToEndAsync();
+            var stderr = await p.StandardError.ReadToEndAsync();
+            await p.WaitForExitAsync();
+            detail = "exit " + p.ExitCode + " " + stdout + stderr;
+        }
+        Check("mutant-test-seed-execute-on-another-definer-killed",
+            detail.Contains("subtype_count", StringComparison.Ordinal), detail);
+    }
+
+    static async Task<NpgsqlDataSource> OpenTestSeed(NpgsqlDataSource owner)
+    {
+        string database;
+        string host;
+        int port;
+        await using (var c = await owner.OpenConnectionAsync())
+        {
+            database = (string)(await new NpgsqlCommand("SELECT current_database()", c).ExecuteScalarAsync())!;
+            host = c.Host ?? "127.0.0.1";
+            port = c.Port;
+        }
+        var path = "/tmp/ff-db/" + database + "_test_seed.env";
+        var line = File.ReadAllText(path).Trim();
+        const string prefix = "TEST_SEED_PASSWORD=";
+        if (!line.StartsWith(prefix, StringComparison.Ordinal) || line.Length <= prefix.Length)
+            throw new InvalidOperationException("test seed password file is missing a password");
+        var builder = new NpgsqlConnectionStringBuilder
+        {
+            Host = host,
+            Port = port,
+            Database = database,
+            Username = database + "_test_seed",
+            Password = line[prefix.Length..],
+        };
+        return NpgsqlDataSource.Create(builder.ConnectionString);
+    }
+
     static async Task GrantTruncateMutant(NpgsqlDataSource owner)
     {
         string database;
@@ -1031,18 +1085,19 @@ static class Req064Suite
 
     static async Task Seed(NpgsqlDataSource owner)
     {
-        await Exec(owner, """
+        await using var seed = await OpenTestSeed(owner);
+        await Exec(seed, """
             INSERT INTO auth.app_user (user_id, partner_id, status) VALUES
               ($1, NULL, 'active'), ($2, NULL, 'active'), ($3, NULL, 'active'),
               ($4, NULL, 'active'), ($5, NULL, 'active'), ($6, NULL, 'active'),
               ($7, NULL, 'active')
             """, Sa, Sa2, Upa, Both, None, Cash, Mix);
-        await Exec(owner, """
+        await Exec(seed, """
             INSERT INTO auth.user_issuer (user_id, issuer)
             SELECT x, $1 FROM unnest($2::uuid[]) AS x
-            ON CONFLICT (user_id) DO UPDATE SET issuer = EXCLUDED.issuer
+            ON CONFLICT (user_id) DO NOTHING
             """, Issuer, new[] { Sa, Sa2, Upa, Both, None, Cash, Mix });
-        await Exec(owner, """
+        await Exec(seed, """
             INSERT INTO auth.admin_assignment (assignment_id, user_id, role_id, scope_kind, partner_id, status, version, granted_by, granted_at) VALUES
               ($1, $2, 'super_admin', 'global', NULL, 'active', 1, $2, now()),
               ($3, $4, 'super_admin', 'global', NULL, 'active', 1, $2, now()),
@@ -1053,15 +1108,15 @@ static class Req064Suite
               ($14, $15, 'partner_admin', 'partner', $7, 'active', 1, $2, now()),
               ($16, $15, 'cashier', 'partner', $11, 'active', 1, $2, now())
             """, Asa, Sa, Asa2, Sa2, Apa, Upa, Pa, AbothA, Both, AbothB, Pb, Acash, Cash, AmixA, Mix, AmixB);
-        await Exec(owner, "INSERT INTO auth.location VALUES ($1,$2,'req064-a','Req064 A'),($3,$4,'req064-b','Req064 B')", La, Pa, Lb, Pb);
-        await Exec(owner, """
+        await Exec(seed, "INSERT INTO auth.location VALUES ($1,$2,'req064-a','Req064 A'),($3,$4,'req064-b','Req064 B')", La, Pa, Lb, Pb);
+        await Exec(seed, """
             INSERT INTO auth.location_login_config (location_id, provider_kind, display_name, entra_allowed_tenant_ids, allow_db_fallback, mfa_required, created_by, created_at, updated_by, updated_at)
             VALUES ($1,'database','A','{}',false,false,$3,now(),$3,now()),
                    ($2,'database','B','{}',false,false,$3,now(),$3,now())
             """, La, Lb, Sa);
         if (await ScalarLong(owner, "SELECT count(*) FROM catalog.registered_entry WHERE entry_id = $1", Fee) > 0)
             return;
-        await using var c = await owner.OpenConnectionAsync();
+        await using var c = await seed.OpenConnectionAsync();
         await using var tx = await c.BeginTransactionAsync();
         await using (var guc = new NpgsqlCommand("""
             SELECT set_config('app.resolved_global_admin','on', true),
@@ -1073,7 +1128,6 @@ static class Req064Suite
             guc.Parameters.Add(new() { Value = Sa.ToString("D") });
             await guc.ExecuteNonQueryAsync();
         }
-        await Begin(c, tx, Sa);
         await using (var entry = new NpgsqlCommand("""
             INSERT INTO catalog.registered_entry (
               entry_id, family, entry_class, owner_partner_id, code, is_active, row_version,
@@ -1926,10 +1980,15 @@ static class Req064Suite
                       SELECT 1 FROM aclexplode(p.proacl) e
                         JOIN pg_roles r ON r.oid = e.grantee
                        WHERE e.privilege_type = 'EXECUTE' AND r.rolcanlogin
+                         AND NOT (
+                           r.rolname = current_database() || '_test_seed'
+                           AND p.proname = 'history_partner'
+                         )
                     )
                )
             """);
         Check("catalog-definer-has-no-public-or-login-execute", exec == "", exec);
+        await HistoryPartnerExecuteMutant(owner);
         var alter = await OwnerDdl(owner, "ALTER POLICY location_owner ON auth.location USING (false)");
         var drop = await OwnerDdl(owner, "DROP TRIGGER app_user_last_sa ON auth.app_user");
         Check("owner-cannot-alter-policy-or-drop-trigger", alter == "42501" && drop == "42501", alter + " " + drop);
