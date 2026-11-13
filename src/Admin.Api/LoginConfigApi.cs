@@ -1104,13 +1104,15 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         var screens = new JsonArray();
         if (who.IsSuper)
         {
+            // DEC-264 / STEP 5: Super Admin nav grants for Create Partner/Client/Location Admin.
+            screens.Add("create_partner");
             screens.Add("create_client");
             screens.Add("create_location");
             screens.Add("config");
-            screens.Add("create_partner");
         }
         else if (who.IsPartnerAdmin)
         {
+            // Leave Partner Admin nav as today (create_location + config).
             screens.Add("create_location");
             screens.Add("config");
         }

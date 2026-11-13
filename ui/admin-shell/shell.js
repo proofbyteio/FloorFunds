@@ -30,16 +30,17 @@ const pages = {
   locations: { label: "Locations", need: "create_location" },
   // F-21. create_location and config come from GET /api/nav screens
   // (LoginConfigApi.NavAsync for Super Admin and Partner Admin).
-  create: { label: "Create location", need: "create_location" },
+  // DEC-264: Super Admin nav labels exact — Create Partner/Client/Location Admin.
+  create: { label: "Create Location Admin", need: "create_location" },
   config: { label: "Sign-in config", need: "config" },
   catalog: { label: "Catalog", need: "catalog" },
   clients: { label: "Create Client Admin", need: "create_client" },
-  // STEP 2 Partner form; STEP 5 locks nav labels to Create * Admin.
   partners: { label: "Create Partner Admin", need: "create_partner" },
   "partner-edit": { label: "Edit partner", need: "create_partner" },
 };
 
 let grant = [];
+let navRole = "";
 
 // Location name length matches the existing LoginConfigValidator limit: more
 // than 200 Unicode scalars is name_invalid. Count by code points ([...value]),
@@ -96,9 +97,11 @@ function renderNav(current) {
   navEl.replaceChildren();
   if (grant.length === 0) return;
   for (const [id, page] of Object.entries(pages)) {
-    // F-05. Create and Sign-in config stay in pages for F-21 routing, not as nav labels.
-    // partner-edit is reached after create, not as a nav item.
-    if (id === "create" || id === "config" || id === "partner-edit") continue;
+    // F-05. Sign-in config stays off nav labels. partner-edit is post-create only.
+    // DEC-264: Create Location Admin is a Super Admin nav item only; Partner Admin nav stays as today
+    // (Locations via create_location grant; Create location hash route still works, not a nav label).
+    if (id === "config" || id === "partner-edit") continue;
+    if (id === "create" && navRole !== "Super Admin") continue;
     if (page.need && !grant.includes(page.need)) continue;
     const a = document.createElement("a");
     a.href = "#/" + id;
@@ -194,6 +197,7 @@ async function createLocationControl() {
   const partners = await api("/api/screens/location-partners");
   const id = partners.body?.partners?.[0];
   if (!id) return null;
+  // Partner Admin sees this Locations CTA; keep prior wording. Super Admin also has the nav item.
   const a = primaryControl("a", "Create location");
   // UX F-06: real /orgs path. server.mjs serves it as the shell.
   a.href = "/orgs/" + id + "/locations/new";
@@ -401,7 +405,7 @@ function showValidationBanner(form, title, fieldsOrDetail) {
 export async function showCreate(state) {
   const probe = await api("/api/screens/location-partners");
   if (probe.status === 403) return denied();
-  main.replaceChildren(h("h1", "Create location"));
+  main.replaceChildren(h("h1", "Create Location Admin"));
   if (state === "timeout") main.append(banner("warning", "Timed out", "The request did not finish. Nothing was confirmed."));
   if (state === "error" && probe.body) main.append(banner("error", "Could not create the location", JSON.stringify(probe.body)));
   const form = document.createElement("form");
@@ -759,6 +763,7 @@ async function draw() {
     signedIn.textContent = who && role ? "Signed in as " + who + " · Role: " + role : "";
   }
   grant = me.status === 200 ? (me.body.screens ?? []) : [];
+  navRole = me.status === 200 && typeof me.body?.role === "string" ? me.body.role : "";
   const deep = orgsRoute();
   const name = route();
   renderNav(deep ? "locations" : name === "denied" ? "" : name);
