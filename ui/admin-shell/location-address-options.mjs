@@ -1,4 +1,4 @@
-// Create-location address options for the US / Canada shell form (Screen 05).
+// US / Canada address options for Create location and Create client shell forms.
 // Country list is intentionally limited to US and CA. Region codes are ISO-3166-2
 // subdivisions; time zones are IANA names the API stores as text.
 

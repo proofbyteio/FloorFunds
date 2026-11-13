@@ -215,33 +215,24 @@ async function fillPartners(select) {
   return select.options.length > 0;
 }
 
-export async function showCreate(state) {
-  const probe = await api("/api/screens/location-partners");
-  if (probe.status === 403) return denied();
-  main.replaceChildren(h("h1", "Create location"));
-  if (state === "timeout") main.append(banner("warning", "Timed out", "The request did not finish. Nothing was confirmed."));
-  if (state === "error" && probe.body) main.append(banner("error", "Could not create the location", JSON.stringify(probe.body)));
-  const form = document.createElement("form");
-  form.className = "card";
-  const name = document.createElement("input");
-  name.className = "field__input";
-  name.id = "location-name";
-  name.name = "name";
-  name.required = true;
-  // Do not set HTML maxlength: it counts UTF-16 units. JS + server use Unicode scalars (F-24 / PQ-313).
-  const nameField = h("label");
-  nameField.className = "field";
-  nameField.htmlFor = "location-name";
-  const nameLabel = h("span", "Location name");
-  nameLabel.className = "field__label";
-  nameField.append(nameLabel, name);
-  form.append(nameField);
-  const partner = document.createElement("select");
-  partner.className = "field__input";
-  partner.name = "partner_id";
-  partner.required = true;
-  partner.setAttribute("aria-describedby", "partner-hint");
-  const address = {};
+function fillSelect(select, options, { blankLabel = "Select…", selected = "" } = {}) {
+  select.replaceChildren();
+  const blank = document.createElement("option");
+  blank.value = "";
+  blank.textContent = blankLabel;
+  select.append(blank);
+  for (const opt of options) {
+    const o = document.createElement("option");
+    o.value = opt.code ?? opt.value;
+    o.textContent = opt.label;
+    if (selected && o.value === selected) o.selected = true;
+    select.append(o);
+  }
+  if (selected) select.value = selected;
+}
+
+/** Shared US/CA address block for Create location and Create client. */
+export async function appendNorthAmericaAddressFields(form, address) {
   function textField(label, fieldName, required, opts = {}) {
     const input = document.createElement("input");
     input.className = "field__input";
@@ -270,21 +261,6 @@ export async function showCreate(state) {
     field.querySelector("span").className = "field__label";
     address[fieldName] = select;
     return field;
-  }
-  function fillSelect(select, options, { blankLabel = "Select…", selected = "" } = {}) {
-    select.replaceChildren();
-    const blank = document.createElement("option");
-    blank.value = "";
-    blank.textContent = blankLabel;
-    select.append(blank);
-    for (const opt of options) {
-      const o = document.createElement("option");
-      o.value = opt.code ?? opt.value;
-      o.textContent = opt.label;
-      if (selected && o.value === selected) o.selected = true;
-      select.append(o);
-    }
-    if (selected) select.value = selected;
   }
   const countryField = selectField("Country *", "country", true);
   const regionField = selectField("State / province *", "region", true);
@@ -315,13 +291,7 @@ export async function showCreate(state) {
     }),
     zoneField,
   ]) form.append(field);
-  for (const [label, control] of [["Partner", partner]]) {
-    const field = h("label");
-    field.className = "field";
-    field.append(h("span", label), control);
-    field.querySelector("span").className = "field__label";
-    form.append(field);
-  }
+
   const rules = await api("/address/country-rules.json");
   const byCountry = new Map();
   for (const row of rules.body?.rows ?? []) byCountry.set(row.country, row);
@@ -347,6 +317,74 @@ export async function showCreate(state) {
   }
   address.country.addEventListener("change", applyCountry);
   applyCountry();
+}
+
+export function addressPayload(address) {
+  const postal = address.postal_code.disabled ? "" : address.postal_code.value.trim();
+  return {
+    address_line_1: address.address_line_1.value.trim(),
+    address_line_2: address.address_line_2.value.trim(),
+    city: address.city.value.trim(),
+    country: address.country.value,
+    region: address.region.disabled ? "" : address.region.value.trim(),
+    postal_code: postal,
+    phone: address.phone.value.trim(),
+    email: address.email.value.trim(),
+    time_zone: address.time_zone.value.trim(),
+  };
+}
+
+export function addressLengthError(address) {
+  const phone = address.phone.value.trim();
+  const email = address.email.value.trim();
+  const postal = address.postal_code.disabled ? "" : address.postal_code.value.trim();
+  if (phone.length > FIELD_LIMITS.phone) {
+    return { title: "Primary contact phone", detail: `Use at most ${FIELD_LIMITS.phone} characters.` };
+  }
+  if (email.length > FIELD_LIMITS.email) {
+    return { title: "Primary contact email", detail: `Use at most ${FIELD_LIMITS.email} characters.` };
+  }
+  if (postal.length > address.postal_code.maxLength) {
+    return { title: "ZIP / postal code", detail: `Use at most ${address.postal_code.maxLength} characters.` };
+  }
+  return null;
+}
+
+export async function showCreate(state) {
+  const probe = await api("/api/screens/location-partners");
+  if (probe.status === 403) return denied();
+  main.replaceChildren(h("h1", "Create location"));
+  if (state === "timeout") main.append(banner("warning", "Timed out", "The request did not finish. Nothing was confirmed."));
+  if (state === "error" && probe.body) main.append(banner("error", "Could not create the location", JSON.stringify(probe.body)));
+  const form = document.createElement("form");
+  form.className = "card";
+  const name = document.createElement("input");
+  name.className = "field__input";
+  name.id = "location-name";
+  name.name = "name";
+  name.required = true;
+  // Do not set HTML maxlength: it counts UTF-16 units. JS + server use Unicode scalars (F-24 / PQ-313).
+  const nameField = h("label");
+  nameField.className = "field";
+  nameField.htmlFor = "location-name";
+  const nameLabel = h("span", "Location name");
+  nameLabel.className = "field__label";
+  nameField.append(nameLabel, name);
+  form.append(nameField);
+  const partner = document.createElement("select");
+  partner.className = "field__input";
+  partner.name = "partner_id";
+  partner.required = true;
+  partner.setAttribute("aria-describedby", "partner-hint");
+  const address = {};
+  await appendNorthAmericaAddressFields(form, address);
+  for (const [label, control] of [["Partner", partner]]) {
+    const field = h("label");
+    field.className = "field";
+    field.append(h("span", label), control);
+    field.querySelector("span").className = "field__label";
+    form.append(field);
+  }
   const submit = primaryControl("button", "Create location");
   submit.type = "submit";
   form.append(submit);
@@ -369,36 +407,17 @@ export async function showCreate(state) {
       submit.disabled = false;
       return;
     }
-    const phone = address.phone.value.trim();
-    const email = address.email.value.trim();
-    const postal = address.postal_code.disabled ? "" : address.postal_code.value.trim();
-    if (phone.length > FIELD_LIMITS.phone) {
-      form.prepend(banner("error", "Primary contact phone", `Use at most ${FIELD_LIMITS.phone} characters.`));
-      return;
-    }
-    if (email.length > FIELD_LIMITS.email) {
-      form.prepend(banner("error", "Primary contact email", `Use at most ${FIELD_LIMITS.email} characters.`));
-      return;
-    }
-    if (postal.length > address.postal_code.maxLength) {
-      form.prepend(banner("error", "ZIP / postal code", `Use at most ${address.postal_code.maxLength} characters.`));
+    const lengthError = addressLengthError(address);
+    if (lengthError) {
+      main.querySelector(".banner--error")?.remove();
+      form.prepend(banner("error", lengthError.title, lengthError.detail));
       return;
     }
     submit.disabled = true;
     const body = {
       partner_id: partner.value,
       name: name.value.trim(),
-      address: {
-        address_line_1: address.address_line_1.value.trim(),
-        address_line_2: address.address_line_2.value.trim(),
-        city: address.city.value.trim(),
-        country: address.country.value,
-        region: address.region.disabled ? "" : address.region.value.trim(),
-        postal_code: postal,
-        phone,
-        email,
-        time_zone: address.time_zone.value.trim(),
-      },
+      address: addressPayload(address),
     };
     let res;
     try {
@@ -509,13 +528,71 @@ async function showCatalog() {
   main.append(ul);
 }
 
-async function showClients() {
+export async function showClients() {
   const res = await api("/api/screens/create-client");
   if (res.status === 403) return denied();
-  main.replaceChildren(
-    h("h1", "Clients"),
-    h("p", "Placeholder  ·  this screen is not built"),
-  );
+  main.replaceChildren(h("h1", "Create client"));
+  if (res.body?.write === "held") {
+    main.append(banner("info", "Create is held", "The form is available for layout review. Saving a client stays refused until PQ-278 (API returns client_create_pending_pq278)."));
+  }
+  const form = document.createElement("form");
+  form.className = "card";
+  const name = document.createElement("input");
+  name.className = "field__input";
+  name.id = "client-name";
+  name.name = "name";
+  name.required = true;
+  const nameField = h("label");
+  nameField.className = "field";
+  nameField.htmlFor = "client-name";
+  const nameLabel = h("span", "Client name");
+  nameLabel.className = "field__label";
+  nameField.append(nameLabel, name);
+  form.append(nameField);
+  const address = {};
+  await appendNorthAmericaAddressFields(form, address);
+  const submit = primaryControl("button", "Create client");
+  submit.type = "submit";
+  form.append(submit);
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    main.querySelector(".banner--error")?.remove();
+    if (!name.value.trim()) {
+      form.prepend(banner("error", "Client name", "Enter a client name."));
+      return;
+    }
+    const lengthError = addressLengthError(address);
+    if (lengthError) {
+      form.prepend(banner("error", lengthError.title, lengthError.detail));
+      return;
+    }
+    submit.disabled = true;
+    const body = {
+      name: name.value.trim(),
+      address: addressPayload(address),
+    };
+    let write;
+    try {
+      write = await api("/api/screens/create-client", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(12000),
+      });
+    } catch {
+      form.prepend(banner("warning", "Timed out", "The request did not finish. Nothing was confirmed."));
+      submit.disabled = false;
+      return;
+    }
+    if (write.status >= 400) {
+      form.prepend(banner("error", "Could not create the client", write.body?.error || "The server refused the request."));
+      submit.disabled = false;
+      return;
+    }
+    form.prepend(banner("info", "Created", "The client was accepted."));
+    submit.disabled = false;
+  });
+  main.append(form);
 }
 
 async function draw() {
