@@ -5293,3 +5293,83 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113197000_FfpConvergeAddressNotValid') THEN
+
+    -- F10b: converge address/name CHECKs + time_zone FKs to NOT VALID.
+    -- Drop IF EXISTS and re-add with the same names/expressions as FfpAddressChecks
+    -- (and location_name_length from FfpLocationClient). Never rewrite/delete rows.
+
+    ALTER TABLE auth.partner DROP CONSTRAINT IF EXISTS partner_address_line_1_len;
+    ALTER TABLE auth.partner DROP CONSTRAINT IF EXISTS partner_address_line_2_len;
+    ALTER TABLE auth.partner DROP CONSTRAINT IF EXISTS partner_city_len;
+    ALTER TABLE auth.partner DROP CONSTRAINT IF EXISTS partner_postal_len;
+    ALTER TABLE auth.partner DROP CONSTRAINT IF EXISTS partner_email_len_lower;
+    ALTER TABLE auth.partner DROP CONSTRAINT IF EXISTS partner_time_zone_fk;
+
+    ALTER TABLE auth.partner
+      ADD CONSTRAINT partner_address_line_1_len CHECK (char_length(address_line_1) BETWEEN 1 AND 100) NOT VALID,
+      ADD CONSTRAINT partner_address_line_2_len CHECK (char_length(address_line_2) BETWEEN 0 AND 40) NOT VALID,
+      ADD CONSTRAINT partner_city_len CHECK (char_length(city) BETWEEN 2 AND 50) NOT VALID,
+      ADD CONSTRAINT partner_postal_len CHECK (char_length(postal_code) BETWEEN 1 AND 10) NOT VALID,
+      ADD CONSTRAINT partner_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email))) NOT VALID;
+
+    ALTER TABLE auth.partner
+      ADD CONSTRAINT partner_time_zone_fk
+      FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name) NOT VALID;
+
+    ALTER TABLE auth.client DROP CONSTRAINT IF EXISTS client_address_line_1_len;
+    ALTER TABLE auth.client DROP CONSTRAINT IF EXISTS client_address_line_2_len;
+    ALTER TABLE auth.client DROP CONSTRAINT IF EXISTS client_city_len;
+    ALTER TABLE auth.client DROP CONSTRAINT IF EXISTS client_postal_len;
+    ALTER TABLE auth.client DROP CONSTRAINT IF EXISTS client_email_len_lower;
+    ALTER TABLE auth.client DROP CONSTRAINT IF EXISTS client_time_zone_fk;
+
+    ALTER TABLE auth.client
+      ADD CONSTRAINT client_address_line_1_len CHECK (char_length(address_line_1) BETWEEN 1 AND 100) NOT VALID,
+      ADD CONSTRAINT client_address_line_2_len CHECK (char_length(address_line_2) BETWEEN 0 AND 40) NOT VALID,
+      ADD CONSTRAINT client_city_len CHECK (char_length(city) BETWEEN 2 AND 50) NOT VALID,
+      ADD CONSTRAINT client_postal_len CHECK (char_length(postal_code) BETWEEN 1 AND 10) NOT VALID,
+      ADD CONSTRAINT client_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email))) NOT VALID;
+
+    ALTER TABLE auth.client
+      ADD CONSTRAINT client_time_zone_fk
+      FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name) NOT VALID;
+
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_address_line_1_len;
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_address_line_2_len;
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_city_len;
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_postal_len;
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_email_len_lower;
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_time_zone_fk;
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_name_length;
+
+    ALTER TABLE auth.location
+      ADD CONSTRAINT location_address_line_1_len CHECK (address_line_1 IS NULL OR char_length(address_line_1) BETWEEN 1 AND 100) NOT VALID,
+      ADD CONSTRAINT location_address_line_2_len CHECK (address_line_2 IS NULL OR char_length(address_line_2) BETWEEN 0 AND 40) NOT VALID,
+      ADD CONSTRAINT location_city_len CHECK (city IS NULL OR char_length(city) BETWEEN 2 AND 50) NOT VALID,
+      ADD CONSTRAINT location_postal_len CHECK (postal_code IS NULL OR char_length(postal_code) BETWEEN 1 AND 10) NOT VALID,
+      ADD CONSTRAINT location_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email))) NOT VALID;
+
+    ALTER TABLE auth.location
+      ADD CONSTRAINT location_time_zone_fk
+      FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name) NOT VALID;
+
+    ALTER TABLE auth.location
+      ADD CONSTRAINT location_name_length CHECK (char_length(name) BETWEEN 2 AND 100) NOT VALID;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113197000_FfpConvergeAddressNotValid') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113197000_FfpConvergeAddressNotValid', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
