@@ -28,10 +28,11 @@ let leaving = false;
 const pages = {
   home: { label: "Home", need: null },
   locations: { label: "Locations", need: "create_location" },
-  // F-21 / DEC-264 / F7: UI nav is driven only by server screen keys from NavAsync.
-  // create_location_admin is SA-only (nav label "Create Location Admin").
-  // create_location stays for Locations + PA "Create location" CTA / #/create route.
-  create: { label: "Create Location Admin", need: "create_location", navNeed: "create_location_admin" },
+  // F-21 / DEC-264 / F7b: UI nav is driven only by server screen keys from NavAsync.
+  // SA (create_location_admin): nav label "Create Location Admin" → #/create.
+  // PA (create_location without create_location_admin): nav label "Create location" → #/create
+  // (main 5f7cec33 wording). Never both. Route auth still uses create_location.
+  create: { label: "Create Location Admin", need: "create_location" },
   "location-edit": { label: "Edit location", need: "create_location" },
   config: { label: "Sign-in config", need: "config" },
   catalog: { label: "Catalog", need: "catalog" },
@@ -94,10 +95,22 @@ function renderNav(current) {
   if (grant.length === 0) return;
   for (const [id, page] of Object.entries(pages)) {
     // F-05. Sign-in config stays off nav labels. partner-edit / location-edit are post-create only.
-    // F7: gate on server keys only (navNeed ?? need) — never on the role label string.
+    // F7 / F7b: gate on server keys only — never on the role label string.
     if (id === "config" || id === "partner-edit" || id === "location-edit") continue;
-    const gate = page.navNeed ?? page.need;
-    if (gate && !grant.includes(gate)) continue;
+    if (id === "create") {
+      // SA: create_location_admin → "Create Location Admin".
+      // PA: create_location without that key → "Create location" (main label). No duplicate.
+      const saCreate = grant.includes("create_location_admin");
+      const paCreate = grant.includes("create_location") && !saCreate;
+      if (!saCreate && !paCreate) continue;
+      const a = document.createElement("a");
+      a.href = "#/create";
+      a.textContent = saCreate ? "Create Location Admin" : "Create location";
+      if (current === "create") a.setAttribute("aria-current", "page");
+      navEl.append(a);
+      continue;
+    }
+    if (page.need && !grant.includes(page.need)) continue;
     const a = document.createElement("a");
     a.href = "#/" + id;
     a.textContent = page.label;
