@@ -5172,49 +5172,47 @@ DO $EF$
 BEGIN
     IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113194000_FfpAddressChecks') THEN
 
-    -- F2 / SSE2 + F2 caveat: DB CHECKs matching OrgFormValidation address rules.
-    -- postal_code: length only (max 10). US ZIP / CA postal shape stay in the API.
-    -- NOT VALID: never abort migrate on legacy rows; never rewrite/delete them.
-    -- New writes are still checked. (Edited this unreleased history-gated body rather than
-    -- a new forward mig: kits that already recorded the MigrationId keep their applied
-    -- constraints; fresh applies get NOT VALID.)
+    -- F2 / SSE2: DB CHECKs matching OrgFormValidation address rules.
+    -- postal_code: length only (max 10). US ZIP / CA postal shape stay in the API
+    -- (per-country regex is not simple enough for a shared CHECK across US+CA).
+    -- time_zones already has PK (country_iso, iana_name); FK uses that composite key.
 
     ALTER TABLE auth.partner
-      ADD CONSTRAINT partner_address_line_1_len CHECK (char_length(address_line_1) BETWEEN 1 AND 100) NOT VALID,
-      ADD CONSTRAINT partner_address_line_2_len CHECK (char_length(address_line_2) BETWEEN 0 AND 40) NOT VALID,
-      ADD CONSTRAINT partner_city_len CHECK (char_length(city) BETWEEN 2 AND 50) NOT VALID,
-      ADD CONSTRAINT partner_postal_len CHECK (char_length(postal_code) BETWEEN 1 AND 10) NOT VALID,
-      ADD CONSTRAINT partner_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email))) NOT VALID;
+      ADD CONSTRAINT partner_address_line_1_len CHECK (char_length(address_line_1) BETWEEN 1 AND 100),
+      ADD CONSTRAINT partner_address_line_2_len CHECK (char_length(address_line_2) BETWEEN 0 AND 40),
+      ADD CONSTRAINT partner_city_len CHECK (char_length(city) BETWEEN 2 AND 50),
+      ADD CONSTRAINT partner_postal_len CHECK (char_length(postal_code) BETWEEN 1 AND 10),
+      ADD CONSTRAINT partner_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email)));
 
     ALTER TABLE auth.partner
       ADD CONSTRAINT partner_time_zone_fk
-      FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name) NOT VALID;
+      FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name);
 
     ALTER TABLE auth.client
-      ADD CONSTRAINT client_address_line_1_len CHECK (char_length(address_line_1) BETWEEN 1 AND 100) NOT VALID,
-      ADD CONSTRAINT client_address_line_2_len CHECK (char_length(address_line_2) BETWEEN 0 AND 40) NOT VALID,
-      ADD CONSTRAINT client_city_len CHECK (char_length(city) BETWEEN 2 AND 50) NOT VALID,
-      ADD CONSTRAINT client_postal_len CHECK (char_length(postal_code) BETWEEN 1 AND 10) NOT VALID,
-      ADD CONSTRAINT client_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email))) NOT VALID;
+      ADD CONSTRAINT client_address_line_1_len CHECK (char_length(address_line_1) BETWEEN 1 AND 100),
+      ADD CONSTRAINT client_address_line_2_len CHECK (char_length(address_line_2) BETWEEN 0 AND 40),
+      ADD CONSTRAINT client_city_len CHECK (char_length(city) BETWEEN 2 AND 50),
+      ADD CONSTRAINT client_postal_len CHECK (char_length(postal_code) BETWEEN 1 AND 10),
+      ADD CONSTRAINT client_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email)));
 
     ALTER TABLE auth.client
       ADD CONSTRAINT client_time_zone_fk
-      FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name) NOT VALID;
+      FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name);
 
-    -- Legacy auth.location rows may violate; CHECKs also allow NULL address columns.
+    -- Legacy auth.location rows keep NULL addresses; CHECKs allow NULL.
     ALTER TABLE auth.location
-      ADD CONSTRAINT location_address_line_1_len CHECK (address_line_1 IS NULL OR char_length(address_line_1) BETWEEN 1 AND 100) NOT VALID,
-      ADD CONSTRAINT location_address_line_2_len CHECK (address_line_2 IS NULL OR char_length(address_line_2) BETWEEN 0 AND 40) NOT VALID,
-      ADD CONSTRAINT location_city_len CHECK (city IS NULL OR char_length(city) BETWEEN 2 AND 50) NOT VALID,
-      ADD CONSTRAINT location_postal_len CHECK (postal_code IS NULL OR char_length(postal_code) BETWEEN 1 AND 10) NOT VALID,
-      ADD CONSTRAINT location_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email))) NOT VALID;
+      ADD CONSTRAINT location_address_line_1_len CHECK (address_line_1 IS NULL OR char_length(address_line_1) BETWEEN 1 AND 100),
+      ADD CONSTRAINT location_address_line_2_len CHECK (address_line_2 IS NULL OR char_length(address_line_2) BETWEEN 0 AND 40),
+      ADD CONSTRAINT location_city_len CHECK (city IS NULL OR char_length(city) BETWEEN 2 AND 50),
+      ADD CONSTRAINT location_postal_len CHECK (postal_code IS NULL OR char_length(postal_code) BETWEEN 1 AND 10),
+      ADD CONSTRAINT location_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email)));
 
     DO $fk$
     BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'location_time_zone_fk') THEN
         ALTER TABLE auth.location
           ADD CONSTRAINT location_time_zone_fk
-          FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name) NOT VALID;
+          FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name);
       END IF;
     END
     $fk$;
