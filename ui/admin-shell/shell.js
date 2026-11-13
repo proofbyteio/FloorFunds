@@ -15,6 +15,11 @@ import {
   normalizePostal,
   postalMaxLength,
 } from "./location-address-options.mjs";
+import {
+  addressFieldErrors,
+  entityNameError,
+  fieldsBannerDetail,
+} from "./org-form-rules.mjs";
 
 const main = document.querySelector("#main");
 const navEl = document.querySelector("#nav");
@@ -29,6 +34,9 @@ const pages = {
   config: { label: "Sign-in config", need: "config" },
   catalog: { label: "Catalog", need: "catalog" },
   clients: { label: "Clients", need: "create_client" },
+  // STEP 2 Partner form; STEP 5 renames nav labels to Create * Admin.
+  partners: { label: "Create Partner Admin", need: "create_partner" },
+  "partner-edit": { label: "Edit partner", need: "create_partner" },
 };
 
 let grant = [];
@@ -79,7 +87,8 @@ function orgsRoute() {
 
 function route() {
   if (orgsRoute()) return "orgs";
-  const name = (location.hash || "#/home").slice(2) || "home";
+  const raw = (location.hash || "#/home").slice(2) || "home";
+  const name = raw.split("?")[0] || "home";
   return pages[name] ? name : "denied";
 }
 
@@ -88,7 +97,8 @@ function renderNav(current) {
   if (grant.length === 0) return;
   for (const [id, page] of Object.entries(pages)) {
     // F-05. Create and Sign-in config stay in pages for F-21 routing, not as nav labels.
-    if (id === "create" || id === "config") continue;
+    // partner-edit is reached after create, not as a nav item.
+    if (id === "create" || id === "config" || id === "partner-edit") continue;
     if (page.need && !grant.includes(page.need)) continue;
     const a = document.createElement("a");
     a.href = "#/" + id;
@@ -278,21 +288,37 @@ export async function appendNorthAmericaAddressFields(form, address) {
       maxLength: postalMaxLength(DEFAULT_COUNTRY),
       placeholder: "12345 or 12345-6789",
     }),
-    textField("Primary contact phone *", "phone", true, {
-      type: "tel",
-      autocomplete: "tel",
-      inputMode: "tel",
-      maxLength: FIELD_LIMITS.phone,
-      placeholder: "+1 702 555 0100",
-    }),
-    textField("Primary contact email (optional)", "email", false, {
-      type: "email",
-      autocomplete: "email",
-      maxLength: FIELD_LIMITS.email,
-      placeholder: "name@example.com",
-    }),
-    zoneField,
   ]) form.append(field);
+
+  // Phone: country-code picker (US/CA, both +1) + national input. Server is authoritative.
+  const phoneCountry = document.createElement("select");
+  phoneCountry.className = "field__input";
+  phoneCountry.name = "phone_country";
+  phoneCountry.required = true;
+  fillSelect(phoneCountry, [
+    { code: "US", label: "+1 United States (US)" },
+    { code: "CA", label: "+1 Canada (CA)" },
+  ], { blankLabel: "", selected: DEFAULT_COUNTRY });
+  const phoneCountryField = h("label");
+  phoneCountryField.className = "field";
+  phoneCountryField.append(h("span", "Phone country *"), phoneCountry);
+  phoneCountryField.querySelector("span").className = "field__label";
+  address.phone_country = phoneCountry;
+  form.append(phoneCountryField);
+  form.append(textField("Primary contact phone *", "phone", true, {
+    type: "tel",
+    autocomplete: "tel",
+    inputMode: "tel",
+    maxLength: FIELD_LIMITS.phone,
+    placeholder: "702 555 0100",
+  }));
+  form.append(textField("Primary contact email (optional)", "email", false, {
+    type: "email",
+    autocomplete: "email",
+    maxLength: FIELD_LIMITS.email,
+    placeholder: "name@example.com",
+  }));
+  form.append(zoneField);
 
   // DEC-258/260: dropdowns from GET /api/lookups/* (not hard-coded lists).
   const countries = await loadCountries(api);
@@ -329,6 +355,8 @@ export async function appendNorthAmericaAddressFields(form, address) {
     if (address.postal_code.value.length > address.postal_code.maxLength) {
       address.postal_code.value = address.postal_code.value.slice(0, address.postal_code.maxLength);
     }
+    // Phone region follows address country when US/CA (picker default +1).
+    if (code === "US" || code === "CA") address.phone_country.value = code;
   }
   address.country.addEventListener("change", () => { void applyCountry(); });
   address.postal_code.addEventListener("blur", () => {
@@ -355,19 +383,19 @@ export function addressPayload(address) {
 }
 
 export function addressLengthError(address) {
-  const phone = address.phone.value.trim();
-  const email = address.email.value.trim();
-  const postal = address.postal_code.disabled ? "" : address.postal_code.value.trim();
-  if (phone.length > FIELD_LIMITS.phone) {
-    return { title: "Primary contact phone", detail: `Use at most ${FIELD_LIMITS.phone} characters.` };
-  }
-  if (email.length > FIELD_LIMITS.email) {
-    return { title: "Primary contact email", detail: `Use at most ${FIELD_LIMITS.email} characters.` };
-  }
-  if (postal.length > address.postal_code.maxLength) {
-    return { title: "ZIP / postal code", detail: `Use at most ${address.postal_code.maxLength} characters.` };
-  }
+  // Prefer exact owner sentences via addressFieldErrors; keep a length-only fallback.
+  const fields = addressFieldErrors(address);
+  if (fields.length) return { title: "Check the address", detail: fieldsBannerDetail(fields), fields };
   return null;
+}
+
+function showValidationBanner(form, title, fieldsOrDetail) {
+  main.querySelector(".banner--error")?.remove();
+  form.querySelector(".banner--error")?.remove();
+  const detail = typeof fieldsOrDetail === "string"
+    ? fieldsOrDetail
+    : fieldsBannerDetail(fieldsOrDetail);
+  form.prepend(banner("error", title, detail || " "));
 }
 
 export async function showCreate(state) {
@@ -420,17 +448,19 @@ export async function showCreate(state) {
   }
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const nameError = locationNameClientError(name.value);
-    if (nameError) {
-      main.querySelector(".banner--error")?.remove();
-      form.prepend(banner("error", "Location name", ""));
-      submit.disabled = false;
+    // Pending PQ-313 → FFP name 2–100 with exact sentences (STEP 4). Client pre-check here.
+    const nameMsg = entityNameError("location", name.value) || locationNameClientError(name.value);
+    if (nameMsg && nameMsg !== "required" && nameMsg !== "name_invalid") {
+      showValidationBanner(form, "Location name", nameMsg);
+      return;
+    }
+    if (nameMsg === "required" || nameMsg === "name_invalid") {
+      showValidationBanner(form, "Location name", entityNameError("location", name.value) || "Enter a location name.");
       return;
     }
     const lengthError = addressLengthError(address);
     if (lengthError) {
-      main.querySelector(".banner--error")?.remove();
-      form.prepend(banner("error", lengthError.title, lengthError.detail));
+      showValidationBanner(form, lengthError.title, lengthError.detail);
       return;
     }
     submit.disabled = true;
@@ -453,12 +483,98 @@ export async function showCreate(state) {
     }
     if (res.status === 408) return showCreate("timeout");
     if (res.status >= 400) {
-      main.querySelector(".banner--error")?.remove();
-      form.prepend(banner("error", "Could not create the location", res.body?.error || "The server refused the request."));
+      const detail = res.status === 422 && Array.isArray(res.body?.fields)
+        ? fieldsBannerDetail(res.body.fields)
+        : (res.body?.error || "The server refused the request.");
+      showValidationBanner(form, "Could not create the location", detail);
       submit.disabled = false;
       return;
     }
     location.hash = "#/locations";
+  });
+  main.append(form);
+}
+
+async function showPartners(editId) {
+  const probe = await api("/api/nav");
+  if (probe.status === 401) return;
+  if (!(probe.body?.screens ?? []).includes("create_partner")) return denied();
+  const editing = Boolean(editId);
+  main.replaceChildren(h("h1", editing ? "Edit partner" : "Create Partner Admin"));
+  const form = document.createElement("form");
+  form.className = "card";
+  const name = document.createElement("input");
+  name.className = "field__input";
+  name.name = "name";
+  name.required = true;
+  const nameField = h("label");
+  nameField.className = "field";
+  nameField.append(h("span", "Partner name"), name);
+  nameField.querySelector("span").className = "field__label";
+  form.append(nameField);
+  const address = {};
+  await appendNorthAmericaAddressFields(form, address);
+  const submit = primaryControl("button", editing ? "Save partner" : "Create partner");
+  submit.type = "submit";
+  form.append(submit);
+  if (editing) {
+    const got = await api("/api/orgs/partners/" + editId);
+    if (got.status !== 200) {
+      main.append(banner("error", "Not found", "That partner is not available."));
+      return;
+    }
+    name.value = got.body.name ?? "";
+    const a = got.body.address ?? {};
+    address.address_line_1.value = a.address_line_1 ?? "";
+    address.address_line_2.value = a.address_line_2 ?? "";
+    address.city.value = a.city ?? "";
+    if (a.country) {
+      address.country.value = a.country;
+      await address.country.dispatchEvent(new Event("change"));
+      // allow applyCountry to settle
+      await new Promise((r) => setTimeout(r, 0));
+      address.region.value = a.region ?? "";
+      address.postal_code.value = a.postal_code ?? "";
+      address.time_zone.value = a.time_zone ?? "";
+      address.phone.value = a.phone ?? "";
+      address.email.value = a.email ?? "";
+    }
+  }
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const nameMsg = entityNameError("partner", name.value);
+    if (nameMsg) { showValidationBanner(form, "Partner name", nameMsg); return; }
+    const addrErr = addressLengthError(address);
+    if (addrErr) { showValidationBanner(form, addrErr.title, addrErr.detail); return; }
+    submit.disabled = true;
+    const body = { name: name.value.trim(), address: addressPayload(address) };
+    const path = editing ? "/api/orgs/partners/" + editId : "/api/orgs/partners";
+    const method = editing ? "PUT" : "POST";
+    let res;
+    try {
+      res = await api(path, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(12000),
+      });
+    } catch {
+      showValidationBanner(form, "Timed out", "The request did not finish. Nothing was confirmed.");
+      submit.disabled = false;
+      return;
+    }
+    if (res.status >= 400) {
+      const detail = res.status === 422 && Array.isArray(res.body?.fields)
+        ? fieldsBannerDetail(res.body.fields)
+        : (res.body?.error || "The server refused the request.");
+      showValidationBanner(form, "Could not save the partner", detail);
+      submit.disabled = false;
+      return;
+    }
+    const id = res.body?.partner_id || editId;
+    location.hash = "#/partner-edit?id=" + encodeURIComponent(id);
+    form.prepend(banner("info", editing ? "Saved" : "Created", "Partner " + (res.body?.name || "") + " was accepted."));
+    submit.disabled = false;
   });
   main.append(form);
 }
@@ -576,16 +692,10 @@ export async function showClients() {
   form.append(submit);
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    main.querySelector(".banner--error")?.remove();
-    if (!name.value.trim()) {
-      form.prepend(banner("error", "Client name", "Enter a client name."));
-      return;
-    }
+    const nameMsg = entityNameError("client", name.value);
+    if (nameMsg) { showValidationBanner(form, "Client name", nameMsg); return; }
     const lengthError = addressLengthError(address);
-    if (lengthError) {
-      form.prepend(banner("error", lengthError.title, lengthError.detail));
-      return;
-    }
+    if (lengthError) { showValidationBanner(form, lengthError.title, lengthError.detail); return; }
     submit.disabled = true;
     const body = {
       name: name.value.trim(),
@@ -605,7 +715,10 @@ export async function showClients() {
       return;
     }
     if (write.status >= 400) {
-      form.prepend(banner("error", "Could not create the client", write.body?.error || "The server refused the request."));
+      const detail = write.status === 422 && Array.isArray(write.body?.fields)
+        ? fieldsBannerDetail(write.body.fields)
+        : (write.body?.error || "The server refused the request.");
+      showValidationBanner(form, "Could not create the client", detail);
       submit.disabled = false;
       return;
     }
@@ -641,6 +754,11 @@ async function draw() {
   if (name === "config") return showConfig();
   if (name === "catalog") return showCatalog();
   if (name === "clients") return showClients();
+  if (name === "partners") return showPartners();
+  if (name === "partner-edit") {
+    const id = new URLSearchParams((location.hash.split("?")[1] || "")).get("id");
+    return showPartners(id || "");
+  }
 }
 
 export let started = Promise.resolve();
