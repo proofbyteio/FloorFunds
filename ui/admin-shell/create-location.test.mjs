@@ -175,7 +175,7 @@ const email = findNamed(form, "email");
 check("state-is-a-required-select-for-us", region?.tag === "select" && region.required === true && region.options.some((o) => o.value === "NV"));
 check("timezone-is-a-required-select", zone?.tag === "select" && zone.required === true && zone.options.some((o) => o.value === "America/Los_Angeles"));
 check("postal-phone-email-have-length-limits",
-  postal?.maxLength === 10 && phone?.maxLength === 20 && email?.maxLength === 254 && email?.type === "email",
+  postal?.maxLength === 10 && phone?.maxLength === 20 && email?.maxLength === 50 && email?.type === "email",
   `postal=${postal?.maxLength} phone=${phone?.maxLength} email=${email?.maxLength}/${email?.type}`);
 region.value = "NV";
 postal.value = "89101";

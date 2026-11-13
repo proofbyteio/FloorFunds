@@ -51,7 +51,7 @@ export const FIELD_LIMITS = {
   postal_code_us: 10, // 12345 or 12345-6789
   postal_code_ca: 7,  // A1A 1A1
   phone: 20,          // allows +1 and light formatting; E.164 digits ≤ 15
-  email: 254,         // RFC 5321 practical upper bound
+  email: 50,          // Primary contact email UI max (Create location / Create client)
 };
 
 export function regionsFor(country) {
