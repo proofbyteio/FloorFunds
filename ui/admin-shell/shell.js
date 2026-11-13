@@ -32,6 +32,7 @@ const pages = {
   // (LoginConfigApi.NavAsync for Super Admin and Partner Admin).
   // DEC-264: Super Admin nav labels exact — Create Partner/Client/Location Admin.
   create: { label: "Create Location Admin", need: "create_location" },
+  "location-edit": { label: "Edit location", need: "create_location" },
   config: { label: "Sign-in config", need: "config" },
   catalog: { label: "Catalog", need: "catalog" },
   clients: { label: "Create Client Admin", need: "create_client" },
@@ -42,14 +43,10 @@ const pages = {
 let grant = [];
 let navRole = "";
 
-// Location name length matches the existing LoginConfigValidator limit: more
-// than 200 Unicode scalars is name_invalid. Count by code points ([...value]),
-// not UTF-16 .length. The 200 limit itself is a proposal pending PQ-313.
+// FFP STEP 4 / PQ-329: location name is 2–100 after normalization (owner sentences via
+// entityNameError). Count by code points ([...value]), not UTF-16 .length — never HTML maxlength.
 export function locationNameClientError(value) {
-  const name = String(value ?? "").trim();
-  if ([...name].length === 0) return "required";
-  if ([...name].length > 200) return "name_invalid";
-  return "";
+  return entityNameError("location", value);
 }
 
 function goSignIn(reason) {
@@ -100,7 +97,7 @@ function renderNav(current) {
     // F-05. Sign-in config stays off nav labels. partner-edit is post-create only.
     // DEC-264: Create Location Admin is a Super Admin nav item only; Partner Admin nav stays as today
     // (Locations via create_location grant; Create location hash route still works, not a nav label).
-    if (id === "config" || id === "partner-edit") continue;
+    if (id === "config" || id === "partner-edit" || id === "location-edit") continue;
     if (id === "create" && navRole !== "Super Admin") continue;
     if (page.need && !grant.includes(page.need)) continue;
     const a = document.createElement("a");
@@ -179,14 +176,23 @@ function table(rows) {
   const t = document.createElement("table");
   t.className = "shell__table";
   const head = document.createElement("tr");
-  for (const name of ["Location", "Client / partner", "Sign-in config", "Actions"]) head.append(h("th", name));
+  for (const name of ["Location", "Client", "Partner", "Sign-in config", "Actions"]) head.append(h("th", name));
   t.append(head);
   for (const row of rows) {
     const tr = document.createElement("tr");
-    const config = h("a", "/orgs/{partner}/locations/{location}/sign-in".replace("{partner}", row.partner_id).replace("{location}", row.location_id));
+    const config = h("a", "Sign-in");
     config.href = "/orgs/" + row.partner_id + "/locations/" + row.location_id + "/sign-in";
-    tr.append(h("td", row.name), h("td", row.partner_id), h("td"), h("td"));
-    tr.children[2].append(config);
+    const edit = h("a", "Edit");
+    edit.href = "#/location-edit?id=" + encodeURIComponent(row.location_id);
+    tr.append(
+      h("td", row.name),
+      h("td", row.client_id || "(unlinked)"),
+      h("td", row.partner_id),
+      h("td"),
+      h("td"),
+    );
+    tr.children[3].append(config);
+    tr.children[4].append(edit);
     t.append(tr);
   }
   return t;
@@ -194,13 +200,9 @@ function table(rows) {
 
 async function createLocationControl() {
   if (!grant.includes("create_location")) return null;
-  const partners = await api("/api/screens/location-partners");
-  const id = partners.body?.partners?.[0];
-  if (!id) return null;
   // Partner Admin sees this Locations CTA; keep prior wording. Super Admin also has the nav item.
   const a = primaryControl("a", "Create location");
-  // UX F-06: real /orgs path. server.mjs serves it as the shell.
-  a.href = "/orgs/" + id + "/locations/new";
+  a.href = "#/create";
   return a;
 }
 
@@ -396,26 +398,48 @@ export function addressLengthError(address) {
 function showValidationBanner(form, title, fieldsOrDetail) {
   main.querySelector(".banner--error")?.remove();
   form.querySelector(".banner--error")?.remove();
+  // Exact owner sentences live in fields[].code (joined by fieldsBannerDetail).
+  // Never fall back to a blank/" " detail — that hid the sentence at the banner.
   const detail = typeof fieldsOrDetail === "string"
     ? fieldsOrDetail
     : fieldsBannerDetail(fieldsOrDetail);
-  form.prepend(banner("error", title, detail || " "));
+  form.prepend(banner("error", title, detail));
 }
 
-export async function showCreate(state) {
-  const probe = await api("/api/screens/location-partners");
+export async function showCreate(state, editId) {
+  const probe = await api("/api/orgs/locations");
   if (probe.status === 403) return denied();
-  main.replaceChildren(h("h1", "Create Location Admin"));
+  const editing = Boolean(editId);
+  main.replaceChildren(h("h1", editing ? "Edit location" : "Create Location Admin"));
   if (state === "timeout") main.append(banner("warning", "Timed out", "The request did not finish. Nothing was confirmed."));
-  if (state === "error" && probe.body) main.append(banner("error", "Could not create the location", JSON.stringify(probe.body)));
   const form = document.createElement("form");
   form.className = "card";
+  const client = document.createElement("select");
+  client.className = "field__input";
+  client.name = "client_id";
+  client.required = true;
+  client.setAttribute("aria-describedby", "client-hint");
+  const clientField = h("label");
+  clientField.className = "field";
+  clientField.append(h("span", "Client"), client);
+  clientField.querySelector("span").className = "field__label";
+  form.append(clientField);
+  const pull = document.createElement("button");
+  pull.type = "button";
+  pull.className = "button";
+  pull.textContent = "Pull address from client";
+  pull.setAttribute("aria-describedby", "pull-hint");
+  form.append(pull);
+  const pullHint = h("p", "One-time fill of the address fields from the selected client. Does not sync later, and does not copy phone, email, or time zone beyond filling those inputs once.");
+  pullHint.id = "pull-hint";
+  pullHint.className = "field__hint";
+  form.append(pullHint);
   const name = document.createElement("input");
   name.className = "field__input";
   name.id = "location-name";
   name.name = "name";
   name.required = true;
-  // Do not set HTML maxlength: it counts UTF-16 units. JS + server use Unicode scalars (F-24 / PQ-313).
+  // Do not set HTML maxlength: it counts UTF-16 units. JS + server use Unicode scalars (FFP 2–100).
   const nameField = h("label");
   nameField.className = "field";
   nameField.htmlFor = "location-name";
@@ -423,74 +447,107 @@ export async function showCreate(state) {
   nameLabel.className = "field__label";
   nameField.append(nameLabel, name);
   form.append(nameField);
-  const partner = document.createElement("select");
-  partner.className = "field__input";
-  partner.name = "partner_id";
-  partner.required = true;
-  partner.setAttribute("aria-describedby", "partner-hint");
   const address = {};
   await appendNorthAmericaAddressFields(form, address);
-  for (const [label, control] of [["Partner", partner]]) {
-    const field = h("label");
-    field.className = "field";
-    field.append(h("span", label), control);
-    field.querySelector("span").className = "field__label";
-    form.append(field);
-  }
-  const submit = primaryControl("button", "Create location");
+  const submit = primaryControl("button", editing ? "Save location" : "Create location");
   submit.type = "submit";
   form.append(submit);
-  const hint = h("p", "Choose an existing partner from the server list. A partner id cannot be typed. PQ-284 reversible default.");
-  hint.id = "partner-hint";
+  const hint = h("p", "Choose an existing client from the server list. A client id cannot be typed.");
+  hint.id = "client-hint";
   hint.className = "field__hint";
   form.insertBefore(hint, submit);
-  const ready = await fillPartners(partner);
-  if (!ready) {
-    partner.disabled = true;
+  const clients = await api("/api/orgs/clients");
+  const clientRows = clients.body?.clients ?? [];
+  fillSelect(client, clientRows.map((row) => ({
+    code: row.client_id,
+    label: row.name + " (" + row.client_id + ")",
+  })), { blankLabel: "Select a client…" });
+  if (!clientRows.length) {
+    client.disabled = true;
     submit.disabled = true;
-    form.prepend(banner("info", "No existing partner", "The server returned no partner for this grant. A partner id cannot be typed."));
+    pull.disabled = true;
+    form.prepend(banner("info", "No clients", "Create a client before creating a location."));
+  }
+  async function fillAddressFromClient(clientId) {
+    if (!clientId) return;
+    const got = await api("/api/orgs/clients/" + clientId);
+    if (got.status !== 200 || !got.body?.address) return;
+    const a = got.body.address;
+    address.address_line_1.value = a.address_line_1 ?? "";
+    address.address_line_2.value = a.address_line_2 ?? "";
+    address.city.value = a.city ?? "";
+    if (a.country) {
+      address.country.value = a.country;
+      address.country.dispatchEvent(new Event("change"));
+      await new Promise((r) => setTimeout(r, 50));
+      address.region.value = a.region ?? "";
+      address.postal_code.value = a.postal_code ?? "";
+      address.time_zone.value = a.time_zone ?? "";
+      address.phone.value = a.phone ?? "";
+      address.email.value = a.email ?? "";
+      if (address.phone_country && (a.country === "US" || a.country === "CA")) {
+        address.phone_country.value = a.country;
+      }
+    }
+  }
+  pull.addEventListener("click", () => { void fillAddressFromClient(client.value); });
+  if (editing) {
+    const got = await api("/api/orgs/locations/" + editId);
+    if (got.status !== 200) {
+      main.append(banner("error", "Not found", "That location is not available."));
+      return;
+    }
+    name.value = got.body.name ?? "";
+    if (got.body.client_id) client.value = got.body.client_id;
+    const a = got.body.address;
+    if (a) {
+      address.address_line_1.value = a.address_line_1 ?? "";
+      address.address_line_2.value = a.address_line_2 ?? "";
+      address.city.value = a.city ?? "";
+      if (a.country) {
+        address.country.value = a.country;
+        address.country.dispatchEvent(new Event("change"));
+        await new Promise((r) => setTimeout(r, 50));
+        address.region.value = a.region ?? "";
+        address.postal_code.value = a.postal_code ?? "";
+        address.time_zone.value = a.time_zone ?? "";
+        address.phone.value = a.phone ?? "";
+        address.email.value = a.email ?? "";
+      }
+    }
   }
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    // Pending PQ-313 → FFP name 2–100 with exact sentences (STEP 4). Client pre-check here.
-    const nameMsg = entityNameError("location", name.value) || locationNameClientError(name.value);
-    if (nameMsg && nameMsg !== "required" && nameMsg !== "name_invalid") {
-      showValidationBanner(form, "Location name", nameMsg);
-      return;
-    }
-    if (nameMsg === "required" || nameMsg === "name_invalid") {
-      showValidationBanner(form, "Location name", entityNameError("location", name.value) || "Enter a location name.");
-      return;
-    }
+    if (!client.value) { showValidationBanner(form, "Client", "Select a client."); return; }
+    const nameMsg = locationNameClientError(name.value);
+    if (nameMsg) { showValidationBanner(form, "Location name", nameMsg); return; }
     const lengthError = addressLengthError(address);
-    if (lengthError) {
-      showValidationBanner(form, lengthError.title, lengthError.detail);
-      return;
-    }
+    if (lengthError) { showValidationBanner(form, lengthError.title, lengthError.detail); return; }
     submit.disabled = true;
     const body = {
-      partner_id: partner.value,
+      client_id: client.value,
       name: name.value.trim(),
       address: addressPayload(address),
     };
     let res;
     try {
-      res = await api("/api/orgs/locations", {
-        method: "POST",
+      res = await api(editing ? "/api/orgs/locations/" + editId : "/api/orgs/locations", {
+        method: editing ? "PUT" : "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(12000),
       });
     } catch {
+      if (editing) return showCreate("timeout", editId);
       location.hash = "#/create";
       return showCreate("timeout");
     }
-    if (res.status === 408) return showCreate("timeout");
+    if (res.status === 408) return showCreate("timeout", editId);
     if (res.status >= 400) {
       const detail = res.status === 422 && Array.isArray(res.body?.fields)
         ? fieldsBannerDetail(res.body.fields)
         : (res.body?.error || "The server refused the request.");
-      showValidationBanner(form, "Could not create the location", detail);
+      showValidationBanner(form, editing ? "Could not save the location" : "Could not create the location", detail);
       submit.disabled = false;
       return;
     }
@@ -774,6 +831,10 @@ async function draw() {
   if (name === "home") return showHome();
   if (name === "locations") return showLocations();
   if (name === "create") return showCreate();
+  if (name === "location-edit") {
+    const id = new URLSearchParams((location.hash.split("?")[1] || "")).get("id");
+    return showCreate(undefined, id || "");
+  }
   if (name === "config") return showConfig();
   if (name === "catalog") return showCatalog();
   if (name === "clients") return showClients();

@@ -1,7 +1,7 @@
 // DEC-237. A missing location name is rejected by the existing create validator.
-// The 200 Unicode-scalar upper bound is the existing validator limit, kept as a
-// proposal pending PQ-313. This probe does not add a length, character, or
-// uniqueness rule beyond that existing ValidateCreate check (F-24).
+// FFP STEP 4 / PQ-329 (PM DEC-241 Option 1): product location name is 2–100 Unicode
+// scalars (was pending PQ-313 at 200). This probe still exercises the legacy
+// ValidateCreate path (F-24) at the 200-scalar bound for that older check only.
 using System.Text;
 using System.Text.Json;
 

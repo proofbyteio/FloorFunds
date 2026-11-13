@@ -5108,3 +5108,60 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113193000_FfpLocationClient') THEN
+
+    -- PQ-329 / DEC-241 option 1: nullable client_id; do not backfill or touch existing rows.
+    ALTER TABLE auth.location
+      ADD COLUMN IF NOT EXISTS client_id uuid NULL;
+
+    DO $fk$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'location_client_fk'
+      ) THEN
+        ALTER TABLE auth.location
+          ADD CONSTRAINT location_client_fk
+          FOREIGN KEY (client_id) REFERENCES auth.client (client_id);
+      END IF;
+    END
+    $fk$;
+
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_name_length;
+    ALTER TABLE auth.location
+      ADD CONSTRAINT location_name_length CHECK (char_length(name) BETWEEN 2 AND 100);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS location_client_name_ci_ux
+      ON auth.location (
+        client_id,
+        lower(regexp_replace(btrim(name), '\s+', ' ', 'g'))
+      )
+      WHERE client_id IS NOT NULL;
+
+    DO $gr$
+    DECLARE
+      a text := current_database() || '_admin_api';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE format(
+          'GRANT UPDATE (name, client_id, partner_id, address_line_1, address_line_2, city, country, region, postal_code, phone, email, time_zone) ON auth.location TO %I',
+          a);
+      END IF;
+    END
+    $gr$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113193000_FfpLocationClient') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113193000_FfpLocationClient', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;

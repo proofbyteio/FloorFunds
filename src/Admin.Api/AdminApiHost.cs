@@ -42,6 +42,8 @@ public static class AdminApiHost
         app.MapPut("/api/orgs/locations/{location_id}/login-config", (HttpContext ctx, string location_id) => api.PutAsync(ctx, location_id));
         app.MapGet("/api/orgs/locations/{location_id}/login-config/changes", (HttpContext ctx, string location_id) => api.ChangesAsync(ctx, location_id));
         app.MapPost("/api/orgs/locations", (Func<HttpContext, Task<IResult>>)(ctx => api.PostAsync(ctx)));
+        app.MapGet("/api/orgs/locations/{location_id}", (HttpContext ctx, string location_id) => api.GetOrgLocationAsync(ctx, location_id));
+        app.MapPut("/api/orgs/locations/{location_id}", (HttpContext ctx, string location_id) => api.PutOrgLocationAsync(ctx, location_id));
         app.MapGet("/api/orgs/login-config/limits", (Func<HttpContext, Task<IResult>>)(ctx => api.LimitsAsync(ctx))); // DEC-107 (TLD 16:32 Q2); ?partner_id= Slice A
         // Slice A (TLD 06:59 route, LD 12b1d9cd): per-partner reason-length bounds.
         app.MapGet("/api/orgs/partners/{partner_id}/login-config/reason-bounds", (HttpContext ctx, string partner_id) => api.GetReasonBoundsAsync(ctx, partner_id));

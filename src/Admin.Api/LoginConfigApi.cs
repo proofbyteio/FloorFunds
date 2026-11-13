@@ -811,18 +811,48 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
     public Task<IResult> LocationsAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         if (!who.IsAdmin) throw Err(403, "forbidden");
-        await using var cmd = new NpgsqlCommand("SELECT location_id, partner_id, name, slug FROM auth.location ORDER BY name", c, tx);
+        await using var cmd = new NpgsqlCommand(
+            "SELECT location_id, partner_id, client_id, name, slug FROM auth.location ORDER BY name", c, tx);
         var rows = new JsonArray();
         await using var r = await cmd.ExecuteReaderAsync();
         while (await r.ReadAsync())
             rows.Add(new JsonObject
             {
-                ["location_id"] = r.GetGuid(0).ToString(),
-                ["partner_id"] = r.GetGuid(1).ToString(),
-                ["name"] = r.GetString(2),
-                ["slug"] = r.GetString(3),
+                ["location_id"] = r.GetGuid(0).ToString("D"),
+                ["partner_id"] = r.GetGuid(1).ToString("D"),
+                ["client_id"] = r.IsDBNull(2) ? null : r.GetGuid(2).ToString("D"),
+                ["name"] = r.GetString(3),
+                ["slug"] = r.GetString(4),
             });
         return Json(200, new JsonObject { ["locations"] = rows });
+    });
+
+    public Task<IResult> GetOrgLocationAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (!who.IsAdmin) throw Err(403, "forbidden");
+        if (ParseId(id) is not { } loc || loc == Guid.Empty) throw Err(404, "not_found");
+        var row = await LoadOrgLocationAsync(c, tx, loc) ?? throw Err(404, "not_found");
+        if (!who.IsSuper && who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(row.PartnerId))
+            throw Err(404, "not_found");
+        return Json(200, OrgLocationView(row));
+    });
+
+    public Task<IResult> PutOrgLocationAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (!who.IsAdmin || !who.Grant.LoginMethodWrite || !who.Grant.OrgCreateEdit) throw Err(403, "forbidden");
+        if (ParseId(id) is not { } loc || loc == Guid.Empty) throw Err(404, "not_found");
+        var existing = await LoadOrgLocationAsync(c, tx, loc) ?? throw Err(404, "not_found");
+        if (!who.IsSuper && who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(existing.PartnerId))
+            throw Err(404, "not_found");
+        var read = await ReadBodyAsync(ctx);
+        if (read.TimedOut) throw BodyTimeout(ctx, who);
+        if (read.TooLarge) throw Err(413, "payload_too_large");
+        if (ParseObject(read.Bytes) is not { } o) throw Err(400, "malformed_body");
+        var parsed = await ParseLocationBodyAsync(c, tx, who, o, excludeLocationId: loc);
+        await UpdateOrgLocationAsync(c, tx, loc, parsed.ClientId, parsed.PartnerId, parsed.Name, parsed.Address);
+        await tx.CommitAsync();
+        var row = await LoadOrgLocationAsync(c, tx, loc) ?? throw new InvalidOperationException("row vanished");
+        return Json(200, OrgLocationView(row));
     });
 
     /// <summary>
@@ -1344,94 +1374,57 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         // body is 400 here (authorised callers only); neither writes anything.
         if (read.TooLarge) throw Err(413, "payload_too_large");
         if (ParseObject(read.Bytes) is not { } o) throw Err(400, "malformed_body");
-        var bodyPartner = LoginConfigValidator.BodyPartner(o);
-        if (who.IsPartnerAdmin && bodyPartner is { } bp && !who.Grant.AssignedPartners.Contains(bp))
-        {
-            var lc = o.TryGetProperty("login_config", out var l) ? l : (JsonElement?)null;
-            await DenyAsync(who, "forbidden_scope", bp, null, LoginConfigValidator.AttemptedFields(lc));
-            throw Err(404, "not_found");
-        }
-        // Step 8.
+
+        // FFP STEP 4: client_id + required address; partner_id comes from the client (login_config still optional, not expanded).
+        var parsed = await ParseLocationBodyAsync(c, tx, who, o, excludeLocationId: null);
         var errs = new List<FieldError>();
-        // Slice A: the body's partner's bounds; with no valid partner_id (422 anyway) the deployment config.
-        var bounds = bodyPartner is { } rp ? await ResolveBoundsAsync(c, tx, rp) : ReasonBounds.FromConfig(opt);
-        var n = LoginConfigValidator.ValidateCreate(o, bounds, errs, out var bound);
-        var tenantBound = bound.Length > 0 && bodyPartner is { } tp && await TenantBoundAsync(c, tx, bound, tp);
+        var bounds = await ResolveBoundsAsync(c, tx, parsed.PartnerId);
+        LoginConfigInput? cfg = null;
+        Guid[] bound = [];
+        if (o.TryGetProperty("login_config", out var lcEl))
+        {
+            if (lcEl.ValueKind != JsonValueKind.Object) errs.Add(new("login_config", "type"));
+            else cfg = LoginConfigValidator.ValidateWrite(lcEl, "login_config/", null, bounds, errs, out bound);
+        }
+        var tenantBound = bound.Length > 0 && await TenantBoundAsync(c, tx, bound, parsed.PartnerId);
         if (tenantBound) errs.Add(new("login_config/entra_allowed_tenant_ids/0", "tenant_bound_elsewhere"));
         if (errs.Count > 0)
         {
             await tx.RollbackAsync();
-            if (tenantBound) await DenyAsync(who, "tenant_bound_elsewhere", bodyPartner!.Value, null, ["entra_allowed_tenant_ids"]);
+            if (tenantBound) await DenyAsync(who, "tenant_bound_elsewhere", parsed.PartnerId, null, ["entra_allowed_tenant_ids"]);
             throw Validation(errs);
         }
-        var cfg = n!.Config;
-        // Steps 9-10 apply only when sign-in setup is included. A create with no
-        // login_config stores the location and leaves it unable to sign in.
         if (cfg is not null)
         {
             var down = DowngradeFields(true, false, cfg);
             if (down.Count > 0 && who.IsPartnerAdmin)
             {
                 await tx.RollbackAsync();
-                await DenyAsync(who, "not_super_admin", n.PartnerId, null, down);
+                await DenyAsync(who, "not_super_admin", parsed.PartnerId, null, down);
                 throw Err(403, "not_super_admin");
             }
             if (down.Count > 0 && cfg.Reason is null) throw Err(400, "reason_required");
-        }
-        LocationAddress? address = null;
-        if (o.TryGetProperty("address", out var addressEl))
-        {
-            var addressErrors = new List<FieldError>();
-            if (!CountryAddress.TryParse(addressEl, addressErrors, out address))
-            {
-                await tx.RollbackAsync();
-                throw Validation(addressErrors);
-            }
         }
 
         var location = Guid.NewGuid();
         var slug = NewSlug();
         var now = Now();
-        await using (var ins = new NpgsqlCommand("INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ($1, $2, $3, $4)", c, tx))
+        await using (var ins = new NpgsqlCommand(
+            """
+            INSERT INTO auth.location
+              (location_id, partner_id, client_id, slug, name,
+               address_line_1, address_line_2, city, country, region, postal_code, phone, email, time_zone)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+            """, c, tx))
         {
-            ins.Parameters.Add(new() { Value = location });
-            ins.Parameters.Add(new() { Value = n.PartnerId });
-            ins.Parameters.Add(new() { Value = slug });
-            ins.Parameters.Add(new() { Value = n.Name });
+            BindOrgLocation(ins, location, parsed.PartnerId, parsed.ClientId, slug, parsed.Name, parsed.Address);
             await ins.ExecuteNonQueryAsync();
-        }
-        if (address is not null)
-        {
-            await using var addr = new NpgsqlCommand(
-                """
-                UPDATE auth.location
-                   SET address_line_1 = $2, address_line_2 = $3, city = $4, country = $5, region = $6,
-                       postal_code = $7, phone = $8, email = $9, time_zone = $10
-                 WHERE location_id = $1
-                """, c, tx);
-            addr.Parameters.Add(new() { Value = location });
-            addr.Parameters.Add(new() { Value = address.Line1 });
-            addr.Parameters.Add(new() { Value = (object?)address.Line2 ?? DBNull.Value });
-            addr.Parameters.Add(new() { Value = address.City });
-            addr.Parameters.Add(new() { Value = address.Country });
-            addr.Parameters.Add(new() { Value = (object?)address.Region ?? DBNull.Value });
-            addr.Parameters.Add(new() { Value = (object?)address.Postal ?? DBNull.Value });
-            addr.Parameters.Add(new() { Value = address.Phone });
-            addr.Parameters.Add(new() { Value = (object?)address.Email ?? DBNull.Value });
-            addr.Parameters.Add(new() { Value = address.TimeZone });
-            await addr.ExecuteNonQueryAsync();
         }
         if (cfg is null)
         {
             await tx.CommitAsync();
             ctx.Response.Headers.Location = $"/api/orgs/locations/{location:D}";
-            return Json(201, new JsonObject
-            {
-                ["location_id"] = location.ToString("D"),
-                ["partner_id"] = n.PartnerId.ToString("D"),
-                ["slug"] = slug,
-                ["name"] = n.Name,
-            });
+            return Json(201, OrgLocationView((location, parsed.PartnerId, parsed.ClientId, slug, parsed.Name, parsed.Address)));
         }
         var entra = cfg.ProviderKind == "entra";
         await using (var ins = new NpgsqlCommand(
@@ -1454,7 +1447,6 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             ins.Parameters.Add(new() { Value = now.UtcDateTime, NpgsqlDbType = NpgsqlDbType.TimestampTz });
             await ins.ExecuteNonQueryAsync();
         }
-        // changed_fields on create: vs the column defaults (OQ-P3-7).
         var changed = new List<string> { "provider_kind", "display_name" };
         if (cfg.Tenants.Length > 0) changed.Add("entra_allowed_tenant_ids");
         if (entra) { changed.Add("oidc_authority"); changed.Add("oidc_client_id"); changed.Add("secret_ref"); }
@@ -1464,11 +1456,171 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         var changeId = Guid.CreateVersion7();
         var after = AuditOutbox.State(cfg.ProviderKind, cfg.Tenants, cfg.AllowDbFallback, cfg.MfaRequired);
         await InsertChangeAsync(c, tx, changeId, location, who, cfg.Reason, now, true, cf, null, after, 1);
-        await outbox.InsertAsync(c, tx, AuditOutbox.ProviderChanged(Guid.CreateVersion7(), now, who.Id, who.RequestId, n.PartnerId, location, changeId, true,
+        await outbox.InsertAsync(c, tx, AuditOutbox.ProviderChanged(Guid.CreateVersion7(), now, who.Id, who.RequestId, parsed.PartnerId, location, changeId, true,
             1, cf, null, after, cfg.Reason), CancellationToken.None);
-        var saved = await LoadAsync(c, tx, location, n.PartnerId, false) ?? throw new InvalidOperationException("row vanished");
+        var saved = await LoadAsync(c, tx, location, parsed.PartnerId, false) ?? throw new InvalidOperationException("row vanished");
         await tx.CommitAsync();
         ctx.Response.Headers.Location = $"/api/orgs/locations/{location:D}/login-config";
         return ViewResult(ctx, 201, saved, who);
     });
+
+    sealed record LocationBody(Guid ClientId, Guid PartnerId, string Name, OrgAddress Address);
+
+    async Task<LocationBody> ParseLocationBodyAsync(
+        NpgsqlConnection c, NpgsqlTransaction tx, Caller who, JsonElement o, Guid? excludeLocationId)
+    {
+        var errs = new List<FieldError>();
+        foreach (var p in o.EnumerateObject())
+            if (p.Name is not ("client_id" or "name" or "address" or "login_config"))
+                errs.Add(new(p.Name, "unknown_field"));
+
+        Guid clientId = default;
+        if (!o.TryGetProperty("client_id", out var cid) || cid.ValueKind != JsonValueKind.String
+            || !Guid.TryParseExact(cid.GetString(), "D", out clientId) || clientId == Guid.Empty)
+            errs.Add(new("client_id", "Select a client."));
+
+        var client = clientId == Guid.Empty ? null : await LoadClientAsync(c, tx, clientId);
+        if (clientId != Guid.Empty && client is null)
+            errs.Add(new("client_id", "Select a client."));
+        var partnerId = client?.PartnerId ?? Guid.Empty;
+        if (client is not null && who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId))
+        {
+            await DenyAsync(who, "forbidden_scope", partnerId, null, ["client_id"]);
+            throw Err(404, "not_found");
+        }
+
+        string? nameRaw = null;
+        if (!o.TryGetProperty("name", out var nm) || nm.ValueKind == JsonValueKind.Null) nameRaw = null;
+        else if (nm.ValueKind != JsonValueKind.String) errs.Add(new("name", "Enter a location name."));
+        else nameRaw = nm.GetString();
+        var name = OrgFormValidation.ValidateEntityName("location", nameRaw, errs);
+        if (name is not null && clientId != Guid.Empty
+            && await LocationNameTakenAsync(c, tx, clientId, name, excludeLocationId))
+            errs.Add(new("name", "A location with this name already exists for this client."));
+
+        OrgAddress? address = null;
+        if (!o.TryGetProperty("address", out var addrEl) || addrEl.ValueKind != JsonValueKind.Object)
+            errs.Add(new("address", "Enter a street address."));
+        else
+            address = await OrgFormValidation.ParseAddressAsync(addrEl, errs,
+                country => CountryActive(c, tx, country),
+                (co, re) => RegionExists(c, tx, co, re),
+                (co, tz) => TimeZoneExists(c, tx, co, tz),
+                co => PostalRule(c, tx, co));
+
+        if (errs.Count > 0 || name is null || address is null || client is null)
+            throw Validation(errs);
+        return new LocationBody(client.Value.Id, client.Value.PartnerId, name, address);
+    }
+
+    static async Task<bool> LocationNameTakenAsync(
+        NpgsqlConnection c, NpgsqlTransaction tx, Guid clientId, string name, Guid? exclude)
+    {
+        await using var cmd = new NpgsqlCommand(
+            exclude is null
+                ? """
+                  SELECT 1 FROM auth.location
+                   WHERE client_id = $1
+                     AND lower(regexp_replace(btrim(name), '\s+', ' ', 'g'))
+                       = lower(regexp_replace(btrim($2), '\s+', ' ', 'g'))
+                   LIMIT 1
+                  """
+                : """
+                  SELECT 1 FROM auth.location
+                   WHERE client_id = $1
+                     AND lower(regexp_replace(btrim(name), '\s+', ' ', 'g'))
+                       = lower(regexp_replace(btrim($2), '\s+', ' ', 'g'))
+                     AND location_id <> $3
+                   LIMIT 1
+                  """, c, tx);
+        cmd.Parameters.Add(new() { Value = clientId });
+        cmd.Parameters.Add(new() { Value = name });
+        if (exclude is { } ex) cmd.Parameters.Add(new() { Value = ex });
+        await using var r = await cmd.ExecuteReaderAsync();
+        return await r.ReadAsync();
+    }
+
+    async Task<(Guid Id, Guid PartnerId, Guid? ClientId, string Slug, string Name, OrgAddress? Address)?> LoadOrgLocationAsync(
+        NpgsqlConnection c, NpgsqlTransaction tx, Guid id)
+    {
+        await using var cmd = new NpgsqlCommand(
+            """
+            SELECT location_id, partner_id, client_id, slug, name,
+                   address_line_1, address_line_2, city, country, region, postal_code, phone, email, time_zone
+              FROM auth.location WHERE location_id = $1
+            """, c, tx);
+        cmd.Parameters.Add(new() { Value = id });
+        await using var r = await cmd.ExecuteReaderAsync();
+        if (!await r.ReadAsync()) return null;
+        OrgAddress? addr = null;
+        if (!r.IsDBNull(5) && !r.IsDBNull(7) && !r.IsDBNull(8) && !r.IsDBNull(11) && !r.IsDBNull(13))
+        {
+            addr = new OrgAddress(
+                r.GetString(5), r.IsDBNull(6) ? "" : r.GetString(6), r.GetString(7), r.GetString(8).Trim(),
+                r.IsDBNull(9) ? "" : r.GetString(9), r.IsDBNull(10) ? "" : r.GetString(10),
+                r.GetString(11), r.IsDBNull(12) ? null : r.GetString(12), r.GetString(13));
+        }
+        return (r.GetGuid(0), r.GetGuid(1), r.IsDBNull(2) ? null : r.GetGuid(2), r.GetString(3), r.GetString(4), addr);
+    }
+
+    static JsonObject OrgLocationView((Guid Id, Guid PartnerId, Guid? ClientId, string Slug, string Name, OrgAddress? Address) row)
+    {
+        var o = new JsonObject
+        {
+            ["location_id"] = row.Id.ToString("D"),
+            ["partner_id"] = row.PartnerId.ToString("D"),
+            ["client_id"] = row.ClientId is { } c ? c.ToString("D") : null,
+            ["slug"] = row.Slug,
+            ["name"] = row.Name,
+        };
+        if (row.Address is { } a)
+            o["address"] = OrgFormValidation.AddressJson(a, OrgFormValidation.FormatNational(a.PhoneE164, a.Country));
+        return o;
+    }
+
+    static void BindOrgLocation(NpgsqlCommand cmd, Guid id, Guid partnerId, Guid clientId, string slug, string name, OrgAddress a)
+    {
+        cmd.Parameters.Add(new() { Value = id });
+        cmd.Parameters.Add(new() { Value = partnerId });
+        cmd.Parameters.Add(new() { Value = clientId });
+        cmd.Parameters.Add(new() { Value = slug });
+        cmd.Parameters.Add(new() { Value = name });
+        cmd.Parameters.Add(new() { Value = a.AddressLine1 });
+        cmd.Parameters.Add(new() { Value = a.AddressLine2 });
+        cmd.Parameters.Add(new() { Value = a.City });
+        cmd.Parameters.Add(new() { Value = a.Country });
+        cmd.Parameters.Add(new() { Value = a.Region });
+        cmd.Parameters.Add(new() { Value = a.PostalCode });
+        cmd.Parameters.Add(new() { Value = a.PhoneE164 });
+        cmd.Parameters.Add(new() { Value = (object?)a.Email ?? DBNull.Value });
+        cmd.Parameters.Add(new() { Value = a.TimeZone });
+    }
+
+    static async Task UpdateOrgLocationAsync(
+        NpgsqlConnection c, NpgsqlTransaction tx, Guid id, Guid clientId, Guid partnerId, string name, OrgAddress a)
+    {
+        await using var cmd = new NpgsqlCommand(
+            """
+            UPDATE auth.location SET
+              client_id=$2, partner_id=$3, name=$4,
+              address_line_1=$5, address_line_2=$6, city=$7, country=$8, region=$9,
+              postal_code=$10, phone=$11, email=$12, time_zone=$13
+             WHERE location_id=$1
+            """, c, tx);
+        cmd.Parameters.Add(new() { Value = id });
+        cmd.Parameters.Add(new() { Value = clientId });
+        cmd.Parameters.Add(new() { Value = partnerId });
+        cmd.Parameters.Add(new() { Value = name });
+        cmd.Parameters.Add(new() { Value = a.AddressLine1 });
+        cmd.Parameters.Add(new() { Value = a.AddressLine2 });
+        cmd.Parameters.Add(new() { Value = a.City });
+        cmd.Parameters.Add(new() { Value = a.Country });
+        cmd.Parameters.Add(new() { Value = a.Region });
+        cmd.Parameters.Add(new() { Value = a.PostalCode });
+        cmd.Parameters.Add(new() { Value = a.PhoneE164 });
+        cmd.Parameters.Add(new() { Value = (object?)a.Email ?? DBNull.Value });
+        cmd.Parameters.Add(new() { Value = a.TimeZone });
+        await cmd.ExecuteNonQueryAsync();
+    }
 }
+
