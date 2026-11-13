@@ -5265,3 +5265,33 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113196000_FfpLocationPhoneE164') THEN
+
+    -- F5 info: match partner/client phone E.164 CHECK. NOT VALID for legacy rows
+    -- that may store NULL or non-E.164 values (never rewrite/delete them).
+    DO $ck$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'location_phone_e164') THEN
+        ALTER TABLE auth.location
+          ADD CONSTRAINT location_phone_e164
+          CHECK (phone IS NULL OR phone ~ '^\+[1-9][0-9]{1,14}$') NOT VALID;
+      END IF;
+    END
+    $ck$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113196000_FfpLocationPhoneE164') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113196000_FfpLocationPhoneE164', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
