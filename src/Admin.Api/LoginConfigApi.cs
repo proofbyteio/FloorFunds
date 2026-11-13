@@ -1208,9 +1208,12 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
 
     public Task<IResult> ListOrgClientsAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsSuper) throw Err(403, "forbidden");
+        // F9 / DEC-241: SA sees all; PA reads clients of assigned partner(s) only (create/edit stay SA-only).
+        if (!who.IsAdmin) throw Err(403, "forbidden");
         var partnerFilter = (ctx.Request.Query["partner_id"].ToString() ?? "").Trim();
         Guid? onlyPartner = ParseId(partnerFilter);
+        if (onlyPartner is { } want && who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(want))
+            throw Err(404, "not_found");
         await using var cmd = onlyPartner is { } p
             ? new NpgsqlCommand("SELECT client_id, partner_id, name FROM auth.client WHERE partner_id = $1 ORDER BY lower(name)", c, tx)
             : new NpgsqlCommand("SELECT client_id, partner_id, name FROM auth.client ORDER BY lower(name)", c, tx);
@@ -1218,20 +1221,28 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         var rows = new JsonArray();
         await using var r = await cmd.ExecuteReaderAsync();
         while (await r.ReadAsync())
+        {
+            var partnerId = r.GetGuid(1);
+            // Defense in depth with AssignedPartners (RLS also scopes via actor_can_partner).
+            if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId)) continue;
             rows.Add(new JsonObject
             {
                 ["client_id"] = r.GetGuid(0).ToString("D"),
-                ["partner_id"] = r.GetGuid(1).ToString("D"),
+                ["partner_id"] = partnerId.ToString("D"),
                 ["name"] = r.GetString(2),
             });
+        }
         return Json(200, new JsonObject { ["clients"] = rows });
     });
 
     public Task<IResult> GetOrgClientAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsSuper) throw Err(403, "forbidden");
+        // F9: PA may GET own-partner clients (pull-address); foreign partner → 404 not_found (same as POST scope).
+        if (!who.IsAdmin) throw Err(403, "forbidden");
         if (ParseId(id) is not { } clientId || clientId == Guid.Empty) throw Err(404, "not_found");
         var row = await LoadClientAsync(c, tx, clientId) ?? throw Err(404, "not_found");
+        if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(row.PartnerId))
+            throw Err(404, "not_found");
         return Json(200, ClientView(row));
     });
 

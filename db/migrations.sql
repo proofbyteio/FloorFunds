@@ -5228,3 +5228,38 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113195000_FfpClientPartnerRead') THEN
+
+    -- F9 / DEC-241: Partner Admin may SELECT clients of assigned partners (actor_can_partner).
+    -- Permissive policies OR with existing client_admin_select (actor_is_global) for Super Admin.
+    -- Does not grant INSERT/UPDATE to Partner Admin (create/edit stay Super Admin only).
+    DO $pol$
+    DECLARE
+      a text := current_database() || '_admin_api';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'client_admin_select_partner' AND polrelid = 'auth.client'::regclass) THEN
+          EXECUTE format(
+            'CREATE POLICY client_admin_select_partner ON auth.client FOR SELECT TO %I USING (auth.actor_can_partner(partner_id))',
+            a);
+        END IF;
+      END IF;
+    END
+    $pol$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113195000_FfpClientPartnerRead') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113195000_FfpClientPartnerRead', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
