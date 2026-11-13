@@ -233,7 +233,7 @@ BEGIN
     DECLARE
       a text := current_database() || '_admin_api';
       l text := current_database() || '_login';
-      scope text := $p$(current_setting('app.admin_type', true) = 'super' OR (current_setting('app.admin_type', true) = 'partner' AND partner_id = nullif(current_setting('app.partner_id', true), '')::uuid))$p$;
+      scope text := $p$(current_setting('app.resolved_global_admin', true) = 'on' OR partner_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) OR location_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')))$p$;
       via_location text := $p$(EXISTS (SELECT 1 FROM auth.location l WHERE l.location_id = %I.location_id))$p$;
     BEGIN
       EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I, %I', current_database(), a, l);
@@ -318,7 +318,7 @@ BEGIN
     DO $s2a_prb$
     DECLARE
       a text := current_database() || '_admin_api';
-      any_admin text := $p$(current_setting('app.admin_type', true) = 'super' OR (current_setting('app.admin_type', true) = 'partner' AND nullif(current_setting('app.partner_id', true), '') IS NOT NULL))$p$;
+      any_admin text := $p$(current_setting('app.resolved_global_admin', true) = 'on' OR EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) p(id) WHERE p.id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') OR EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')) loc(id) WHERE loc.id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'))$p$;
     BEGIN
       EXECUTE format('CREATE POLICY prb_admin ON auth.partner_reason_bounds FOR ALL TO %I USING %s WITH CHECK %s', a, any_admin, any_admin);
       EXECUTE format('GRANT SELECT, INSERT ON auth.partner_reason_bounds TO %I', a);
@@ -1053,24 +1053,43 @@ BEGIN
     END
     $fn$;
 
-    CREATE FUNCTION catalog._actor(OUT admin_type text, OUT partner_id uuid, OUT actor_user_id uuid, OUT correlation_id text, OUT reason text)
+    -- admin_type / partner_id here are the labels stored on history_pending. They are derived from the
+    -- resolver GUCs. This function does not read app.admin_type or app.partner_id.
+    CREATE FUNCTION catalog._actor(
+      OUT admin_type text,
+      OUT partner_id uuid,
+      OUT actor_user_id uuid,
+      OUT correlation_id text,
+      OUT reason text,
+      OUT resolved_global boolean,
+      OUT resolved_partner_ids uuid[])
       LANGUAGE plpgsql
       SET search_path = pg_catalog
     AS $fn$
+    DECLARE
+      raw text;
+      token text;
     BEGIN
-      admin_type := current_setting('app.admin_type', true);
-      IF admin_type IS NULL OR admin_type NOT IN ('super', 'partner') THEN
-        PERFORM catalog._err('P0001', 'catalog_actor_context');
+      resolved_global := current_setting('app.resolved_global_admin', true) = 'on';
+      resolved_partner_ids := ARRAY[]::uuid[];
+      raw := coalesce(current_setting('app.resolved_partner_ids', true), '');
+      IF raw <> '' THEN
+        FOREACH token IN ARRAY string_to_array(raw, ',') LOOP
+          IF token ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN
+            resolved_partner_ids := resolved_partner_ids || token::uuid;
+          ELSE
+            PERFORM catalog._err('P0001', 'catalog_actor_context');
+          END IF;
+        END LOOP;
       END IF;
-      IF admin_type = 'partner' THEN
-        BEGIN
-          partner_id := nullif(current_setting('app.partner_id', true), '')::uuid;
-        EXCEPTION WHEN invalid_text_representation THEN
-          PERFORM catalog._err('P0001', 'catalog_actor_context');
-        END;
-        IF partner_id IS NULL THEN
-          PERFORM catalog._err('P0001', 'catalog_actor_context');
-        END IF;
+      IF resolved_global THEN
+        admin_type := 'super';
+        partner_id := NULL;
+      ELSIF coalesce(array_length(resolved_partner_ids, 1), 0) >= 1 THEN
+        admin_type := 'partner';
+        partner_id := resolved_partner_ids[1];
+      ELSE
+        PERFORM catalog._err('P0001', 'catalog_actor_context');
       END IF;
       BEGIN
         actor_user_id := nullif(current_setting('app.actor_user_id', true), '')::uuid;
@@ -1503,13 +1522,13 @@ BEGIN
         AND p_family NOT IN ('manufacturer','device_model','processor','reason_code','id_document_type','fee_type','model_hardware_claim') THEN
         PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
       END IF;
-      IF v_actor.admin_type = 'super' THEN
+      IF v_actor.resolved_global THEN
         NULL;
-      ELSIF v_actor.admin_type = 'partner'
+      ELSIF NOT v_actor.resolved_global
         AND p_entry_class = 'descriptive'
         AND p_family IN ('manufacturer','device_model','processor','reason_code','id_document_type','fee_type')
         AND p_owner_partner_id IS NOT NULL
-        AND p_owner_partner_id = v_actor.partner_id THEN
+        AND p_owner_partner_id = ANY (v_actor.resolved_partner_ids) THEN
         NULL;
       ELSE
         PERFORM catalog._err('P0001', 'catalog_create_actor');
@@ -1648,13 +1667,13 @@ BEGIN
       IF NOT v_found THEN
         PERFORM catalog._err('23503', 'catalog_reference_not_found');
       END IF;
-      IF v_actor.admin_type = 'partner' AND v_owner IS NOT NULL AND v_owner IS DISTINCT FROM v_actor.partner_id THEN
+      IF NOT v_actor.resolved_global AND v_owner IS NOT NULL AND NOT (v_owner = ANY (v_actor.resolved_partner_ids)) THEN
         PERFORM catalog._err('23503', 'catalog_reference_not_found');
       END IF;
-      IF v_actor.admin_type = 'partner' AND v_owner IS NULL THEN
+      IF NOT v_actor.resolved_global AND v_owner IS NULL THEN
         PERFORM catalog._err('P0001', 'catalog_claim_edit_actor');
       END IF;
-      IF v_actor.admin_type <> 'super' AND NOT (v_actor.admin_type = 'partner' AND v_owner IS NOT NULL AND v_owner = v_actor.partner_id) THEN
+      IF NOT v_actor.resolved_global AND NOT (v_owner IS NOT NULL AND v_owner = ANY (v_actor.resolved_partner_ids)) THEN
         PERFORM catalog._err('P0001', 'catalog_claim_edit_actor');
       END IF;
 
@@ -2189,24 +2208,38 @@ BEGIN
       FOR EACH ROW EXECUTE FUNCTION catalog.tg_scope_refuse();
     CREATE TRIGGER tg_scope_refuse BEFORE INSERT OR UPDATE OR DELETE ON catalog.location_switch
       FOR EACH ROW EXECUTE FUNCTION catalog.tg_scope_refuse();
-    -- SELECT policies inline the session mask. No catalog function is granted to admin_api or login.
-    -- Owner policies are TO the migration role, not PUBLIC. Protected tables are FORCE RLS.
+    -- Catalog read policies. Authorization reads app.resolved_global_admin and the resolved
+    -- partner and location id lists set by the resolver. A value that is not a uuid is ignored,
+    -- so a bad setting returns zero rows rather than an error.
     DO $pol$
     DECLARE
-      t text;
-      owner_name text := current_user;
       api text := current_database() || '_admin_api';
+      owner_name text := current_user;
+      uuid_re text := '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
       read_expr text := $e$CASE
-        WHEN current_setting('app.admin_type', true) = 'super' THEN true
-        WHEN current_setting('app.admin_type', true) = 'partner'
-          AND nullif(current_setting('app.partner_id', true), '') ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
-          AND (%s IS NULL OR %s = nullif(current_setting('app.partner_id', true), '')::uuid)
-        THEN true
+        WHEN current_setting('app.resolved_global_admin', true) = 'on' THEN true
+        WHEN EXISTS (
+          SELECT 1
+            FROM unnest(string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) AS p(id)
+           WHERE p.id ~ '%s'
+             AND (%s IS NULL OR %s::text = p.id)
+        ) THEN true
+        WHEN EXISTS (
+          SELECT 1
+            FROM unnest(string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')) AS loc(id)
+            JOIN auth.location l ON l.location_id::text = loc.id
+           WHERE loc.id ~ '%s'
+             AND (%s IS NULL OR l.partner_id::text = %s::text)
+        ) THEN true
         ELSE false
       END$e$;
-      partner_ok text := $e$(current_setting('app.admin_type', true) = 'partner'
-          AND nullif(current_setting('app.partner_id', true), '') ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
-          AND nullif(current_setting('app.partner_id', true), '')::uuid IS NOT NULL)$e$;
+      t text;
+      owned text[] := ARRAY[
+        'manufacturer','device_model','processor','reason_code','id_document_type','fee_type'];
+      global_only text[] := ARRAY[
+        'catalog_release','transaction_type','channel','device_category','hardware_capability_kind',
+        'card_network','card_funding_class','payment_rail','check_instrument_kind','check_drawer_class',
+        'check_purpose','transaction_status','currency','ref_global','global_device_model'];
       all_tables text[] := ARRAY[
         'registered_entry','ref_global','ref_private','global_device_model',
         'catalog_release','transaction_type','channel','device_category','manufacturer','device_model',
@@ -2214,14 +2247,10 @@ BEGIN
         'check_instrument_kind','check_drawer_class','check_purpose','processor','transaction_status',
         'reason_code','id_document_type','currency','fee_type',
         'partner_switch','location_switch','history_pending','entry_change','edit_coord','tx_marker'];
-      owned text[] := ARRAY['manufacturer','device_model','processor','reason_code','id_document_type','fee_type'];
-      global_only text[] := ARRAY[
-        'catalog_release','transaction_type','channel','device_category','hardware_capability_kind',
-        'card_network','card_funding_class','payment_rail','check_instrument_kind','check_drawer_class',
-        'check_purpose','transaction_status','currency','ref_global','global_device_model'];
     BEGIN
       FOREACH t IN ARRAY all_tables LOOP
         EXECUTE format('ALTER TABLE catalog.%I ENABLE ROW LEVEL SECURITY', t);
+        EXECUTE format('DROP POLICY IF EXISTS %I ON catalog.%I', t || '_owner', t);
         EXECUTE format(
           'CREATE POLICY %I ON catalog.%I FOR ALL TO %I USING (true) WITH CHECK (true)',
           t || '_owner', t, owner_name);
@@ -2229,80 +2258,145 @@ BEGIN
       EXECUTE 'ALTER TABLE catalog.history_pending FORCE ROW LEVEL SECURITY';
       EXECUTE 'ALTER TABLE catalog.edit_coord FORCE ROW LEVEL SECURITY';
       EXECUTE 'ALTER TABLE catalog.tx_marker FORCE ROW LEVEL SECURITY';
+      -- The uuid pattern is inserted with %L so a literal percent cannot reach format().
+      read_expr := format(read_expr, uuid_re, '%s', '%s', uuid_re, '%s', '%s');
+
+      EXECUTE format('DROP POLICY IF EXISTS registered_entry_read ON catalog.registered_entry');
+      EXECUTE format('DROP POLICY IF EXISTS ref_global_read ON catalog.ref_global');
+      EXECUTE format('DROP POLICY IF EXISTS ref_private_read ON catalog.ref_private');
+      EXECUTE format('DROP POLICY IF EXISTS model_hardware_claim_read ON catalog.model_hardware_claim');
+      EXECUTE format('DROP POLICY IF EXISTS claim_read ON catalog.model_hardware_claim');
+      EXECUTE format('DROP POLICY IF EXISTS partner_switch_read ON catalog.partner_switch');
+      EXECUTE format('DROP POLICY IF EXISTS location_switch_read ON catalog.location_switch');
+      EXECUTE format('DROP POLICY IF EXISTS entry_change_read ON catalog.entry_change');
+      FOREACH t IN ARRAY owned LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON catalog.%I', t || '_read', t);
+      END LOOP;
 
       EXECUTE format(
         'CREATE POLICY registered_entry_read ON catalog.registered_entry FOR SELECT TO %I USING (%s)',
-        api, format(read_expr, 'owner_partner_id', 'owner_partner_id'));
+        api, format(read_expr, 'owner_partner_id', 'owner_partner_id', 'owner_partner_id', 'owner_partner_id'));
+      FOREACH t IN ARRAY global_only LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON catalog.%I', t || '_read', t);
+        EXECUTE format(
+          'CREATE POLICY %I ON catalog.%I FOR SELECT TO %I USING (%s)',
+          t || '_read', t, api, format(read_expr, 'NULL', 'NULL', 'NULL', 'NULL'));
+      END LOOP;
       EXECUTE format(
         'CREATE POLICY ref_private_read ON catalog.ref_private FOR SELECT TO %I USING (%s)',
-        api, format(read_expr, 'owner_partner_id', 'owner_partner_id'));
-      EXECUTE format(
-        'CREATE POLICY model_hardware_claim_read ON catalog.model_hardware_claim FOR SELECT TO %I USING (%s)',
-        api, format(read_expr, 'derived_owner', 'derived_owner'));
+        api, format(read_expr, 'owner_partner_id', 'owner_partner_id', 'owner_partner_id', 'owner_partner_id'));
       FOREACH t IN ARRAY owned LOOP
         EXECUTE format(
           'CREATE POLICY %I ON catalog.%I FOR SELECT TO %I USING (%s)',
-          t || '_read', t, api, format(read_expr, 'owner_partner_id', 'owner_partner_id'));
+          t || '_read', t, api,
+          format(read_expr, 'owner_partner_id', 'owner_partner_id', 'owner_partner_id', 'owner_partner_id'));
       END LOOP;
-      FOREACH t IN ARRAY global_only LOOP
-        EXECUTE format(
-          'CREATE POLICY %I ON catalog.%I FOR SELECT TO %I USING (%s)',
-          t || '_read', t, api, format(read_expr, 'NULL', 'NULL'));
-      END LOOP;
-
       EXECUTE format(
-        'CREATE POLICY partner_switch_read ON catalog.partner_switch FOR SELECT TO %I USING (%s)',
-        api,
-        format($p$current_setting('app.admin_type', true) = 'super'
-          OR (%s
-            AND partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
+        'CREATE POLICY model_hardware_claim_read ON catalog.model_hardware_claim FOR SELECT TO %I USING (%s)',
+        api, format(read_expr, 'derived_owner', 'derived_owner', 'derived_owner', 'derived_owner'));
+
+      EXECUTE format($f$
+        CREATE POLICY partner_switch_read ON catalog.partner_switch FOR SELECT TO %I USING (
+          current_setting('app.resolved_global_admin', true) = 'on'
+          OR (
+            partner_switch.partner_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ','))
+            AND partner_switch.partner_id::text ~ %L
             AND EXISTS (
               SELECT 1 FROM catalog.registered_entry e
-              WHERE e.entry_id = partner_switch.entry_id
-                AND (%s)
-            ))$p$, partner_ok, format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id')));
-
-      EXECUTE format(
-        'CREATE POLICY location_switch_read ON catalog.location_switch FOR SELECT TO %I USING (%s)',
-        api,
-        format($p$current_setting('app.admin_type', true) = 'super'
-          OR (%s
+               WHERE e.entry_id = partner_switch.entry_id
+                 AND (%s)
+            )
+          )
+          OR (
+            EXISTS (
+              SELECT 1
+                FROM unnest(string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')) AS loc(id)
+                JOIN auth.location l ON l.location_id::text = loc.id
+               WHERE loc.id ~ %L
+                 AND l.partner_id = partner_switch.partner_id
+            )
             AND EXISTS (
+              SELECT 1 FROM catalog.registered_entry e
+               WHERE e.entry_id = partner_switch.entry_id
+                 AND (%s)
+            )
+          )
+        )
+      $f$, api, uuid_re,
+        format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id'),
+        uuid_re,
+        format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id'));
+
+      EXECUTE format($f$
+        CREATE POLICY location_switch_read ON catalog.location_switch FOR SELECT TO %I USING (
+          current_setting('app.resolved_global_admin', true) = 'on'
+          OR (
+            EXISTS (
               SELECT 1 FROM auth.location l
-              WHERE l.location_id = location_switch.location_id
-                AND l.partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
+               WHERE l.location_id = location_switch.location_id
+                 AND l.partner_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ','))
+                 AND l.partner_id::text ~ %L
             )
             AND EXISTS (
               SELECT 1 FROM catalog.registered_entry e
-              WHERE e.entry_id = location_switch.entry_id
-                AND (%s)
-            ))$p$, partner_ok, format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id')));
+               WHERE e.entry_id = location_switch.entry_id
+                 AND (%s)
+            )
+          )
+          OR (
+            location_switch.location_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ','))
+            AND location_switch.location_id::text ~ %L
+            AND EXISTS (
+              SELECT 1 FROM catalog.registered_entry e
+               WHERE e.entry_id = location_switch.entry_id
+                 AND (%s)
+            )
+          )
+        )
+      $f$, api, uuid_re,
+        format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id'),
+        uuid_re,
+        format(read_expr, 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id', 'e.owner_partner_id'));
 
-      EXECUTE format(
-        'CREATE POLICY entry_change_read ON catalog.entry_change FOR SELECT TO %I USING (%s)',
-        api,
-        format($p$current_setting('app.admin_type', true) = 'super'
-          OR (%s
-            AND EXISTS (
-              SELECT 1 FROM catalog.registered_entry e
-              WHERE e.entry_id = entry_change.entry_id
-                AND (e.owner_partner_id IS NULL OR e.owner_partner_id = nullif(current_setting('app.partner_id', true), '')::uuid)
-            )
-            AND (
-              (entry_change.scope_level = 'entry'
-                AND entry_change.target_partner_id IS NULL
-                AND entry_change.target_location_id IS NULL)
-              OR (entry_change.scope_level = 'partner'
-                AND entry_change.target_partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
-                AND entry_change.target_location_id IS NULL)
-              OR (entry_change.scope_level = 'location'
-                AND entry_change.target_partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
-                AND EXISTS (
-                  SELECT 1 FROM auth.location l
-                  WHERE l.location_id = entry_change.target_location_id
-                    AND l.partner_id = nullif(current_setting('app.partner_id', true), '')::uuid
-                ))
-            ))$p$, partner_ok));
+      EXECUTE format($f$
+        CREATE POLICY entry_change_read ON catalog.entry_change FOR SELECT TO %I USING (
+          current_setting('app.resolved_global_admin', true) = 'on'
+          OR EXISTS (
+            SELECT 1
+              FROM unnest(string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) AS p(id)
+             WHERE p.id ~ %L
+               AND EXISTS (
+                 SELECT 1 FROM catalog.registered_entry e
+                  WHERE e.entry_id = entry_change.entry_id
+                    AND (e.owner_partner_id IS NULL OR e.owner_partner_id::text = p.id)
+               )
+               AND (
+                 (entry_change.scope_level = 'entry' AND entry_change.target_partner_id IS NULL AND entry_change.target_location_id IS NULL)
+                 OR (entry_change.scope_level = 'partner' AND entry_change.target_partner_id::text = p.id AND entry_change.target_location_id IS NULL)
+                 OR (entry_change.scope_level = 'location' AND entry_change.target_partner_id::text = p.id AND EXISTS (
+                      SELECT 1 FROM auth.location l
+                       WHERE l.location_id = entry_change.target_location_id AND l.partner_id::text = p.id
+                    ))
+               )
+          )
+          OR EXISTS (
+            SELECT 1
+              FROM unnest(string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')) AS loc(id)
+              JOIN auth.location mine ON mine.location_id::text = loc.id
+             WHERE loc.id ~ %L
+               AND EXISTS (
+                 SELECT 1 FROM catalog.registered_entry e
+                  WHERE e.entry_id = entry_change.entry_id
+                    AND (e.owner_partner_id IS NULL OR e.owner_partner_id = mine.partner_id)
+               )
+               AND (
+                 (entry_change.scope_level = 'entry' AND entry_change.target_partner_id IS NULL AND entry_change.target_location_id IS NULL)
+                 OR (entry_change.scope_level = 'partner' AND entry_change.target_partner_id = mine.partner_id AND entry_change.target_location_id IS NULL)
+                 OR (entry_change.scope_level = 'location' AND entry_change.target_location_id = mine.location_id AND entry_change.target_partner_id = mine.partner_id)
+               )
+          )
+        )
+      $f$, api, uuid_re, uuid_re);
     END
     $pol$;
 
@@ -2355,3 +2449,2373 @@ BEGIN
 END $EF$;
 COMMIT;
 
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110160000_Req064AssignmentResolver') THEN
+    -- REQ-064 assignment store, resolver, and the last-active global Super Admin guard.
+    -- SQLSTATE P0001, MESSAGE last_active_super_admin: the statement would remove the last
+    -- effective global Super Admin. Effective means role_id super_admin, scope_kind global,
+    -- both scope ids null, status active, revoked_at null, and the app_user is active and
+    -- not locked. The guard takes pg_advisory_xact_lock(814064204) inside the trigger and
+    -- then counts the other effective Super Admins, so two concurrent removals cannot both commit.
+    -- Covered statements: revoked_at, assignment status, app_user status, app_user lock,
+    -- role_id or scope_kind leaving global super_admin, DELETE, and TRUNCATE.
+    -- TRUNCATE of auth.app_user without CASCADE is already refused by foreign keys.
+    -- There is no revoke or assign API here.
+
+    CREATE TABLE auth.admin_assignment (
+      assignment_id uuid        NOT NULL,
+      user_id       uuid        NOT NULL,
+      role_id       text        NOT NULL,
+      scope_kind    text        NOT NULL,
+      partner_id    uuid        NULL,
+      location_id   uuid        NULL,
+      status        text        NOT NULL,
+      version       bigint      NOT NULL DEFAULT 1,
+      granted_by    uuid        NOT NULL,
+      granted_at    timestamptz NOT NULL,
+      revoked_at    timestamptz NULL,
+      CONSTRAINT admin_assignment_pkey PRIMARY KEY (assignment_id),
+      CONSTRAINT admin_assignment_user_fk FOREIGN KEY (user_id) REFERENCES auth.app_user (user_id),
+      CONSTRAINT admin_assignment_location_fk FOREIGN KEY (location_id) REFERENCES auth.location (location_id),
+      CONSTRAINT admin_assignment_granted_by_fk FOREIGN KEY (granted_by) REFERENCES auth.app_user (user_id),
+      CONSTRAINT admin_assignment_role CHECK (role_id IN (
+        'super_admin', 'partner_admin', 'client_admin', 'supervisor', 'cashier', 'auditor', 'accounting', 'support')),
+      CONSTRAINT admin_assignment_scope_kind CHECK (scope_kind IN ('global', 'partner', 'location')),
+      CONSTRAINT admin_assignment_status CHECK (status IN ('active', 'disabled', 'revoked')),
+      CONSTRAINT admin_assignment_version CHECK (version >= 1),
+      CONSTRAINT admin_assignment_super CHECK (
+        role_id <> 'super_admin' OR (scope_kind = 'global' AND partner_id IS NULL AND location_id IS NULL)),
+      CONSTRAINT admin_assignment_partner_admin CHECK (
+        role_id <> 'partner_admin' OR (scope_kind = 'partner' AND partner_id IS NOT NULL AND location_id IS NULL)),
+      CONSTRAINT admin_assignment_scope_shape CHECK (
+        (scope_kind = 'global' AND partner_id IS NULL AND location_id IS NULL)
+        OR (scope_kind = 'partner' AND partner_id IS NOT NULL AND location_id IS NULL)
+        OR (scope_kind = 'location' AND location_id IS NOT NULL AND partner_id IS NULL))
+    );
+
+    CREATE INDEX admin_assignment_user_ix ON auth.admin_assignment (user_id);
+
+    ALTER TABLE auth.admin_assignment ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.admin_assignment FORCE ROW LEVEL SECURITY;
+    CREATE POLICY admin_assignment_owner ON auth.admin_assignment FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+
+    CREATE SEQUENCE auth.resolver_read_seq AS bigint;
+
+    -- P0001 / last_active_super_admin. See the file header.
+    CREATE FUNCTION auth._last_sa_guard() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      old_effective boolean := false;
+      new_effective boolean := false;
+      remaining bigint;
+    BEGIN
+      IF TG_TABLE_NAME = 'admin_assignment' THEN
+        old_effective := OLD.role_id = 'super_admin'
+          AND OLD.scope_kind = 'global'
+          AND OLD.partner_id IS NULL
+          AND OLD.location_id IS NULL
+          AND OLD.status = 'active'
+          AND OLD.revoked_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM auth.app_user u
+             WHERE u.user_id = OLD.user_id
+               AND u.status = 'active'
+               AND (u.locked_until IS NULL OR u.locked_until <= now()));
+        IF TG_OP = 'UPDATE' THEN
+          new_effective := NEW.role_id = 'super_admin'
+            AND NEW.scope_kind = 'global'
+            AND NEW.partner_id IS NULL
+            AND NEW.location_id IS NULL
+            AND NEW.status = 'active'
+            AND NEW.revoked_at IS NULL
+            AND EXISTS (
+              SELECT 1 FROM auth.app_user u
+               WHERE u.user_id = NEW.user_id
+                 AND u.status = 'active'
+                 AND (u.locked_until IS NULL OR u.locked_until <= now()));
+        END IF;
+        IF NOT old_effective OR new_effective THEN
+          RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+        END IF;
+      ELSE
+        old_effective := OLD.status = 'active'
+          AND (OLD.locked_until IS NULL OR OLD.locked_until <= now())
+          AND EXISTS (
+            SELECT 1 FROM auth.admin_assignment a
+             WHERE a.user_id = OLD.user_id
+               AND a.role_id = 'super_admin'
+               AND a.scope_kind = 'global'
+               AND a.partner_id IS NULL
+               AND a.location_id IS NULL
+               AND a.status = 'active'
+               AND a.revoked_at IS NULL);
+        IF TG_OP = 'UPDATE' THEN
+          new_effective := NEW.status = 'active'
+            AND (NEW.locked_until IS NULL OR NEW.locked_until <= now())
+            AND EXISTS (
+              SELECT 1 FROM auth.admin_assignment a
+               WHERE a.user_id = NEW.user_id
+                 AND a.role_id = 'super_admin'
+                 AND a.scope_kind = 'global'
+                 AND a.partner_id IS NULL
+                 AND a.location_id IS NULL
+                 AND a.status = 'active'
+                 AND a.revoked_at IS NULL);
+        END IF;
+        IF NOT old_effective OR (TG_OP = 'UPDATE' AND new_effective) THEN
+          RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+        END IF;
+      END IF;
+
+      -- The lock is held until this transaction ends. The count is its own statement, so in
+      -- READ COMMITTED it sees a removal the other session already committed.
+      -- The row this statement is changing is excluded: it has not been updated yet.
+      PERFORM pg_advisory_xact_lock(814064204);
+      IF TG_TABLE_NAME = 'admin_assignment' THEN
+        SELECT count(DISTINCT a.user_id) INTO remaining
+          FROM auth.admin_assignment a
+          JOIN auth.app_user u ON u.user_id = a.user_id
+         WHERE a.assignment_id IS DISTINCT FROM OLD.assignment_id
+           AND a.role_id = 'super_admin'
+           AND a.scope_kind = 'global'
+           AND a.partner_id IS NULL
+           AND a.location_id IS NULL
+           AND a.status = 'active'
+           AND a.revoked_at IS NULL
+           AND u.status = 'active'
+           AND (u.locked_until IS NULL OR u.locked_until <= now());
+      ELSE
+        SELECT count(DISTINCT a.user_id) INTO remaining
+          FROM auth.admin_assignment a
+          JOIN auth.app_user u ON u.user_id = a.user_id
+         WHERE a.user_id IS DISTINCT FROM OLD.user_id
+           AND a.role_id = 'super_admin'
+           AND a.scope_kind = 'global'
+           AND a.partner_id IS NULL
+           AND a.location_id IS NULL
+           AND a.status = 'active'
+           AND a.revoked_at IS NULL
+           AND u.status = 'active'
+           AND (u.locked_until IS NULL OR u.locked_until <= now());
+      END IF;
+      IF remaining < 1 THEN
+        RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'last_active_super_admin';
+      END IF;
+      RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+    END
+    $fn$;
+
+    CREATE TRIGGER admin_assignment_last_sa
+      BEFORE UPDATE OR DELETE ON auth.admin_assignment
+      FOR EACH ROW EXECUTE FUNCTION auth._last_sa_guard();
+
+    CREATE TRIGGER app_user_last_sa
+      BEFORE UPDATE OR DELETE ON auth.app_user
+      FOR EACH ROW EXECUTE FUNCTION auth._last_sa_guard();
+
+    -- TRUNCATE does not fire the row trigger. It would remove every active global Super Admin.
+    CREATE FUNCTION auth._last_sa_truncate_guard() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      remaining bigint;
+    BEGIN
+      PERFORM pg_advisory_xact_lock(814064204);
+      SELECT count(DISTINCT a.user_id) INTO remaining
+        FROM auth.admin_assignment a
+        JOIN auth.app_user u ON u.user_id = a.user_id
+       WHERE a.role_id = 'super_admin'
+         AND a.scope_kind = 'global'
+         AND a.partner_id IS NULL
+         AND a.location_id IS NULL
+         AND a.status = 'active'
+         AND a.revoked_at IS NULL
+         AND u.status = 'active'
+         AND (u.locked_until IS NULL OR u.locked_until <= now());
+      IF remaining >= 1 THEN
+        RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'last_active_super_admin';
+      END IF;
+      RETURN NULL;
+    END
+    $fn$;
+
+    CREATE TRIGGER admin_assignment_last_sa_truncate
+      BEFORE TRUNCATE ON auth.admin_assignment
+      FOR EACH STATEMENT EXECUTE FUNCTION auth._last_sa_truncate_guard();
+
+    CREATE TRIGGER app_user_last_sa_truncate
+      BEFORE TRUNCATE ON auth.app_user
+      FOR EACH STATEMENT EXECUTE FUNCTION auth._last_sa_truncate_guard();
+
+    REVOKE ALL ON FUNCTION auth._last_sa_guard() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth._last_sa_truncate_guard() FROM PUBLIC;
+    REVOKE ALL ON SEQUENCE auth.resolver_read_seq FROM PUBLIC;
+
+    -- Inputs are the verified issuer and subject only. Exactly one active, unlocked user
+    -- or the outcome is deny. A stand-in subject that is the app user id matches user_id
+    -- because a stand-in issuer cannot be stored in external_login. An Entra subject
+    -- matches external_login. The same user from both paths is one user. Two users is deny.
+    -- nextval is the proof the store was read. It is not rolled back.
+    CREATE FUNCTION auth.resolve_grant(p_issuer text, p_subject uuid)
+      RETURNS TABLE (
+        outcome text,
+        user_id uuid,
+        role_wire text,
+        global_admin boolean,
+        partner_ids uuid[],
+        location_ids uuid[],
+        perm_version bigint)
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_user uuid;
+      v_count int;
+      v_global boolean;
+      v_partners uuid[];
+      v_locations uuid[];
+      v_version bigint;
+      v_role text;
+    BEGIN
+      PERFORM nextval('auth.resolver_read_seq');
+      SELECT count(DISTINCT c.user_id), min(c.user_id::text)::uuid
+        INTO v_count, v_user
+        FROM (
+          SELECT u.user_id
+            FROM auth.app_user u
+           WHERE u.user_id = p_subject
+             AND u.status = 'active'
+             AND (u.locked_until IS NULL OR u.locked_until <= now())
+          UNION
+          SELECT u.user_id
+            FROM auth.external_login e
+            JOIN auth.app_user u ON u.user_id = e.user_id
+           WHERE e.issuer = p_issuer
+             AND e.subject = p_subject
+             AND u.status = 'active'
+             AND (u.locked_until IS NULL OR u.locked_until <= now())
+        ) c;
+      IF v_count IS DISTINCT FROM 1 THEN
+        outcome := 'deny'; user_id := NULL; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+
+      SELECT coalesce(bool_or(a.role_id = 'super_admin' AND a.scope_kind = 'global'), false),
+             coalesce(array_agg(DISTINCT a.partner_id) FILTER (WHERE a.scope_kind = 'partner' AND a.partner_id IS NOT NULL), ARRAY[]::uuid[]),
+             coalesce(array_agg(DISTINCT a.location_id) FILTER (WHERE a.scope_kind = 'location' AND a.location_id IS NOT NULL), ARRAY[]::uuid[]),
+             coalesce(max(a.version), 0)
+        INTO v_global, v_partners, v_locations, v_version
+        FROM auth.admin_assignment a
+       WHERE a.user_id = v_user
+         AND a.status = 'active'
+         AND a.revoked_at IS NULL;
+
+      IF v_version = 0 AND NOT v_global AND v_partners = ARRAY[]::uuid[] AND v_locations = ARRAY[]::uuid[] THEN
+        outcome := 'deny'; user_id := v_user; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+
+      IF v_global THEN
+        v_role := 'super_admin';
+      ELSIF EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL AND a.role_id = 'partner_admin'
+      ) THEN
+        v_role := 'partner_admin';
+      ELSE
+        SELECT a.role_id INTO v_role
+          FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+         ORDER BY a.role_id
+         LIMIT 1;
+        v_role := coalesce(v_role, 'none');
+      END IF;
+
+      outcome := 'grant';
+      user_id := v_user;
+      role_wire := v_role;
+      global_admin := v_global;
+      partner_ids := v_partners;
+      location_ids := v_locations;
+      perm_version := v_version;
+      RETURN NEXT;
+    END
+    $fn$;
+
+    REVOKE ALL ON FUNCTION auth.resolve_grant(text, uuid) FROM PUBLIC;
+
+    -- Existing partners for the location-create picker. The caller sees a partner only
+    -- through the resolved grant: global Super Admin, or a partner id on that grant.
+    -- PQ-284: this list is the reversible default. The shell does not accept a typed partner id.
+    CREATE FUNCTION auth.list_existing_partners()
+      RETURNS TABLE (partner_id uuid)
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $partners$
+      SELECT DISTINCT p.partner_id
+        FROM (
+          SELECT u.partner_id FROM auth.app_user u WHERE u.partner_id IS NOT NULL
+          UNION
+          SELECT l.partner_id FROM auth.location l
+          UNION
+          SELECT a.partner_id FROM auth.admin_assignment a WHERE a.partner_id IS NOT NULL
+        ) p
+       WHERE current_setting('app.resolved_global_admin', true) = 'on'
+          OR p.partner_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ','))
+       ORDER BY 1;
+    $partners$;
+
+    REVOKE ALL ON FUNCTION auth.list_existing_partners() FROM PUBLIC;
+
+    DO $req064$
+    DECLARE
+      a text := current_database() || '_admin_api';
+      scope text := $p$(current_setting('app.resolved_global_admin', true) = 'on' OR partner_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) OR location_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')))$p$;
+      any_admin text := $p$(current_setting('app.resolved_global_admin', true) = 'on' OR EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) p(id) WHERE p.id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') OR EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')) loc(id) WHERE loc.id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'))$p$;
+    BEGIN
+      EXECUTE format('REVOKE ALL ON auth.admin_assignment FROM PUBLIC, %I', a);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid) TO %I', a);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.list_existing_partners() TO %I', a);
+      EXECUTE 'DROP POLICY IF EXISTS location_admin ON auth.location';
+      EXECUTE format('CREATE POLICY location_admin ON auth.location FOR ALL TO %I USING %s WITH CHECK %s', a, scope, scope);
+      EXECUTE 'DROP POLICY IF EXISTS prb_admin ON auth.partner_reason_bounds';
+      EXECUTE format('CREATE POLICY prb_admin ON auth.partner_reason_bounds FOR ALL TO %I USING %s WITH CHECK %s', a, any_admin, any_admin);
+    END
+    $req064$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110160000_Req064AssignmentResolver') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110160000_Req064AssignmentResolver', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110200000_Req064RoleScope') THEN
+    -- REQ-064 H-A. A partner id is Partner Admin authority only when that assignment
+    -- row's role is partner_admin. DEC-199 adds assignments; it never upgrades a role.
+    -- A cashier at partner B stays a cashier at B and is not added to partner_ids.
+    CREATE OR REPLACE FUNCTION auth.resolve_grant(p_issuer text, p_subject uuid)
+      RETURNS TABLE (
+        outcome text,
+        user_id uuid,
+        role_wire text,
+        global_admin boolean,
+        partner_ids uuid[],
+        location_ids uuid[],
+        perm_version bigint)
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_user uuid;
+      v_count int;
+      v_global boolean;
+      v_partners uuid[];
+      v_locations uuid[];
+      v_version bigint;
+      v_role text;
+    BEGIN
+      PERFORM nextval('auth.resolver_read_seq');
+      SELECT count(DISTINCT c.user_id), min(c.user_id::text)::uuid
+        INTO v_count, v_user
+        FROM (
+          SELECT u.user_id
+            FROM auth.app_user u
+           WHERE u.user_id = p_subject
+             AND u.status = 'active'
+             AND (u.locked_until IS NULL OR u.locked_until <= now())
+          UNION
+          SELECT u.user_id
+            FROM auth.external_login e
+            JOIN auth.app_user u ON u.user_id = e.user_id
+           WHERE e.issuer = p_issuer
+             AND e.subject = p_subject
+             AND u.status = 'active'
+             AND (u.locked_until IS NULL OR u.locked_until <= now())
+        ) c;
+      IF v_count IS DISTINCT FROM 1 THEN
+        outcome := 'deny'; user_id := NULL; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+
+      SELECT coalesce(bool_or(a.role_id = 'super_admin' AND a.scope_kind = 'global'), false),
+             coalesce(array_agg(DISTINCT a.partner_id) FILTER (
+               WHERE a.scope_kind = 'partner' AND a.role_id = 'partner_admin' AND a.partner_id IS NOT NULL
+             ), ARRAY[]::uuid[]),
+             coalesce(array_agg(DISTINCT a.location_id) FILTER (
+               WHERE a.scope_kind = 'location' AND a.location_id IS NOT NULL
+             ), ARRAY[]::uuid[]),
+             coalesce(max(a.version), 0)
+        INTO v_global, v_partners, v_locations, v_version
+        FROM auth.admin_assignment a
+       WHERE a.user_id = v_user
+         AND a.status = 'active'
+         AND a.revoked_at IS NULL;
+
+      IF v_version = 0 AND NOT v_global AND v_partners = ARRAY[]::uuid[] AND v_locations = ARRAY[]::uuid[] THEN
+        outcome := 'deny'; user_id := v_user; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+
+      IF v_global THEN
+        v_role := 'super_admin';
+      ELSIF EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+           AND a.role_id = 'partner_admin' AND a.scope_kind = 'partner' AND a.partner_id IS NOT NULL
+      ) THEN
+        v_role := 'partner_admin';
+      ELSE
+        SELECT a.role_id INTO v_role
+          FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+         ORDER BY a.role_id
+         LIMIT 1;
+        v_role := coalesce(v_role, 'none');
+      END IF;
+
+      outcome := 'grant';
+      user_id := v_user;
+      role_wire := v_role;
+      global_admin := v_global;
+      partner_ids := v_partners;
+      location_ids := v_locations;
+      perm_version := v_version;
+      RETURN NEXT;
+    END
+    $fn$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110200000_Req064RoleScope') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110200000_Req064RoleScope', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110210000_Req064HistoryPartner') THEN
+    -- REQ-064 history label. catalog._actor.partner_id is resolved_partner_ids[1]
+    -- with no ORDER BY, so it is not the partner of the row being labeled.
+    -- The stored actor_partner_id is the record's partner when the actor is not a
+    -- global Super Admin, otherwise the actor's single Partner Admin partner, never
+    -- "whichever partner happens to be first".
+
+    CREATE OR REPLACE FUNCTION catalog.history_partner(p_record uuid, p_actor uuid[], p_global boolean)
+      RETURNS uuid
+      LANGUAGE sql
+      IMMUTABLE
+      SET search_path = pg_catalog
+    AS $fn$
+      SELECT CASE
+        WHEN coalesce(p_global, false) THEN NULL::uuid
+        WHEN p_record IS NOT NULL THEN p_record
+        WHEN cardinality(coalesce(p_actor, ARRAY[]::uuid[])) = 1 THEN p_actor[1]
+        ELSE NULL::uuid
+      END
+    $fn$;
+
+    REVOKE ALL ON FUNCTION catalog.history_partner(uuid, uuid[], boolean) FROM PUBLIC;
+
+    CREATE OR REPLACE FUNCTION catalog.tg_registry_pending() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE v_actor record;
+    BEGIN
+      IF NEW.owner_partner_id IS NULL AND NEW.entry_class IN ('descriptive', 'provenance') THEN
+        INSERT INTO catalog.ref_global (entry_id, family) VALUES (NEW.entry_id, NEW.family);
+      END IF;
+      IF NEW.owner_partner_id IS NOT NULL
+         AND NEW.family IN ('manufacturer','device_model','processor','reason_code','id_document_type','fee_type') THEN
+        INSERT INTO catalog.ref_private (entry_id, family, owner_partner_id)
+        VALUES (NEW.entry_id, NEW.family, NEW.owner_partner_id);
+      END IF;
+      IF NEW.owner_partner_id IS NULL AND NEW.family = 'device_model' THEN
+        INSERT INTO catalog.global_device_model (entry_id, family) VALUES (NEW.entry_id, NEW.family);
+      END IF;
+      SELECT * INTO v_actor FROM catalog._actor();
+      INSERT INTO catalog.history_pending (
+        entry_id, family, registry_after, subtype_after,
+        actor_user_id, actor_admin_type, actor_partner_id, reason, correlation_id, at)
+      VALUES (
+        NEW.entry_id, NEW.family, to_jsonb(NEW), NULL,
+        v_actor.actor_user_id, v_actor.admin_type,
+        catalog.history_partner(NEW.owner_partner_id, v_actor.resolved_partner_ids, v_actor.resolved_global),
+        v_actor.reason, v_actor.correlation_id,
+        clock_timestamp());
+      RETURN NULL;
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION catalog.tg_registry_update() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE
+      v_actor record;
+      v_before jsonb;
+      v_after jsonb;
+    BEGIN
+      SELECT c.before INTO v_before
+      FROM catalog.edit_coord c
+      WHERE c.entry_id = NEW.entry_id AND c.txn_id = txid_current();
+      IF NOT FOUND THEN
+        RETURN NULL;
+      END IF;
+      SELECT * INTO v_actor FROM catalog._actor();
+      v_after := jsonb_build_object('registry', to_jsonb(NEW), 'subtype', catalog.subtype_json(NEW.entry_id));
+      INSERT INTO catalog.entry_change (
+        change_id, entry_id, scope_level, target_partner_id, target_location_id,
+        row_version, change_kind, actor_user_id, actor_admin_type, actor_partner_id,
+        reason, source, at, before, after)
+      VALUES (
+        gen_random_uuid(), NEW.entry_id, 'entry', NULL, NULL,
+        NEW.row_version, 'updated',
+        v_actor.actor_user_id, v_actor.admin_type,
+        catalog.history_partner(NEW.owner_partner_id, v_actor.resolved_partner_ids, v_actor.resolved_global),
+        v_actor.reason, v_actor.correlation_id, clock_timestamp(),
+        v_before, v_after);
+      DELETE FROM catalog.edit_coord WHERE entry_id = NEW.entry_id AND txn_id = txid_current();
+      RETURN NULL;
+    END
+    $fn$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110210000_Req064HistoryPartner') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110210000_Req064HistoryPartner', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110220000_Req064Issuer') THEN
+    -- REQ-064 M-A. Both the user_id branch and the external_login branch require the issuer.
+    -- auth.user_issuer is not an EF entity. Stand-in issuers do not match the external_login
+    -- issuer check, so the verified (iss, sub) pair is stored here. admin_api cannot write it.
+    CREATE TABLE auth.user_issuer (
+      user_id uuid PRIMARY KEY REFERENCES auth.app_user (user_id),
+      issuer text NOT NULL,
+      CONSTRAINT user_issuer_issuer_len CHECK (char_length(issuer) BETWEEN 1 AND 500)
+    );
+    REVOKE ALL ON TABLE auth.user_issuer FROM PUBLIC;
+    DO $rev$
+    BEGIN
+      EXECUTE format('REVOKE ALL ON TABLE auth.user_issuer FROM %I', current_database() || '_admin_api');
+      EXECUTE format('REVOKE ALL ON TABLE auth.user_issuer FROM %I', current_database() || '_login');
+    EXCEPTION WHEN undefined_object THEN
+      NULL;
+    END
+    $rev$;
+
+    CREATE OR REPLACE FUNCTION auth.resolve_grant(p_issuer text, p_subject uuid)
+      RETURNS TABLE (
+        outcome text,
+        user_id uuid,
+        role_wire text,
+        global_admin boolean,
+        partner_ids uuid[],
+        location_ids uuid[],
+        perm_version bigint)
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_user uuid;
+      v_count int;
+      v_global boolean;
+      v_partners uuid[];
+      v_locations uuid[];
+      v_version bigint;
+      v_role text;
+    BEGIN
+      PERFORM nextval('auth.resolver_read_seq');
+      SELECT count(DISTINCT c.user_id), min(c.user_id::text)::uuid
+        INTO v_count, v_user
+        FROM (
+          SELECT u.user_id
+            FROM auth.app_user u
+            JOIN auth.user_issuer i ON i.user_id = u.user_id
+           WHERE i.issuer = p_issuer
+             AND u.user_id = p_subject
+             AND u.status = 'active'
+             AND (u.locked_until IS NULL OR u.locked_until <= now())
+          UNION
+          SELECT u.user_id
+            FROM auth.external_login e
+            JOIN auth.app_user u ON u.user_id = e.user_id
+           WHERE e.issuer = p_issuer
+             AND e.subject = p_subject
+             AND u.status = 'active'
+             AND (u.locked_until IS NULL OR u.locked_until <= now())
+        ) c;
+      IF v_count IS DISTINCT FROM 1 THEN
+        outcome := 'deny'; user_id := NULL; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+
+      SELECT coalesce(bool_or(a.role_id = 'super_admin' AND a.scope_kind = 'global'), false),
+             coalesce(array_agg(DISTINCT a.partner_id) FILTER (
+               WHERE a.scope_kind = 'partner' AND a.role_id = 'partner_admin' AND a.partner_id IS NOT NULL
+             ), ARRAY[]::uuid[]),
+             coalesce(array_agg(DISTINCT a.location_id) FILTER (
+               WHERE a.scope_kind = 'location' AND a.location_id IS NOT NULL
+             ), ARRAY[]::uuid[]),
+             coalesce(max(a.version), 0)
+        INTO v_global, v_partners, v_locations, v_version
+        FROM auth.admin_assignment a
+       WHERE a.user_id = v_user
+         AND a.status = 'active'
+         AND a.revoked_at IS NULL;
+
+      IF v_version = 0 AND NOT v_global AND v_partners = ARRAY[]::uuid[] AND v_locations = ARRAY[]::uuid[] THEN
+        outcome := 'deny'; user_id := v_user; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+
+      IF v_global THEN
+        v_role := 'super_admin';
+      ELSIF EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+           AND a.role_id = 'partner_admin' AND a.scope_kind = 'partner' AND a.partner_id IS NOT NULL
+      ) THEN
+        v_role := 'partner_admin';
+      ELSE
+        SELECT a.role_id INTO v_role
+          FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+         ORDER BY a.role_id
+         LIMIT 1;
+        v_role := coalesce(v_role, 'none');
+      END IF;
+
+      outcome := 'grant';
+      user_id := v_user;
+      role_wire := v_role;
+      global_admin := v_global;
+      partner_ids := v_partners;
+      location_ids := v_locations;
+      perm_version := v_version;
+      RETURN NEXT;
+    END
+    $fn$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110220000_Req064Issuer') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110220000_Req064Issuer', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110230000_Req064Principal') THEN
+    -- REQ-064 H-B. Row security does not trust app.resolved_* or app.admin_type.
+    -- Those settings are writable by admin_api. Access is derived from the active
+    -- assignment rows of the request principal (app.request_iss, app.request_sub).
+    -- The functions are STABLE SECURITY DEFINER. A later migration grants the NOLOGIN
+    -- role <db>_auth_definer, and the kit superuser step makes that role the owner.
+    -- admin_api is not a member of that role and cannot SET ROLE to it.
+
+    CREATE OR REPLACE FUNCTION auth._request_user() RETURNS uuid
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT CASE WHEN count(DISTINCT c.user_id) = 1 THEN min(c.user_id::text)::uuid ELSE NULL::uuid END
+        FROM (
+          SELECT u.user_id
+            FROM auth.app_user u
+            JOIN auth.user_issuer i ON i.user_id = u.user_id
+           WHERE i.issuer = current_setting('app.request_iss', true)
+             AND u.user_id::text = current_setting('app.request_sub', true)
+             AND u.status = 'active'
+             AND (u.locked_until IS NULL OR u.locked_until <= now())
+          UNION
+          SELECT u.user_id
+            FROM auth.external_login e
+            JOIN auth.app_user u ON u.user_id = e.user_id
+           WHERE e.issuer = current_setting('app.request_iss', true)
+             AND e.subject::text = current_setting('app.request_sub', true)
+             AND u.status = 'active'
+             AND (u.locked_until IS NULL OR u.locked_until <= now())
+        ) c
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.actor_is_global() RETURNS boolean
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = auth._request_user()
+           AND a.role_id = 'super_admin' AND a.scope_kind = 'global'
+           AND a.status = 'active' AND a.revoked_at IS NULL)
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.actor_is_any_admin() RETURNS boolean
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT auth.actor_is_global() OR EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = auth._request_user()
+           AND a.status = 'active' AND a.revoked_at IS NULL
+           AND a.role_id = 'partner_admin' AND a.scope_kind = 'partner' AND a.partner_id IS NOT NULL)
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.actor_has_any_location() RETURNS boolean
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = auth._request_user()
+           AND a.scope_kind = 'location' AND a.location_id IS NOT NULL
+           AND a.status = 'active' AND a.revoked_at IS NULL)
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.actor_can_partner(p_partner uuid) RETURNS boolean
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT auth.actor_is_global() OR EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = auth._request_user()
+           AND a.role_id = 'partner_admin' AND a.scope_kind = 'partner'
+           AND a.partner_id = p_partner
+           AND a.status = 'active' AND a.revoked_at IS NULL)
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.actor_location_sees_partner(p_partner uuid) RETURNS boolean
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+        JOIN auth.location l ON l.location_id = a.location_id
+         WHERE a.user_id = auth._request_user()
+           AND a.scope_kind = 'location'
+           AND a.status = 'active' AND a.revoked_at IS NULL
+           AND l.partner_id = p_partner)
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.actor_has_location(p_location uuid) RETURNS boolean
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = auth._request_user()
+           AND a.scope_kind = 'location' AND a.location_id = p_location
+           AND a.status = 'active' AND a.revoked_at IS NULL)
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.actor_can_location(p_partner uuid, p_location uuid) RETURNS boolean
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT auth.actor_is_global()
+          OR auth.actor_can_partner(p_partner)
+          OR auth.actor_has_location(p_location)
+    $fn$;
+
+    REVOKE ALL ON FUNCTION auth._request_user() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.actor_is_global() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.actor_is_any_admin() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.actor_has_any_location() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.actor_can_partner(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.actor_location_sees_partner(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.actor_has_location(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.actor_can_location(uuid, uuid) FROM PUBLIC;
+
+    CREATE OR REPLACE FUNCTION auth.actor_sees_change(p_entry uuid, p_scope text, p_partner uuid, p_location uuid)
+      RETURNS boolean
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth, catalog
+    AS $fn$
+      SELECT auth.actor_is_global()
+          OR EXISTS (
+            SELECT 1
+              FROM auth.admin_assignment asn
+              JOIN catalog.registered_entry e ON e.entry_id = p_entry
+             WHERE asn.user_id = auth._request_user()
+               AND asn.status = 'active' AND asn.revoked_at IS NULL
+               AND asn.role_id = 'partner_admin' AND asn.scope_kind = 'partner'
+               AND (e.owner_partner_id IS NULL OR e.owner_partner_id = asn.partner_id)
+               AND (
+                 (p_scope = 'entry' AND p_partner IS NULL AND p_location IS NULL)
+                 OR (p_scope = 'partner' AND p_partner = asn.partner_id AND p_location IS NULL)
+                 OR (p_scope = 'location' AND p_partner = asn.partner_id AND EXISTS (
+                      SELECT 1 FROM auth.location l
+                       WHERE l.location_id = p_location AND l.partner_id = asn.partner_id))
+               )
+          )
+          OR EXISTS (
+            SELECT 1
+              FROM auth.admin_assignment asn
+              JOIN auth.location mine ON mine.location_id = asn.location_id
+              JOIN catalog.registered_entry e ON e.entry_id = p_entry
+             WHERE asn.user_id = auth._request_user()
+               AND asn.scope_kind = 'location' AND asn.status = 'active' AND asn.revoked_at IS NULL
+               AND (e.owner_partner_id IS NULL OR e.owner_partner_id = mine.partner_id)
+               AND (
+                 (p_scope = 'entry' AND p_partner IS NULL AND p_location IS NULL)
+                 OR (p_scope = 'partner' AND p_partner = mine.partner_id AND p_location IS NULL)
+                 OR (p_scope = 'location' AND p_location = mine.location_id AND p_partner = mine.partner_id)
+               )
+          )
+    $fn$;
+
+    REVOKE ALL ON FUNCTION auth.actor_sees_change(uuid, text, uuid, uuid) FROM PUBLIC;
+
+    DO $grant$
+    DECLARE
+      a text := current_database() || '_admin_api';
+    BEGIN
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.actor_is_global() TO %I', a);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.actor_is_any_admin() TO %I', a);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.actor_has_any_location() TO %I', a);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.actor_can_partner(uuid) TO %I', a);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.actor_location_sees_partner(uuid) TO %I', a);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.actor_has_location(uuid) TO %I', a);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.actor_can_location(uuid, uuid) TO %I', a);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.actor_sees_change(uuid, text, uuid, uuid) TO %I', a);
+    END
+    $grant$;
+
+    CREATE OR REPLACE FUNCTION auth.list_existing_partners()
+      RETURNS TABLE (partner_id uuid)
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $partners$
+      SELECT DISTINCT p.partner_id
+        FROM (
+          SELECT u.partner_id FROM auth.app_user u WHERE u.partner_id IS NOT NULL
+          UNION
+          SELECT l.partner_id FROM auth.location l
+          UNION
+          SELECT a.partner_id FROM auth.admin_assignment a WHERE a.partner_id IS NOT NULL
+        ) p
+       WHERE auth.actor_is_global() OR auth.actor_can_partner(p.partner_id)
+       ORDER BY 1
+    $partners$;
+
+    DO $pol$
+    DECLARE
+      a text := current_database() || '_admin_api';
+      see text := $s$(auth.actor_is_global() OR (%s IS NULL AND auth.actor_is_any_admin()) OR auth.actor_can_partner(%s) OR auth.actor_location_sees_partner(%s))$s$;
+      t text;
+      owned text[] := ARRAY[
+        'manufacturer','device_model','processor','reason_code','id_document_type','fee_type'];
+      global_only text[] := ARRAY[
+        'catalog_release','transaction_type','channel','device_category','hardware_capability_kind',
+        'card_network','card_funding_class','payment_rail','check_instrument_kind','check_drawer_class',
+        'check_purpose','transaction_status','currency','ref_global','global_device_model'];
+    BEGIN
+      EXECUTE 'DROP POLICY IF EXISTS location_admin ON auth.location';
+      EXECUTE format(
+        'CREATE POLICY location_admin ON auth.location FOR ALL TO %I USING (auth.actor_can_location(partner_id, location_id)) WITH CHECK (auth.actor_can_location(partner_id, location_id))',
+        a);
+      -- Reads: a Partner Admin still sees every partner's bounds (DEC-111). A location
+      -- assignment sees only the partner that owns that location. It cannot write bounds.
+      -- M-B tightens the Partner Admin read to the partner that owns the scope.
+      EXECUTE 'DROP POLICY IF EXISTS prb_admin ON auth.partner_reason_bounds';
+      EXECUTE format(
+        'CREATE POLICY prb_admin ON auth.partner_reason_bounds FOR ALL TO %I USING (auth.actor_is_any_admin() OR auth.actor_location_sees_partner(partner_id)) WITH CHECK (auth.actor_is_any_admin())',
+        a);
+
+      EXECUTE 'DROP POLICY IF EXISTS registered_entry_read ON catalog.registered_entry';
+      EXECUTE format('CREATE POLICY registered_entry_read ON catalog.registered_entry FOR SELECT TO %I USING (%s)',
+        a, format(see, 'owner_partner_id', 'owner_partner_id', 'owner_partner_id'));
+      EXECUTE 'DROP POLICY IF EXISTS ref_private_read ON catalog.ref_private';
+      EXECUTE format('CREATE POLICY ref_private_read ON catalog.ref_private FOR SELECT TO %I USING (%s)',
+        a, format(see, 'owner_partner_id', 'owner_partner_id', 'owner_partner_id'));
+      EXECUTE 'DROP POLICY IF EXISTS model_hardware_claim_read ON catalog.model_hardware_claim';
+      EXECUTE format('CREATE POLICY model_hardware_claim_read ON catalog.model_hardware_claim FOR SELECT TO %I USING (%s)',
+        a, format(see, 'derived_owner', 'derived_owner', 'derived_owner'));
+      FOREACH t IN ARRAY owned LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON catalog.%I', t || '_read', t);
+        EXECUTE format('CREATE POLICY %I ON catalog.%I FOR SELECT TO %I USING (%s)',
+          t || '_read', t, a, format(see, 'owner_partner_id', 'owner_partner_id', 'owner_partner_id'));
+      END LOOP;
+      FOREACH t IN ARRAY global_only LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON catalog.%I', t || '_read', t);
+        EXECUTE format(
+          'CREATE POLICY %I ON catalog.%I FOR SELECT TO %I USING (auth.actor_is_global() OR auth.actor_is_any_admin() OR auth.actor_has_any_location())',
+          t || '_read', t, a);
+      END LOOP;
+
+      EXECUTE 'DROP POLICY IF EXISTS partner_switch_read ON catalog.partner_switch';
+      EXECUTE format($f$
+        CREATE POLICY partner_switch_read ON catalog.partner_switch FOR SELECT TO %I USING (
+          auth.actor_is_global()
+          OR (
+            (auth.actor_can_partner(partner_switch.partner_id) OR auth.actor_location_sees_partner(partner_switch.partner_id))
+            AND EXISTS (SELECT 1 FROM catalog.registered_entry e WHERE e.entry_id = partner_switch.entry_id)
+          )
+        )
+      $f$, a);
+      EXECUTE 'DROP POLICY IF EXISTS location_switch_read ON catalog.location_switch';
+      EXECUTE format($f$
+        CREATE POLICY location_switch_read ON catalog.location_switch FOR SELECT TO %I USING (
+          auth.actor_is_global()
+          OR (
+            (
+              EXISTS (
+                SELECT 1 FROM auth.location l
+                 WHERE l.location_id = location_switch.location_id
+                   AND (auth.actor_can_partner(l.partner_id) OR auth.actor_location_sees_partner(l.partner_id))
+              )
+              OR auth.actor_has_location(location_switch.location_id)
+            )
+            AND EXISTS (SELECT 1 FROM catalog.registered_entry e WHERE e.entry_id = location_switch.entry_id)
+          )
+        )
+      $f$, a);
+      EXECUTE 'DROP POLICY IF EXISTS entry_change_read ON catalog.entry_change';
+      EXECUTE format(
+        'CREATE POLICY entry_change_read ON catalog.entry_change FOR SELECT TO %I USING (auth.actor_sees_change(entry_id, scope_level, target_partner_id, target_location_id))',
+        a);
+    END
+    $pol$;
+
+    -- C-4. The write records the principal the policies just used. The function copies
+    -- app.request_iss and app.request_sub. It does not take them as arguments, and
+    -- admin_api cannot insert the row itself. The audit event JSON is unchanged.
+    CREATE TABLE auth.login_write_principal (
+      write_id uuid PRIMARY KEY,
+      kind text NOT NULL,
+      target_id uuid NOT NULL,
+      issuer text NOT NULL,
+      subject uuid NOT NULL,
+      recorded_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT login_write_principal_kind CHECK (kind IN ('location_login_config', 'partner_reason_bounds')),
+      CONSTRAINT login_write_principal_issuer_len CHECK (char_length(issuer) BETWEEN 1 AND 500)
+    );
+    REVOKE ALL ON TABLE auth.login_write_principal FROM PUBLIC;
+    DO $rev$
+    BEGIN
+      EXECUTE format('REVOKE ALL ON TABLE auth.login_write_principal FROM %I', current_database() || '_admin_api');
+      EXECUTE format('REVOKE ALL ON TABLE auth.login_write_principal FROM %I', current_database() || '_login');
+    EXCEPTION WHEN undefined_object THEN
+      NULL;
+    END
+    $rev$;
+
+    CREATE OR REPLACE FUNCTION auth.record_login_write(p_kind text, p_target uuid) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_iss text := current_setting('app.request_iss', true);
+      v_sub text := current_setting('app.request_sub', true);
+    BEGIN
+      IF v_iss IS NULL OR char_length(v_iss) < 1 OR v_sub IS NULL
+         OR v_sub !~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN
+        RAISE EXCEPTION 'login_write_principal' USING ERRCODE = 'P0001';
+      END IF;
+      INSERT INTO auth.login_write_principal (write_id, kind, target_id, issuer, subject)
+      VALUES (gen_random_uuid(), p_kind, p_target, v_iss, v_sub::uuid);
+    END
+    $fn$;
+    REVOKE ALL ON FUNCTION auth.record_login_write(text, uuid) FROM PUBLIC;
+    DO $grant$
+    BEGIN
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.record_login_write(text, uuid) TO %I', current_database() || '_admin_api');
+    END
+    $grant$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110230000_Req064Principal') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110230000_Req064Principal', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110240000_Req064ReasonRead') THEN
+    -- REQ-064 M-B. A SELECT sees the partner the actor holds: global, that partner's
+    -- Partner Admin assignment, or a location assignment at that partner.
+    -- A location id or partner id in a session setting does not open every partner.
+    -- The write is DEC-111, project-plan L163 (Mohanraj 2026-11-05 6:51 AM: "No,
+    -- Partner Admin can change any partner"). Do not narrow save_partner_bounds.
+    -- PQ-240 is open: whether a Partner Admin may SEE another partner's setting,
+    -- and whether that partner's admins are told. read_partner_bounds and the
+    -- prb_select policy stay as they are while PQ-240(a) is open. The write path
+    -- reads through auth.read_partner_bounds, so a Partner Admin can still update
+    -- a row the SELECT policy hides.
+
+    CREATE OR REPLACE FUNCTION auth.read_partner_bounds(p_partner uuid)
+      RETURNS TABLE (
+        reason_min_length integer,
+        reason_max_length integer,
+        updated_by uuid,
+        updated_at timestamptz,
+        row_version bigint)
+      LANGUAGE plpgsql
+      VOLATILE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    BEGIN
+      -- PQ-240 is open: whether a Partner Admin may SEE another partner's setting,
+      -- and whether that partner's admins are told, is not decided here. This
+      -- write-path read stays any-admin. prb_select is the SELECT policy and is unchanged.
+      IF NOT auth.actor_is_any_admin() THEN
+        RETURN;
+      END IF;
+      RETURN QUERY
+        SELECT b.reason_min_length, b.reason_max_length, b.updated_by, b.updated_at, b.row_version
+          FROM auth.partner_reason_bounds b
+         WHERE b.partner_id = p_partner
+         FOR UPDATE;
+    END
+    $fn$;
+    REVOKE ALL ON FUNCTION auth.read_partner_bounds(uuid) FROM PUBLIC;
+
+    CREATE OR REPLACE FUNCTION auth.save_partner_bounds(
+      p_partner uuid, p_expected bigint, p_min integer, p_max integer, p_by uuid, p_at timestamptz)
+      RETURNS bigint
+      LANGUAGE plpgsql
+      VOLATILE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v bigint;
+    BEGIN
+      -- DEC-111, project-plan L163 (Mohanraj 2026-11-05 6:51 AM: "No, Partner Admin
+      -- can change any partner"). Do not restrict this function to the actor's
+      -- partner. A location-only user and a principal with no assignment are not
+      -- actor_is_any_admin(), so they still cannot write. PQ-240 does not decide the write.
+      IF NOT auth.actor_is_any_admin() THEN
+        RAISE EXCEPTION 'partner_reason_bounds' USING ERRCODE = '42501';
+      END IF;
+      IF p_expected = 0 THEN
+        INSERT INTO auth.partner_reason_bounds
+          (partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version)
+        VALUES (p_partner, p_min, p_max, p_by, p_at, 1);
+        RETURN 1;
+      END IF;
+      UPDATE auth.partner_reason_bounds
+         SET reason_min_length = p_min, reason_max_length = p_max, updated_by = p_by, updated_at = p_at,
+             row_version = row_version + 1
+       WHERE partner_id = p_partner AND row_version = p_expected
+       RETURNING row_version INTO v;
+      RETURN v;
+    END
+    $fn$;
+    REVOKE ALL ON FUNCTION auth.save_partner_bounds(uuid, bigint, integer, integer, uuid, timestamptz) FROM PUBLIC;
+
+    DO $pol$
+    DECLARE
+      a text := current_database() || '_admin_api';
+      see text := $s$(auth.actor_is_global() OR auth.actor_can_partner(partner_id) OR auth.actor_location_sees_partner(partner_id))$s$;
+    BEGIN
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.read_partner_bounds(uuid) TO %I', a);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION auth.save_partner_bounds(uuid, bigint, integer, integer, uuid, timestamptz) TO %I', a);
+      EXECUTE 'DROP POLICY IF EXISTS prb_admin ON auth.partner_reason_bounds';
+      EXECUTE 'DROP POLICY IF EXISTS prb_select ON auth.partner_reason_bounds';
+      EXECUTE 'DROP POLICY IF EXISTS prb_insert ON auth.partner_reason_bounds';
+      EXECUTE 'DROP POLICY IF EXISTS prb_update ON auth.partner_reason_bounds';
+      EXECUTE format('CREATE POLICY prb_select ON auth.partner_reason_bounds FOR SELECT TO %I USING %s', a, see);
+      EXECUTE format('CREATE POLICY prb_insert ON auth.partner_reason_bounds FOR INSERT TO %I WITH CHECK (auth.actor_is_any_admin())', a);
+      EXECUTE format('CREATE POLICY prb_update ON auth.partner_reason_bounds FOR UPDATE TO %I USING (auth.actor_is_any_admin()) WITH CHECK (auth.actor_is_any_admin())', a);
+    END
+    $pol$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110240000_Req064ReasonRead') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110240000_Req064ReasonRead', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110250000_Req064Definer') THEN
+    -- REQ-064. The lookup functions run as a NOLOGIN role created by the kit before this
+    -- migration. This migration cannot CREATE ROLE or ALTER OWNER: the migration user is
+    -- NOCREATEROLE and is not a member of the definer. The superuser owner step does that.
+    -- Policies here let that role see the rows the functions read. admin_api is not a member.
+
+    DO $def$
+    DECLARE
+      r text := current_database() || '_auth_definer';
+    BEGIN
+      -- The kit creates this role before migrate. A scratch database that cannot
+      -- CREATE ROLE skips the grants; its functions stay owned by the migration user.
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_roles
+         WHERE rolname = r AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls
+      ) THEN
+        RETURN;
+      END IF;
+      EXECUTE format('GRANT USAGE ON SCHEMA auth, catalog TO %I', r);
+      EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE auth.resolver_read_seq TO %I', r);
+      EXECUTE format('GRANT SELECT ON auth.app_user, auth.user_issuer, auth.external_login, auth.admin_assignment, auth.location TO %I', r);
+      EXECUTE format('GRANT SELECT, INSERT, UPDATE ON auth.partner_reason_bounds TO %I', r);
+      EXECUTE format('GRANT SELECT, INSERT ON auth.login_write_principal TO %I', r);
+      EXECUTE format('GRANT SELECT ON catalog.registered_entry TO %I', r);
+      EXECUTE 'DROP POLICY IF EXISTS admin_assignment_definer ON auth.admin_assignment';
+      EXECUTE format('CREATE POLICY admin_assignment_definer ON auth.admin_assignment FOR SELECT TO %I USING (true)', r);
+      EXECUTE 'DROP POLICY IF EXISTS location_definer ON auth.location';
+      EXECUTE format('CREATE POLICY location_definer ON auth.location FOR SELECT TO %I USING (true)', r);
+      EXECUTE 'DROP POLICY IF EXISTS prb_definer ON auth.partner_reason_bounds';
+      EXECUTE format('CREATE POLICY prb_definer ON auth.partner_reason_bounds FOR ALL TO %I USING (true) WITH CHECK (true)', r);
+      EXECUTE 'DROP POLICY IF EXISTS registered_entry_definer ON catalog.registered_entry';
+      EXECUTE format('CREATE POLICY registered_entry_definer ON catalog.registered_entry FOR SELECT TO %I USING (true)', r);
+    END
+    $def$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110250000_Req064Definer') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110250000_Req064Definer', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110260000_Req064RlsPrincipal') THEN
+    -- SA L1. The two principal tables were readable by their owner with RLS off.
+    -- ENABLE and FORCE them. The migration user (the database owner) keeps one
+    -- permissive policy so seeds still write. The NOLOGIN definer gets the policy
+    -- its functions need. admin_api and login receive no policy and no grant.
+    ALTER TABLE auth.user_issuer ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.user_issuer FORCE ROW LEVEL SECURITY;
+    ALTER TABLE auth.login_write_principal ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.login_write_principal FORCE ROW LEVEL SECURITY;
+
+    DROP POLICY IF EXISTS user_issuer_owner ON auth.user_issuer;
+    CREATE POLICY user_issuer_owner ON auth.user_issuer
+      FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+
+    DROP POLICY IF EXISTS login_write_principal_owner ON auth.login_write_principal;
+    CREATE POLICY login_write_principal_owner ON auth.login_write_principal
+      FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+
+    DO $l1$
+    DECLARE
+      r text := current_database() || '_auth_definer';
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_roles
+         WHERE rolname = r AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls
+      ) THEN
+        RETURN;
+      END IF;
+      EXECUTE 'DROP POLICY IF EXISTS user_issuer_definer ON auth.user_issuer';
+      EXECUTE format('CREATE POLICY user_issuer_definer ON auth.user_issuer FOR SELECT TO %I USING (true)', r);
+      EXECUTE 'DROP POLICY IF EXISTS login_write_principal_definer ON auth.login_write_principal';
+      EXECUTE format(
+        'CREATE POLICY login_write_principal_definer ON auth.login_write_principal FOR ALL TO %I USING (true) WITH CHECK (true)',
+        r);
+    END
+    $l1$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110260000_Req064RlsPrincipal') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110260000_Req064RlsPrincipal', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110270000_Req064LocationSave') THEN
+    -- SA L2. admin_api no longer holds UPDATE on auth.location_login_config.
+    -- The write goes through a definer function that checks the actor can see the
+    -- location. The column list and the keep-copy CASE match the previous UPDATE.
+    CREATE OR REPLACE FUNCTION auth.save_location_login_config(
+      p_location uuid,
+      p_expected bigint,
+      p_provider_kind text,
+      p_display_name text,
+      p_tenants uuid[],
+      p_oidc_authority text,
+      p_oidc_client_id text,
+      p_keep_copy boolean,
+      p_secret_ref text,
+      p_allow_db_fallback boolean,
+      p_mfa_required boolean,
+      p_updated_by uuid,
+      p_updated_at timestamptz
+    ) RETURNS integer
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      n integer;
+    BEGIN
+      IF auth._request_user() IS NULL OR NOT EXISTS (
+        SELECT 1 FROM auth.location l
+         WHERE l.location_id = p_location
+           AND auth.actor_can_location(l.partner_id, l.location_id)
+      ) THEN
+        RAISE EXCEPTION 'location_login_config' USING ERRCODE = '42501';
+      END IF;
+      UPDATE auth.location_login_config SET
+        provider_kind = p_provider_kind,
+        display_name = p_display_name,
+        entra_allowed_tenant_ids = p_tenants,
+        oidc_authority = CASE WHEN p_keep_copy THEN oidc_authority ELSE p_oidc_authority END,
+        oidc_client_id = CASE WHEN p_keep_copy THEN oidc_client_id ELSE p_oidc_client_id END,
+        secret_ref = CASE WHEN p_keep_copy THEN secret_ref ELSE p_secret_ref END,
+        allow_db_fallback = p_allow_db_fallback,
+        mfa_required = p_mfa_required,
+        updated_by = p_updated_by,
+        updated_at = p_updated_at,
+        row_version = row_version + 1
+      WHERE location_id = p_location AND row_version = p_expected;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      RETURN n;
+    END
+    $fn$;
+
+    REVOKE ALL ON FUNCTION auth.save_location_login_config(uuid, bigint, text, text, uuid[], text, text, boolean, text, boolean, boolean, uuid, timestamptz) FROM PUBLIC;
+
+    DO $l2$
+    DECLARE
+      a text := current_database() || '_admin_api';
+      r text := current_database() || '_auth_definer';
+    BEGIN
+      EXECUTE format(
+        'REVOKE UPDATE (provider_kind, display_name, entra_allowed_tenant_ids, oidc_authority, oidc_client_id, secret_ref, allow_db_fallback, mfa_required, updated_by, updated_at, row_version) ON auth.location_login_config FROM %I',
+        a);
+      EXECUTE format(
+        'GRANT EXECUTE ON FUNCTION auth.save_location_login_config(uuid, bigint, text, text, uuid[], text, text, boolean, text, boolean, boolean, uuid, timestamptz) TO %I',
+        a);
+      IF EXISTS (
+        SELECT 1 FROM pg_roles
+         WHERE rolname = r AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls
+      ) THEN
+        -- SELECT is required: the UPDATE reads oidc_* and secret_ref for the keep-copy CASE.
+        EXECUTE format('GRANT SELECT, UPDATE ON auth.location_login_config TO %I', r);
+        EXECUTE 'DROP POLICY IF EXISTS llc_definer ON auth.location_login_config';
+        EXECUTE 'DROP POLICY IF EXISTS llc_definer_read ON auth.location_login_config';
+        EXECUTE format(
+          'CREATE POLICY llc_definer ON auth.location_login_config FOR UPDATE TO %I USING (true) WITH CHECK (true)',
+          r);
+        -- RLS hides rows with no SELECT policy, so an UPDATE policy alone changes zero rows.
+        EXECUTE format(
+          'CREATE POLICY llc_definer_read ON auth.location_login_config FOR SELECT TO %I USING (true)',
+          r);
+      END IF;
+    END
+    $l2$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110270000_Req064LocationSave') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110270000_Req064LocationSave', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110280000_Req064RevokeTemp') THEN
+    -- SA L3. A database created outside db/kit/database.sql still loses PUBLIC TEMP.
+    -- No statement in this repo creates a temporary table, so the privilege is not granted back.
+    DO $temp$
+    BEGIN
+      EXECUTE format('REVOKE TEMP ON DATABASE %I FROM PUBLIC', current_database());
+    END
+    $temp$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110280000_Req064RevokeTemp') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110280000_Req064RevokeTemp', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110290000_Req064Session') THEN
+    -- DEC-213. The request principal is a session bound to this backend and this
+    -- transaction. app.request_iss and app.request_sub are not read. The raw token
+    -- is never stored. admin_api cannot call open_session. The issuer role can,
+    -- when the kit created it. A scratch database creates that issuer role before
+    -- this migration so the owner is not granted open_session.
+
+    CREATE TABLE auth.request_session (
+      token_hash bytea PRIMARY KEY,
+      jti uuid NOT NULL UNIQUE,
+      iss text NOT NULL,
+      sub text NOT NULL,
+      user_id uuid NOT NULL REFERENCES auth.app_user (user_id),
+      created_at timestamptz NOT NULL,
+      expires_at timestamptz NOT NULL,
+      revoked_at timestamptz,
+      CONSTRAINT request_session_ttl CHECK (expires_at <= created_at + interval '15 minutes'),
+      CONSTRAINT request_session_iss_len CHECK (char_length(iss) BETWEEN 1 AND 500),
+      CONSTRAINT request_session_sub_len CHECK (char_length(sub) BETWEEN 1 AND 500)
+    );
+    CREATE TABLE auth.request_binding (
+      backend_pid integer NOT NULL,
+      xact_id xid8 NOT NULL,
+      token_hash bytea NOT NULL REFERENCES auth.request_session (token_hash),
+      user_id uuid NOT NULL,
+      PRIMARY KEY (backend_pid, xact_id)
+    );
+    REVOKE ALL ON TABLE auth.request_session, auth.request_binding FROM PUBLIC;
+
+    ALTER TABLE auth.request_session ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.request_session FORCE ROW LEVEL SECURITY;
+    ALTER TABLE auth.request_binding ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.request_binding FORCE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS request_session_owner ON auth.request_session;
+    CREATE POLICY request_session_owner ON auth.request_session
+      FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+    DROP POLICY IF EXISTS request_binding_owner ON auth.request_binding;
+    CREATE POLICY request_binding_owner ON auth.request_binding
+      FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+
+    -- 32 live sessions per principal. 600 opens in a minute. Both are fixed here.
+    CREATE OR REPLACE FUNCTION auth.open_session(p_iss text, p_sub text, p_jti uuid, p_exp timestamptz)
+      RETURNS text
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_user uuid;
+      v_created timestamptz := clock_timestamp();
+      v_exp timestamptz;
+      v_token text;
+      v_hash bytea;
+    BEGIN
+      IF p_iss IS NULL OR char_length(p_iss) < 1 OR char_length(p_iss) > 500
+         OR p_sub IS NULL OR char_length(p_sub) < 1 OR p_jti IS NULL THEN
+        RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
+      END IF;
+      IF p_exp IS NULL OR p_exp <= v_created THEN
+        RAISE EXCEPTION 'session_expired' USING ERRCODE = '42501';
+      END IF;
+      SELECT u.user_id INTO v_user
+        FROM auth.app_user u
+        JOIN auth.user_issuer i ON i.user_id = u.user_id AND i.issuer = p_iss
+       WHERE u.user_id::text = p_sub
+         AND u.status = 'active'
+         AND (u.locked_until IS NULL OR u.locked_until <= v_created);
+      IF v_user IS NULL THEN
+        SELECT u.user_id INTO v_user
+          FROM auth.external_login e
+          JOIN auth.app_user u ON u.user_id = e.user_id
+          JOIN auth.user_issuer i ON i.user_id = u.user_id AND i.issuer = e.issuer
+         WHERE e.issuer = p_iss
+           AND e.subject::text = p_sub
+           AND u.status = 'active'
+           AND (u.locked_until IS NULL OR u.locked_until <= v_created);
+      END IF;
+      IF v_user IS NULL THEN
+        RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
+      END IF;
+      IF (SELECT count(*) FROM auth.request_session s
+           WHERE s.user_id = v_user AND s.revoked_at IS NULL AND s.expires_at > v_created) >= 32 THEN
+        RAISE EXCEPTION 'session_cap' USING ERRCODE = '54000';
+      END IF;
+      IF (SELECT count(*) FROM auth.request_session s
+           WHERE s.user_id = v_user AND s.created_at > v_created - interval '1 minute') >= 600 THEN
+        RAISE EXCEPTION 'session_rate' USING ERRCODE = '54000';
+      END IF;
+      v_exp := least(p_exp, v_created + interval '15 minutes');
+      v_token := encode(sha256(convert_to(gen_random_uuid()::text || gen_random_uuid()::text, 'UTF8')), 'hex');
+      v_hash := sha256(convert_to(v_token, 'UTF8'));
+      BEGIN
+        INSERT INTO auth.request_session (token_hash, jti, iss, sub, user_id, created_at, expires_at)
+        VALUES (v_hash, p_jti, p_iss, p_sub, v_user, v_created, v_exp);
+      EXCEPTION WHEN unique_violation THEN
+        -- Same jti, same subject, already expired, not revoked: replace the row.
+        -- A live row, a revoked row, or a different subject stays jti_reused.
+        DELETE FROM auth.request_binding b
+         USING auth.request_session s
+         WHERE b.token_hash = s.token_hash
+           AND s.jti = p_jti
+           AND s.user_id = v_user
+           AND s.iss = p_iss
+           AND s.sub = p_sub
+           AND s.revoked_at IS NULL
+           AND s.expires_at <= v_created;
+        DELETE FROM auth.request_session s
+         WHERE s.jti = p_jti
+           AND s.user_id = v_user
+           AND s.iss = p_iss
+           AND s.sub = p_sub
+           AND s.revoked_at IS NULL
+           AND s.expires_at <= v_created;
+        IF NOT FOUND THEN
+          RAISE EXCEPTION 'jti_reused' USING ERRCODE = '23505';
+        END IF;
+        INSERT INTO auth.request_session (token_hash, jti, iss, sub, user_id, created_at, expires_at)
+        VALUES (v_hash, p_jti, p_iss, p_sub, v_user, v_created, v_exp);
+      END;
+      RETURN v_token;
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.begin_request(p_token text) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_hash bytea := sha256(convert_to(p_token, 'UTF8'));
+      v_user uuid;
+    BEGIN
+      SELECT s.user_id INTO v_user
+        FROM auth.request_session s
+       WHERE s.token_hash = v_hash
+         AND s.revoked_at IS NULL
+         AND s.expires_at > clock_timestamp();
+      IF v_user IS NULL THEN
+        -- The row is still checked. Expired and not revoked is a distinct error
+        -- so the host can return 401. Revoked and unknown stay session_denied.
+        IF EXISTS (
+          SELECT 1 FROM auth.request_session s
+           WHERE s.token_hash = v_hash
+             AND s.revoked_at IS NULL
+             AND s.expires_at <= clock_timestamp()
+        ) THEN
+          RAISE EXCEPTION 'session_expired' USING ERRCODE = '42501';
+        END IF;
+        RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
+      END IF;
+      BEGIN
+        INSERT INTO auth.request_binding (backend_pid, xact_id, token_hash, user_id)
+        VALUES (pg_backend_pid(), pg_current_xact_id(), v_hash, v_user);
+      EXCEPTION WHEN unique_violation THEN
+        RAISE EXCEPTION 'session_rebind' USING ERRCODE = '25001';
+      END;
+      DELETE FROM auth.request_binding b
+       WHERE b.backend_pid = pg_backend_pid()
+         AND b.xact_id IS DISTINCT FROM pg_current_xact_id();
+      DELETE FROM auth.request_binding b
+       WHERE NOT EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.pid = b.backend_pid);
+      DELETE FROM auth.request_session s
+       WHERE s.expires_at < clock_timestamp() - interval '1 hour';
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.current_principal() RETURNS uuid
+      LANGUAGE sql
+      STABLE
+      PARALLEL RESTRICTED
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT s.user_id
+        FROM auth.request_binding b
+        JOIN auth.request_session s ON s.token_hash = b.token_hash
+       WHERE b.backend_pid = pg_backend_pid()
+         AND b.xact_id = pg_current_xact_id()
+         AND s.revoked_at IS NULL
+         AND s.expires_at > clock_timestamp()
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.session_issuer() RETURNS text
+      LANGUAGE sql
+      STABLE
+      PARALLEL RESTRICTED
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT s.iss
+        FROM auth.request_binding b
+        JOIN auth.request_session s ON s.token_hash = b.token_hash
+       WHERE b.backend_pid = pg_backend_pid()
+         AND b.xact_id = pg_current_xact_id()
+         AND s.revoked_at IS NULL
+         AND s.expires_at > clock_timestamp()
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.revoke_session(p_token text) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    BEGIN
+      UPDATE auth.request_session
+         SET revoked_at = clock_timestamp()
+       WHERE token_hash = sha256(convert_to(p_token, 'UTF8'))
+         AND revoked_at IS NULL;
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth._request_user() RETURNS uuid
+      LANGUAGE sql
+      STABLE
+      PARALLEL RESTRICTED
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT u.user_id
+        FROM auth.app_user u
+       WHERE u.user_id = auth.current_principal()
+         AND u.status = 'active'
+         AND (u.locked_until IS NULL OR u.locked_until <= clock_timestamp())
+    $fn$;
+
+    ALTER FUNCTION auth.actor_is_global() PARALLEL RESTRICTED;
+    ALTER FUNCTION auth.actor_is_any_admin() PARALLEL RESTRICTED;
+    ALTER FUNCTION auth.actor_has_any_location() PARALLEL RESTRICTED;
+    ALTER FUNCTION auth.actor_can_partner(uuid) PARALLEL RESTRICTED;
+    ALTER FUNCTION auth.actor_location_sees_partner(uuid) PARALLEL RESTRICTED;
+    ALTER FUNCTION auth.actor_has_location(uuid) PARALLEL RESTRICTED;
+    ALTER FUNCTION auth.actor_can_location(uuid, uuid) PARALLEL RESTRICTED;
+    ALTER FUNCTION auth.actor_sees_change(uuid, text, uuid, uuid) PARALLEL RESTRICTED;
+    ALTER FUNCTION auth.list_existing_partners() PARALLEL RESTRICTED;
+    ALTER FUNCTION auth.read_partner_bounds(uuid) PARALLEL RESTRICTED;
+
+    CREATE OR REPLACE FUNCTION auth.resolve_grant(p_issuer text, p_subject uuid)
+      RETURNS TABLE (
+        outcome text,
+        user_id uuid,
+        role_wire text,
+        global_admin boolean,
+        partner_ids uuid[],
+        location_ids uuid[],
+        perm_version bigint)
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_user uuid;
+      v_global boolean;
+      v_partners uuid[];
+      v_locations uuid[];
+      v_version bigint;
+      v_role text;
+    BEGIN
+      -- Arguments are ignored. The binding is the principal. A caller that passes
+      -- a different issuer or subject still resolves the bound user.
+      PERFORM p_issuer, p_subject;
+      PERFORM nextval('auth.resolver_read_seq');
+      v_user := auth._request_user();
+      IF v_user IS NULL THEN
+        outcome := 'deny'; user_id := NULL; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+      SELECT coalesce(bool_or(a.role_id = 'super_admin' AND a.scope_kind = 'global'), false),
+             coalesce(array_agg(DISTINCT a.partner_id) FILTER (
+               WHERE a.scope_kind = 'partner' AND a.role_id = 'partner_admin' AND a.partner_id IS NOT NULL
+             ), ARRAY[]::uuid[]),
+             coalesce(array_agg(DISTINCT a.location_id) FILTER (
+               WHERE a.scope_kind = 'location' AND a.location_id IS NOT NULL
+             ), ARRAY[]::uuid[]),
+             coalesce(max(a.version), 0)
+        INTO v_global, v_partners, v_locations, v_version
+        FROM auth.admin_assignment a
+       WHERE a.user_id = v_user
+         AND a.status = 'active'
+         AND a.revoked_at IS NULL;
+      IF v_version = 0 AND NOT v_global AND v_partners = ARRAY[]::uuid[] AND v_locations = ARRAY[]::uuid[] THEN
+        outcome := 'deny'; user_id := v_user; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+      IF v_global THEN
+        v_role := 'super_admin';
+      ELSIF EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+           AND a.role_id = 'partner_admin' AND a.scope_kind = 'partner' AND a.partner_id IS NOT NULL
+      ) THEN
+        v_role := 'partner_admin';
+      ELSE
+        SELECT a.role_id INTO v_role
+          FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+         ORDER BY a.role_id
+         LIMIT 1;
+        v_role := coalesce(v_role, 'none');
+      END IF;
+      outcome := 'grant';
+      user_id := v_user;
+      role_wire := v_role;
+      global_admin := v_global;
+      partner_ids := v_partners;
+      location_ids := v_locations;
+      perm_version := v_version;
+      RETURN NEXT;
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.record_login_write(p_kind text, p_target uuid) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_iss text;
+      v_sub text;
+    BEGIN
+      SELECT s.iss, s.sub INTO v_iss, v_sub
+        FROM auth.request_binding b
+        JOIN auth.request_session s ON s.token_hash = b.token_hash
+       WHERE b.backend_pid = pg_backend_pid()
+         AND b.xact_id = pg_current_xact_id()
+         AND s.revoked_at IS NULL
+         AND s.expires_at > clock_timestamp();
+      IF v_iss IS NULL OR v_sub IS NULL
+         OR v_sub !~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN
+        RAISE EXCEPTION 'login_write_principal' USING ERRCODE = 'P0001';
+      END IF;
+      INSERT INTO auth.login_write_principal (write_id, kind, target_id, issuer, subject)
+      VALUES (gen_random_uuid(), p_kind, p_target, v_iss, v_sub::uuid);
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.revoke_on_principal_change() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_user uuid;
+    BEGIN
+      IF TG_TABLE_NAME = 'app_user' THEN
+        IF NEW.status IS DISTINCT FROM OLD.status OR NEW.locked_until IS DISTINCT FROM OLD.locked_until THEN
+          UPDATE auth.request_session SET revoked_at = clock_timestamp()
+           WHERE user_id = NEW.user_id AND revoked_at IS NULL;
+        END IF;
+        RETURN NULL;
+      END IF;
+      v_user := CASE WHEN TG_OP = 'DELETE' THEN OLD.user_id ELSE NEW.user_id END;
+      UPDATE auth.request_session SET revoked_at = clock_timestamp()
+       WHERE user_id = v_user AND revoked_at IS NULL;
+      IF TG_OP = 'UPDATE' AND NEW.user_id IS DISTINCT FROM OLD.user_id THEN
+        UPDATE auth.request_session SET revoked_at = clock_timestamp()
+         WHERE user_id = OLD.user_id AND revoked_at IS NULL;
+      END IF;
+      RETURN NULL;
+    END
+    $fn$;
+
+    DROP TRIGGER IF EXISTS app_user_revoke_sessions ON auth.app_user;
+    CREATE TRIGGER app_user_revoke_sessions
+      AFTER UPDATE OF status, locked_until ON auth.app_user
+      FOR EACH ROW EXECUTE FUNCTION auth.revoke_on_principal_change();
+
+    DROP TRIGGER IF EXISTS admin_assignment_revoke_sessions ON auth.admin_assignment;
+    CREATE TRIGGER admin_assignment_revoke_sessions
+      AFTER INSERT OR UPDATE OR DELETE ON auth.admin_assignment
+      FOR EACH ROW EXECUTE FUNCTION auth.revoke_on_principal_change();
+
+    REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.begin_request(text) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.current_principal() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.session_issuer() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.revoke_session(text) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.revoke_on_principal_change() FROM PUBLIC;
+
+    DO $sess$
+    DECLARE
+      a text := current_database() || '_admin_api';
+      l text := current_database() || '_login';
+      i text := current_database() || '_issuer';
+      r text := current_database() || '_auth_definer';
+    BEGIN
+      -- open_session is not granted to the database owner. Catalog scratch creates
+      -- <db>_issuer before this migration, and the block below grants that role.
+      -- admin_api is not granted open_session.
+      EXECUTE 'GRANT EXECUTE ON FUNCTION auth.begin_request(text), auth.current_principal(), auth.session_issuer(), auth.revoke_session(text) TO CURRENT_USER';
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE format('REVOKE ALL ON TABLE auth.request_session, auth.request_binding FROM %I', a);
+        EXECUTE format('REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz) FROM %I', a);
+        EXECUTE format('REVOKE ALL ON FUNCTION auth.revoke_session(text) FROM %I', a);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.begin_request(text), auth.current_principal(), auth.session_issuer() TO %I', a);
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = l) THEN
+        EXECUTE format('REVOKE ALL ON TABLE auth.request_session, auth.request_binding FROM %I', l);
+        EXECUTE format('REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz) FROM %I', l);
+        EXECUTE format('REVOKE ALL ON FUNCTION auth.begin_request(text) FROM %I', l);
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = i AND rolcanlogin AND NOT rolsuper) THEN
+        EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), i);
+        EXECUTE format('GRANT USAGE ON SCHEMA auth TO %I', i);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.open_session(text, text, uuid, timestamptz) TO %I', i);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.revoke_session(text) TO %I', i);
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM pg_roles
+         WHERE rolname = r AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls
+      ) THEN
+        EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON auth.request_session, auth.request_binding TO %I', r);
+        EXECUTE 'DROP POLICY IF EXISTS request_session_definer ON auth.request_session';
+        EXECUTE format('CREATE POLICY request_session_definer ON auth.request_session FOR ALL TO %I USING (true) WITH CHECK (true)', r);
+        EXECUTE 'DROP POLICY IF EXISTS request_binding_definer ON auth.request_binding';
+        EXECUTE format('CREATE POLICY request_binding_definer ON auth.request_binding FOR ALL TO %I USING (true) WITH CHECK (true)', r);
+      END IF;
+    END
+    $sess$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110290000_Req064Session') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110290000_Req064Session', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110300000_Req064RevokeLogin') THEN
+    -- Sign-out revokes every live request session for that user. Only the issuer
+    -- role can call this. The database owner and admin_api cannot.
+
+    CREATE OR REPLACE FUNCTION auth.revoke_login(p_iss text, p_sub text) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_user uuid;
+    BEGIN
+      IF p_iss IS NULL OR p_sub IS NULL OR char_length(p_iss) < 1 OR char_length(p_sub) < 1 THEN
+        RETURN;
+      END IF;
+      SELECT u.user_id INTO v_user
+        FROM auth.app_user u
+        JOIN auth.user_issuer i ON i.user_id = u.user_id AND i.issuer = p_iss
+       WHERE u.user_id::text = p_sub;
+      IF v_user IS NULL THEN
+        SELECT u.user_id INTO v_user
+          FROM auth.external_login e
+          JOIN auth.app_user u ON u.user_id = e.user_id
+          JOIN auth.user_issuer i ON i.user_id = u.user_id AND i.issuer = e.issuer
+         WHERE e.issuer = p_iss
+           AND e.subject::text = p_sub;
+      END IF;
+      IF v_user IS NULL THEN
+        RETURN;
+      END IF;
+      UPDATE auth.request_session
+         SET revoked_at = clock_timestamp()
+       WHERE user_id = v_user
+         AND revoked_at IS NULL;
+    END
+    $fn$;
+
+    REVOKE ALL ON FUNCTION auth.revoke_login(text, text) FROM PUBLIC;
+
+    DO $rev$
+    DECLARE
+      a text := current_database() || '_admin_api';
+      i text := current_database() || '_issuer';
+      owner_name text;
+    BEGIN
+      SELECT pg_get_userbyid(datdba)::text INTO owner_name
+        FROM pg_database WHERE datname = current_database();
+      EXECUTE format('REVOKE ALL ON FUNCTION auth.revoke_login(text, text) FROM %I', owner_name);
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE format('REVOKE ALL ON FUNCTION auth.revoke_login(text, text) FROM %I', a);
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = i AND rolcanlogin AND NOT rolsuper) THEN
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.revoke_login(text, text) TO %I', i);
+      END IF;
+    END
+    $rev$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110300000_Req064RevokeLogin') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110300000_Req064RevokeLogin', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110310000_Req064Actor') THEN
+    -- The catalog actor is the bound session principal. Resolved GUCs are not read.
+    -- correlation_id and reason are the write label, not the principal.
+    -- Main's catalog._actor has fewer OUT columns. CREATE OR REPLACE cannot change
+    -- the return type, so the old function is dropped first.
+
+    DROP FUNCTION IF EXISTS catalog._actor();
+
+    CREATE OR REPLACE FUNCTION catalog._actor(
+      OUT admin_type text,
+      OUT partner_id uuid,
+      OUT actor_user_id uuid,
+      OUT correlation_id text,
+      OUT reason text,
+      OUT resolved_global boolean,
+      OUT resolved_partner_ids uuid[])
+      LANGUAGE plpgsql
+      SET search_path = pg_catalog
+    AS $fn$
+    DECLARE
+      v_outcome text;
+      v_user uuid;
+      v_global boolean;
+      v_partners uuid[];
+    BEGIN
+      SELECT g.outcome, g.user_id, g.global_admin, g.partner_ids
+        INTO v_outcome, v_user, v_global, v_partners
+        FROM auth.resolve_grant('', '00000000-0000-0000-0000-000000000000'::uuid) g;
+      IF v_outcome IS DISTINCT FROM 'grant' OR v_user IS NULL THEN
+        PERFORM catalog._err('P0001', 'catalog_actor_context');
+      END IF;
+      actor_user_id := v_user;
+      resolved_global := coalesce(v_global, false);
+      resolved_partner_ids := coalesce(v_partners, ARRAY[]::uuid[]);
+      IF resolved_global THEN
+        admin_type := 'super';
+        partner_id := NULL;
+      ELSIF coalesce(cardinality(resolved_partner_ids), 0) >= 1 THEN
+        admin_type := 'partner';
+        partner_id := resolved_partner_ids[1];
+      ELSE
+        PERFORM catalog._err('P0001', 'catalog_actor_context');
+      END IF;
+      correlation_id := nullif(current_setting('app.correlation_id', true), '');
+      IF correlation_id IS NULL THEN
+        PERFORM catalog._err('P0001', 'catalog_actor_context');
+      END IF;
+      reason := nullif(current_setting('app.reason', true), '');
+      IF reason IS NOT NULL AND (reason <> btrim(reason) OR char_length(reason) NOT BETWEEN 1 AND 500) THEN
+        PERFORM catalog._err('P0001', 'catalog_reason_required');
+      END IF;
+    END
+    $fn$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261110310000_Req064Actor') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261110310000_Req064Actor', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261111180000_Req064SessionClose') THEN
+-- One login lock and a logout cutoff. The shipped 20261110290000 function replaced an
+-- expired row for the same jti. This migration drops that replace. A database that
+-- already applied 20261110290000 or 20261110300000 gets the same functions through
+-- CREATE OR REPLACE. The old migration text is left as history.
+
+CREATE TABLE IF NOT EXISTS auth.login_cutoff (
+  user_id uuid PRIMARY KEY,
+  revoked_before timestamptz NOT NULL
+);
+-- No foreign key. A KEY SHARE check on delete of app_user would require the
+-- migration user to hold UPDATE on this table. The definer trigger removes the row.
+ALTER TABLE auth.login_cutoff DROP CONSTRAINT IF EXISTS login_cutoff_user_id_fkey;
+REVOKE ALL ON TABLE auth.login_cutoff FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION auth._login_cutoff_user_delete() RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, auth
+AS $fn$
+BEGIN
+  DELETE FROM auth.login_cutoff WHERE user_id = OLD.user_id;
+  RETURN OLD;
+END
+$fn$;
+
+REVOKE ALL ON FUNCTION auth._login_cutoff_user_delete() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS app_user_login_cutoff_delete ON auth.app_user;
+CREATE TRIGGER app_user_login_cutoff_delete
+  BEFORE DELETE ON auth.app_user
+  FOR EACH ROW EXECUTE FUNCTION auth._login_cutoff_user_delete();
+
+ALTER TABLE auth.login_cutoff ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth.login_cutoff FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS login_cutoff_owner ON auth.login_cutoff;
+CREATE POLICY login_cutoff_owner ON auth.login_cutoff
+  FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+
+CREATE OR REPLACE FUNCTION auth._lock_login(p_user uuid)
+  RETURNS void
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog
+AS $fn$
+BEGIN
+  IF p_user IS NULL THEN
+    RETURN;
+  END IF;
+  -- 814064213 is this login lock. 814064204 stays the last-Super-Admin lock.
+  -- The second key is the user. A hash collision waits two logins together.
+  PERFORM pg_advisory_xact_lock(814064213, hashtext(p_user::text));
+END
+$fn$;
+
+REVOKE ALL ON FUNCTION auth._lock_login(uuid) FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION auth.open_session(
+  p_iss text, p_sub text, p_jti uuid, p_exp timestamptz, p_iat timestamptz)
+  RETURNS text
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, auth
+AS $fn$
+DECLARE
+  v_user uuid;
+  v_created timestamptz := clock_timestamp();
+  v_exp timestamptz;
+  v_token text;
+  v_hash bytea;
+BEGIN
+  IF p_iss IS NULL OR char_length(p_iss) < 1 OR char_length(p_iss) > 500
+     OR p_sub IS NULL OR char_length(p_sub) < 1 OR p_jti IS NULL OR p_iat IS NULL THEN
+    RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
+  END IF;
+  IF p_exp IS NULL OR p_exp <= v_created THEN
+    RAISE EXCEPTION 'session_expired' USING ERRCODE = '42501';
+  END IF;
+  SELECT u.user_id INTO v_user
+    FROM auth.app_user u
+    JOIN auth.user_issuer i ON i.user_id = u.user_id AND i.issuer = p_iss
+   WHERE u.user_id::text = p_sub;
+  IF v_user IS NULL THEN
+    SELECT u.user_id INTO v_user
+      FROM auth.external_login e
+      JOIN auth.app_user u ON u.user_id = e.user_id
+      JOIN auth.user_issuer i ON i.user_id = u.user_id AND i.issuer = e.issuer
+     WHERE e.issuer = p_iss
+       AND e.subject::text = p_sub;
+  END IF;
+  IF v_user IS NULL THEN
+    RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
+  END IF;
+  PERFORM auth._lock_login(v_user);
+  -- Status is read again after the lock, against v_created. A lock that was in
+  -- force when this open started still denies after locked_until passes while
+  -- we wait, and that open does not insert a row.
+  IF NOT EXISTS (SELECT 1 FROM auth.app_user u WHERE u.user_id = v_user AND u.status = 'active' AND (u.locked_until IS NULL OR u.locked_until <= v_created)) THEN
+    RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
+  END IF;
+  -- One second is the remaining future-iat window. A later iat is not proof
+  -- the token was issued after logout.
+  IF p_iat > clock_timestamp() + interval '1 second' THEN
+    RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM auth.login_cutoff c
+     WHERE c.user_id = v_user
+       AND p_iat <= c.revoked_before
+  ) THEN
+    RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501';
+  END IF;
+  IF (SELECT count(*) FROM auth.request_session s
+       WHERE s.user_id = v_user AND s.revoked_at IS NULL AND s.expires_at > v_created) >= 32 THEN
+    RAISE EXCEPTION 'session_cap' USING ERRCODE = '54000';
+  END IF;
+  IF (SELECT count(*) FROM auth.request_session s
+       WHERE s.user_id = v_user AND s.created_at > v_created - interval '1 minute') >= 600 THEN
+    RAISE EXCEPTION 'session_rate' USING ERRCODE = '54000';
+  END IF;
+  v_exp := least(p_exp, v_created + interval '15 minutes');
+  v_token := encode(sha256(convert_to(gen_random_uuid()::text || gen_random_uuid()::text, 'UTF8')), 'hex');
+  v_hash := sha256(convert_to(v_token, 'UTF8'));
+  BEGIN
+    INSERT INTO auth.request_session (token_hash, jti, iss, sub, user_id, created_at, expires_at)
+    VALUES (v_hash, p_jti, p_iss, p_sub, v_user, v_created, v_exp);
+  EXCEPTION WHEN unique_violation THEN
+    -- One jti is one row. An expired row is not replaced.
+    RAISE EXCEPTION 'jti_reused' USING ERRCODE = '23505';
+  END;
+  RETURN v_token;
+END
+$fn$;
+
+DROP FUNCTION IF EXISTS auth.open_session(text, text, uuid, timestamptz);
+
+-- The shipped revoke_login revoked EXECUTE from the database owner. Replacing
+-- the function needs that privilege back for this statement only.
+GRANT EXECUTE ON FUNCTION auth.revoke_login(text, text) TO CURRENT_USER;
+
+CREATE OR REPLACE FUNCTION auth.revoke_login(p_iss text, p_sub text) RETURNS void
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, auth
+AS $fn$
+DECLARE
+  v_user uuid;
+  v_now timestamptz;
+BEGIN
+  IF p_iss IS NULL OR p_sub IS NULL OR char_length(p_iss) < 1 OR char_length(p_sub) < 1 THEN
+    RETURN;
+  END IF;
+  SELECT u.user_id INTO v_user
+    FROM auth.app_user u
+    JOIN auth.user_issuer i ON i.user_id = u.user_id AND i.issuer = p_iss
+   WHERE u.user_id::text = p_sub;
+  IF v_user IS NULL THEN
+    SELECT u.user_id INTO v_user
+      FROM auth.external_login e
+      JOIN auth.app_user u ON u.user_id = e.user_id
+      JOIN auth.user_issuer i ON i.user_id = u.user_id AND i.issuer = e.issuer
+     WHERE e.issuer = p_iss
+       AND e.subject::text = p_sub;
+  END IF;
+  IF v_user IS NULL THEN
+    RETURN;
+  END IF;
+  PERFORM auth._lock_login(v_user);
+  v_now := clock_timestamp();
+  INSERT INTO auth.login_cutoff (user_id, revoked_before)
+  VALUES (v_user, v_now)
+  ON CONFLICT (user_id) DO UPDATE SET revoked_before = EXCLUDED.revoked_before;
+  UPDATE auth.request_session
+     SET revoked_at = v_now
+   WHERE user_id = v_user
+     AND revoked_at IS NULL;
+END
+$fn$;
+
+CREATE OR REPLACE FUNCTION auth.revoke_on_principal_change() RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, auth
+AS $fn$
+DECLARE
+  v_user uuid;
+  v_old uuid;
+  v_new uuid;
+BEGIN
+  IF TG_TABLE_NAME = 'app_user' THEN
+    IF NEW.status IS DISTINCT FROM OLD.status OR NEW.locked_until IS DISTINCT FROM OLD.locked_until THEN
+      PERFORM auth._lock_login(NEW.user_id);
+      UPDATE auth.request_session SET revoked_at = clock_timestamp()
+       WHERE user_id = NEW.user_id AND revoked_at IS NULL;
+    END IF;
+    RETURN NULL;
+  END IF;
+  v_user := CASE WHEN TG_OP = 'DELETE' THEN OLD.user_id ELSE NEW.user_id END;
+  IF TG_OP = 'UPDATE' AND NEW.user_id IS DISTINCT FROM OLD.user_id THEN
+    v_old := OLD.user_id;
+    v_new := NEW.user_id;
+    IF v_old < v_new THEN
+      PERFORM auth._lock_login(v_old);
+      PERFORM auth._lock_login(v_new);
+    ELSE
+      PERFORM auth._lock_login(v_new);
+      PERFORM auth._lock_login(v_old);
+    END IF;
+  ELSE
+    PERFORM auth._lock_login(v_user);
+  END IF;
+  UPDATE auth.request_session SET revoked_at = clock_timestamp()
+   WHERE user_id = v_user AND revoked_at IS NULL;
+  IF TG_OP = 'UPDATE' AND NEW.user_id IS DISTINCT FROM OLD.user_id THEN
+    UPDATE auth.request_session SET revoked_at = clock_timestamp()
+     WHERE user_id = OLD.user_id AND revoked_at IS NULL;
+  END IF;
+  RETURN NULL;
+END
+$fn$;
+
+-- A cached issuer session is replayed only while this is still true. A revoked
+-- row, an expired row, or an iat at or before login_cutoff is not served from
+-- the cache. A null iat is denied: NULL <= revoked_before is unknown, so the
+-- cutoff comparison would otherwise treat a logged-out user as still open.
+CREATE OR REPLACE FUNCTION auth.session_still_open(p_token text, p_iat timestamptz) RETURNS boolean
+  LANGUAGE plpgsql
+  STABLE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, auth
+AS $fn$
+BEGIN
+  IF p_iat IS NULL THEN RAISE EXCEPTION 'session_denied' USING ERRCODE = '42501'; END IF;
+  RETURN EXISTS (
+    SELECT 1
+      FROM auth.request_session s
+     WHERE s.token_hash = sha256(convert_to(p_token, 'UTF8'))
+       AND s.revoked_at IS NULL
+       AND s.expires_at > clock_timestamp()
+       AND NOT EXISTS (
+         SELECT 1 FROM auth.login_cutoff c
+          WHERE c.user_id = s.user_id
+            AND p_iat <= c.revoked_before
+       )
+  );
+END
+$fn$;
+
+REVOKE ALL ON FUNCTION auth.session_still_open(text, timestamptz) FROM PUBLIC;
+
+REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz, timestamptz) FROM PUBLIC;
+
+DO $close$
+DECLARE
+  a text := current_database() || '_admin_api';
+  l text := current_database() || '_login';
+  i text := current_database() || '_issuer';
+  r text := current_database() || '_auth_definer';
+  owner_name text;
+BEGIN
+  SELECT pg_get_userbyid(datdba)::text INTO owner_name
+    FROM pg_database WHERE datname = current_database();
+  EXECUTE format('REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz, timestamptz) FROM %I', owner_name);
+  -- The database owner keeps EXECUTE on _lock_login. Scratch databases do not run
+  -- the definer-owner step, so the trigger still runs as that owner. The kit
+  -- definer also receives EXECUTE below, for after that step changes the owner.
+  EXECUTE format('REVOKE ALL ON FUNCTION auth.revoke_login(text, text) FROM %I', owner_name);
+  -- login_cutoff has no foreign key. The last-active-super-admin guard is the
+  -- trigger on app_user and admin_assignment. TRUNCATE here would erase every
+  -- cutoff and let a pre-logout iat open, so the owner does not keep it.
+  EXECUTE format('REVOKE TRUNCATE ON TABLE auth.login_cutoff FROM %I', owner_name);
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+    EXECUTE format('REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz, timestamptz) FROM %I', a);
+    EXECUTE format('REVOKE ALL ON TABLE auth.login_cutoff FROM %I', a);
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = l) THEN
+    EXECUTE format('REVOKE ALL ON FUNCTION auth.open_session(text, text, uuid, timestamptz, timestamptz) FROM %I', l);
+    EXECUTE format('REVOKE ALL ON TABLE auth.login_cutoff FROM %I', l);
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = i AND rolcanlogin AND NOT rolsuper) THEN
+    EXECUTE format('GRANT EXECUTE ON FUNCTION auth.open_session(text, text, uuid, timestamptz, timestamptz) TO %I', i);
+    EXECUTE format('GRANT EXECUTE ON FUNCTION auth.revoke_login(text, text) TO %I', i);
+    EXECUTE format('GRANT EXECUTE ON FUNCTION auth.session_still_open(text, timestamptz) TO %I', i);
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_roles
+     WHERE rolname = r AND NOT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls
+  ) THEN
+    EXECUTE format('GRANT EXECUTE ON FUNCTION auth._lock_login(uuid) TO %I', r);
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON auth.login_cutoff TO %I', r);
+    EXECUTE 'DROP POLICY IF EXISTS login_cutoff_definer ON auth.login_cutoff';
+    EXECUTE format('CREATE POLICY login_cutoff_definer ON auth.login_cutoff FOR ALL TO %I USING (true) WITH CHECK (true)', r);
+  END IF;
+END
+$close$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261111180000_Req064SessionClose') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261111180000_Req064SessionClose', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261112050000_Req064LocationAddress') THEN
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS address_line_1 text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS address_line_2 text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS city text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS country text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS region text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS postal_code text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS phone text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE auth.location ADD COLUMN IF NOT EXISTS time_zone text;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261112050000_Req064LocationAddress') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261112050000_Req064LocationAddress', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261112060000_Req064SessionSubject') THEN
+CREATE OR REPLACE FUNCTION auth.session_subject() RETURNS text
+  LANGUAGE sql
+  STABLE
+  PARALLEL RESTRICTED
+  SECURITY DEFINER
+  SET search_path = pg_catalog, auth
+AS $fn$
+  SELECT s.sub
+    FROM auth.request_binding b
+    JOIN auth.request_session s ON s.token_hash = b.token_hash
+   WHERE b.backend_pid = pg_backend_pid()
+     AND b.xact_id = pg_current_xact_id()
+     AND s.revoked_at IS NULL
+     AND s.expires_at > clock_timestamp()
+$fn$;
+
+REVOKE ALL ON FUNCTION auth.session_subject() FROM PUBLIC;
+
+DO $subj$
+DECLARE
+  a text := current_database() || '_admin_api';
+BEGIN
+  EXECUTE 'GRANT EXECUTE ON FUNCTION auth.session_subject() TO CURRENT_USER';
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+    EXECUTE format('GRANT EXECUTE ON FUNCTION auth.session_subject() TO %I', a);
+  END IF;
+END
+$subj$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261112060000_Req064SessionSubject') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261112060000_Req064SessionSubject', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;

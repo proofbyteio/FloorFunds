@@ -14,7 +14,7 @@ export function renderApp(state) {
     <a class="skip-link" href="#main">Skip to content</a>
     <p class="draft-banner">TEST-ONLY presentation. Synthetic fixture projection of the accepted catalog contract. Not the .NET double, not an API, and not a database. Rows are not production seeds.</p>
     <header class="topbar">
-      <p class="crumbs">Cash Advance / Administration / Master data</p>
+      <p class="crumbs">${esc(state.productName || "")} / Administration / Master data</p>
       <p class="context">Synthetic review context: ${esc(actor.label)}. Not authentication.</p>
     </header>
     <div class="actor-bar">
@@ -238,7 +238,7 @@ function feeForm(state) {
         <textarea id="fee-description" name="description" maxlength="2000">${esc(state.form.description)}</textarea>
       </div>
       <p class="field-help" id="fee-help">Recording a names-only fee here adds a synthetic session row. Refresh discards it. The audit intent is not emitted and is not durable acceptance.</p>
-      <button type="button" class="primary" id="fee-save" data-action="submit-fee" aria-describedby="fee-help">Record names-only fee in this synthetic session</button>
+      <button type="button" class="primary btn-primary" id="fee-save" data-action="submit-fee" aria-describedby="fee-help"><span class="btn-primary__press">Record names-only fee in this synthetic session</span></button>
     </form>`;
 }
 
@@ -391,9 +391,11 @@ function sameCode(state) {
   state.scope = previous.scope;
   const actor = ACTORS[state.role];
   const entries = listed.status === 200 ? listed.list.entries.filter((entry) => entry.code === "EXAMPLE-5-A") : [];
-  const ownsPrivate = state.role === "partner_admin" && listed.status === 200;
-  const note = ownsPrivate
-    ? `The table is ${actor.label}'s manufacturer list. Both identities are here because this principal is the owning Partner Admin. This screen does not give the private row to any other principal.`
+  const seesPrivate = (state.role === "partner_admin" || state.role === "super_admin") && listed.status === 200;
+  const note = seesPrivate
+    ? state.role === "super_admin"
+      ? `The table is ${actor.label}'s manufacturer list. Both identities are here because this principal's resolved global Super Admin assignment includes partner-private non-claim rows. This screen does not show a hidden count.`
+      : `The table is ${actor.label}'s manufacturer list. Both identities are here because this principal is the owning Partner Admin. This screen does not give the private row to any other Partner Admin.`
     : listed.status === 200
       ? `The table is ${actor.label}'s manufacturer list. This principal does not receive the private non-claim row. A direct read of that private row is the same as a missing row. This screen does not show a hidden count. Choose Partner Admin (own test partner) in the synthetic principal selector to see both identities.`
       : `${actor.label} has no manufacturer table on this screen. The list status is ${listed.status} ${listed.code || listed.detail || ""}. That refusal is not a missing row.`;

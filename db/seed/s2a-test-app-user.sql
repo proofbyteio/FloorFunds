@@ -12,4 +12,12 @@ INSERT INTO auth.app_user (user_id, partner_id, status, locked_until) VALUES
   ('5f0c3e1a-0003-4000-8000-000000000c05', '5f0c3e1a-0001-4000-8000-000000000001', 'active', NULL), -- cashier_pwd   (pci-main)    SSE2-FAKE-TEST-ONLY
   ('5f0c3e1a-0003-4000-8000-000000000c06', '5f0c3e1a-0001-4000-8000-000000000001', 'active', NULL)  -- cashier_wia   (pci-main)    SSE2-FAKE-TEST-ONLY
 ON CONFLICT (user_id) DO NOTHING;
+-- Exactly one synthetic Partner Admin with an assignment: the fixture partner_admin. SSE2-FAKE-TEST-ONLY.
+INSERT INTO auth.admin_assignment (
+  assignment_id, user_id, role_id, scope_kind, partner_id, location_id, status, version, granted_by, granted_at, revoked_at)
+SELECT '5f0c3e1a-0003-4000-8000-000000000c14', u.user_id, 'partner_admin', 'partner',
+       '5f0c3e1a-0001-4000-8000-000000000001', NULL, 'active', 1, u.user_id, now(), NULL
+  FROM auth.app_user u
+ WHERE u.user_id = '5f0c3e1a-0003-4000-8000-000000000c04'
+ON CONFLICT (assignment_id) DO NOTHING;
 COMMIT;

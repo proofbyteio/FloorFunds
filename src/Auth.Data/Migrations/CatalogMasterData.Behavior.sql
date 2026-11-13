@@ -160,13 +160,13 @@ BEGIN
     AND p_family NOT IN ('manufacturer','device_model','processor','reason_code','id_document_type','fee_type','model_hardware_claim') THEN
     PERFORM catalog._err('P0001', 'catalog_column_matrix_unsettled');
   END IF;
-  IF v_actor.admin_type = 'super' THEN
+  IF v_actor.resolved_global THEN
     NULL;
-  ELSIF v_actor.admin_type = 'partner'
+  ELSIF NOT v_actor.resolved_global
     AND p_entry_class = 'descriptive'
     AND p_family IN ('manufacturer','device_model','processor','reason_code','id_document_type','fee_type')
     AND p_owner_partner_id IS NOT NULL
-    AND p_owner_partner_id = v_actor.partner_id THEN
+    AND p_owner_partner_id = ANY (v_actor.resolved_partner_ids) THEN
     NULL;
   ELSE
     PERFORM catalog._err('P0001', 'catalog_create_actor');
@@ -305,13 +305,13 @@ BEGIN
   IF NOT v_found THEN
     PERFORM catalog._err('23503', 'catalog_reference_not_found');
   END IF;
-  IF v_actor.admin_type = 'partner' AND v_owner IS NOT NULL AND v_owner IS DISTINCT FROM v_actor.partner_id THEN
+  IF NOT v_actor.resolved_global AND v_owner IS NOT NULL AND NOT (v_owner = ANY (v_actor.resolved_partner_ids)) THEN
     PERFORM catalog._err('23503', 'catalog_reference_not_found');
   END IF;
-  IF v_actor.admin_type = 'partner' AND v_owner IS NULL THEN
+  IF NOT v_actor.resolved_global AND v_owner IS NULL THEN
     PERFORM catalog._err('P0001', 'catalog_claim_edit_actor');
   END IF;
-  IF v_actor.admin_type <> 'super' AND NOT (v_actor.admin_type = 'partner' AND v_owner IS NOT NULL AND v_owner = v_actor.partner_id) THEN
+  IF NOT v_actor.resolved_global AND NOT (v_owner IS NOT NULL AND v_owner = ANY (v_actor.resolved_partner_ids)) THEN
     PERFORM catalog._err('P0001', 'catalog_claim_edit_actor');
   END IF;
 

@@ -1,10 +1,10 @@
 -- floorfunds-kit preflight (K1, TL 8:32). READ-ONLY: runs before any SQL that changes anything.
--- psql variables: db, role, api_role, login_role. Output (psql -tA), one line per finding:
+-- psql variables: db, role, api_role, login_role, issuer_role. Output (psql -tA), one line per finding:
 --   REFUSE <reason>   hard refusal; --force never overrides it
 --   EXISTS <object>   a kit-marked object already exists; the kit proceeds only with --force
 --   END floorfunds-kit-preflight   always the LAST line (KF3). setup.sh/setup.ps1 fail closed (exit 5) without it,
 --                                  so empty or truncated output is never read as "no findings".
--- KF1: a kit role (--role, <db>_admin_api, <db>_login) is refused when it has BYPASSRLS, CREATEROLE, CREATEDB or
+-- KF1: a kit role (--role, <db>_admin_api, <db>_login, <db>_issuer) is refused when it has BYPASSRLS, CREATEROLE, CREATEDB or
 -- REPLICATION, or when it is a member (directly or through other roles) of any role outside this run's kit-marked
 -- roles: pg_* roles, superuser/privileged roles, unmarked roles. The kit grants no role memberships at all and its
 -- roles need none (db/migrations.sql grants only object privileges), so any membership was added by someone else.
@@ -13,7 +13,7 @@
 -- KF-G (TLD 9:42): and when two of this run's kit roles are members of each other: no pg_auth_members row may involve a kit role.
 -- Kit objects carry COMMENT ... IS 'floorfunds-kit' (shared description). Unmarked = not created by the kit.
 BEGIN TRANSACTION READ ONLY;
-WITH RECURSIVE want(name) AS (VALUES (:'role'), (:'api_role'), (:'login_role')),
+WITH RECURSIVE want(name) AS (VALUES (:'role'), (:'api_role'), (:'login_role'), (:'issuer_role')),
 ri AS (
   SELECT w.name, a.oid, coalesce(a.rolsuper, false) AS super,
          concat_ws(', ', CASE WHEN a.rolbypassrls THEN 'BYPASSRLS' END, CASE WHEN a.rolcreaterole THEN 'CREATEROLE' END,

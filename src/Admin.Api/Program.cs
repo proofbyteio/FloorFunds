@@ -1,5 +1,9 @@
 using Admin.Api;
 
+if (args.Contains("--name-required-check")) return LocationNameProbe.Run();
+if (args.Contains("--catalog-nav-check")) return CatalogNavProbe.Run();
+if (args.Contains("--signed-in-check")) return SignedInProbe.Run();
+
 // Config: appsettings.json (optional), environment (Entra__Authority, ...), command line. Refuses to start on any invalid value.
 var cfg = new ConfigurationBuilder()
     .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true)

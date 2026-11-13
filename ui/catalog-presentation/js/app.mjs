@@ -23,7 +23,7 @@ function paint(moveToTitle) {
   const active = document.activeElement?.id;
   app.innerHTML = renderApp(state);
   const title = document.querySelector("#screen-title");
-  document.title = title ? `${title.textContent} — Cash Advance master data` : "Cash Advance master data";
+  document.title = title ? `${title.textContent} — Master data` : "Master data";
   const restore = restoreId ? document.getElementById(restoreId) : null;
   restoreId = null;
   let target = null;

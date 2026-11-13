@@ -8,7 +8,7 @@ public static class AdminApiHost
 {
     /// <summary>
     /// Builds the API (fail closed): options validated, audit schema loaded (unknown keyword = throw), DB role guard (§8.3).
-    /// <paramref name="directory"/> defaults to the INTERIM token directory; only the in-process checks pass another one
+    /// <paramref name="directory"/> defaults to the assignment resolver; only the in-process checks pass another one
     /// (and <paramref name="extraLogger"/>, to read the error log line).
     /// </summary>
     public static async Task<WebApplication> BuildAsync(AdminApiOptions options, IAdminDirectory? directory = null, TimeProvider? clock = null,
@@ -16,7 +16,8 @@ public static class AdminApiHost
     {
         var opt = options.Validated();
         var schema = JsonSchemaLite.Load(await File.ReadAllTextAsync(opt.AuditSchemaPath));
-        var ds = NpgsqlDataSource.Create(opt.ConnectionString);
+        var built = new NpgsqlConnectionStringBuilder(opt.ConnectionString) { NoResetOnClose = false };
+        var ds = NpgsqlDataSource.Create(built.ConnectionString);
         await GuardRoleAsync(ds);
 
         var b = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [] });
@@ -30,8 +31,8 @@ public static class AdminApiHost
         b.Services.AddSingleton(opt);
         b.Services.AddSingleton(ds);
         b.Services.AddSingleton(new AuditOutbox(schema));
-        b.Services.AddSingleton(new AdminTokenValidator(opt));
-        b.Services.AddSingleton(directory ?? new TokenAdminDirectory());
+        b.Services.AddSingleton(new SessionIssuer(opt));
+        b.Services.AddSingleton(directory ?? new DbAdminDirectory());
         b.Services.AddSingleton(clock ?? TimeProvider.System);
         b.Services.AddSingleton<LoginConfigApi>();
         var app = b.Build();
@@ -45,10 +46,16 @@ public static class AdminApiHost
         // Slice A (TLD 06:59 route, LD 12b1d9cd): per-partner reason-length bounds.
         app.MapGet("/api/orgs/partners/{partner_id}/login-config/reason-bounds", (HttpContext ctx, string partner_id) => api.GetReasonBoundsAsync(ctx, partner_id));
         app.MapPut("/api/orgs/partners/{partner_id}/login-config/reason-bounds", (HttpContext ctx, string partner_id) => api.PutReasonBoundsAsync(ctx, partner_id));
+        app.MapGet("/api/orgs/locations", (Func<HttpContext, Task<IResult>>)(ctx => api.LocationsAsync(ctx)));
+        app.MapGet("/api/screens/location-partners", (Func<HttpContext, Task<IResult>>)(ctx => api.PartnersAsync(ctx)));
+        app.MapGet("/api/nav", (Func<HttpContext, Task<IResult>>)(ctx => api.NavAsync(ctx)));
+        app.MapGet("/api/screens/catalog", (Func<HttpContext, Task<IResult>>)(ctx => api.CatalogScreenAsync(ctx)));
+        app.MapGet("/api/screens/create-client", (Func<HttpContext, Task<IResult>>)(ctx => api.CreateClientAsync(ctx)));
+        app.MapPost("/api/screens/create-client", (Func<HttpContext, Task<IResult>>)(ctx => api.CreateClientWriteAsync(ctx)));
         return app;
     }
 
-    /// <summary>Refuse to start if the connection's role is a superuser, has BYPASSRLS, or owns (or inherits an owner of) auth objects.</summary>
+    /// <summary>Refuse to start if the connection's role is a superuser, has BYPASSRLS, owns auth, is the issuer, or can open or revoke a session. Also refuse statement logging that would record the session token.</summary>
     public static async Task GuardRoleAsync(NpgsqlDataSource ds)
     {
         await using var c = await ds.OpenConnectionAsync();
@@ -57,7 +64,14 @@ public static class AdminApiHost
             SELECT r.rolsuper, r.rolbypassrls,
                    EXISTS (SELECT 1 FROM pg_class t JOIN pg_namespace n ON n.oid = t.relnamespace
                            WHERE n.nspname = 'auth' AND pg_has_role(current_user, t.relowner, 'MEMBER'))
-                   OR EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = 'auth' AND pg_has_role(current_user, n.nspowner, 'MEMBER'))
+                   OR EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = 'auth' AND pg_has_role(current_user, n.nspowner, 'MEMBER')),
+                   r.rolname = current_database() || '_issuer',
+                   has_function_privilege(current_user, 'auth.open_session(text,text,uuid,timestamptz,timestamptz)', 'EXECUTE')
+                   OR has_function_privilege(current_user, 'auth.revoke_session(text)', 'EXECUTE')
+                   OR has_function_privilege(current_user, 'auth.revoke_login(text,text)', 'EXECUTE'),
+                   current_setting('log_statement'),
+                   current_setting('log_min_duration_statement'),
+                   current_setting('log_parameter_max_length')
             FROM pg_roles r WHERE r.rolname = current_user
             """, c);
         await using var r = await cmd.ExecuteReaderAsync();
@@ -65,6 +79,18 @@ public static class AdminApiHost
         if (r.GetBoolean(0)) throw new InvalidOperationException("startup guard: the API role is a superuser");
         if (r.GetBoolean(1)) throw new InvalidOperationException("startup guard: the API role has BYPASSRLS");
         if (r.GetBoolean(2)) throw new InvalidOperationException("startup guard: the API role owns auth objects");
+        if (r.GetBoolean(3)) throw new InvalidOperationException("startup guard: the API role is the issuer role");
+        if (r.GetBoolean(4)) throw new InvalidOperationException("startup guard: the API role can open or revoke a session");
+        RefuseStatementLogging(r.GetString(5), r.GetString(6), r.GetString(7));
+    }
+
+    /// <summary>log_statement=all, or duration logging of every statement while parameters are logged, would put the session token in a superuser log.</summary>
+    public static void RefuseStatementLogging(string statement, string minDuration, string parameterLength)
+    {
+        if (string.Equals(statement, "all", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("startup guard: log_statement=all records the session token");
+        if (minDuration == "0" && parameterLength != "0")
+            throw new InvalidOperationException("startup guard: log_min_duration_statement=0 with parameter logging records the session token");
     }
 }
 

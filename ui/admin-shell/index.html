@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin</title>
+  <link rel="icon" href="/theme/favicon.ico" sizes="any">
+  <link rel="icon" href="/theme/favicon-32x32.png" type="image/png" sizes="32x32">
+  <link rel="icon" href="/theme/favicon-16x16.png" type="image/png" sizes="16x16">
+  <link rel="apple-touch-icon" href="/theme/apple-touch-icon.png">
+  <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/shell.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="shell__top">
+    <p class="shell__signed-in" id="signed-in"></p>
+    <a class="shell__signout" href="/standin/connect/endsession">Sign out</a>
+  </header>
+  <div class="shell">
+    <nav class="shell__nav" aria-label="Admin">
+      <div class="shell__brand">
+        <a class="admin-lockup" href="#/home">
+          <img class="admin-lockup__mark" src="/theme/logo-1.svg" alt="">
+          <span class="admin-lockup__name"></span>
+        </a>
+      </div>
+      <div id="nav"></div>
+    </nav>
+    <main class="shell__main" id="main"></main>
+  </div>
+  <script type="module" src="/shell.js"></script>
+</body>
+</html>

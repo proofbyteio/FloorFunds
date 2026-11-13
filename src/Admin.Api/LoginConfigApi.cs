@@ -8,7 +8,7 @@ using NpgsqlTypes;
 namespace Admin.Api;
 
 /// <summary>A caller after step 1 (authn) and the server-side role lookup. Nothing here comes from request data.</summary>
-public sealed record Caller(AdminIdentity Id, AdminGrant Grant, string RequestId)
+public sealed record Caller(AdminIdentity Id, AdminGrant Grant, string RequestId, string SessionToken)
 {
     public bool IsSuper => Grant.Role == BuiltInRole.SuperAdmin;
     public bool IsPartnerAdmin => Grant.Role == BuiltInRole.PartnerAdmin;
@@ -24,11 +24,12 @@ sealed record LlcRow(Guid LocationId, Guid PartnerId, string Slug, string Name, 
 }
 
 /// <summary>
-/// S2a location login config endpoints (spec §3), check order §4. Trust boundary (§8.3, K4): app.admin_type / app.partner_id are
-/// set only by <see cref="SetScopeAsync"/>, transaction-local (set_config(..., true)), from the <see cref="Caller"/> (validated token +
-/// server-side directory) or from the definer function's answer, never from the body, headers, query or path. All SQL is parameterised.
+/// S2a location login config endpoints (spec §3), check order §4. Trust boundary: app.resolved_global_admin,
+/// app.resolved_partner_ids, and app.resolved_location_ids are set only by <see cref="SetScopeAsync"/>, transaction-local
+/// (set_config(..., true)), from the resolved grant, never from the body, headers, query, path, or token admin_type.
+/// All SQL is parameterised.
 /// </summary>
-public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, AdminTokenValidator tokens, IAdminDirectory directory,
+public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, SessionIssuer tokens, IAdminDirectory directory,
     AuditOutbox outbox, ILogger<LoginConfigApi> log, TimeProvider clock)
 {
     const int MaxBody = 64 * 1024;
@@ -41,6 +42,22 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
     {
         public int Status { get; } = status;
         public JsonObject? Body { get; } = body;
+    }
+
+    sealed class ClosedSession : Exception
+    {
+    }
+
+    const string ClosedBody = "{\"error\":\"session_expired\"}";
+
+    static bool IsClosedSession(PostgresException ex)
+        => ex.SqlState == PostgresErrorCodes.InsufficientPrivilege
+           && ex.MessageText is "session_expired" or "session_denied";
+
+    static IResult Closed(HttpContext ctx)
+    {
+        ctx.Response.Headers.WWWAuthenticate = "Bearer";
+        return Results.Text(ClosedBody, "application/json; charset=utf-8", null, 401);
     }
 
     static Fail Err(int status, string code, Action<JsonObject>? more = null)
@@ -60,27 +77,99 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
     /// </summary>
     public const string RequestIdHeader = RequestEnvelope.Header;
 
-    async Task<IResult> Run(HttpContext ctx, Func<Caller, Task<IResult>> f)
+    async Task<IResult> Run(HttpContext ctx, Func<Caller, NpgsqlConnection, NpgsqlTransaction, Task<IResult>> f)
     {
         var requestId = RequestEnvelope.Id(ctx);
         ctx.Response.Headers.CacheControl = "no-store";
+        NpgsqlConnection? c = null;
+        NpgsqlTransaction? tx = null;
         try
         {
-            var id = await tokens.AuthenticateAsync(ctx.Request);
-            if (id is null) { ctx.Response.Headers.WWWAuthenticate = "Bearer"; return Results.StatusCode(401); }
-            var g = await directory.ResolveAsync(id, ctx.RequestAborted);
-            // A built-in role must agree with the sign-in kind; otherwise only org:V (if any) remains.
-            if ((g.Role == BuiltInRole.SuperAdmin && id.AdminType != "super") || (g.Role == BuiltInRole.PartnerAdmin && (id.AdminType != "partner" || id.PartnerId is null)))
-                g = g with { Role = BuiltInRole.None, LoginMethodWrite = false, OrgCreateEdit = false, PartnerReasonBoundsWrite = false };
-            return await f(new Caller(id, g, requestId));
+            IssuedSession issued;
+            try
+            {
+                var opened = await tokens.OpenAsync(ctx.Request, ctx.RequestAborted);
+                if (opened is null) { ctx.Response.Headers.WWWAuthenticate = "Bearer"; return Results.StatusCode(401); }
+                issued = opened;
+            }
+            catch (SessionClosedException)
+            {
+                return Closed(ctx);
+            }
+            catch (IssuerUnavailableException)
+            {
+                return Results.StatusCode(503);
+            }
+            var id = issued.Identity;
+            c = await db.OpenConnectionAsync(ctx.RequestAborted);
+            tx = await c.BeginTransactionAsync(ctx.RequestAborted);
+            try { await BeginRequestAsync(c, tx, issued.SessionToken); }
+            catch (PostgresException ex) when (IsClosedSession(ex))
+            {
+                await SafeRollback(c, tx);
+                return Closed(ctx);
+            }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
+            {
+                await SafeRollback(c, tx);
+                return Results.StatusCode(403);
+            }
+            AdminGrant g;
+            try { g = await directory.ResolveAsync(id, c, tx, ctx.RequestAborted); }
+            catch (PostgresException)
+            {
+                await SafeRollback(c, tx);
+                return Results.StatusCode(403);
+            }
+            await SetScopeAsync(c, tx, g, id.UserId);
+            return await f(new Caller(Wire(id, g), g, requestId, issued.SessionToken), c, tx);
         }
-        catch (Fail x) { return x.Body is null ? Results.StatusCode(x.Status) : Json(x.Status, x.Body); }
+        catch (Fail x)
+        {
+            await SafeRollback(c, tx);
+            return x.Body is null ? Results.StatusCode(x.Status) : Json(x.Status, x.Body);
+        }
+        catch (ClosedSession)
+        {
+            await SafeRollback(c, tx);
+            return Closed(ctx);
+        }
         catch (Exception x)
         {
-            // Fail closed: nothing committed. Log the type/SQLSTATE only: messages and DETAIL lines can carry row values.
+            if (c is not null) { try { NpgsqlConnection.ClearPool(c); } catch { } }
             log.LogError("admin-api request failed: {Type} {SqlState} request_id={RequestId}", x.GetType().Name, (x as PostgresException)?.SqlState, requestId);
             return Results.StatusCode(500);
         }
+        finally
+        {
+            if (tx is not null) await tx.DisposeAsync();
+            if (c is not null) await c.DisposeAsync();
+        }
+    }
+
+    static AdminIdentity Wire(AdminIdentity token, AdminGrant g)
+    {
+        if (g.Role == BuiltInRole.SuperAdmin)
+            return token with { AdminType = "super", PartnerId = null };
+        if (g.Role == BuiltInRole.PartnerAdmin && g.AssignedPartners.Count == 1)
+            return token with { AdminType = "partner", PartnerId = g.AssignedPartners.First() };
+        if (g.Role == BuiltInRole.PartnerAdmin)
+            return token with { AdminType = "partner", PartnerId = null };
+        return token;
+    }
+
+    static async Task SafeRollback(NpgsqlConnection? c, NpgsqlTransaction? tx)
+    {
+        if (tx is null) return;
+        try
+        {
+            // RollbackAsync disposes the transaction. The race handler rolls back before it throws Fail,
+            // so this second rollback must tolerate an already-disposed transaction.
+            if (tx.Connection is null) return;
+            await tx.RollbackAsync();
+        }
+        catch (ObjectDisposedException) { }
+        catch { if (c is not null) { try { NpgsqlConnection.ClearPool(c); } catch { } } }
     }
 
     DateTimeOffset Now()
@@ -91,12 +180,46 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     static Guid? ParseId(string s) => Guid.TryParseExact(s, "D", out var g) ? g : null;
 
-    /// <summary>The ONLY place app.* settings are written. Transaction-local; values from the caller or the definer function.</summary>
-    static async Task SetScopeAsync(NpgsqlConnection c, NpgsqlTransaction tx, string adminType, Guid? partner)
+    /// <summary>
+    /// The only admin-api writer of the request principal. Transaction-local.
+    /// Called from Run after the issuer returns a session token, and again on the
+    /// reason-bounds retry because that retry opens a new transaction. Both calls
+    /// are begin_request of the same session token. The host does not call
+    /// open_session and does not set app.request_iss or app.request_sub.
+    /// </summary>
+    static async Task BeginRequestAsync(NpgsqlConnection c, NpgsqlTransaction tx, string sessionToken)
     {
-        await using var cmd = new NpgsqlCommand("SELECT set_config('app.admin_type', $1, true), set_config('app.partner_id', $2, true)", c, tx);
-        cmd.Parameters.Add(new() { Value = adminType });
-        cmd.Parameters.Add(new() { Value = partner?.ToString("D") ?? "" });
+        await using var cmd = new NpgsqlCommand("SELECT auth.begin_request($1)", c, tx);
+        cmd.Parameters.Add(new() { Value = sessionToken });
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>Clears token admin_type. The resolved flags are not an authorization source.</summary>
+    static async Task SetScopeAsync(NpgsqlConnection c, NpgsqlTransaction tx, AdminGrant g, Guid actor)
+    {
+        var partners = g.Role == BuiltInRole.SuperAdmin ? "" : string.Join(',', g.AssignedPartners.Select(id => id.ToString("D")));
+        var locations = new HashSet<Guid>();
+        if (g.Role != BuiltInRole.SuperAdmin)
+        {
+            foreach (var id in g.AssignedLocations) locations.Add(id);
+            foreach (var id in g.OrgViewLocations) locations.Add(id);
+        }
+        var privileged = g.Role != BuiltInRole.None || g.OrgViewLocations.Count > 0;
+        await using var cmd = new NpgsqlCommand(
+            """
+            SELECT set_config('app.resolved_global_admin', $1, true),
+                   set_config('app.resolved_partner_ids', $2, true),
+                   set_config('app.resolved_location_ids', $3, true),
+                   set_config('app.actor_user_id', $4, true),
+                   set_config('app.perm_version', $5, true),
+                   set_config('app.admin_type', '', true),
+                   set_config('app.partner_id', '', true)
+            """, c, tx);
+        cmd.Parameters.Add(new() { Value = g.Role == BuiltInRole.SuperAdmin ? "on" : "" });
+        cmd.Parameters.Add(new() { Value = partners });
+        cmd.Parameters.Add(new() { Value = string.Join(',', locations.Select(id => id.ToString("D"))) });
+        cmd.Parameters.Add(new() { Value = privileged ? actor.ToString("D") : "" });
+        cmd.Parameters.Add(new() { Value = g.PermVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) });
         await cmd.ExecuteNonQueryAsync();
     }
 
@@ -291,6 +414,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         cmd.Parameters.Add(new() { Value = after.ToJsonString(), NpgsqlDbType = NpgsqlDbType.Jsonb });
         cmd.Parameters.Add(new() { Value = rowVersion });
         await cmd.ExecuteNonQueryAsync();
+        await using var recorded = new NpgsqlCommand("SELECT auth.record_login_write('location_login_config', $1)", c, tx);
+        recorded.Parameters.Add(new() { Value = location });
+        await recorded.ExecuteNonQueryAsync();
     }
 
     // ---------- Slice A: per-partner reason-length bounds ----------
@@ -308,9 +434,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
     /// <summary>Needs app.* scope super, or partner with app.partner_id set (RLS prb_admin): every caller of the resolver has it.</summary>
     static async Task<PrbRow?> LoadBoundsAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid partner, bool forUpdate)
     {
-        await using var cmd = new NpgsqlCommand(
-            "SELECT reason_min_length, reason_max_length, updated_by, updated_at, row_version FROM auth.partner_reason_bounds WHERE partner_id = $1"
-            + (forUpdate ? " FOR UPDATE" : ""), c, tx);
+        await using var cmd = new NpgsqlCommand(forUpdate
+            ? "SELECT reason_min_length, reason_max_length, updated_by, updated_at, row_version FROM auth.read_partner_bounds($1)"
+            : "SELECT reason_min_length, reason_max_length, updated_by, updated_at, row_version FROM auth.partner_reason_bounds WHERE partner_id = $1", c, tx);
         cmd.Parameters.Add(new() { Value = partner });
         await using var r = await cmd.ExecuteReaderAsync();
         if (!await r.ReadAsync()) return null;
@@ -352,7 +478,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
     JsonObject BoundsView(Caller who, Guid partner, PrbRow? r)
     {
         var b = r is null ? ReasonBounds.FromConfig(opt) : new ReasonBounds(r.Min, r.Max);
-        var editor = ShowsBoundsEditor(who.Id, partner);
+        var editor = who.IsSuper || (who.IsPartnerAdmin && who.Grant.AssignedPartners.Contains(partner));
         var v = new JsonObject
         {
             ["partner_id"] = partner.ToString("D"), ["reason_min_length"] = b.Min, ["reason_max_length"] = b.Max,
@@ -379,14 +505,11 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     // ---------- GET /api/orgs/partners/{partner_id}/login-config/reason-bounds (Slice A) ----------
 
-    public Task<IResult> GetReasonBoundsAsync(HttpContext ctx, string partnerId) => Run(ctx, async who =>
+    public Task<IResult> GetReasonBoundsAsync(HttpContext ctx, string partnerId) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         if (!who.IsAdmin) throw Err(403, "forbidden");
         var partner = PartnerFromPath(partnerId);
         if (!MayReadPartnerBounds(who, partner)) throw Err(404, "not_found");
-        await using var c = await db.OpenConnectionAsync();
-        await using var tx = await c.BeginTransactionAsync();
-        await SetScopeAsync(c, tx, who.Id.AdminType, who.Id.PartnerId);
         var row = await LoadBoundsAsync(c, tx, partner, false);
         await tx.CommitAsync();
         return BoundsResult(ctx, who, partner, row);
@@ -403,7 +526,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
     /// 200 on create and update; ETag = the new row_version. Same values on a stored row = 200, nothing written, no event, no bump
     /// [TLD 11:23 B]; an explicit first PUT always creates v1 + event, even with the inherited default values [TLD 11:23 C].
     /// </summary>
-    public Task<IResult> PutReasonBoundsAsync(HttpContext ctx, string partnerId) => Run(ctx, async who =>
+    public Task<IResult> PutReasonBoundsAsync(HttpContext ctx, string partnerId) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         if (!MayWritePartnerBounds(who)) throw Err(403, "forbidden");
         var read = await ReadBodyAsync(ctx);
@@ -414,9 +537,6 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         if (im.Count != 1 || PrbIfMatchRe.Match(im[0] ?? "") is not { Success: true } m) throw Err(400, "if_match_invalid");
         var expected = long.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
 
-        await using var c = await db.OpenConnectionAsync();
-        await using var tx = await c.BeginTransactionAsync();
-        await SetScopeAsync(c, tx, who.Id.AdminType, who.Id.PartnerId);
         var row = await LoadBoundsAsync(c, tx, partner, true);
         var current = row?.RowVersion ?? ReasonBoundsUnsetVersion;
         if (current != expected) throw Err(409, "concurrency_conflict", b => b["current_row_version"] = current);
@@ -435,31 +555,42 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         var next = created ? ReasonBoundsCreateVersion : expected + 1;
         try
         {
-            await using var w = new NpgsqlCommand(created
-                ? "INSERT INTO auth.partner_reason_bounds (partner_id, reason_min_length, reason_max_length, updated_by, updated_at, row_version) VALUES ($1, $3, $4, $5, $6, 1)"
-                : "UPDATE auth.partner_reason_bounds SET reason_min_length = $3, reason_max_length = $4, updated_by = $5, updated_at = $6, row_version = row_version + 1 WHERE partner_id = $1 AND row_version = $2",
-                c, tx);
+            await using var w = new NpgsqlCommand(
+                "SELECT auth.save_partner_bounds($1, $2, $3, $4, $5, $6)", c, tx);
             w.Parameters.Add(new() { Value = partner });
             w.Parameters.Add(new() { Value = expected });
             w.Parameters.Add(new() { Value = n.Min });
             w.Parameters.Add(new() { Value = n.Max });
             w.Parameters.Add(new() { Value = who.Id.UserId });
             w.Parameters.Add(new() { Value = now.UtcDateTime, NpgsqlDbType = NpgsqlDbType.TimestampTz });
-            if (await w.ExecuteNonQueryAsync() != 1) throw Err(409, "concurrency_conflict", b => b["current_row_version"] = current);
+            if (await w.ExecuteScalarAsync() is not long) throw Err(409, "concurrency_conflict", b => b["current_row_version"] = current);
         }
         catch (PostgresException x) when (created && x.SqlState == PostgresErrorCodes.UniqueViolation)
         {
             // TLD 08:00b(1): a racing first PUT committed the row first. Report the winner's version.
             await tx.RollbackAsync();
             await using var tx2 = await c.BeginTransactionAsync();
-            await SetScopeAsync(c, tx2, who.Id.AdminType, who.Id.PartnerId);
-            var won = await LoadBoundsAsync(c, tx2, partner, false) ?? throw new InvalidOperationException("unique violation without a row");
+            // The principal is transaction-local, so the rolled-back transaction dropped it.
+            // Same begin_request as Run, same session token, not a second open_session.
+            try { await BeginRequestAsync(c, tx2, who.SessionToken); }
+            catch (PostgresException ex) when (IsClosedSession(ex))
+            {
+                await tx2.RollbackAsync();
+                throw new ClosedSession();
+            }
+            await SetScopeAsync(c, tx2, who.Grant, who.Id.UserId);
+            var won = await LoadBoundsAsync(c, tx2, partner, true) ?? throw new InvalidOperationException("unique violation without a row");
             await tx2.CommitAsync();
             throw Err(409, "concurrency_conflict", b => b["current_row_version"] = won.RowVersion);
         }
+        await using (var recorded = new NpgsqlCommand("SELECT auth.record_login_write('partner_reason_bounds', $1)", c, tx))
+        {
+            recorded.Parameters.Add(new() { Value = partner });
+            await recorded.ExecuteNonQueryAsync();
+        }
         await outbox.InsertAsync(c, tx, AuditOutbox.PartnerReasonBoundsChanged(Guid.CreateVersion7(), now, who.Id, who.RequestId, partner, created, next,
             old.Min, old.Max, n.Min, n.Max), CancellationToken.None);
-        var saved = await LoadBoundsAsync(c, tx, partner, false) ?? throw new InvalidOperationException("row vanished");
+        var saved = await LoadBoundsAsync(c, tx, partner, true) ?? throw new InvalidOperationException("row vanished");
         await tx.CommitAsync();
         return BoundsResult(ctx, who, partner, saved);
     });
@@ -474,19 +605,16 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     // ---------- GET /api/orgs/locations/{id}/login-config ----------
 
-    public Task<IResult> GetAsync(HttpContext ctx, string id) => Run(ctx, async who =>
+    public Task<IResult> GetAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         // Step 2: org:V (built-in admins hold it; a reader holds it on listed locations).
         if (!who.IsAdmin && who.Grant.OrgViewLocations.Count == 0) throw Err(403, "forbidden");
         var loc = ParseId(id) ?? throw Err(404, "not_found");
         var real = await LocationPartnerAsync(loc) ?? throw Err(404, "not_found");
-        if (who.IsPartnerAdmin && real != who.Id.PartnerId) throw Err(404, "not_found");
+        if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(real)) throw Err(404, "not_found");
         if (!who.IsAdmin && !who.Grant.OrgViewLocations.Contains(loc)) throw Err(404, "not_found");
-        await using var c = await db.OpenConnectionAsync();
-        await using var tx = await c.BeginTransactionAsync();
-        // org:V reader: RLS scoped to the location's partner, decided server-side above (OQ-S2a-1).
-        await SetScopeAsync(c, tx, who.IsSuper ? "super" : "partner", who.IsSuper ? null : who.IsPartnerAdmin ? who.Id.PartnerId : real);
-        var row = await LoadAsync(c, tx, loc, who.IsPartnerAdmin ? who.Id.PartnerId!.Value : real, false) ?? throw Err(404, "not_found");
+        // Scope was set from the grant inside Run. org:V is the resolved location list.
+        var row = await LoadAsync(c, tx, loc, real, false) ?? throw Err(404, "not_found");
         var bounds = await ResolveBoundsAsync(c, tx, row.PartnerId); // Slice A: the location's partner
         await tx.CommitAsync();
         return ViewResult(ctx, 200, row, who, bounds);
@@ -500,7 +628,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
     /// ?partner_id=X (the create page's partner) = X's bounds, behind the LS-OQ-61 read check point (else 404 not_found; malformed = 422
     /// partner_id_format); no partner_id = a Partner Admin's own partner, else (Super Admin, org:V reader) the deployment config.
     /// </summary>
-    public Task<IResult> LimitsAsync(HttpContext ctx) => Run(ctx, async who =>
+    public Task<IResult> LimitsAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         if (!who.IsAdmin && who.Grant.OrgViewLocations.Count == 0) throw Err(403, "forbidden");
         Guid? partner = null;
@@ -510,11 +638,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             if (!MayReadPartnerBounds(who, g)) throw Err(404, "not_found");
             partner = g;
         }
-        else if (who.IsPartnerAdmin) partner = who.Id.PartnerId;
+        else if (who.IsPartnerAdmin && who.Grant.AssignedPartners.Count == 1) partner = who.Grant.AssignedPartners.First();
         if (partner is not { } p) return Json(200, LimitsJson(ReasonBounds.FromConfig(opt)));
-        await using var c = await db.OpenConnectionAsync();
-        await using var tx = await c.BeginTransactionAsync();
-        await SetScopeAsync(c, tx, who.Id.AdminType, who.Id.PartnerId);
         var b = await ResolveBoundsAsync(c, tx, p);
         await tx.CommitAsync();
         return Json(200, LimitsJson(b));
@@ -522,15 +647,12 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     // ---------- GET /api/orgs/locations/{id}/login-config/changes ----------
 
-    public Task<IResult> ChangesAsync(HttpContext ctx, string id) => Run(ctx, async who =>
+    public Task<IResult> ChangesAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         if (!who.IsAdmin) throw Err(403, "forbidden");
         var loc = ParseId(id) ?? throw Err(404, "not_found");
         var real = await LocationPartnerAsync(loc) ?? throw Err(404, "not_found");
-        if (who.IsPartnerAdmin && real != who.Id.PartnerId) throw Err(404, "not_found");
-        await using var c = await db.OpenConnectionAsync();
-        await using var tx = await c.BeginTransactionAsync();
-        await SetScopeAsync(c, tx, who.Id.AdminType, who.Id.PartnerId);
+        if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(real)) throw Err(404, "not_found");
         await using var cmd = new NpgsqlCommand(
             """
             SELECT ch.change_id, ch.at, ch.actor_user_id, ch.admin_type, ch.change_kind, ch.changed_fields, ch.before::text, ch.after::text, ch.reason, ch.row_version
@@ -539,7 +661,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             ORDER BY ch.at DESC, ch.row_version DESC LIMIT 100
             """, c, tx);
         cmd.Parameters.Add(new() { Value = loc });
-        cmd.Parameters.Add(new() { Value = who.IsPartnerAdmin ? who.Id.PartnerId!.Value : real });
+        cmd.Parameters.Add(new() { Value = real });
         var items = new JsonArray();
         await using (var r = await cmd.ExecuteReaderAsync())
             while (await r.ReadAsync())
@@ -557,7 +679,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
     // ---------- PUT /api/orgs/locations/{id}/login-config ----------
 
-    public Task<IResult> PutAsync(HttpContext ctx, string id) => Run(ctx, async who =>
+    public Task<IResult> PutAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         var loc = ParseId(id);
         // Step 2, decided before the body is read [TLD 2026-11-04 9:04, OQ-P3-8]; the body is read afterwards only to name the attempted fields.
@@ -574,7 +696,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         // Steps 3-4.
         if (loc is not { } location) throw Err(404, "not_found");
         var real = await LocationPartnerAsync(location) ?? throw Err(404, "not_found");
-        if (who.IsPartnerAdmin && real != who.Id.PartnerId)
+        if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(real))
         {
             await DenyAsync(who, "forbidden_scope", real, location, LoginConfigValidator.AttemptedFields(body));
             throw Err(404, "not_found");
@@ -585,10 +707,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         if (im.Count != 1 || IfMatchRe.Match(im[0] ?? "") is not { Success: true } m) throw Err(400, "if_match_invalid");
         var expected = long.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
 
-        await using var c = await db.OpenConnectionAsync();
-        await using var tx = await c.BeginTransactionAsync();
-        await SetScopeAsync(c, tx, who.Id.AdminType, who.Id.PartnerId);
-        var row = await LoadAsync(c, tx, location, who.IsPartnerAdmin ? who.Id.PartnerId!.Value : real, true) ?? throw Err(404, "not_found");
+        // admin_api has no UPDATE, so this read cannot FOR UPDATE. The version predicate inside
+        // auth.save_location_login_config is the write lock; a lost race returns 0 and becomes 409.
+        var row = await LoadAsync(c, tx, location, real, false) ?? throw Err(404, "not_found");
         // Step 6.
         if (row.RowVersion != expected) throw Err(409, "concurrency_conflict", b => b["current_row_version"] = row.RowVersion);
         // Step 7. Oversize = 413, nothing written (rolled back) [TLD 2026-11-04 9:28, P3-2]; steps 3-6 still answer first (P3-3: no change).
@@ -638,13 +759,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
 
         var now = Now();
         await using (var up = new NpgsqlCommand(
-            """
-            UPDATE auth.location_login_config SET provider_kind = $3, display_name = $4, entra_allowed_tenant_ids = $5,
-                   oidc_authority = CASE WHEN $8 THEN oidc_authority ELSE $6 END, oidc_client_id = CASE WHEN $8 THEN oidc_client_id ELSE $7 END,
-                   secret_ref = CASE WHEN $8 THEN secret_ref ELSE $9 END, allow_db_fallback = $10, mfa_required = $11,
-                   updated_by = $12, updated_at = $13, row_version = row_version + 1
-            WHERE location_id = $1 AND row_version = $2
-            """, c, tx))
+            "SELECT auth.save_location_login_config($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)", c, tx))
         {
             up.Parameters.Add(new() { Value = location });
             up.Parameters.Add(new() { Value = expected });
@@ -659,7 +774,10 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             up.Parameters.Add(new() { Value = n.MfaRequired });
             up.Parameters.Add(new() { Value = who.Id.UserId });
             up.Parameters.Add(new() { Value = now.UtcDateTime, NpgsqlDbType = NpgsqlDbType.TimestampTz });
-            if (await up.ExecuteNonQueryAsync() != 1) throw Err(409, "concurrency_conflict", b => b["current_row_version"] = row.RowVersion);
+            var wrote = await up.ExecuteScalarAsync();
+            var savedRows = wrote switch { int i => (long)i, long l => l, _ => 0L };
+            if (savedRows != 1)
+                throw Err(409, "concurrency_conflict", b => b["current_row_version"] = row.RowVersion);
         }
         var changeId = Guid.CreateVersion7();
         var after = AuditOutbox.State(n.ProviderKind, n.Tenants, n.AllowDbFallback, n.MfaRequired);
@@ -689,7 +807,96 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         return new string(s);
     }
 
-    public Task<IResult> PostAsync(HttpContext ctx) => Run(ctx, async who =>
+    /// <summary>Locations the resolved grant can already read. An empty list is 200, not an error.</summary>
+    public Task<IResult> LocationsAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (!who.IsAdmin) throw Err(403, "forbidden");
+        await using var cmd = new NpgsqlCommand("SELECT location_id, partner_id, name, slug FROM auth.location ORDER BY name", c, tx);
+        var rows = new JsonArray();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+            rows.Add(new JsonObject
+            {
+                ["location_id"] = r.GetGuid(0).ToString(),
+                ["partner_id"] = r.GetGuid(1).ToString(),
+                ["name"] = r.GetString(2),
+                ["slug"] = r.GetString(3),
+            });
+        return Json(200, new JsonObject { ["locations"] = rows });
+    });
+
+    /// <summary>
+    /// Partners that already exist, filtered by the resolved grant. PQ-284 reversible default:
+    /// the shell offers this list and does not accept a typed partner id.
+    /// </summary>
+    public Task<IResult> PartnersAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (!who.IsAdmin) throw Err(403, "forbidden");
+        await using var cmd = new NpgsqlCommand("SELECT partner_id FROM auth.list_existing_partners()", c, tx);
+        var ids = new JsonArray();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync()) ids.Add(r.GetGuid(0).ToString());
+        return Json(200, new JsonObject { ["partners"] = ids });
+    });
+
+    public Task<IResult> NavAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (c.State != System.Data.ConnectionState.Open || tx.Connection is null) throw Err(403, "forbidden");
+        var screens = new JsonArray();
+        if (who.IsSuper)
+        {
+            screens.Add("create_client");
+            screens.Add("create_location");
+            screens.Add("config");
+        }
+        else if (who.IsPartnerAdmin)
+        {
+            screens.Add("create_location");
+            screens.Add("config");
+        }
+        if (CatalogNav.Includes(who.Id.UserId, who.Grant)) screens.Add("catalog");
+        string signedInAs = "";
+        await using (var sub = new NpgsqlCommand("SELECT auth.session_subject()", c, tx))
+        {
+            var value = await sub.ExecuteScalarAsync();
+            if (value is string s) signedInAs = s;
+        }
+        return Json(200, new JsonObject
+        {
+            ["screens"] = screens,
+            ["product_name"] = opt.ProductName,
+            ["signed_in_as"] = signedInAs,
+            ["role"] = SignedInCopy.Role(who.Grant.Role),
+        });
+    });
+
+    /// <summary>Catalog stays read-only in this shell. The screen is granted to an admin; the write is not performed.</summary>
+    public Task<IResult> CatalogScreenAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (c.State != System.Data.ConnectionState.Open || tx.Connection is null) throw Err(403, "forbidden");
+        if (!CatalogNav.Includes(who.Id.UserId, who.Grant)) throw Err(403, "forbidden");
+        return Json(200, new JsonObject { ["screen"] = "catalog", ["write"] = "held" });
+    });
+
+    /// <summary>Create Client stays held. A Super Admin may see the screen. The write is not performed.</summary>
+    public Task<IResult> CreateClientAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (c.State != System.Data.ConnectionState.Open || tx.Connection is null) throw Err(403, "forbidden");
+        if (!who.IsSuper) throw Err(403, "forbidden");
+        return Json(200, new JsonObject { ["screen"] = "create_client", ["write"] = "held" });
+    });
+
+    /// <summary>
+    /// Create Client is not implemented. PQ-278 is still open, so a resolved Super Admin
+    /// gets the same refusal as everyone else. This is a placeholder, not a grant.
+    /// </summary>
+    public Task<IResult> CreateClientWriteAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (c.State != System.Data.ConnectionState.Open || tx.Connection is null || who.Id.UserId == Guid.Empty) throw Err(403, "forbidden");
+        throw Err(403, "client_create_pending_pq278");
+    });
+
+    public Task<IResult> PostAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         // Step 2, decided before the body is read [TLD 2026-11-04 9:04, OQ-P3-8]: a 403 never depends on the body (never 400/413).
         // The refused create is still audited [TLD 2026-11-04 9:04, OQ-P3-2]: location_id null, target partner = the body's partner_id
@@ -708,16 +915,13 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
         if (read.TooLarge) throw Err(413, "payload_too_large");
         if (ParseObject(read.Bytes) is not { } o) throw Err(400, "malformed_body");
         var bodyPartner = LoginConfigValidator.BodyPartner(o);
-        if (who.IsPartnerAdmin && bodyPartner is { } bp && bp != who.Id.PartnerId)
+        if (who.IsPartnerAdmin && bodyPartner is { } bp && !who.Grant.AssignedPartners.Contains(bp))
         {
             var lc = o.TryGetProperty("login_config", out var l) ? l : (JsonElement?)null;
             await DenyAsync(who, "forbidden_scope", bp, null, LoginConfigValidator.AttemptedFields(lc));
             throw Err(404, "not_found");
         }
         // Step 8.
-        await using var c = await db.OpenConnectionAsync();
-        await using var tx = await c.BeginTransactionAsync();
-        await SetScopeAsync(c, tx, who.Id.AdminType, who.Id.PartnerId);
         var errs = new List<FieldError>();
         // Slice A: the body's partner's bounds; with no valid partner_id (422 anyway) the deployment config.
         var bounds = bodyPartner is { } rp ? await ResolveBoundsAsync(c, tx, rp) : ReasonBounds.FromConfig(opt);
@@ -731,27 +935,75 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Adm
             throw Validation(errs);
         }
         var cfg = n!.Config;
-        // Steps 9-10: on create, vs "none" (A-5).
-        var down = DowngradeFields(true, false, cfg);
-        if (down.Count > 0 && who.IsPartnerAdmin)
+        // Steps 9-10 apply only when sign-in setup is included. A create with no
+        // login_config stores the location and leaves it unable to sign in.
+        if (cfg is not null)
         {
-            await tx.RollbackAsync();
-            await DenyAsync(who, "not_super_admin", n.PartnerId, null, down);
-            throw Err(403, "not_super_admin");
+            var down = DowngradeFields(true, false, cfg);
+            if (down.Count > 0 && who.IsPartnerAdmin)
+            {
+                await tx.RollbackAsync();
+                await DenyAsync(who, "not_super_admin", n.PartnerId, null, down);
+                throw Err(403, "not_super_admin");
+            }
+            if (down.Count > 0 && cfg.Reason is null) throw Err(400, "reason_required");
         }
-        if (down.Count > 0 && cfg.Reason is null) throw Err(400, "reason_required");
+        LocationAddress? address = null;
+        if (o.TryGetProperty("address", out var addressEl))
+        {
+            var addressErrors = new List<FieldError>();
+            if (!CountryAddress.TryParse(addressEl, addressErrors, out address))
+            {
+                await tx.RollbackAsync();
+                throw Validation(addressErrors);
+            }
+        }
 
-        var entra = cfg.ProviderKind == "entra";
         var location = Guid.NewGuid();
+        var slug = NewSlug();
         var now = Now();
         await using (var ins = new NpgsqlCommand("INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ($1, $2, $3, $4)", c, tx))
         {
             ins.Parameters.Add(new() { Value = location });
             ins.Parameters.Add(new() { Value = n.PartnerId });
-            ins.Parameters.Add(new() { Value = NewSlug() });
+            ins.Parameters.Add(new() { Value = slug });
             ins.Parameters.Add(new() { Value = n.Name });
             await ins.ExecuteNonQueryAsync();
         }
+        if (address is not null)
+        {
+            await using var addr = new NpgsqlCommand(
+                """
+                UPDATE auth.location
+                   SET address_line_1 = $2, address_line_2 = $3, city = $4, country = $5, region = $6,
+                       postal_code = $7, phone = $8, email = $9, time_zone = $10
+                 WHERE location_id = $1
+                """, c, tx);
+            addr.Parameters.Add(new() { Value = location });
+            addr.Parameters.Add(new() { Value = address.Line1 });
+            addr.Parameters.Add(new() { Value = (object?)address.Line2 ?? DBNull.Value });
+            addr.Parameters.Add(new() { Value = address.City });
+            addr.Parameters.Add(new() { Value = address.Country });
+            addr.Parameters.Add(new() { Value = (object?)address.Region ?? DBNull.Value });
+            addr.Parameters.Add(new() { Value = (object?)address.Postal ?? DBNull.Value });
+            addr.Parameters.Add(new() { Value = address.Phone });
+            addr.Parameters.Add(new() { Value = (object?)address.Email ?? DBNull.Value });
+            addr.Parameters.Add(new() { Value = address.TimeZone });
+            await addr.ExecuteNonQueryAsync();
+        }
+        if (cfg is null)
+        {
+            await tx.CommitAsync();
+            ctx.Response.Headers.Location = $"/api/orgs/locations/{location:D}";
+            return Json(201, new JsonObject
+            {
+                ["location_id"] = location.ToString("D"),
+                ["partner_id"] = n.PartnerId.ToString("D"),
+                ["slug"] = slug,
+                ["name"] = n.Name,
+            });
+        }
+        var entra = cfg.ProviderKind == "entra";
         await using (var ins = new NpgsqlCommand(
             """
             INSERT INTO auth.location_login_config (location_id, provider_kind, display_name, entra_allowed_tenant_ids, oidc_authority, oidc_client_id,

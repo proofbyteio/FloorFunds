@@ -92,6 +92,9 @@
           "Npgsql.EntityFrameworkCore.PostgreSQL": "[10.0.3, 10.0.3]"
         }
       },
+      "catalog.contracts": {
+        "type": "Project"
+      },
       "login.abstractions": {
         "type": "Project"
       }

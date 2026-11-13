@@ -5,8 +5,15 @@
 #      and any existing role or DB the kit did not create (no 'floorfunds-kit' marker); --force never overrides
 #      that; nor kit roles with BYPASSRLS/CREATEROLE/CREATEDB/REPLICATION or any role membership outside the kit
 #      (KF1); output without the preflight's end marker is a refusal (KF3). Re-running on the kit's own (marked) objects needs --force (K1, TL 8:32).
-#   1. owner login role + a database it owns (superuser step; created objects are marked 'floorfunds-kit')
-#   2. the two S2a app roles <db>_admin_api and <db>_login (superuser step; spec §8.2)
+#   1. owner login role + a database it owns (superuser step; created objects are marked 'floorfunds-kit').
+#      --force is the only supported path for an intermediate REQ-064 database. db/kit/database.sql
+#      drops and recreates a marked database whose __EFMigrationsHistory contains one of the
+#      thirteen run 7-10 ids listed there (20261110160000 through 20261110310000, the ids at
+#      9ebb0eb that main 18372896 does not have). A future main id is not on that list and is
+#      left in place. In-place migration is not attempted for a listed id. A history that is
+#      a subset of main's four ids is migrated in place.
+#   2. the S2a app roles <db>_admin_api and <db>_login, plus <db>_issuer (superuser step; spec §8.2).
+#      <db>_issuer is a LOGIN role with no membership. Its password is only for the issuer process.
 #   3. db/migrations.sql applied AS THE OWNER (idempotent script from the EF runner;
 #      the only way schema/tables are created) — skip with --no-migrate
 #   4. optional TEST-ONLY seed db/seed/*.sql (--seed; SSE2-FAKE-TEST-ONLY data)
@@ -17,6 +24,7 @@ ROLE=floorfunds_dev
 PASSWORD="${FF_DB_PASSWORD:-}"
 ADMIN_API_PASSWORD="${FF_ADMIN_API_PASSWORD:-}"
 LOGIN_PASSWORD="${FF_LOGIN_PASSWORD:-}"
+ISSUER_PASSWORD="${FF_ISSUER_PASSWORD:-}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MIGRATIONS="$HERE/migrations.sql"
 MIGRATE=1
@@ -36,14 +44,19 @@ Usage: db/setup.sh [--db NAME] [--role NAME] [--password PW] [--host H] [--port 
   Owner password: --password, else env FF_DB_PASSWORD, else prompted (hidden).
   WARNING (I-3): --password PW puts the password in this process's argv, visible in the process list (ps)
   and in your shell history. Prefer the hidden prompt, or env FF_DB_PASSWORD.
-  App-role passwords (<db>_admin_api, <db>_login): env FF_ADMIN_API_PASSWORD and
-                   FF_LOGIN_PASSWORD, else prompted (hidden).
+  App-role passwords (<db>_admin_api, <db>_login, <db>_issuer): env FF_ADMIN_API_PASSWORD,
+                   FF_LOGIN_PASSWORD, and FF_ISSUER_PASSWORD, else prompted (hidden).
+                   FF_ISSUER_PASSWORD is for the issuer process only. It is not an Admin.Api setting.
   --superuser-cmd  command that runs psql as a Postgres superuser
                    (default: "$SUPERUSER_CMD_DEFAULT"; macOS Homebrew: "psql").
   --host           host written into the connection string (default 127.0.0.1)
   --admin-host     host the superuser psql connects to (default: local socket)
   --force          proceed when the kit's own (marked) DB/roles already exist: re-set their
                    passwords and grants. Never acts on objects the kit did not create.
+                   A marked database whose migration history contains a listed
+                   intermediate REQ-064 id (db/kit/database.sql) is dropped and recreated.
+                   That is the only supported path for an intermediate REQ-064 database.
+                   A future main id is not on that list and is left in place.
   --drop           drop and recreate ONLY the named database; needs --force, and only a
                    kit-marked DB owned by --role is ever dropped.
   Always refused (even with --force): --db postgres/template0/template1 or any template DB,
@@ -82,8 +95,8 @@ NAME_RE='^[a-z_][a-z0-9_]{0,62}$'
 [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || { echo "Invalid --port" >&2; exit 2; }
 # <db>_admin_api must still fit in 63 bytes.
 (( ${#DB} <= 53 )) || { echo "Invalid --db name: at most 53 characters (app role <db>_admin_api must fit)" >&2; exit 2; }
-ADMIN_API_ROLE="${DB}_admin_api"; LOGIN_ROLE="${DB}_login"
-[[ "$ROLE" != "$ADMIN_API_ROLE" && "$ROLE" != "$LOGIN_ROLE" ]] || { echo "Invalid --role: must not be an app role name" >&2; exit 2; }
+ADMIN_API_ROLE="${DB}_admin_api"; LOGIN_ROLE="${DB}_login"; ISSUER_ROLE="${DB}_issuer"
+[[ "$ROLE" != "$ADMIN_API_ROLE" && "$ROLE" != "$LOGIN_ROLE" && "$ROLE" != "$ISSUER_ROLE" ]] || { echo "Invalid --role: must not be an app role name" >&2; exit 2; }
 if [[ "$MIGRATE" -eq 1 ]]; then
   [[ -r "$MIGRATIONS" ]] || { echo "Migrations script not found: $MIGRATIONS" >&2; exit 2; }
   command -v psql >/dev/null || { echo "psql not found on PATH (needed to apply migrations as the owner)" >&2; exit 3; }
@@ -95,7 +108,7 @@ for f in preflight.sql role.sql database.sql; do [[ -r "$KIT/$f" ]] || { echo "K
 # K1 hard refusals by name (no SQL at all): --force never overrides these.
 refuse() { echo "Refused: $1. Nothing was changed." >&2; exit 5; }
 case "$DB" in postgres|template0|template1) refuse "--db $DB is a system database" ;; esac
-for r in "$ROLE" "$ADMIN_API_ROLE" "$LOGIN_ROLE"; do
+for r in "$ROLE" "$ADMIN_API_ROLE" "$LOGIN_ROLE" "$ISSUER_ROLE"; do
   [[ "$r" != postgres ]] || refuse "role postgres is the bootstrap superuser"
   [[ "$r" != pg_* ]] || refuse "role $r: the pg_ prefix is reserved"
 done
@@ -116,6 +129,7 @@ ask() { # ask VAR "prompt": hidden prompt if VAR is empty
 ask PASSWORD "Password for role $ROLE" "role $ROLE"
 ask ADMIN_API_PASSWORD "Password for app role $ADMIN_API_ROLE" "app role $ADMIN_API_ROLE"
 ask LOGIN_PASSWORD "Password for app role $LOGIN_ROLE" "app role $LOGIN_ROLE"
+ask ISSUER_PASSWORD "Password for app role $ISSUER_ROLE" "app role $ISSUER_ROLE"
 
 # shellcheck disable=SC2206
 PSQL=($SUPERUSER_CMD)
@@ -144,8 +158,8 @@ pw_set() { # \set NAME 'verifier' (base64 + $ : only, so no psql escaping is nee
 }
 
 # 0. K1 preflight: read-only, before anything is changed.
-echo "Preflight (read-only): $DB, $ROLE, $ADMIN_API_ROLE, $LOGIN_ROLE..."
-PRE="$(run_psql -tA -v api_role="$ADMIN_API_ROLE" -v login_role="$LOGIN_ROLE" -f - <"$KIT/preflight.sql")" \
+echo "Preflight (read-only): $DB, $ROLE, $ADMIN_API_ROLE, $LOGIN_ROLE, $ISSUER_ROLE..."
+PRE="$(run_psql -tA -v api_role="$ADMIN_API_ROLE" -v login_role="$LOGIN_ROLE" -v issuer_role="$ISSUER_ROLE" -f - <"$KIT/preflight.sql")" \
   || { echo "Preflight failed (see the psql error above). Nothing was changed." >&2; exit 5; }
 # KF3: fail closed. The preflight always ends with this line; empty or truncated output is a refusal.
 if [[ "$(tail -n 1 <<<"$PRE")" != "END floorfunds-kit-preflight" ]]; then
@@ -170,7 +184,7 @@ upsert_role() {
 upsert_role "$ROLE" "$PASSWORD"
 
 if [[ "$DROP" -eq 1 ]]; then echo "Dropping database $DB (only this database, only if kit-marked)..."; fi
-echo "Database $DB: create if missing (kit-marked only)..."
+echo "Database $DB: create if missing (kit-marked only). --force recreates a database whose history contains a listed intermediate REQ-064 id..."
 run_psql -v drop="$DROP" -f - <"$KIT/database.sql" \
   || { echo "Database $DB: kit SQL step aborted (see the psql error above)." >&2; exit 5; }
 
@@ -178,6 +192,7 @@ run_psql -v drop="$DROP" -f - <"$KIT/database.sql" \
 # RAISEs if either is missing or privileged.
 upsert_role "$ADMIN_API_ROLE" "$ADMIN_API_PASSWORD"
 upsert_role "$LOGIN_ROLE" "$LOGIN_PASSWORD"
+upsert_role "$ISSUER_ROLE" "$ISSUER_PASSWORD"
 
 owner_psql() { # as the owner over TCP; the password goes in the child's env, never argv
   PGPASSWORD="$PASSWORD" psql -X -q -v ON_ERROR_STOP=1 -h "$HOST" -p "$PORT" -U "$ROLE" -d "$DB" "$@"
@@ -188,11 +203,62 @@ if [[ "$MIGRATE" -eq 1 ]]; then
   PGOPTIONS='-c client_min_messages=warning' owner_psql -f "$MIGRATIONS" || { echo "Migrations failed (see the psql error above)" >&2; exit 4; }
   echo "Applied migrations: $(owner_psql -tA -c 'SELECT string_agg("MigrationId", '"', '"' ORDER BY "MigrationId") FROM public."__EFMigrationsHistory"')"
 fi
+have_history=0
+if owner_psql -tA -c "SELECT to_regclass('public.\"__EFMigrationsHistory\"') IS NOT NULL" 2>/dev/null | grep -q t; then
+  have_history=1
+fi
+# Kit SQL transfers ownership of functions the migrator has already installed.
+# A history stub, or a main schema from before those functions, is kept by
+# database.sql and is not a failure here. The migrator runs, then kit SQL.
+auth_ready=0
+catalog_ready=0
+if [[ "$have_history" -eq 1 ]]; then
+  # Schema must exist. A history-only stub (future main id) has no auth objects;
+  # to_regprocedure alone is not enough to decide the kit SQL step.
+  if owner_psql -tA -c "SELECT to_regnamespace('auth') IS NOT NULL AND to_regprocedure('auth._request_user()') IS NOT NULL" 2>/dev/null | grep -qx t; then
+    auth_ready=1
+  fi
+  if owner_psql -tA -c "SELECT to_regnamespace('catalog') IS NOT NULL" 2>/dev/null | grep -qx t; then
+    catalog_ready=1
+  fi
+fi
+if [[ "$auth_ready" -eq 1 ]]; then
+  echo "Definer owner: NOLOGIN role (superuser step)..."
+  { printf '\\c %s\n' "$DB"; cat "$KIT/definer-owner.sql"; } | run_psql -f - \
+    || { echo "Definer owner step failed (see the psql error above)" >&2; exit 4; }
+else
+  echo "Definer owner: skipped, auth._request_user is not installed yet."
+fi
+if [[ "$catalog_ready" -eq 1 ]]; then
+  echo "Catalog definer owner: NOLOGIN role (superuser step)..."
+  { printf '\\c %s\n' "$DB"; cat "$KIT/catalog-definer-owner.sql"; } | run_psql -f - \
+    || { echo "Catalog definer owner step failed (see the psql error above)" >&2; exit 4; }
+else
+  echo "Catalog definer owner: skipped, schema catalog is not installed yet."
+fi
 if [[ "$SEED" -eq 1 ]]; then
+  # TEST-ONLY role. The password stays in a mode-0600 file and is not printed.
+  install -d -m 1733 /tmp/ff-db
+  seed_env="/tmp/ff-db/${DB}_test_seed.env"
+  if [[ -f "$seed_env" ]]; then
+    test_seed_password="$(sed -n 's/^TEST_SEED_PASSWORD=//p' "$seed_env")"
+  else
+    test_seed_password="$(openssl rand -hex 24)"
+    umask 077
+    printf 'TEST_SEED_PASSWORD=%s\n' "$test_seed_password" > "${seed_env}.tmp"
+    chmod 0600 "${seed_env}.tmp"
+    mv "${seed_env}.tmp" "$seed_env"
+  fi
+  echo "Test seed role: LOGIN, no memberships (superuser step, test mode only)..."
+  { printf '\\set test_seed_password %s\n' "'$test_seed_password'"; printf '\\c %s\n' "$DB"; cat "$KIT/test-seed-role.sql"; } | run_psql -f - \
+    || { echo "Test seed role step failed (see the psql error above)" >&2; exit 4; }
+  # A2: seed SQL runs as _test_seed. The migrator has no INSERT on these tables.
+  seed_pw="$(sed -n 's/^TEST_SEED_PASSWORD=//p' "$seed_env")"
   for f in "$HERE"/seed/*.sql; do
-    echo "Seed (TEST-ONLY): $(basename "$f")..."
-    owner_psql -f "$f"
+    echo "Seed (TEST-ONLY): $(basename "$f") as ${DB}_test_seed..."
+    PGPASSWORD="$seed_pw" psql -X -q -v ON_ERROR_STOP=1 -h "$HOST" -p "$PORT" -U "${DB}_test_seed" -d "$DB" -f "$f"
   done
+  unset test_seed_password seed_pw
 fi
 
 cat <<DONE
@@ -206,4 +272,8 @@ Connection string templates (Npgsql); passwords are the ones you entered:
 
 Set them outside the repo, as env vars (see db/README.md, "Run and test"):
   CONNECTION_STRING (owner), ADMIN_API_CONNECTION_STRING, LOGIN_CONNECTION_STRING
+
+The issuer role $ISSUER_ROLE is LOGIN and a member of nothing. Its password is
+FF_ISSUER_PASSWORD, read only by the issuer process. Do not put it in the admin
+host's config, environment, pool, or connection strings.
 DONE

@@ -29,6 +29,15 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
             b.Property(x => x.PartnerId).HasColumnName("partner_id").HasColumnType("uuid");
             b.Property(x => x.Slug).HasColumnName("slug").HasColumnType("text").IsRequired();
             b.Property(x => x.Name).HasColumnName("name").HasColumnType("text").IsRequired();
+            b.Property(x => x.AddressLine1).HasColumnName("address_line_1").HasColumnType("text");
+            b.Property(x => x.AddressLine2).HasColumnName("address_line_2").HasColumnType("text");
+            b.Property(x => x.City).HasColumnName("city").HasColumnType("text");
+            b.Property(x => x.Country).HasColumnName("country").HasColumnType("text");
+            b.Property(x => x.Region).HasColumnName("region").HasColumnType("text");
+            b.Property(x => x.PostalCode).HasColumnName("postal_code").HasColumnType("text");
+            b.Property(x => x.Phone).HasColumnName("phone").HasColumnType("text");
+            b.Property(x => x.Email).HasColumnName("email").HasColumnType("text");
+            b.Property(x => x.TimeZone).HasColumnName("time_zone").HasColumnType("text");
         });
         modelBuilder.Entity<LocationLoginConfigRow>(b =>
         {

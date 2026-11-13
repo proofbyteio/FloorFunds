@@ -1,0 +1,330 @@
+/* {productName} admin — one theme layer, shipped DARK set (DEC-227).
+   The visible name comes from Branding:ProductName (DEC-228). The config default is not repeated here.
+   DEC-230 updates DEC-226 for the sidebar and sign-in only (mark + name).
+   DEC-231: inputs stay 0.375rem.
+   DEC-232: CTA gold gradient and glow, AA-readable.
+   DEC-233: decorative halo on standalone buttons only (e.g. Sign in).
+   DEC-235 (supersedes DEC-234): on phones, primary buttons scale(.95) and
+   glow when pressed. Reduced-motion: no scale, no transition; glow state
+   change still shows instantly.
+   Light is NOT SELECTED and is not shipped here.
+   Visual rendering is UNVERIFIED. contrast.py is the source of truth for AA.
+*/
+
+:root {
+  /* HELD_LOGO (TL choice under DEC-226). logo-1.svg
+     sha256 117217d83459f9215cd379a759b7e2e2902111760c2f853de85d9f7ef235165e
+     Small icons: matching favicon rasters of the same monogram.
+     DEC-230 updates DEC-226 for the sidebar and sign-in only: mark + {productName}
+     text. Everywhere else stays mark-only. */
+  --held-logo-file: logo-1.svg;
+  --held-logo-sha256: 117217d83459f9215cd379a759b7e2e2902111760c2f853de85d9f7ef235165e;
+  --held-logo-lockup-sidebar-signin: mark-and-name;
+  --held-logo-lockup-elsewhere: mark-only;
+
+  /* DEC-230 lockup typography (sidebar and sign-in only). */
+  --lockup-gap: 0.5rem; /* 8px between mark and name */
+  --lockup-mark-size-sidebar: 36px;
+  --lockup-mark-size-signin: 48px;
+  --lockup-name-size-sidebar: 1rem; /* 16px */
+  --lockup-name-size-signin: 1.25rem; /* 20px */
+  --lockup-name-weight: 600;
+  --lockup-name-color: #f0ede8; /* --foreground; 15.78:1 on #141414, 16.95:1 on #0a0a0a */
+  --lockup-name-max-width-sidebar: 160px;
+  --lockup-name-max-width-signin: 240px;
+
+  /* DEC-227 DECIDED: Inter, dark, pill buttons. DEC-231: inputs stay rx6. */
+  --font-family: Inter, "Inter Fallback", sans-serif;
+  --radius-button: 9999px; /* pill */
+  --radius-control: 0.375rem; /* inputs and other controls: rx6 (DEC-231) */
+
+  /* Shared scale (from Playerhub CSS-main / CSS-font). */
+  --spacing: 0.25rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: calc(1 / 0.75);
+  --text-sm: 0.875rem;
+  --text-sm--line-height: calc(1.25 / 0.875);
+  --text-base: 1rem;
+  --text-base--line-height: calc(1.5 / 1);
+  --text-lg: 1.125rem;
+  --text-lg--line-height: calc(1.75 / 1.125);
+  --text-xl: 1.25rem;
+  --text-xl--line-height: calc(1.75 / 1.25);
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: calc(2 / 1.5);
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --title-size: 22px; /* accepted 01–12 page title */
+  --control-height-button: 40px;
+  --control-height-input: 36px;
+  --sidebar-width: 280px;
+  --header-height: 60px;
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* —— Shipped DARK value set (DEC-227). The only shipped theme layer. —— */
+  --background: #0a0a0a;
+  --foreground: #f0ede8;
+  --surface: #141414;
+  --text-muted: #9ca3af;
+  --placeholder: #9ca3af;
+  --disabled-text: #9ca3af;
+  --link: #6286ea; /* substituted from #1d4ed8; see SUBSTITUTIONS.tsv */
+  --link-on-banner: #1d4ed8;
+  --primary: #d1b26f;
+  --primary-hover: #a58a51;
+  --text-on-primary: #0a0a0a;
+  --border-control: #d1b26f;
+  --focus-ring: #d1b26f;
+  --input-bg: #141414;
+  --secondary-bg: #141414;
+  --secondary-text: #f0ede8;
+  --danger-fill: #fb2c36;
+  --text-on-danger: #0a0a0a;
+  --error: #e44236; /* substituted from #b42318 */
+  --success: #079057; /* substituted from #05603a */
+  --warning: #ba6a00; /* substituted from #9a5800 */
+  --error-banner-bg: #fef3f2;
+  --error-banner-text: #b42318;
+  --error-banner-border: #b42318;
+  --warning-banner-bg: #fff4e0;
+  --warning-banner-text: #9a5800;
+  --warning-banner-border: #9a5800;
+  --success-banner-bg: #ecfdf3;
+  --success-banner-text: #05603a;
+  --success-banner-border: #05603a;
+  --info-banner-bg: #eff4ff;
+  --info-banner-text: #1d4ed8;
+  --banner-body: #5b6472;
+  --hover-bg: #27241d; /* 10% #d1b26f over #141414 */
+  --selected-bg: #27241d;
+  --nav-active-bg: #27241d;
+  --nav-active-edge: #d1b26f;
+  --header-bg: #141414;
+  --sidebar-bg: #141414;
+  --signin-bg: #0a0a0a;
+  --hairline: #ffffff14; /* decorative only; not a 3:1 control border */
+
+  /* DEC-232 CTA gradient and glow — exact values from saved Playerhub sources.
+     JS-shell 2p-ru8jk3s5jw.js line 9:
+       bg-gradient-to-r from-[#B9893C] to-[#E5C07B] text-black
+       shadow-[0_0_20px_rgba(185,137,60,0.4)]
+       hover:shadow-[0_0_30px_rgba(185,137,60,0.6)]
+       border border-[#F1E28C]/50
+       mobile CTA: shadow-[0_0_30px_rgba(185,137,60,0.3)]
+       and transition-transform active:scale-95 (DEC-235)
+     CSS-main 1c0ms08wznt54.css line 1 (minified):
+       .from-\[\#B9893C\]{--tw-gradient-from:#b9893c;…}  (char 70082)
+       .to-\[\#E5C07B\]{--tw-gradient-to:#e5c07b}
+       .active\:scale-95:active{…;scale:var(--tw-scale-x) var(--tw-scale-y)}
+         with --tw-scale-x/y/z: 95%  (char 187890)  → scale(.95)
+       .transition-transform uses --default-transition-duration:.15s
+         and --default-transition-timing-function:cubic-bezier(.4, 0, .2, 1) */
+  --cta-stop-dark: #b9893c; /* worst stop for #0a0a0a text, 6.32:1 */
+  --cta-stop-light: #e5c07b; /* 11.46:1 with #0a0a0a */
+  --cta-gradient: linear-gradient(to right, var(--cta-stop-dark), var(--cta-stop-light));
+  --cta-glow: 0 0 20px rgba(185, 137, 60, 0.4);
+  --cta-glow-hover: 0 0 30px rgba(185, 137, 60, 0.6);
+  --cta-glow-active: 0 0 30px rgba(185, 137, 60, 0.3);
+  --cta-border: rgba(241, 226, 140, 0.5); /* #F1E28C at 50%; decorative, not a 3:1 control border */
+  --cta-halo: linear-gradient(to right, var(--primary), var(--primary-hover));
+  /* Solid fallback under the gradient (also the fill if gradient is unavailable). */
+  --cta-fallback-fill: var(--primary);
+  /* DEC-235 press. Source: .active\:scale-95:active → scale(.95).
+     Duration: .15s from --default-transition-duration (no duration-* on the CTA).
+     Easing: cubic-bezier(.4, 0, .2, 1) from --default-transition-timing-function. */
+  --cta-press-scale: 0.95;
+  --cta-press-duration: 0.15s;
+  --cta-press-easing: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Focus-visible: 2px or more, passing color, 2px offset so the ring sits
+   against the page/surface (3:1) rather than flush on a gold fill.
+   Glow is decorative only and MUST NOT replace this ring (DEC-232 / TL).
+   The press scale is applied to an inner surface so this ring is unaffected
+   (DEC-235): it does not shrink, shift, or get clipped. */
+:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+/* DEC-230 lockup: logo-1.svg mark + {productName} text, sidebar and sign-in only.
+   A long {productName} truncates with an ellipsis at the max-width below.
+   The full name stays in the DOM (this is the accessible name); do not
+   replace the text node with a shortened string. Optional title is a
+   hover hint only, not a substitute for the DOM text. */
+.admin-lockup {
+  display: flex;
+  align-items: center;
+  gap: var(--lockup-gap);
+  min-width: 0;
+  text-decoration: none;
+  color: var(--lockup-name-color);
+}
+.admin-lockup__mark {
+  flex: 0 0 auto;
+  width: var(--lockup-mark-size-sidebar);
+  height: var(--lockup-mark-size-sidebar);
+}
+.admin-lockup__name {
+  font-family: var(--font-family);
+  font-weight: var(--lockup-name-weight);
+  font-size: var(--lockup-name-size-sidebar);
+  line-height: var(--text-base--line-height);
+  color: var(--lockup-name-color);
+  max-width: var(--lockup-name-max-width-sidebar);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.admin-lockup--signin .admin-lockup__mark {
+  width: var(--lockup-mark-size-signin);
+  height: var(--lockup-mark-size-signin);
+}
+.admin-lockup--signin .admin-lockup__name {
+  font-size: var(--lockup-name-size-signin);
+  line-height: var(--text-xl--line-height);
+  max-width: var(--lockup-name-max-width-signin);
+}
+
+/* DEC-232 / DEC-235 placement: existing primary buttons only.
+   Do not apply to secondary, danger, inputs, banners, or the marketing header.
+   Text --text-on-primary (#0a0a0a) must pass 4.5:1 on every gradient stop
+   (see contrast.py: worst stop #b9893c = 6.32:1; active press uses the same stops).
+   The outer .btn-primary box keeps layout size and the :focus-visible ring.
+   Scale is applied only to the inner .btn-primary__press surface, with
+   transform-origin / scale origin at the center, so the 2px ring still shows
+   and is not scaled or clipped. overflow is visible. */
+.btn-primary {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--control-height-button);
+  border-radius: var(--radius-button);
+  color: var(--text-on-primary);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-family: var(--font-family);
+  font-weight: var(--font-weight-medium);
+  font-size: var(--text-sm);
+  overflow: visible;
+  transform-origin: center;
+}
+.btn-primary__press {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  color: inherit;
+  background-color: var(--cta-fallback-fill);
+  background-image: var(--cta-gradient);
+  border: 1px solid var(--cta-border);
+  box-shadow: var(--cta-glow);
+  transform-origin: center;
+  /* Source CTA: transition-transform with no duration-* class, so
+     --default-transition-duration:.15s and
+     --default-transition-timing-function:cubic-bezier(.4, 0, .2, 1)
+     (CSS-main line 1, chars 5980 and 166130). box-shadow is included so
+     the glow eases at the same duration; under reduced-motion both are none. */
+  transition-property: scale, box-shadow;
+  transition-duration: var(--cta-press-duration);
+  transition-timing-function: var(--cta-press-easing);
+}
+.btn-primary:hover .btn-primary__press {
+  box-shadow: var(--cta-glow-hover);
+}
+.btn-primary:active .btn-primary__press {
+  box-shadow: var(--cta-glow-active);
+}
+
+/* DEC-235 — “phones” (PROPOSED mapping): viewports below the source `lg`
+   breakpoint that gates the mobile overlay which actually carries
+   active:scale-95. That overlay is `lg:hidden` (JS-shell line 9). CSS-main
+   line 1, char 197450: @media (min-width:64rem){ … .lg\:hidden{display:none}
+   at char 198175 }. 64rem = 1024px at a 16px root. pointer:coarse is not
+   used in the saved CSS or on this CTA. A JS hook isMobile (innerWidth<768)
+   exists in the same file but only drops backdrop-blur for performance; it
+   does not gate the press scale. */
+@media not all and (min-width: 64rem) {
+  .btn-primary:active .btn-primary__press {
+    scale: var(--cta-press-scale); /* 0.95 — source scale(.95) on :active */
+  }
+}
+
+/* DEC-233 DECIDED: decorative blur halo only on standalone buttons
+   (e.g. Sign in), not on every toolbar or table-row primary.
+   Source: JS-shell line 9,
+   absolute -inset-1 bg-gradient-to-r from-primary to-primary-dark
+   rounded-full blur opacity-25 group-hover:opacity-50
+   transition duration-1000 group-hover:duration-200.
+   Never used as the text fill. Never a focus indicator. */
+.btn-primary-halo {
+  background-image: var(--cta-halo);
+  opacity: 0.25;
+  filter: blur(8px);
+  transition: opacity 1000ms ease;
+  pointer-events: none;
+}
+.btn-primary-halo:hover,
+.btn-primary:hover + .btn-primary-halo,
+.group:hover .btn-primary-halo {
+  opacity: 0.5;
+  transition-duration: 200ms;
+}
+
+/* Motion:
+   The source CTA gradient and glow have no looping animation. The press
+   scale uses transition-transform at .15s; hover/halo use CSS transitions.
+   The saved CSS also defines .animate-\[shimmer_3s_infinite\]{animation:3s infinite shimmer}
+   (CSS-main line 1, char 27084), used on the marketing header which is not
+   applied here; @keyframes shimmer was not found in the saved CSS-main file.
+
+   prefers-reduced-motion: reduce (TL rule): no scale and no transition, but
+   the glow state change still shows so the press stays visible (applied
+   instantly). The :focus-visible ring is unchanged. */
+@media (prefers-reduced-motion: reduce) {
+  .btn-primary,
+  .btn-primary__press,
+  .btn-primary-halo {
+    transition: none;
+    animation: none;
+  }
+  .btn-primary:active .btn-primary__press,
+  .btn-primary__press {
+    scale: none;
+  }
+  /* Intentionally do not reset --cta-glow-hover / --cta-glow-active.
+     :active still applies --cta-glow-active instantly, with no transition. */
+}
+
+/* Self-hosted Inter variable fonts from the official rsms/inter release v4.1.
+   Source: https://github.com/rsms/inter/releases/tag/v4.1
+   Files from that release only: web/InterVariable.woff2, web/InterVariable-Italic.woff2, LICENSE.txt.
+   No CDN and no remote font URL. */
+@font-face {
+  font-family: Inter;
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("fonts/InterVariable.woff2") format("woff2");
+}
+@font-face {
+  font-family: Inter;
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("fonts/InterVariable-Italic.woff2") format("woff2");
+}

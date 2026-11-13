@@ -1,0 +1,18 @@
+.shell { display: grid; grid-template-columns: var(--sidebar-width) 1fr; min-height: 100vh; }
+.shell__nav { background: var(--color-surface); border-right: 1px solid var(--color-border); padding: var(--space-4); }
+.shell__brand { font-weight: var(--font-weight-semibold); margin-bottom: var(--space-4); }
+.shell__nav a { display: block; padding: var(--space-2) var(--space-3); margin-bottom: var(--space-1); border-radius: var(--radius-sm); text-decoration: none; color: var(--color-text); }
+.shell__nav a[aria-current="page"] { background: var(--nav-active-bg); box-shadow: inset 3px 0 0 var(--nav-active-edge); }
+.shell__main { padding: var(--space-6); }
+.shell__table { width: 100%; border-collapse: collapse; background: var(--color-surface); }
+.shell__table th, .shell__table td { text-align: left; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-border); }
+.shell__actions { display: flex; gap: var(--space-3); margin-top: var(--space-4); }
+select.field__input {
+  background-color: var(--input-bg);
+  color: var(--foreground);
+  border-radius: var(--radius-control);
+}
+@media (max-width: 720px) {
+  .shell { grid-template-columns: 1fr; }
+  .shell__nav { border-right: 0; border-bottom: 1px solid var(--color-border); }
+}

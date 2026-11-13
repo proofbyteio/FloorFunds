@@ -6,6 +6,12 @@
 #  B. live runs on scratch $P* (default ff_kit_kf*) DBs/roles created here (unmarked ones by hand, for the purpose) and all
 #     dropped at the end. Asserts refusals change nothing (oid, attributes, password hash, comment).
 # usage: db/tests/k1-kit-tests.sh   (needs sudo -u postgres, pwsh 7, and for the DB checks a built src/Auth.Data.Checks)
+# FF_PG_LOG: server log of the cluster under test. The KF-A checks read it from a byte
+# offset (sudo -u postgres tail); they never write it. Default is the Debian PostgreSQL 17
+# main log. Set FF_PG_LOG when the cluster under test is not that file, or the four KF-A
+# log checks read the wrong log and fail. Auth.Data inside checks() also needs
+# SCRATCH_ADMIN_CONNECTION_STRING (and SCRATCH_PG_PORT when the scratch cluster is not 5432);
+# without them the scratch probes fail and the summary is 169 passed, 5 failed.
 set -uo pipefail
 # Every scratch DB/role name below is built from P, and cleanup matches PL (P with _ escaped for LIKE), so a renamed
 # copy only needs P changed and still cleans up everything it made (SSE2 KF5 suggestion).
@@ -54,7 +60,7 @@ stub_case() {
     fi
   done
 }
-export FF_DB_PASSWORD="$(PW)" FF_ADMIN_API_PASSWORD="$(PW)" FF_LOGIN_PASSWORD="$(PW)"
+export FF_DB_PASSWORD="$(PW)" FF_ADMIN_API_PASSWORD="$(PW)" FF_LOGIN_PASSWORD="$(PW)" FF_ISSUER_PASSWORD="$(PW)"
 echo "=== A. stub runs (no database is touched) ==="
 stub_case "--db postgres --force" 5 0 "postgres is a system database" "" -- --db postgres --role ${P}z --force --no-migrate
 stub_case "--db postgres --role postgres --force --drop" 5 0 "system database" "" -- --db postgres --role postgres --force --drop --no-migrate
@@ -70,10 +76,10 @@ stub_case "--db ff_sse --role ff_sse --force --drop (unmarked) still refused" 5 
 stub_case "--db ff_sse2 --role ff_sse2 --force --drop (unmarked) still refused" 5 1 "Refused: role ff_sse2 exists but was not created" "${FF_SSE_PRE//ff_sse/ff_sse2}" -- --db ff_sse2 --role ff_sse2 --force --drop --no-migrate
 stub_case "superuser role, even if marked, --force" 5 1 "Refused: role ${P}z is a superuser" "REFUSE role ${P}z is a superuser${NL}EXISTS role ${P}z${NL}" -- --db ${P}z --role ${P}z --force --no-migrate
 stub_case "existing kit objects without --force" 5 1 "re-run with .?-?-?[Ff]orce" "EXISTS role ${P}z${NL}EXISTS database ${P}z${NL}" -- --db ${P}z --role ${P}z --no-migrate
-# --force on the kit's own objects proceeds: 1 preflight + 3 roles + 1 DB, every mutating script is the guarded kit SQL.
-stub_case "existing kit objects with --force proceeds (5 calls)" 0 5 "Done" "EXISTS role ${P}z${NL}EXISTS database ${P}z${NL}" -- --db ${P}z --role ${P}z --force --no-migrate
-ok "stub: the --force run sent only guarded kit SQL (role.sql x3 marker guard, database.sql drop + create guards)" \
-  "$([[ $(grep -c 'refusing to alter a role the kit did not create' "$KIT_STUB_LOG") == 3 && $(grep -c 'refusing to touch a database the kit did not create' "$KIT_STUB_LOG") == 2 ]] && echo 1 || echo 0)"
+# --force on the kit's own objects proceeds: 1 preflight + 4 roles + 1 DB, every mutating script is the guarded kit SQL.
+stub_case "existing kit objects with --force proceeds (6 calls)" 0 6 "Done" "EXISTS role ${P}z${NL}EXISTS database ${P}z${NL}" -- --db ${P}z --role ${P}z --force --no-migrate
+ok "stub: the --force run sent only guarded kit SQL (role.sql x4 marker guard, database.sql drop + create guards)" \
+  "$([[ $(grep -c 'refusing to alter a role the kit did not create' "$KIT_STUB_LOG") == 4 && $(grep -c 'refusing to touch a database the kit did not create' "$KIT_STUB_LOG") == 2 ]] && echo 1 || echo 0)"
 # KF3: no end marker = fail closed, even with --force and nothing else in the output.
 export KIT_STUB_NO_END=1
 stub_case "KF3 empty preflight output (no end marker) with --force -> refused" 5 1 "preflight returned no end marker" "" -- --db ${P}z --role ${P}z --force --no-migrate
@@ -111,47 +117,58 @@ marked() { q "SELECT count(*) FROM (SELECT oid FROM pg_roles WHERE rolname = ANY
 dboid() { q "SELECT coalesce((SELECT oid::text FROM pg_database WHERE datname='$1'), 'none')"; }
 pwhash() { q "SELECT md5(coalesce(rolpassword,'')) FROM pg_authid WHERE rolname='$1'"; }
 SH() { bash "$DBDIR/setup.sh" "$@" >"$T/out" 2>&1; echo $?; }
-PS() { sudo -u postgres --preserve-env=FF_DB_PASSWORD,FF_ADMIN_API_PASSWORD,FF_LOGIN_PASSWORD pwsh -NoProfile -NonInteractive -File "$DBDIR/setup.ps1" -AdminHost '' "$@" >"$T/out" 2>&1; echo $?; }
+PS() { sudo -u postgres --preserve-env=FF_DB_PASSWORD,FF_ADMIN_API_PASSWORD,FF_LOGIN_PASSWORD,FF_ISSUER_PASSWORD pwsh -NoProfile -NonInteractive -File "$DBDIR/setup.ps1" -AdminHost '' "$@" >"$T/out" 2>&1; echo $?; }
 checks() { # checks DB OWNER -> last line of the DB checks (passwords from the current env)
+  # Auth.Data's scratch probes read SCRATCH_ADMIN_CONNECTION_STRING from the process environment.
+  # A shell assignment that was not exported never reaches dotnet, and the run then reports
+  # 169 passed, 5 failed (N3 twice, N1 twice, Q2) at Auth.Data.Checks/Program.cs scratch setup.
+  if [[ -z "${SCRATCH_ADMIN_CONNECTION_STRING:-}" ]]; then
+    echo "scratch env missing: export SCRATCH_ADMIN_CONNECTION_STRING before k1 (else N3 x2, N1 x2, Q2 fail: 169 passed, 5 failed)"
+    return 1
+  fi
+  export SCRATCH_ADMIN_CONNECTION_STRING
   ( cd "$SRC" && export PATH=/home/box/.dotnet:$PATH DOTNET_ROOT=/home/box/.dotnet DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 \
       CONNECTION_STRING="Host=127.0.0.1;Port=5432;Database=$1;Username=$2;Password=$FF_DB_PASSWORD" \
       ADMIN_API_CONNECTION_STRING="Host=127.0.0.1;Port=5432;Database=$1;Username=$1_admin_api;Password=$FF_ADMIN_API_PASSWORD" \
       LOGIN_CONNECTION_STRING="Host=127.0.0.1;Port=5432;Database=$1;Username=$1_login;Password=$FF_LOGIN_PASSWORD" \
+      ISSUER_CONNECTION_STRING="Host=127.0.0.1;Port=5432;Database=$1;Username=$1_issuer;Password=$FF_ISSUER_PASSWORD" \
       AUTH_CHECKS_DB="$1" && dotnet run --no-build --project Auth.Data.Checks -- Login.StandIn/fixtures.json 2>&1 | tail -1 ); }
 cleanup() {
   for d in $(q "SELECT datname FROM pg_database WHERE datname LIKE '$PL%'"); do q "DROP DATABASE \"$d\" WITH (FORCE)" >/dev/null; done
   for r in $(q "SELECT rolname FROM pg_roles WHERE rolname LIKE '$PL%'"); do q "DROP ROLE \"$r\"" >/dev/null; done
 }
 cleanup
-export FF_DB_PASSWORD="$(PW)" FF_ADMIN_API_PASSWORD="$(PW)" FF_LOGIN_PASSWORD="$(PW)"
+export FF_DB_PASSWORD="$(PW)" FF_ADMIN_API_PASSWORD="$(PW)" FF_LOGIN_PASSWORD="$(PW)" FF_ISSUER_PASSWORD="$(PW)"
 
 # B1 setup.sh fresh, --role != --db (K2)
 rc=$(SH --db ${P}a --role ${P}a_owner --seed)
-ok "[sh] fresh ${P}a (--role ${P}a_owner) -> rc 0; DB + 3 roles carry the kit marker" "$([[ $rc == 0 && $(marked ${P}a_owner,${P}a_admin_api,${P}a_login ${P}a) == 4 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
-r=$(checks ${P}a ${P}a_owner); ok "[sh] DB checks on ${P}a with --role != --db (K2) -> $r" "$([[ $r == '174 passed, 0 failed' ]] && echo 1 || echo 0)"
+ok "[sh] fresh ${P}a (--role ${P}a_owner) -> rc 0; DB + 4 roles carry the kit marker" "$([[ $rc == 0 && $(marked ${P}a_owner,${P}a_admin_api,${P}a_login,${P}a_issuer ${P}a) == 5 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
+ok "[sh] marked roles are exactly owner, admin_api, login, issuer" "$([[ $(q "SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles WHERE rolname LIKE '${P}a%' AND shobj_description(oid,'pg_authid')='floorfunds-kit'") == "${P}a_admin_api,${P}a_issuer,${P}a_login,${P}a_owner" ]] && echo 1 || echo 0)"
+r=$(checks ${P}a ${P}a_owner); ok "[sh] DB checks on ${P}a with --role != --db (K2) -> $r" "$([[ $r == '181 passed, 0 failed' ]] && echo 1 || echo 0)"
 s0=$(snap); rc=$(SH --db ${P}a --role ${P}a_owner --seed)
 ok "[sh] re-run without --force -> rc 5, nothing changed" "$([[ $rc == 5 && $(snap) == "$s0" ]] && grep -q 're-run with --force' "$T/out" && echo 1 || echo 0)" "rc=$rc"
 rc=$(SH --db ${P}a --role ${P}a_owner --drop)
 ok "[sh] --drop without --force -> rc 2, nothing changed" "$([[ $rc == 2 && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
 oid0=$(dboid ${P}a); h0=$(pwhash ${P}a_owner)
 TRICKY="k1'q\\b-$(PW)"; rc=$(FF_DB_PASSWORD="$TRICKY" SH --db ${P}a --role ${P}a_owner --force)
-ok "[sh] --force on the kit's own objects -> rc 0, same DB oid, owner password re-set (quote+backslash password logs in)" \
-  "$([[ $rc == 0 && $(dboid ${P}a) == "$oid0" && $(pwhash ${P}a_owner) != "$h0" ]] && PGPASSWORD="$TRICKY" psql -X -tA -h 127.0.0.1 -U ${P}a_owner -d ${P}a -c 'select 1' >/dev/null 2>&1 && echo 1 || echo 0)" "rc=$rc"
+ok "[sh] --force on the kit's own objects -> rc 0, DB recreated (history is past main 18372896), owner password re-set (quote+backslash password logs in)" \
+  "$([[ $rc == 0 && $(dboid ${P}a) != "$oid0" && $(marked x ${P}a) == 1 && $(pwhash ${P}a_owner) != "$h0" ]] && PGPASSWORD="$TRICKY" psql -X -tA -h 127.0.0.1 -U ${P}a_owner -d ${P}a -c 'select 1' >/dev/null 2>&1 && echo 1 || echo 0)" "rc=$rc"
 rc=$(SH --db ${P}a --role ${P}a_owner --force --drop --seed)
 ok "[sh] --force --drop -> rc 0, DB recreated (new oid), still marked" "$([[ $rc == 0 && $(dboid ${P}a) != "$oid0" && $(marked x ${P}a) == 1 ]] && echo 1 || echo 0)" "rc=$rc"
-r=$(checks ${P}a ${P}a_owner); ok "[sh] DB checks after --force --drop -> $r" "$([[ $r == '174 passed, 0 failed' ]] && echo 1 || echo 0)"
+r=$(checks ${P}a ${P}a_owner); ok "[sh] DB checks after --force --drop -> $r" "$([[ $r == '181 passed, 0 failed' ]] && echo 1 || echo 0)"
 
 # B2 setup.ps1 fresh, --role == --db
 rc=$(PS -Db ${P}b -Role ${P}b -Seed)
-ok "[ps1] fresh ${P}b -> rc 0; DB + 3 roles carry the kit marker" "$([[ $rc == 0 && $(marked ${P}b,${P}b_admin_api,${P}b_login ${P}b) == 4 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
-r=$(checks ${P}b ${P}b); ok "[ps1] DB checks on ${P}b -> $r" "$([[ $r == '174 passed, 0 failed' ]] && echo 1 || echo 0)"
+ok "[ps1] fresh ${P}b -> rc 0; DB + 4 roles carry the kit marker" "$([[ $rc == 0 && $(marked ${P}b,${P}b_admin_api,${P}b_login,${P}b_issuer ${P}b) == 5 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
+ok "[ps1] marked roles are exactly owner, admin_api, login, issuer" "$([[ $(q "SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles WHERE rolname LIKE '${P}b%' AND shobj_description(oid,'pg_authid')='floorfunds-kit'") == "${P}b,${P}b_admin_api,${P}b_issuer,${P}b_login" ]] && echo 1 || echo 0)"
+r=$(checks ${P}b ${P}b); ok "[ps1] DB checks on ${P}b -> $r" "$([[ $r == '181 passed, 0 failed' ]] && echo 1 || echo 0)"
 s0=$(snap); rc=$(PS -Db ${P}b -Role ${P}b)
 ok "[ps1] re-run without -Force -> rc 5, nothing changed" "$([[ $rc == 5 && $(snap) == "$s0" ]] && grep -q 're-run with -Force' "$T/out" && echo 1 || echo 0)" "rc=$rc"
 rc=$(PS -Db ${P}b -Role ${P}b -Drop)
 ok "[ps1] -Drop without -Force -> rc 2, nothing changed" "$([[ $rc == 2 && $(snap) == "$s0" ]] && echo 1 || echo 0)" "rc=$rc"
 oid0=$(dboid ${P}b); rc=$(PS -Db ${P}b -Role ${P}b -Force -Drop -Seed)
 ok "[ps1] -Force -Drop -> rc 0, DB recreated (new oid), still marked" "$([[ $rc == 0 && $(dboid ${P}b) != "$oid0" && $(marked x ${P}b) == 1 ]] && echo 1 || echo 0)" "rc=$rc"
-r=$(checks ${P}b ${P}b); ok "[ps1] DB checks after -Force -Drop -> $r" "$([[ $r == '174 passed, 0 failed' ]] && echo 1 || echo 0)"
+r=$(checks ${P}b ${P}b); ok "[ps1] DB checks after -Force -Drop -> $r" "$([[ $r == '181 passed, 0 failed' ]] && echo 1 || echo 0)"
 
 # B3 hand-made UNMARKED scratch objects (stand-ins for "someone else's DB/role") + a marked superuser
 q "CREATE ROLE ${P}u NOLOGIN" >/dev/null; q "CREATE DATABASE ${P}u OWNER ${P}u" >/dev/null
@@ -211,9 +228,9 @@ kf1_attr() { # ATTR ROLE
 }
 kf1_attr BYPASSRLS ${P}a_owner; kf1_attr CREATEROLE ${P}a_admin_api; kf1_attr REPLICATION ${P}a_login; kf1_attr CREATEDB ${P}a_owner
 oid0=$(dboid ${P}a); rc=$(SH $A)
-ok "[sh] KF1 after every grant/attribute was reverted: --force on ${P}a -> rc 0, same DB oid" "$([[ $rc == 0 && $(dboid ${P}a) == "$oid0" ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
+ok "[sh] KF1 after every grant/attribute was reverted: --force on ${P}a -> rc 0, DB recreated rather than migrated in place" "$([[ $rc == 0 && $(dboid ${P}a) != "$oid0" && $(marked x ${P}a) == 1 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
 mapfile -t pa < <(ps1args $A); rc=$(PS "${pa[@]}")
-ok "[ps1] KF1 after every grant/attribute was reverted: -Force on ${P}a -> rc 0, same DB oid" "$([[ $rc == 0 && $(dboid ${P}a) == "$oid0" ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
+ok "[ps1] KF1 after every grant/attribute was reverted: -Force on ${P}a -> rc 0, DB recreated rather than migrated in place" "$([[ $rc == 0 && $(dboid ${P}a) != "$oid0" && $(marked x ${P}a) == 1 ]] && echo 1 || echo 0)" "rc=$rc $(tail -3 "$T/out" | tr '\n' ' ')"
 
 # B4 defence in depth: the mutating kit SQL itself refuses unmarked objects (if the preflight were bypassed / raced)
 s0=$(snap)
@@ -247,10 +264,10 @@ ok "kit/database.sql DO block (drop=0) directly on unmarked ${P}u -> error, not 
 
 
 # ---------- KF-A / KF-B / KF-C (commit after 81affe1) ----------
-LOG=/var/log/postgresql/postgresql-17-main.log  # read only (sudo -u postgres tail from a byte offset); never edited
+LOG="${FF_PG_LOG:-/var/log/postgresql/postgresql-17-main.log}"  # read only (sudo -u postgres tail from a byte offset); never edited
 logfrom() { sudo -u postgres tail -c +$(( $1 + 1 )) "$LOG"; }
 # KF-A 1: the stored password is a SCRAM verifier made client-side, and the kit's passwords log in.
-for r in ${P}a_owner ${P}a_admin_api ${P}a_login ${P}b ${P}b_admin_api ${P}b_login; do
+for r in ${P}a_owner ${P}a_admin_api ${P}a_login ${P}a_issuer ${P}b ${P}b_admin_api ${P}b_login ${P}b_issuer; do
   ok "KF-A $r: rolpassword is SCRAM-SHA-256\$4096" "$([[ $(q "SELECT rolpassword LIKE 'SCRAM-SHA-256\$4096:%' FROM pg_authid WHERE rolname='$r'") == t ]] && echo 1 || echo 0)"
 done
 for w in sh ps1; do
@@ -259,7 +276,7 @@ for w in sh ps1; do
   ok "KF-A [$w] client-side verifier: ${P}a_login logs in with the new password, not with a wrong one" \
     "$([[ $rc == 0 ]] && PGPASSWORD="$pw" psql -X -tA -h 127.0.0.1 -U ${P}a_login -d ${P}a -c 'select 1' >/dev/null 2>&1 && ! PGPASSWORD="x$pw" psql -X -tA -h 127.0.0.1 -U ${P}a_login -d ${P}a -c 'select 1' >/dev/null 2>&1 && echo 1 || echo 0)" "rc=$rc"
 done
-r=$(checks ${P}b ${P}b); ok "KF-A DB checks on ${P}b after the SCRAM change -> $r" "$([[ $r == '174 passed, 0 failed' ]] && echo 1 || echo 0)"
+r=$(checks ${P}b ${P}b); ok "KF-A DB checks on ${P}b after the SCRAM change -> $r" "$([[ $r == '181 passed, 0 failed' ]] && echo 1 || echo 0)"
 # KF-A 2: force an error INSIDE the DO block's EXECUTE (CREATE ROLE "none": reserved name, passes the name check, not
 # in pg_roles). The unique password must appear neither on stderr/stdout nor in the server log after the offset.
 for w in sh ps1; do
@@ -324,7 +341,7 @@ q "DROP ROLE ${P}adm" >/dev/null
 
 
 # KF-G (TLD 9:42): a membership between two roles of the same kit install is refused (preflight both scripts + DO block).
-for g in "${P}a_owner:${P}a_login" "${P}a_login:${P}a_admin_api"; do
+for g in "${P}a_owner:${P}a_login" "${P}a_login:${P}a_admin_api" "${P}a_issuer:${P}a_admin_api"; do
   gr=${g%%:*}; mb=${g##*:}
   q "GRANT $gr TO $mb" >/dev/null; s0=$(snap)
   rc=$(SH --db ${P}a --role ${P}a_owner --force --no-migrate)
@@ -349,7 +366,7 @@ for w in sh ps1; do
   if [[ $w == sh ]]; then
     FF_LOGIN_PASSWORD=${P}a_login bash "$DBDIR/setup.sh" --superuser-cmd "sudo -u postgres env PGOPTIONS=$PCO psql" --db ${P}a --role ${P}a_owner --force --no-migrate >"$T/out" 2>&1; rc=$?
   else
-    FF_LOGIN_PASSWORD=${P}a_login PGOPTIONS=$PCO sudo -u postgres --preserve-env=FF_DB_PASSWORD,FF_ADMIN_API_PASSWORD,FF_LOGIN_PASSWORD,PGOPTIONS pwsh -NoProfile -NonInteractive -File "$DBDIR/setup.ps1" -AdminHost '' -Db ${P}a -Role ${P}a_owner -Force -NoMigrate >"$T/out" 2>&1; rc=$?
+    FF_LOGIN_PASSWORD=${P}a_login PGOPTIONS=$PCO sudo -u postgres --preserve-env=FF_DB_PASSWORD,FF_ADMIN_API_PASSWORD,FF_LOGIN_PASSWORD,FF_ISSUER_PASSWORD,PGOPTIONS pwsh -NoProfile -NonInteractive -File "$DBDIR/setup.ps1" -AdminHost '' -Db ${P}a -Role ${P}a_owner -Force -NoMigrate >"$T/out" 2>&1; rc=$?
   fi
   ok "I-5 [$w] passwordcheck rejects the ALTER ROLE -> rc 5, 'ALTER ROLE ${P}a_login failed (22023)', login password unchanged" \
     "$([[ $rc == 5 && $(pwhash ${P}a_login) == "$h0" ]] && grep -qF "floorfunds-kit: ALTER ROLE ${P}a_login failed (22023)" "$T/out" && echo 1 || echo 0)" "rc=$rc $(tail -2 "$T/out" | tr '\n' ' ' | sed -E "s#$VRE#<VERIFIER>#g")"

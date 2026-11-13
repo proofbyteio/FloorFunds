@@ -235,7 +235,7 @@ namespace Auth.Data.Migrations
                 DECLARE
                   a text := current_database() || '_admin_api';
                   l text := current_database() || '_login';
-                  scope text := $p$(current_setting('app.admin_type', true) = 'super' OR (current_setting('app.admin_type', true) = 'partner' AND partner_id = nullif(current_setting('app.partner_id', true), '')::uuid))$p$;
+                  scope text := $p$(current_setting('app.resolved_global_admin', true) = 'on' OR partner_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_partner_ids', true), ''), ',')) OR location_id::text = ANY (string_to_array(coalesce(current_setting('app.resolved_location_ids', true), ''), ',')))$p$;
                   via_location text := $p$(EXISTS (SELECT 1 FROM auth.location l WHERE l.location_id = %I.location_id))$p$;
                 BEGIN
                   EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I, %I', current_database(), a, l);

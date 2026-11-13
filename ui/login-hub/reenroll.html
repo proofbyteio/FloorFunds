@@ -11,7 +11,7 @@
 <form novalidate method="post" action="{{action}}">
 <input type="hidden" name="__RequestVerificationToken" value="{{af}}">
 <div class="field"><label class="field__label" for="reenrolcode">6-digit code from the app</label><input class="field__input" id="reenrolcode" name="totp_code" data-testid="totp-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required></div>
-<button class="button button--primary button--block" type="submit" data-testid="reenroll-submit">Finish setup</button>
+<button class="button button--primary btn-primary button--block" type="submit" data-testid="reenroll-submit"><span class="btn-primary__press">Finish setup</span></button>
 </form>
 <a href="{{signout}}">Sign out</a>
 </section>

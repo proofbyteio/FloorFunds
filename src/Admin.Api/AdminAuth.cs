@@ -1,79 +1,102 @@
-using Microsoft.IdentityModel.JsonWebTokens;
-using Microsoft.IdentityModel.Tokens;
+using System.Net;
+using System.Text;
+using System.Text.Json;
 
 namespace Admin.Api;
 
-/// <summary>The server-side authenticated identity: taken ONLY from a validated access_token_admin (claims.schema.json).</summary>
-public sealed record AdminIdentity(Guid UserId, string AdminType, Guid? PartnerId);
+/// <summary>
+/// Authenticated token identity. AdminType and PartnerId are the sign-in claims.
+/// They are not authority. Issuer is the verified iss. The resolver maps (iss, sub) to a user.
+/// </summary>
+public sealed record AdminIdentity(Guid UserId, string AdminType, Guid? PartnerId, string Issuer = "");
 
 public enum BuiltInRole { None, SuperAdmin, PartnerAdmin }
 
 /// <summary>
-/// What the caller holds (spec §4 step 2). Permissions count only through a built-in Super Admin or Partner Admin role
-/// [SRC: LD L172]; OrgViewLocations is org:V on specific locations (a reader with no admin role). PartnerReasonBoundsWrite is
-/// org:partner_reason_bounds:write (Slice A, LD 12b1d9cd): Super Admin and ANY Partner Admin, for ANY partner; the only cross-partner
-/// Partner Admin permission [Confirmed DEC-111]. No other Partner Admin check is widened by it.
+/// What the caller holds after the assignment lookup. PartnerIds and LocationIds are the union of active
+/// assignments (DEC-199). OrgViewLocations is the injected org:V reader set used by the existing checks.
+/// PartnerReasonBoundsWrite is org:partner_reason_bounds:write: Super Admin and ANY Partner Admin, for ANY partner.
 /// </summary>
-public sealed record AdminGrant(BuiltInRole Role, bool LoginMethodWrite, bool OrgCreateEdit, IReadOnlySet<Guid> OrgViewLocations, bool PartnerReasonBoundsWrite = false)
+public sealed record AdminGrant(
+    BuiltInRole Role,
+    bool LoginMethodWrite,
+    bool OrgCreateEdit,
+    IReadOnlySet<Guid> OrgViewLocations,
+    bool PartnerReasonBoundsWrite = false,
+    IReadOnlySet<Guid>? PartnerIds = null,
+    IReadOnlySet<Guid>? LocationIds = null,
+    long PermVersion = 0)
 {
     public static readonly AdminGrant Nothing = new(BuiltInRole.None, false, false, new HashSet<Guid>());
-}
-
-/// <summary>Server-side role lookup. It sees only the authenticated identity, never request data.</summary>
-public interface IAdminDirectory
-{
-    Task<AdminGrant> ResolveAsync(AdminIdentity id, CancellationToken ct);
+    public IReadOnlySet<Guid> AssignedPartners => PartnerIds ?? Empty;
+    public IReadOnlySet<Guid> AssignedLocations => LocationIds ?? Empty;
+    static readonly HashSet<Guid> Empty = [];
 }
 
 /// <summary>
-/// INTERIM (OQ-S2a-1 open; S2a has no role store): an /admin sign-in (admin_type super|partner) IS the built-in Super Admin /
-/// Partner Admin role, which holds org:V, org:location_login_method:write and org create/edit. org:V-only readers and custom-role
-/// callers cannot reach backoffice-api yet; the checks inject a directory to exercise those paths.
+/// Server-side role lookup inside the request transaction. It sees the authenticated identity and the
+/// open transaction, never request data. A failure denies.
 /// </summary>
-public sealed class TokenAdminDirectory : IAdminDirectory
+public interface IAdminDirectory
 {
-    public Task<AdminGrant> ResolveAsync(AdminIdentity id, CancellationToken ct) => Task.FromResult(id.AdminType switch
-    {
-        "super" => new AdminGrant(BuiltInRole.SuperAdmin, true, true, new HashSet<Guid>(), PartnerReasonBoundsWrite: true),
-        "partner" => new AdminGrant(BuiltInRole.PartnerAdmin, true, true, new HashSet<Guid>(), PartnerReasonBoundsWrite: true),
-        _ => AdminGrant.Nothing,
-    });
+    Task<AdminGrant> ResolveAsync(AdminIdentity id, Npgsql.NpgsqlConnection connection, Npgsql.NpgsqlTransaction transaction, CancellationToken ct);
 }
 
-public sealed class AdminTokenValidator(AdminApiOptions o)
-{
-    readonly JsonWebTokenHandler _h = new() { MapInboundClaims = false };
-    readonly TokenValidationParameters _p = new()
-    {
-        ValidIssuer = o.TokenIssuer, IssuerSigningKeys = o.SigningKeys, ValidAudience = AdminApiOptions.Audience,
-        ValidAlgorithms = [SecurityAlgorithms.RsaSha256], ValidTypes = ["at+jwt"], RequireExpirationTime = true,
-        RequireSignedTokens = true, ValidateLifetime = true, ValidateIssuerSigningKey = true, ClockSkew = TimeSpan.FromSeconds(30),
-    };
+/// <summary>The issuer process is not reachable. The host answers 503 and does not open a session itself.</summary>
+public sealed class IssuerUnavailableException : Exception;
 
-    /// <summary>Step 1 (authn). Null = 401. Exactly one "Authorization: Bearer" header; access_token_admin claim rules.</summary>
-    public async Task<AdminIdentity?> AuthenticateAsync(HttpRequest req)
+/// <summary>The issuer refused a token whose session is revoked or cut off. The host answers the one closed-session 401.</summary>
+public sealed class SessionClosedException : Exception;
+
+/// <summary>What the issuer process returns after it has verified the token and opened a session.</summary>
+public sealed record IssuedSession(string SessionToken, AdminIdentity Identity);
+
+/// <summary>
+/// Sends the raw bearer token to the issuer process. This process does not verify the signature
+/// and does not hold the issuer role. Null is a rejected token (401). A connection failure throws
+/// <see cref="IssuerUnavailableException"/> (503).
+/// </summary>
+public sealed class SessionIssuer(AdminApiOptions o)
+{
+    readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(3) };
+
+    public async Task<IssuedSession?> OpenAsync(HttpRequest req, CancellationToken ct)
     {
         var hs = req.Headers.Authorization;
         if (hs.Count != 1 || hs[0] is not { } h || !h.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) return null;
         var token = h[7..].Trim();
         if (token.Length is 0 or > 8192) return null;
-        TokenValidationResult r;
-        try { r = await _h.ValidateTokenAsync(token, _p); } catch (Exception) { return null; }
-        if (!r.IsValid || r.SecurityToken is not JsonWebToken t) return null;
-        // aud: one string (access_token_base); no location_id on an /admin token; not a recovery re-enrol session.
-        if (t.Audiences.Count() != 1 || t.TryGetPayloadValue<object>("location_id", out _)) return null;
-        if (t.TryGetPayloadValue<object>("aud", out var audRaw) && audRaw is not string) return null;
-        if (!t.TryGetPayloadValue<string>("sub", out var sub) || !Guid.TryParseExact(sub, "D", out var userId)) return null;
-        if (!t.TryGetPayloadValue<string>("admin_type", out var at) || at is not ("super" or "partner")) return null;
-        if (t.TryGetPayloadValue<string>("session_kind", out var sk) && sk == "recovery_reenroll") return null;
-        var hasPartner = t.TryGetPayloadValue<object>("partner_id", out _);
-        Guid? partner = null;
-        if (at == "partner")
+        HttpResponseMessage res;
+        try
         {
-            if (!t.TryGetPayloadValue<string>("partner_id", out var ps) || !Guid.TryParseExact(ps, "D", out var pid) || pid == Guid.Empty) return null;
-            partner = pid;
+            using var msg = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(o.IssuerUrl), "/v1/session"))
+            { Content = new StringContent(token, Encoding.UTF8, "text/plain") };
+            res = await _http.SendAsync(msg, ct);
         }
-        else if (hasPartner) return null;
-        return new AdminIdentity(userId, at, partner);
+        catch (HttpRequestException) { throw new IssuerUnavailableException(); }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested) { throw new IssuerUnavailableException(); }
+        using (res)
+        {
+            if (res.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                var denied = await res.Content.ReadAsStringAsync(ct);
+                if (denied == "{\"error\":\"session_expired\"}") throw new SessionClosedException();
+                return null;
+            }
+            if (res.StatusCode != HttpStatusCode.OK) throw new IssuerUnavailableException();
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+            var root = doc.RootElement;
+            var session = root.GetProperty("session").GetString();
+            var sub = root.GetProperty("sub").GetString();
+            var iss = root.GetProperty("iss").GetString() ?? "";
+            var adminType = root.GetProperty("admin_type").GetString() ?? "";
+            if (session is not { Length: 64 } || !Guid.TryParseExact(sub, "D", out var userId))
+                throw new IssuerUnavailableException();
+            Guid? partner = null;
+            if (root.TryGetProperty("partner_id", out var p) && p.ValueKind == JsonValueKind.String
+                && Guid.TryParseExact(p.GetString(), "D", out var pid))
+                partner = pid;
+            return new IssuedSession(session, new AdminIdentity(userId, adminType, partner, iss));
+        }
     }
 }

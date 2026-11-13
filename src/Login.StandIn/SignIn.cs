@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Antiforgery;
 
 namespace Login.StandIn;
 
-public sealed record LocationInfo(string Slug, string LocationId, string PartnerId, string? CachdClientId, string Preset);
+public sealed record LocationInfo(string Slug, string LocationId, string PartnerId, string? CachdClientId, string Preset, bool HasLoginConfig);
 
 // /l/{slug} sign-in, TOTP step, attest-nonce (contract 4.11, 6.1-6.7; ui-driver testids and strings).
 public static class SignIn
@@ -16,8 +16,22 @@ public static class SignIn
 
     public static LocationInfo? Location(JsonObject fx, string slug) =>
         fx["partners"]!.AsArray().SelectMany(p => p!["locations"]!.AsArray().Select(l => new LocationInfo((string)l!["slug"]!,
-            (string)l["location_id"]!, (string)p!["partner_id"]!, (string?)p["cachd_client_id"], (string)p["preset"]!)))
+            (string)l["location_id"]!, (string)p!["partner_id"]!, (string?)p["cachd_client_id"], (string)p["preset"]!,
+            Configured(l!))))
         .FirstOrDefault(l => l.Slug == slug);
+
+    // A fixture location with no login_config member was created when sign-in setup was required.
+    // false or null means there is no config, so sign-in stays closed.
+    static bool Configured(JsonNode location)
+    {
+        if (location is not JsonObject o || !o.ContainsKey("login_config")) return true;
+        var node = o["login_config"];
+        if (node is null) return false;
+        if (node is JsonValue v && v.TryGetValue<bool>(out var on)) return on;
+        return true;
+    }
+
+    public static bool Opens(LocationInfo? loc) => loc is not null && LocationSignIn.Allowed(loc.HasLoginConfig);
 
     public static JsonObject Scope(LocationInfo l)
     {
@@ -38,8 +52,8 @@ public static class SignIn
 
     static string E(string s) => WebUtility.HtmlEncode(s);
     // Generic ui/ card (hub, admin, sign-out confirm): layout.html + card.html.
-    public static IResult Html(string testid, string body, int status = 200) =>
-        Ui.Page("Sign in", Ui.Render("card", ("testid", testid), ("body", body)), null, status);
+    public static IResult Html(string testid, string body, int status = 200, bool productLockup = false, string? title = null) =>
+        Ui.Page(title ?? "Sign in", Ui.Render("card", ("testid", testid), ("body", body)), null, status, productLockup);
 
     // OQ-11 (TL 9:42): an unknown user still runs one PBKDF2 hash against this dummy, so timing matches a known user.
     public static readonly (byte[] Salt, byte[] Hash) DummyCred = StandInUser.Hash(Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)));
@@ -81,10 +95,10 @@ public static class SignIn
         var agent = $"http://localhost:{agentPort}/_standin/agent/attest";
         if (resign) // 5.3 re-prompt (UX 07 #u2/#p2). [ASSUMPTION A44] after attestation_invalid (5.5) it is wrapped in screen 8B (UX 08 agentdown).
         {
-            var r = Ui.Render("resign-in", ("action", slugBase), ("agent", agent), ("af", t), ("error", error is null ? "" : Ui.Error(error)));
-            return Ui.Page("Sign in to Cash Advance", agentDown ? Ui.Render("screen-8b", ("resign", r)) : r, "signin", status);
+            var r = Ui.Render("resign-in", ("action", slugBase), ("agent", agent), ("af", t), ("error", error is null ? "" : Ui.Error(error)), ("product", Ui.ProductName));
+            return Ui.Page("Sign in to " + Ui.ProductName, agentDown ? Ui.Render("screen-8b", ("resign", r)) : r, "signin", status, productLockup: true);
         }
-        return Ui.Page("Sign in", Ui.Render("signin", ("action", slugBase), ("agent", agent), ("af", t), ("error", Ui.Error(error))), "signin", status);
+        return Ui.Page("Sign in", Ui.Render("signin", ("action", slugBase), ("agent", agent), ("af", t), ("error", Ui.Error(error))), "signin", status, productLockup: true);
     }
 
     static IResult TotpPage(HttpContext c, IAntiforgery af, string slugBase, string? error)
@@ -127,7 +141,7 @@ public static class SignIn
             Headers(c, ports.Control);
             lock (st.Gate)
             {
-                if (Location(st.Fixtures, slug) is null) return Results.NotFound();
+                if (!Opens(Location(st.Fixtures, slug))) return Results.NotFound();
                 var now = st.Clock.Now;
                 // A ret is only ever our own authorize URL (no open redirect).
                 var tx = new SignInTx { Id = TokenIssuer.NewHandle(), Slug = slug, Nonce = TokenIssuer.NewHandle(), NonceAt = now,
@@ -164,7 +178,7 @@ public static class SignIn
             {
                 var tx = GetTx(st, c, slug);
                 var loc = Location(st.Fixtures, slug);
-                if (tx is null || loc is null || tx.Stage != "password") return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
+                if (tx is null || loc is null || !LocationSignIn.Allowed(loc.HasLoginConfig) || tx.Stage != "password") return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
                 var now = st.Clock.Now;
                 // 6.7 step 1 consumes the nonce before anything else, whatever happens next.
                 var (ok, remote) = Attestation.Check(st, tx, jws, issuer, "signin", now);
@@ -191,7 +205,7 @@ public static class SignIn
                 if (ok && remote)
                 {
                     Fail("remote_session", user!.UserId);
-                    return Ui.Page("Sign-in is blocked", Ui.Render("screen-8a"));
+                    return Ui.Page("Sign-in is blocked", Ui.Render("screen-8a", ("product", Ui.ProductName)));
                 }
                 // [ASSUMPTION A53] the failure counter is NOT reset by a right password alone (else password+wrong-TOTP never locks); a full sign-in resets it.
                 // 4.11: the pre-session id is reissued after the password step.
@@ -215,7 +229,7 @@ public static class SignIn
                 var loc = Location(st.Fixtures, slug);
                 // G5: pending pre-MFA state older than 5 min is dropped; the user starts a full sign-in (same page as an unknown tx).
                 if (tx is not null && tx.Stage == "totp" && tx.PreMfaExpired(st.Clock.Now)) { st.Auth.Tx.Remove(tx.Id); tx = null; }
-                if (tx is null || loc is null || tx.Stage != "totp" || !st.Users.TryGetValue(tx.Username!, out var user))
+                if (tx is null || loc is null || !LocationSignIn.Allowed(loc.HasLoginConfig) || tx.Stage != "totp" || !st.Users.TryGetValue(tx.Username!, out var user))
                     return PasswordPage(c, af, Base(slug), Generic, ports.Control, resign: tx?.Resign == true, agentDown: tx?.AgentDown == true);
                 var now = st.Clock.Now;
                 // G1 +-30 s: one 30 s step either side.

@@ -149,7 +149,7 @@ var paList = service.List(pa, CatalogFamily.FeeType);
 var otherList = service.List(otherPa, CatalogFamily.FeeType);
 var cashierList = service.List(cashier, CatalogFamily.FeeType);
 Check("lists keep both same-code rows for the owner and omit hidden rows without a hidden count",
-    saList.List!.Entries.Count == 2
+    saList.List!.Entries.Count == 3 && saList.List.Entries.Count(entry => entry.EntryId == privateFee.EntryId) == 1
     && paList.List!.Entries.Count == 3
     && otherList.List!.Entries.Count == 2
     && otherList.List.Entries.Count(entry => entry.EntryId == privateFee.EntryId) == 0
@@ -159,7 +159,7 @@ Check("lists keep both same-code rows for the owner and omit hidden rows without
     && saList.List.Pagination == "not_a_cursor_contract");
 var hiddenRead = service.Read(sa, CatalogFamily.FeeType, privateFee.EntryId!.Value);
 var missingRead = service.Read(sa, CatalogFamily.FeeType, G(80));
-Check("SA private non-claim read matches missing", OutcomeCompare.SameRefusal(hiddenRead, missingRead) && hiddenRead.Status == ProposedStatus.NotFound);
+Check("SA private non-claim read is visible", hiddenRead.Status == ProposedStatus.Ok && hiddenRead.Entry!.Code == "LATE" && hiddenRead.Entry.EntryId == privateFee.EntryId);
 var otherRead = service.Read(otherPa, CatalogFamily.FeeType, privateFee.EntryId!.Value);
 Check("other Partner Admin private read matches missing", OutcomeCompare.SameRefusal(otherRead, missingRead));
 var ownerRead = service.Read(pa, CatalogFamily.FeeType, privateFee.EntryId!.Value);
@@ -169,7 +169,8 @@ Check("read projection has no actor, classification, or schema version",
     && !JsonSerializer.Serialize(ownerRead.Entry).Contains("economic_role", StringComparison.Ordinal)
     && !JsonSerializer.Serialize(ownerRead.Entry).Contains("\"Number\":0", StringComparison.Ordinal));
 var saHistory = service.History(sa, CatalogFamily.FeeType, privateFee.EntryId!.Value);
-Check("SA private fee history matches missing", OutcomeCompare.SameRefusal(saHistory, missingRead));
+Check("SA private fee history is visible and omits the actor", saHistory.Status == ProposedStatus.Ok && saHistory.History!.Count == 1
+    && saHistory.History[0].ChangeKind == "created" && typeof(HistoryProjection).GetProperties().All(property => property.Name != "ActorUserId"));
 var ownerHistory = service.History(pa, CatalogFamily.FeeType, privateFee.EntryId!.Value);
 Check("owner history omits the actor user id", ownerHistory.Status == ProposedStatus.Ok && ownerHistory.History!.Count == 1
     && ownerHistory.History[0].ChangeKind == "created" && typeof(HistoryProjection).GetProperties().All(property => property.Name != "ActorUserId"));
@@ -291,7 +292,9 @@ Check("hidden Off matches missing", OutcomeCompare.SameRefusal(hiddenOff, missin
 var previewBefore = repo.HistoryCount;
 var missingPreview = service.Preview(sa, CatalogFamily.FeeType, G(82), GraphView.Default);
 var hiddenPreview = service.Preview(sa, CatalogFamily.FeeType, privateFee.EntryId!.Value, new GraphView.Fixture("rev-empty", []));
-Check("hidden and missing previews match", OutcomeCompare.SameRefusal(missingPreview, hiddenPreview) && missingPreview.Preview is null);
+Check("SA preview of a visible private fee stays a held fixture preview", hiddenPreview.Status == ProposedStatus.Ok && !hiddenPreview.Wrote
+    && hiddenPreview.Preview!.Impact == "fixture_not_authorization" && hiddenPreview.Preview.AuthorizesWrites == false
+    && hiddenPreview.Preview.ApplyAllowed == false && missingPreview.Status == ProposedStatus.NotFound && missingPreview.Preview is null);
 var unknownPreview = service.Preview(sa, CatalogFamily.FeeType, globalId, null);
 Check("UNCONFIGURED preview impact is unknown and not zero", unknownPreview.Preview!.Impact == "unknown" && unknownPreview.Preview.AffectedCount is null
     && unknownPreview.Preview.FixtureDeclaredEdgeCount is null && unknownPreview.Preview.ApplyAllowed == false && repo.HistoryCount == previewBefore);

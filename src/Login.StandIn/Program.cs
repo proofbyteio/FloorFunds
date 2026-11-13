@@ -1,6 +1,9 @@
 // Stand-in login service (SI1). Contract: tag contract-v1 (e363090).
 using Login.StandIn;
 
+if (args.Contains("--location-signin-check")) return LocationSignInProbe.Run();
+if (args.Contains("--admin-signout-check")) return OAuthSignOutProbe.Run();
+
 var builder = WebApplication.CreateBuilder(args);
 var cfg = builder.Configuration;
 // HO17 (TL 9:42): no request-line logging. ASP.NET Core "Request starting/finished" and routing logs carry raw query strings
@@ -50,5 +53,6 @@ Handoff.Map(app, state, issuerPath, issuer, ports);
 Reenroll.Map(app, state, issuerPath, ports, cfg);
 SessionCap.Map(app, state, issuerPath, ports);
 CageStub.Map(app, state, issuerPath, ports);
+if (args.Contains("--admin-handoff-check")) return AdminHandoffAuthorizeProbe.Run(app, issuer, issuerPath, ports);
 app.Run();
 return 0;
