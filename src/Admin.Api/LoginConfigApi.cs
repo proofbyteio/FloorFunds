@@ -850,8 +850,10 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         if (ParseObject(read.Bytes) is not { } o) throw Err(400, "malformed_body");
         var parsed = await ParseLocationBodyAsync(c, tx, who, o, excludeLocationId: loc);
         await UpdateOrgLocationAsync(c, tx, loc, parsed.ClientId, parsed.PartnerId, parsed.Name, parsed.Address);
-        await tx.CommitAsync();
+        // F8: re-read inside the open transaction (same order as POST login-config ~1478–1479).
+        // Loading after CommitAsync left the connection outside the tx and returned 500.
         var row = await LoadOrgLocationAsync(c, tx, loc) ?? throw new InvalidOperationException("row vanished");
+        await tx.CommitAsync();
         return Json(200, OrgLocationView(row));
     });
 
