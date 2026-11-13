@@ -1046,7 +1046,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
             """, c, tx);
         BindPartner(cmd, id, name, a);
-        await cmd.ExecuteNonQueryAsync();
+        try { await cmd.ExecuteNonQueryAsync(); }
+        catch (PostgresException ex) when (IsNameUniqueViolation(ex, "partner_name_ci_ux"))
+        { throw Validation([new("name", "A partner with this name already exists.")]); }
     }
 
     static async Task UpdatePartnerAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid id, string name, OrgAddress a)
@@ -1059,8 +1061,15 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
              WHERE partner_id=$1
             """, c, tx);
         BindPartner(cmd, id, name, a);
-        await cmd.ExecuteNonQueryAsync();
+        try { await cmd.ExecuteNonQueryAsync(); }
+        catch (PostgresException ex) when (IsNameUniqueViolation(ex, "partner_name_ci_ux"))
+        { throw Validation([new("name", "A partner with this name already exists.")]); }
     }
+
+    static bool IsNameUniqueViolation(PostgresException ex, string indexOrConstraint) =>
+        ex.SqlState == PostgresErrorCodes.UniqueViolation
+        && (ex.ConstraintName == indexOrConstraint
+            || string.Equals(ex.ConstraintName, indexOrConstraint, StringComparison.OrdinalIgnoreCase));
 
     static void BindPartner(NpgsqlCommand cmd, Guid id, string name, OrgAddress a)
     {
@@ -1302,7 +1311,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
             """, c, tx);
         BindClient(cmd, id, partnerId, name, a);
-        await cmd.ExecuteNonQueryAsync();
+        try { await cmd.ExecuteNonQueryAsync(); }
+        catch (PostgresException ex) when (IsNameUniqueViolation(ex, "client_partner_name_ci_ux"))
+        { throw Validation([new("name", "A client with this name already exists for this partner.")]); }
     }
 
     static async Task UpdateClientAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid id, Guid partnerId, string name, OrgAddress a)
@@ -1315,7 +1326,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
              WHERE client_id=$1
             """, c, tx);
         BindClient(cmd, id, partnerId, name, a);
-        await cmd.ExecuteNonQueryAsync();
+        try { await cmd.ExecuteNonQueryAsync(); }
+        catch (PostgresException ex) when (IsNameUniqueViolation(ex, "client_partner_name_ci_ux"))
+        { throw Validation([new("name", "A client with this name already exists for this partner.")]); }
     }
 
     static void BindClient(NpgsqlCommand cmd, Guid id, Guid partnerId, string name, OrgAddress a)
@@ -1418,7 +1431,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             """, c, tx))
         {
             BindOrgLocation(ins, location, parsed.PartnerId, parsed.ClientId, slug, parsed.Name, parsed.Address);
-            await ins.ExecuteNonQueryAsync();
+            try { await ins.ExecuteNonQueryAsync(); }
+            catch (PostgresException ex) when (IsNameUniqueViolation(ex, "location_client_name_ci_ux"))
+            { throw Validation([new("name", "A location with this name already exists for this client.")]); }
         }
         if (cfg is null)
         {
@@ -1620,7 +1635,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         cmd.Parameters.Add(new() { Value = a.PhoneE164 });
         cmd.Parameters.Add(new() { Value = (object?)a.Email ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = a.TimeZone });
-        await cmd.ExecuteNonQueryAsync();
+        try { await cmd.ExecuteNonQueryAsync(); }
+        catch (PostgresException ex) when (IsNameUniqueViolation(ex, "location_client_name_ci_ux"))
+        { throw Validation([new("name", "A location with this name already exists for this client.")]); }
     }
 }
 

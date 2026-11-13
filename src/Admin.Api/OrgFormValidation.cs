@@ -31,8 +31,10 @@ public static class OrgFormValidation
 
     public static string Normalize(string? value)
     {
+        // F4: trim/collapse whitespace, then Unicode NFC so stored name and lower() index agree.
         var t = (value ?? "").Trim();
         if (t.Length == 0) return "";
+        t = t.Normalize(NormalizationForm.FormC);
         var sb = new StringBuilder(t.Length);
         var space = false;
         foreach (var ch in t)

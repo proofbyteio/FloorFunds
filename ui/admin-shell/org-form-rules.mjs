@@ -1,7 +1,8 @@
 // Client-side mirrors of OrgFormValidation (server is authoritative). Exact owner sentences only.
 
 export function normalizeText(value) {
-  return String(value ?? "").trim().replace(/\s+/g, " ");
+  // F4: match server OrgFormValidation.Normalize — trim, NFC, collapse whitespace.
+  return String(value ?? "").trim().normalize("NFC").replace(/\s+/g, " ");
 }
 
 export function scalarLen(value) {
