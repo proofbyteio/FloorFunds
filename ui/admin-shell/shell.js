@@ -5,6 +5,14 @@
 // Swap this default by replacing fillPartners() and the select below together
 // with enforceExistingPartner in server.mjs.
 import { applyProductName, productNameFromConfig } from "./branding.mjs";
+import {
+  COUNTRIES,
+  DEFAULT_COUNTRY,
+  FIELD_LIMITS,
+  TIME_ZONES,
+  postalMaxLength,
+  regionsFor,
+} from "./location-address-options.mjs";
 
 const main = document.querySelector("#main");
 const navEl = document.querySelector("#nav");
@@ -207,6 +215,141 @@ async function fillPartners(select) {
   return select.options.length > 0;
 }
 
+function fillSelect(select, options, { blankLabel = "Select…", selected = "" } = {}) {
+  select.replaceChildren();
+  const blank = document.createElement("option");
+  blank.value = "";
+  blank.textContent = blankLabel;
+  select.append(blank);
+  for (const opt of options) {
+    const o = document.createElement("option");
+    o.value = opt.code ?? opt.value;
+    o.textContent = opt.label;
+    if (selected && o.value === selected) o.selected = true;
+    select.append(o);
+  }
+  if (selected) select.value = selected;
+}
+
+/** Shared US/CA address block for Create location and Create client. */
+export async function appendNorthAmericaAddressFields(form, address) {
+  function textField(label, fieldName, required, opts = {}) {
+    const input = document.createElement("input");
+    input.className = "field__input";
+    input.name = fieldName;
+    if (required) input.required = true;
+    if (opts.type) input.type = opts.type;
+    if (opts.maxLength) input.maxLength = opts.maxLength;
+    if (opts.autocomplete) input.autocomplete = opts.autocomplete;
+    if (opts.inputMode) input.inputMode = opts.inputMode;
+    if (opts.placeholder) input.placeholder = opts.placeholder;
+    const field = h("label");
+    field.className = "field";
+    field.append(h("span", label), input);
+    field.querySelector("span").className = "field__label";
+    address[fieldName] = input;
+    return field;
+  }
+  function selectField(label, fieldName, required) {
+    const select = document.createElement("select");
+    select.className = "field__input";
+    select.name = fieldName;
+    if (required) select.required = true;
+    const field = h("label");
+    field.className = "field";
+    field.append(h("span", label), select);
+    field.querySelector("span").className = "field__label";
+    address[fieldName] = select;
+    return field;
+  }
+  const countryField = selectField("Country *", "country", true);
+  const regionField = selectField("State / province *", "region", true);
+  const zoneField = selectField("Time zone *", "time_zone", true);
+  for (const field of [
+    textField("Address line 1 *", "address_line_1", true),
+    textField("Address line 2 (optional)", "address_line_2", false),
+    textField("City *", "city", true),
+    countryField,
+    regionField,
+    textField("ZIP / postal code *", "postal_code", true, {
+      autocomplete: "postal-code",
+      maxLength: postalMaxLength(DEFAULT_COUNTRY),
+      placeholder: "12345 or 12345-6789",
+    }),
+    textField("Primary contact phone *", "phone", true, {
+      type: "tel",
+      autocomplete: "tel",
+      inputMode: "tel",
+      maxLength: FIELD_LIMITS.phone,
+      placeholder: "+1 702 555 0100",
+    }),
+    textField("Primary contact email (optional)", "email", false, {
+      type: "email",
+      autocomplete: "email",
+      maxLength: FIELD_LIMITS.email,
+      placeholder: "name@example.com",
+    }),
+    zoneField,
+  ]) form.append(field);
+
+  const rules = await api("/address/country-rules.json");
+  const byCountry = new Map();
+  for (const row of rules.body?.rows ?? []) byCountry.set(row.country, row);
+  fillSelect(address.country, COUNTRIES, { blankLabel: "", selected: DEFAULT_COUNTRY });
+  fillSelect(address.time_zone, TIME_ZONES, { blankLabel: "Select a time zone…" });
+  function applyCountry() {
+    const code = address.country.value || DEFAULT_COUNTRY;
+    const row = byCountry.get(code);
+    fillSelect(address.region, regionsFor(code), { blankLabel: "Select…" });
+    const postalUse = row?.postal ?? "required";
+    const stateUse = row?.state ?? "required";
+    address.region.required = stateUse === "required";
+    address.region.disabled = stateUse === "not_used";
+    if (stateUse === "not_used") address.region.value = "";
+    address.postal_code.required = postalUse === "required";
+    address.postal_code.disabled = postalUse === "not_used";
+    if (postalUse === "not_used") address.postal_code.value = "";
+    address.postal_code.maxLength = postalMaxLength(code);
+    address.postal_code.placeholder = code === "CA" ? "A1A 1A1" : "12345 or 12345-6789";
+    if (address.postal_code.value.length > address.postal_code.maxLength) {
+      address.postal_code.value = address.postal_code.value.slice(0, address.postal_code.maxLength);
+    }
+  }
+  address.country.addEventListener("change", applyCountry);
+  applyCountry();
+}
+
+export function addressPayload(address) {
+  const postal = address.postal_code.disabled ? "" : address.postal_code.value.trim();
+  return {
+    address_line_1: address.address_line_1.value.trim(),
+    address_line_2: address.address_line_2.value.trim(),
+    city: address.city.value.trim(),
+    country: address.country.value,
+    region: address.region.disabled ? "" : address.region.value.trim(),
+    postal_code: postal,
+    phone: address.phone.value.trim(),
+    email: address.email.value.trim(),
+    time_zone: address.time_zone.value.trim(),
+  };
+}
+
+export function addressLengthError(address) {
+  const phone = address.phone.value.trim();
+  const email = address.email.value.trim();
+  const postal = address.postal_code.disabled ? "" : address.postal_code.value.trim();
+  if (phone.length > FIELD_LIMITS.phone) {
+    return { title: "Primary contact phone", detail: `Use at most ${FIELD_LIMITS.phone} characters.` };
+  }
+  if (email.length > FIELD_LIMITS.email) {
+    return { title: "Primary contact email", detail: `Use at most ${FIELD_LIMITS.email} characters.` };
+  }
+  if (postal.length > address.postal_code.maxLength) {
+    return { title: "ZIP / postal code", detail: `Use at most ${address.postal_code.maxLength} characters.` };
+  }
+  return null;
+}
+
 export async function showCreate(state) {
   const probe = await api("/api/screens/location-partners");
   if (probe.status === 403) return denied();
@@ -234,38 +377,7 @@ export async function showCreate(state) {
   partner.required = true;
   partner.setAttribute("aria-describedby", "partner-hint");
   const address = {};
-  function textField(label, fieldName, required) {
-    const input = document.createElement("input");
-    input.className = "field__input";
-    input.name = fieldName;
-    if (required) input.required = true;
-    const field = h("label");
-    field.className = "field";
-    field.append(h("span", label), input);
-    field.querySelector("span").className = "field__label";
-    address[fieldName] = input;
-    return field;
-  }
-  const country = document.createElement("select");
-  country.className = "field__input";
-  country.name = "country";
-  country.required = true;
-  address.country = country;
-  const countryField = h("label");
-  countryField.className = "field";
-  countryField.append(h("span", "Country *"), country);
-  countryField.querySelector("span").className = "field__label";
-  for (const field of [
-    textField("Address line 1 *", "address_line_1", true),
-    textField("Address line 2 (optional)", "address_line_2", false),
-    textField("City *", "city", true),
-    countryField,
-    textField("State / province / region", "region", false),
-    textField("ZIP / postal code", "postal_code", false),
-    textField("Primary contact phone *", "phone", true),
-    textField("Primary contact email (optional)", "email", false),
-    textField("Time zone *", "time_zone", true),
-  ]) form.append(field);
+  await appendNorthAmericaAddressFields(form, address);
   for (const [label, control] of [["Partner", partner]]) {
     const field = h("label");
     field.className = "field";
@@ -273,29 +385,6 @@ export async function showCreate(state) {
     field.querySelector("span").className = "field__label";
     form.append(field);
   }
-  const rules = await api("/address/country-rules.json");
-  const byCountry = new Map();
-  for (const row of rules.body?.rows ?? []) byCountry.set(row.country, row);
-  const blank = document.createElement("option");
-  blank.value = "";
-  country.append(blank);
-  for (const code of byCountry.keys()) {
-    const o = document.createElement("option");
-    o.value = code;
-    o.textContent = code;
-    country.append(o);
-  }
-  function applyCountry() {
-    const row = byCountry.get(country.value);
-    for (const [fieldName, key] of [["region", "state"], ["postal_code", "postal"]]) {
-      const input = address[fieldName];
-      const use = row ? row[key] : "optional";
-      input.required = use === "required";
-      input.disabled = use === "not_used";
-      if (use === "not_used") input.value = "";
-    }
-  }
-  country.addEventListener("change", applyCountry);
   const submit = primaryControl("button", "Create location");
   submit.type = "submit";
   form.append(submit);
@@ -318,21 +407,17 @@ export async function showCreate(state) {
       submit.disabled = false;
       return;
     }
+    const lengthError = addressLengthError(address);
+    if (lengthError) {
+      main.querySelector(".banner--error")?.remove();
+      form.prepend(banner("error", lengthError.title, lengthError.detail));
+      return;
+    }
     submit.disabled = true;
     const body = {
       partner_id: partner.value,
       name: name.value.trim(),
-      address: {
-        address_line_1: address.address_line_1.value.trim(),
-        address_line_2: address.address_line_2.value.trim(),
-        city: address.city.value.trim(),
-        country: address.country.value,
-        region: address.region.disabled ? "" : address.region.value.trim(),
-        postal_code: address.postal_code.disabled ? "" : address.postal_code.value.trim(),
-        phone: address.phone.value.trim(),
-        email: address.email.value.trim(),
-        time_zone: address.time_zone.value.trim(),
-      },
+      address: addressPayload(address),
     };
     let res;
     try {
@@ -443,13 +528,71 @@ async function showCatalog() {
   main.append(ul);
 }
 
-async function showClients() {
+export async function showClients() {
   const res = await api("/api/screens/create-client");
   if (res.status === 403) return denied();
-  main.replaceChildren(
-    h("h1", "Clients"),
-    h("p", "Placeholder  ·  this screen is not built"),
-  );
+  main.replaceChildren(h("h1", "Create client"));
+  if (res.body?.write === "held") {
+    main.append(banner("info", "Create is held", "The form is available for layout review. Saving a client stays refused until PQ-278 (API returns client_create_pending_pq278)."));
+  }
+  const form = document.createElement("form");
+  form.className = "card";
+  const name = document.createElement("input");
+  name.className = "field__input";
+  name.id = "client-name";
+  name.name = "name";
+  name.required = true;
+  const nameField = h("label");
+  nameField.className = "field";
+  nameField.htmlFor = "client-name";
+  const nameLabel = h("span", "Client name");
+  nameLabel.className = "field__label";
+  nameField.append(nameLabel, name);
+  form.append(nameField);
+  const address = {};
+  await appendNorthAmericaAddressFields(form, address);
+  const submit = primaryControl("button", "Create client");
+  submit.type = "submit";
+  form.append(submit);
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    main.querySelector(".banner--error")?.remove();
+    if (!name.value.trim()) {
+      form.prepend(banner("error", "Client name", "Enter a client name."));
+      return;
+    }
+    const lengthError = addressLengthError(address);
+    if (lengthError) {
+      form.prepend(banner("error", lengthError.title, lengthError.detail));
+      return;
+    }
+    submit.disabled = true;
+    const body = {
+      name: name.value.trim(),
+      address: addressPayload(address),
+    };
+    let write;
+    try {
+      write = await api("/api/screens/create-client", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(12000),
+      });
+    } catch {
+      form.prepend(banner("warning", "Timed out", "The request did not finish. Nothing was confirmed."));
+      submit.disabled = false;
+      return;
+    }
+    if (write.status >= 400) {
+      form.prepend(banner("error", "Could not create the client", write.body?.error || "The server refused the request."));
+      submit.disabled = false;
+      return;
+    }
+    form.prepend(banner("info", "Created", "The client was accepted."));
+    submit.disabled = false;
+  });
+  main.append(form);
 }
 
 async function draw() {

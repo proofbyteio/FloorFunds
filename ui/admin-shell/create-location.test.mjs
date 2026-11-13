@@ -90,7 +90,10 @@ globalThis.fetch = async (url, opts) => {
   const path = String(url);
   if (path === "/api/nav") return json(200, { screens: ["create_location"], product_name: "Northwind" });
   if (path === "/api/screens/location-partners") return json(200, { partners: ["11111111-1111-4111-8111-111111111111"] });
-  if (path === "/address/country-rules.json") return json(200, { rows: [{ country: "AC", state: "not_used", postal: "not_used" }] });
+  if (path === "/address/country-rules.json") return json(200, { rows: [
+    { country: "US", state: "required", postal: "required" },
+    { country: "CA", state: "required", postal: "required" },
+  ] });
   if (path === "/api/orgs/locations" && opts && opts.method === "POST") {
     posts.push(JSON.parse(opts.body));
     const body = JSON.parse(opts.body);
@@ -143,30 +146,40 @@ const form = (function find(node) {
 await form.listeners.submit({ preventDefault() {} });
 check("blank-name-does-not-submit", posts.length === 0, String(posts.length));
 
-nameInput.value = "North Desk";
-for (const field of ["address_line_1", "city", "phone", "time_zone"]) {
-  const input = (function find(node) {
-    if (!node) return null;
-    if (node.name === field) return node;
-    for (const child of node.children ?? []) {
-      const hit = find(child);
-      if (hit) return hit;
-    }
-    return null;
-  })(form);
-  if (input) input.value = field === "time_zone" ? "UTC" : "One";
-}
-const country = (function find(node) {
-  if (!node) return null;
-  if (node.name === "country") return node;
-  for (const child of node.children ?? []) {
-    const hit = find(child);
+function findNamed(root, field) {
+  if (!root) return null;
+  if (root.name === field) return root;
+  for (const child of root.children ?? []) {
+    const hit = findNamed(child, field);
     if (hit) return hit;
   }
   return null;
-})(form);
-country.value = "AC";
+}
+nameInput.value = "North Desk";
+for (const field of ["address_line_1", "city", "phone"]) {
+  const input = findNamed(form, field);
+  if (input) input.value = "One";
+}
+const country = findNamed(form, "country");
+check("country-defaults-to-us-and-lists-only-us-ca",
+  country?.value === "US"
+  && country.options.filter((o) => o.value).map((o) => o.value).join(",") === "US,CA",
+  country?.options?.map((o) => o.value).join(","));
+country.value = "US";
 country.listeners.change();
+const region = findNamed(form, "region");
+const postal = findNamed(form, "postal_code");
+const zone = findNamed(form, "time_zone");
+const phone = findNamed(form, "phone");
+const email = findNamed(form, "email");
+check("state-is-a-required-select-for-us", region?.tag === "select" && region.required === true && region.options.some((o) => o.value === "NV"));
+check("timezone-is-a-required-select", zone?.tag === "select" && zone.required === true && zone.options.some((o) => o.value === "America/Los_Angeles"));
+check("postal-phone-email-have-length-limits",
+  postal?.maxLength === 10 && phone?.maxLength === 20 && email?.maxLength === 50 && email?.type === "email",
+  `postal=${postal?.maxLength} phone=${phone?.maxLength} email=${email?.maxLength}/${email?.type}`);
+region.value = "NV";
+postal.value = "89101";
+zone.value = "America/Los_Angeles";
 await form.listeners.submit({ preventDefault() {} });
 await shell.started;
 const listed = (function texts(node, acc) {
