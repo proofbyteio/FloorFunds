@@ -2,6 +2,12 @@
   "version": 1,
   "dependencies": {
     "net10.0": {
+      "libphonenumber-csharp": {
+        "type": "Direct",
+        "requested": "[9.0.43, 9.0.43]",
+        "resolved": "9.0.43",
+        "contentHash": "lwk6mSQXueLrQx1BU3AM6GDkwvfbCY96AflkOAK9ts6zvMjziVjkc2zAlaLJMfyR0kme/1zqa9cPQIb9y1101A=="
+      },
       "Microsoft.IdentityModel.JsonWebTokens": {
         "type": "Direct",
         "requested": "[8.19.2, 8.19.2]",
