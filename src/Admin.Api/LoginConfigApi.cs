@@ -839,6 +839,74 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         return Json(200, new JsonObject { ["partners"] = ids });
     });
 
+    /// <summary>FFP shared lookups (DEC-258/260): active countries for address dropdowns.</summary>
+    public Task<IResult> LookupCountriesAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (!who.IsAdmin) throw Err(403, "forbidden");
+        await using var cmd = new NpgsqlCommand(
+            "SELECT iso_code, name FROM auth.countries WHERE active ORDER BY name", c, tx);
+        var rows = new JsonArray();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            var code = r.GetString(0).Trim();
+            rows.Add(new JsonObject { ["code"] = code, ["label"] = r.GetString(1) + " (" + code + ")" });
+        }
+        return Json(200, new JsonObject { ["countries"] = rows });
+    });
+
+    /// <summary>Regions for a country ISO code (?country=US|CA).</summary>
+    public Task<IResult> LookupRegionsAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (!who.IsAdmin) throw Err(403, "forbidden");
+        var country = (ctx.Request.Query["country"].ToString() ?? "").Trim().ToUpperInvariant();
+        if (country.Length != 2) throw Validation([new("country", "required")]);
+        await using var cmd = new NpgsqlCommand(
+            "SELECT iso_3166_2, name FROM auth.regions WHERE country_iso = $1 ORDER BY name", c, tx);
+        cmd.Parameters.Add(new() { Value = country });
+        var rows = new JsonArray();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+            rows.Add(new JsonObject { ["code"] = r.GetString(0), ["label"] = r.GetString(1) + " (" + r.GetString(0) + ")" });
+        return Json(200, new JsonObject { ["country"] = country, ["regions"] = rows });
+    });
+
+    /// <summary>IANA time zones for a country (?country=US|CA).</summary>
+    public Task<IResult> LookupTimeZonesAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (!who.IsAdmin) throw Err(403, "forbidden");
+        var country = (ctx.Request.Query["country"].ToString() ?? "").Trim().ToUpperInvariant();
+        if (country.Length != 2) throw Validation([new("country", "required")]);
+        await using var cmd = new NpgsqlCommand(
+            "SELECT iana_name, label FROM auth.time_zones WHERE country_iso = $1 ORDER BY label", c, tx);
+        cmd.Parameters.Add(new() { Value = country });
+        var rows = new JsonArray();
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+            rows.Add(new JsonObject { ["value"] = r.GetString(0), ["label"] = r.GetString(1) + " (" + r.GetString(0) + ")" });
+        return Json(200, new JsonObject { ["country"] = country, ["time_zones"] = rows });
+    });
+
+    /// <summary>Postal-rule metadata for a country (?country=US|CA).</summary>
+    public Task<IResult> LookupPostalRuleAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
+    {
+        if (!who.IsAdmin) throw Err(403, "forbidden");
+        var country = (ctx.Request.Query["country"].ToString() ?? "").Trim().ToUpperInvariant();
+        if (country.Length != 2) throw Validation([new("country", "required")]);
+        await using var cmd = new NpgsqlCommand(
+            "SELECT pattern, max_length, normalize FROM auth.postal_rules WHERE country_iso = $1", c, tx);
+        cmd.Parameters.Add(new() { Value = country });
+        await using var r = await cmd.ExecuteReaderAsync();
+        if (!await r.ReadAsync()) throw Err(404, "not_found");
+        return Json(200, new JsonObject
+        {
+            ["country"] = country,
+            ["pattern"] = r.GetString(0),
+            ["max_length"] = r.GetInt32(1),
+            ["normalize"] = r.GetString(2),
+        });
+    });
+
     public Task<IResult> NavAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         if (c.State != System.Data.ConnectionState.Open || tx.Connection is null) throw Err(403, "forbidden");

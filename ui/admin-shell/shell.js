@@ -6,12 +6,14 @@
 // with enforceExistingPartner in server.mjs.
 import { applyProductName, productNameFromConfig } from "./branding.mjs";
 import {
-  COUNTRIES,
   DEFAULT_COUNTRY,
   FIELD_LIMITS,
-  TIME_ZONES,
+  loadCountries,
+  loadPostalRule,
+  loadRegions,
+  loadTimeZones,
+  normalizePostal,
   postalMaxLength,
-  regionsFor,
 } from "./location-address-options.mjs";
 
 const main = document.querySelector("#main");
@@ -292,31 +294,49 @@ export async function appendNorthAmericaAddressFields(form, address) {
     zoneField,
   ]) form.append(field);
 
-  const rules = await api("/address/country-rules.json");
-  const byCountry = new Map();
-  for (const row of rules.body?.rows ?? []) byCountry.set(row.country, row);
-  fillSelect(address.country, COUNTRIES, { blankLabel: "", selected: DEFAULT_COUNTRY });
-  fillSelect(address.time_zone, TIME_ZONES, { blankLabel: "Select a time zone…" });
-  function applyCountry() {
-    const code = address.country.value || DEFAULT_COUNTRY;
-    const row = byCountry.get(code);
-    fillSelect(address.region, regionsFor(code), { blankLabel: "Select…" });
-    const postalUse = row?.postal ?? "required";
-    const stateUse = row?.state ?? "required";
-    address.region.required = stateUse === "required";
-    address.region.disabled = stateUse === "not_used";
-    if (stateUse === "not_used") address.region.value = "";
-    address.postal_code.required = postalUse === "required";
-    address.postal_code.disabled = postalUse === "not_used";
-    if (postalUse === "not_used") address.postal_code.value = "";
-    address.postal_code.maxLength = postalMaxLength(code);
+  // DEC-258/260: dropdowns from GET /api/lookups/* (not hard-coded lists).
+  const countries = await loadCountries(api);
+  fillSelect(address.country, countries, { blankLabel: "Select a country…", selected: DEFAULT_COUNTRY });
+  address._postalRule = null;
+  async function applyCountry() {
+    const code = address.country.value;
+    address.region.disabled = !code;
+    address.time_zone.disabled = !code;
+    address.postal_code.disabled = !code;
+    if (!code) {
+      fillSelect(address.region, [], { blankLabel: "Select a state or province…" });
+      fillSelect(address.time_zone, [], { blankLabel: "Select a time zone…" });
+      address.region.value = "";
+      address.time_zone.value = "";
+      address.postal_code.value = "";
+      address._postalRule = null;
+      return;
+    }
+    const [regions, zones, rule] = await Promise.all([
+      loadRegions(api, code),
+      loadTimeZones(api, code),
+      loadPostalRule(api, code),
+    ]);
+    address._postalRule = rule;
+    fillSelect(address.region, regions, { blankLabel: "Select a state or province…" });
+    fillSelect(address.time_zone, zones, { blankLabel: "Select a time zone…" });
+    address.region.required = true;
+    address.time_zone.required = true;
+    address.postal_code.required = true;
+    address.postal_code.maxLength = postalMaxLength(code, rule);
     address.postal_code.placeholder = code === "CA" ? "A1A 1A1" : "12345 or 12345-6789";
+    address.postal_code.value = normalizePostal(code, address.postal_code.value, rule);
     if (address.postal_code.value.length > address.postal_code.maxLength) {
       address.postal_code.value = address.postal_code.value.slice(0, address.postal_code.maxLength);
     }
   }
-  address.country.addEventListener("change", applyCountry);
-  applyCountry();
+  address.country.addEventListener("change", () => { void applyCountry(); });
+  address.postal_code.addEventListener("blur", () => {
+    const code = address.country.value;
+    if (!code) return;
+    address.postal_code.value = normalizePostal(code, address.postal_code.value, address._postalRule);
+  });
+  await applyCountry();
 }
 
 export function addressPayload(address) {

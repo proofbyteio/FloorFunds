@@ -4819,3 +4819,175 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113190000_FfpSharedLookups') THEN
+
+    CREATE TABLE auth.countries (
+      iso_code char(2) NOT NULL,
+      name text NOT NULL,
+      active boolean NOT NULL DEFAULT true,
+      CONSTRAINT countries_pkey PRIMARY KEY (iso_code),
+      CONSTRAINT countries_iso_format CHECK (iso_code ~ '^[A-Z]{2}$')
+    );
+
+    CREATE TABLE auth.regions (
+      country_iso char(2) NOT NULL,
+      iso_3166_2 text NOT NULL,
+      name text NOT NULL,
+      CONSTRAINT regions_pkey PRIMARY KEY (country_iso, iso_3166_2),
+      CONSTRAINT regions_country_fk FOREIGN KEY (country_iso) REFERENCES auth.countries (iso_code),
+      CONSTRAINT regions_code_format CHECK (iso_3166_2 ~ '^[A-Z]{2}$')
+    );
+
+    CREATE TABLE auth.postal_rules (
+      country_iso char(2) NOT NULL,
+      pattern text NOT NULL,
+      max_length integer NOT NULL,
+      normalize text NOT NULL,
+      CONSTRAINT postal_rules_pkey PRIMARY KEY (country_iso),
+      CONSTRAINT postal_rules_country_fk FOREIGN KEY (country_iso) REFERENCES auth.countries (iso_code),
+      CONSTRAINT postal_rules_max_length CHECK (max_length BETWEEN 1 AND 32),
+      CONSTRAINT postal_rules_normalize CHECK (normalize IN ('none', 'us_zip', 'ca_postal'))
+    );
+
+    CREATE TABLE auth.time_zones (
+      country_iso char(2) NOT NULL,
+      iana_name text NOT NULL,
+      label text NOT NULL,
+      CONSTRAINT time_zones_pkey PRIMARY KEY (country_iso, iana_name),
+      CONSTRAINT time_zones_country_fk FOREIGN KEY (country_iso) REFERENCES auth.countries (iso_code)
+    );
+
+    INSERT INTO auth.countries (iso_code, name, active) VALUES
+      ('US', 'United States', true),
+      ('CA', 'Canada', true)
+    ON CONFLICT DO NOTHING;
+
+    INSERT INTO auth.postal_rules (country_iso, pattern, max_length, normalize) VALUES
+      ('US', '^\d{5}(-\d{4})?$', 10, 'us_zip'),
+      ('CA', '^[A-Z]\d[A-Z] \d[A-Z]\d$', 7, 'ca_postal')
+    ON CONFLICT DO NOTHING;
+
+-- FFP lookups seed (generated)
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','AL',$$Alabama$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','AK',$$Alaska$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','AZ',$$Arizona$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','AR',$$Arkansas$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','CA',$$California$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','CO',$$Colorado$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','CT',$$Connecticut$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','DE',$$Delaware$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','DC',$$District of Columbia$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','FL',$$Florida$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','GA',$$Georgia$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','HI',$$Hawaii$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','ID',$$Idaho$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','IL',$$Illinois$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','IN',$$Indiana$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','IA',$$Iowa$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','KS',$$Kansas$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','KY',$$Kentucky$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','LA',$$Louisiana$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','ME',$$Maine$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MD',$$Maryland$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MA',$$Massachusetts$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MI',$$Michigan$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MN',$$Minnesota$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MS',$$Mississippi$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MO',$$Missouri$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MT',$$Montana$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NE',$$Nebraska$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NV',$$Nevada$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NH',$$New Hampshire$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NJ',$$New Jersey$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NM',$$New Mexico$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NY',$$New York$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NC',$$North Carolina$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','ND',$$North Dakota$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','OH',$$Ohio$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','OK',$$Oklahoma$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','OR',$$Oregon$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','PA',$$Pennsylvania$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','RI',$$Rhode Island$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','SC',$$South Carolina$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','SD',$$South Dakota$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','TN',$$Tennessee$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','TX',$$Texas$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','UT',$$Utah$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','VT',$$Vermont$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','VA',$$Virginia$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','WA',$$Washington$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','WV',$$West Virginia$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','WI',$$Wisconsin$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','WY',$$Wyoming$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','AB',$$Alberta$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','BC',$$British Columbia$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','MB',$$Manitoba$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','NB',$$New Brunswick$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','NL',$$Newfoundland and Labrador$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','NS',$$Nova Scotia$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','NT',$$Northwest Territories$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','NU',$$Nunavut$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','ON',$$Ontario$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','PE',$$Prince Edward Island$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','QC',$$Quebec$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','SK',$$Saskatchewan$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','YT',$$Yukon$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$America/Los_Angeles$$,$$Pacific$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$America/Denver$$,$$Mountain$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$America/Phoenix$$,$$Arizona$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$America/Chicago$$,$$Central$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$America/New_York$$,$$Eastern$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$America/Anchorage$$,$$Alaska$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$Pacific/Honolulu$$,$$Hawaii$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/Vancouver$$,$$Pacific$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/Edmonton$$,$$Mountain$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/Winnipeg$$,$$Central$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/Regina$$,$$Saskatchewan$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/Toronto$$,$$Eastern$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/Halifax$$,$$Atlantic$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/St_Johns$$,$$Newfoundland$$) ON CONFLICT DO NOTHING;
+
+    ALTER TABLE auth.countries ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.countries FORCE ROW LEVEL SECURITY;
+    ALTER TABLE auth.regions ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.regions FORCE ROW LEVEL SECURITY;
+    ALTER TABLE auth.postal_rules ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.postal_rules FORCE ROW LEVEL SECURITY;
+    ALTER TABLE auth.time_zones ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.time_zones FORCE ROW LEVEL SECURITY;
+
+    CREATE POLICY countries_read ON auth.countries FOR SELECT TO CURRENT_USER USING (true);
+    CREATE POLICY regions_read ON auth.regions FOR SELECT TO CURRENT_USER USING (true);
+    CREATE POLICY postal_rules_read ON auth.postal_rules FOR SELECT TO CURRENT_USER USING (true);
+    CREATE POLICY time_zones_read ON auth.time_zones FOR SELECT TO CURRENT_USER USING (true);
+
+    DO $gr$
+    DECLARE
+      a text := current_database() || '_admin_api';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE format('GRANT SELECT ON auth.countries, auth.regions, auth.postal_rules, auth.time_zones TO %I', a);
+        EXECUTE format('CREATE POLICY countries_admin ON auth.countries FOR SELECT TO %I USING (true)', a);
+        EXECUTE format('CREATE POLICY regions_admin ON auth.regions FOR SELECT TO %I USING (true)', a);
+        EXECUTE format('CREATE POLICY postal_rules_admin ON auth.postal_rules FOR SELECT TO %I USING (true)', a);
+        EXECUTE format('CREATE POLICY time_zones_admin ON auth.time_zones FOR SELECT TO %I USING (true)', a);
+      END IF;
+    END
+    $gr$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113190000_FfpSharedLookups') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113190000_FfpSharedLookups', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;

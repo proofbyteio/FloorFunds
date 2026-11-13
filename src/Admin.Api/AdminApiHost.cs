@@ -48,6 +48,10 @@ public static class AdminApiHost
         app.MapPut("/api/orgs/partners/{partner_id}/login-config/reason-bounds", (HttpContext ctx, string partner_id) => api.PutReasonBoundsAsync(ctx, partner_id));
         app.MapGet("/api/orgs/locations", (Func<HttpContext, Task<IResult>>)(ctx => api.LocationsAsync(ctx)));
         app.MapGet("/api/screens/location-partners", (Func<HttpContext, Task<IResult>>)(ctx => api.PartnersAsync(ctx)));
+        app.MapGet("/api/lookups/countries", (Func<HttpContext, Task<IResult>>)(ctx => api.LookupCountriesAsync(ctx)));
+        app.MapGet("/api/lookups/regions", (Func<HttpContext, Task<IResult>>)(ctx => api.LookupRegionsAsync(ctx)));
+        app.MapGet("/api/lookups/time-zones", (Func<HttpContext, Task<IResult>>)(ctx => api.LookupTimeZonesAsync(ctx)));
+        app.MapGet("/api/lookups/postal-rule", (Func<HttpContext, Task<IResult>>)(ctx => api.LookupPostalRuleAsync(ctx)));
         app.MapGet("/api/nav", (Func<HttpContext, Task<IResult>>)(ctx => api.NavAsync(ctx)));
         app.MapGet("/api/screens/catalog", (Func<HttpContext, Task<IResult>>)(ctx => api.CatalogScreenAsync(ctx)));
         app.MapGet("/api/screens/create-client", (Func<HttpContext, Task<IResult>>)(ctx => api.CreateClientAsync(ctx)));

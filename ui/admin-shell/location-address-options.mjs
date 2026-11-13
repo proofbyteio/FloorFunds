@@ -1,66 +1,90 @@
-// US / Canada address options for Create location and Create client shell forms.
-// Country list is intentionally limited to US and CA. Region codes are ISO-3166-2
-// subdivisions; time zones are IANA names the API stores as text.
-
-export const COUNTRIES = [
-  { code: "US", label: "United States (US)" },
-  { code: "CA", label: "Canada (CA)" },
-];
+// Address dropdown options for Create location and Create client.
+// DEC-258/260: countries, regions, postal rules, and time zones come from GET /api/lookups/*.
 
 export const DEFAULT_COUNTRY = "US";
 
-export const US_STATES = [
-  ["AL", "Alabama"], ["AK", "Alaska"], ["AZ", "Arizona"], ["AR", "Arkansas"], ["CA", "California"],
-  ["CO", "Colorado"], ["CT", "Connecticut"], ["DE", "Delaware"], ["DC", "District of Columbia"],
-  ["FL", "Florida"], ["GA", "Georgia"], ["HI", "Hawaii"], ["ID", "Idaho"], ["IL", "Illinois"],
-  ["IN", "Indiana"], ["IA", "Iowa"], ["KS", "Kansas"], ["KY", "Kentucky"], ["LA", "Louisiana"],
-  ["ME", "Maine"], ["MD", "Maryland"], ["MA", "Massachusetts"], ["MI", "Michigan"], ["MN", "Minnesota"],
-  ["MS", "Mississippi"], ["MO", "Missouri"], ["MT", "Montana"], ["NE", "Nebraska"], ["NV", "Nevada"],
-  ["NH", "New Hampshire"], ["NJ", "New Jersey"], ["NM", "New Mexico"], ["NY", "New York"],
-  ["NC", "North Carolina"], ["ND", "North Dakota"], ["OH", "Ohio"], ["OK", "Oklahoma"], ["OR", "Oregon"],
-  ["PA", "Pennsylvania"], ["RI", "Rhode Island"], ["SC", "South Carolina"], ["SD", "South Dakota"],
-  ["TN", "Tennessee"], ["TX", "Texas"], ["UT", "Utah"], ["VT", "Vermont"], ["VA", "Virginia"],
-  ["WA", "Washington"], ["WV", "West Virginia"], ["WI", "Wisconsin"], ["WY", "Wyoming"],
-].map(([code, label]) => ({ code, label: `${label} (${code})` }));
+/** @deprecated Prefer loadCountries(); kept empty so accidental sync use fails closed. */
+export const COUNTRIES = [];
+/** @deprecated Prefer loadRegions(country). */
+export const US_STATES = [];
+/** @deprecated Prefer loadRegions(country). */
+export const CA_PROVINCES = [];
+/** @deprecated Prefer loadTimeZones(country). */
+export const TIME_ZONES = [];
 
-export const CA_PROVINCES = [
-  ["AB", "Alberta"], ["BC", "British Columbia"], ["MB", "Manitoba"], ["NB", "New Brunswick"],
-  ["NL", "Newfoundland and Labrador"], ["NS", "Nova Scotia"], ["NT", "Northwest Territories"],
-  ["NU", "Nunavut"], ["ON", "Ontario"], ["PE", "Prince Edward Island"], ["QC", "Quebec"],
-  ["SK", "Saskatchewan"], ["YT", "Yukon"],
-].map(([code, label]) => ({ code, label: `${label} (${code})` }));
-
-export const TIME_ZONES = [
-  { value: "America/New_York", label: "Eastern Time (America/New_York)" },
-  { value: "America/Chicago", label: "Central Time (America/Chicago)" },
-  { value: "America/Denver", label: "Mountain Time (America/Denver)" },
-  { value: "America/Phoenix", label: "Arizona (America/Phoenix)" },
-  { value: "America/Los_Angeles", label: "Pacific Time (America/Los_Angeles)" },
-  { value: "America/Anchorage", label: "Alaska (America/Anchorage)" },
-  { value: "Pacific/Honolulu", label: "Hawaii (Pacific/Honolulu)" },
-  { value: "America/Toronto", label: "Eastern Canada (America/Toronto)" },
-  { value: "America/Winnipeg", label: "Central Canada (America/Winnipeg)" },
-  { value: "America/Edmonton", label: "Mountain Canada (America/Edmonton)" },
-  { value: "America/Vancouver", label: "Pacific Canada (America/Vancouver)" },
-  { value: "America/Halifax", label: "Atlantic Canada (America/Halifax)" },
-  { value: "America/St_Johns", label: "Newfoundland (America/St_Johns)" },
-];
-
-/** Field length limits for the create form (UI). Keep within common NA address practice. */
+/** Field length limits for the create form (UI). Postal max comes from the postal-rule API when available. */
 export const FIELD_LIMITS = {
-  postal_code_us: 10, // 12345 or 12345-6789
-  postal_code_ca: 7,  // A1A 1A1
-  phone: 20,          // allows +1 and light formatting; E.164 digits ≤ 15
-  email: 50,          // Primary contact email UI max (Create location / Create client)
+  postal_code_us: 10,
+  postal_code_ca: 7,
+  phone: 20,
+  email: 100,
 };
 
+/**
+ * @param {(path: string) => Promise<{status:number, body?: any}>} apiGet
+ */
+export async function loadCountries(apiGet) {
+  const res = await apiGet("/api/lookups/countries");
+  if (res.status !== 200 || !Array.isArray(res.body?.countries)) return [];
+  return res.body.countries.map((c) => ({ code: c.code, label: c.label }));
+}
+
+/**
+ * @param {(path: string) => Promise<{status:number, body?: any}>} apiGet
+ * @param {string} country
+ */
+export async function loadRegions(apiGet, country) {
+  if (!country) return [];
+  const res = await apiGet("/api/lookups/regions?country=" + encodeURIComponent(country));
+  if (res.status !== 200 || !Array.isArray(res.body?.regions)) return [];
+  return res.body.regions.map((r) => ({ code: r.code, label: r.label }));
+}
+
+/**
+ * @param {(path: string) => Promise<{status:number, body?: any}>} apiGet
+ * @param {string} country
+ */
+export async function loadTimeZones(apiGet, country) {
+  if (!country) return [];
+  const res = await apiGet("/api/lookups/time-zones?country=" + encodeURIComponent(country));
+  if (res.status !== 200 || !Array.isArray(res.body?.time_zones)) return [];
+  return res.body.time_zones.map((z) => ({ value: z.value, label: z.label }));
+}
+
+/**
+ * @param {(path: string) => Promise<{status:number, body?: any}>} apiGet
+ * @param {string} country
+ */
+export async function loadPostalRule(apiGet, country) {
+  if (!country) return null;
+  const res = await apiGet("/api/lookups/postal-rule?country=" + encodeURIComponent(country));
+  if (res.status !== 200 || !res.body) return null;
+  return {
+    pattern: res.body.pattern,
+    max_length: res.body.max_length,
+    normalize: res.body.normalize,
+  };
+}
+
 export function regionsFor(country) {
-  if (country === "US") return US_STATES;
-  if (country === "CA") return CA_PROVINCES;
   return [];
 }
 
-export function postalMaxLength(country) {
+export function postalMaxLength(country, rule) {
+  if (rule && Number.isInteger(rule.max_length)) return rule.max_length;
   if (country === "CA") return FIELD_LIMITS.postal_code_ca;
   return FIELD_LIMITS.postal_code_us;
+}
+
+/** CA: uppercase and insert the space (A1A1A1 → A1A 1A1). */
+export function normalizePostal(country, value, rule) {
+  let v = String(value ?? "").trim();
+  const mode = rule?.normalize || (country === "CA" ? "ca_postal" : country === "US" ? "us_zip" : "none");
+  if (mode === "ca_postal") {
+    v = v.toUpperCase().replace(/\s+/g, "");
+    if (v.length > 3) v = v.slice(0, 3) + " " + v.slice(3, 6);
+    return v;
+  }
+  if (mode === "us_zip") return v.replace(/\s+/g, "");
+  return v;
 }
