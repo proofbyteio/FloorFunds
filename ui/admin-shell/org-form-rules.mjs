@@ -60,9 +60,12 @@ export function postalError(value, country, rule) {
   if (!country) return "";
   let v = String(value ?? "").trim();
   if (!v) return "Enter a ZIP or postal code.";
+  // F1: never truncate. CA — strip spaces + uppercase; reject unless exactly 6 chars;
+  // then insert the space and apply the regex. US — strip spaces only.
   if (rule?.normalize === "ca_postal" || country === "CA") {
     v = v.toUpperCase().replace(/\s+/g, "");
-    if (v.length > 3) v = v.slice(0, 3) + " " + v.slice(3, 6);
+    if (v.length !== 6) return "Enter a valid Canadian postal code, like A1A 1A1.";
+    v = v.slice(0, 3) + " " + v.slice(3);
   } else {
     v = v.replace(/\s+/g, "");
   }

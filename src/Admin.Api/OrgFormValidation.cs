@@ -211,10 +211,17 @@ public static class OrgFormValidation
             return null;
         }
         var v = raw.Trim();
+        // F1: never truncate. CA — strip spaces + uppercase; reject unless exactly 6
+        // alphanumerics; then insert the space and apply the regex. US — strip spaces only.
         if (rule.Value.Normalize == "ca_postal")
         {
             v = Regex.Replace(v.ToUpperInvariant(), @"\s+", "");
-            if (v.Length > 3) v = v[..3] + " " + v[3..Math.Min(6, v.Length)];
+            if (v.Length != 6)
+            {
+                errors.Add(new("postal_code", "Enter a valid Canadian postal code, like A1A 1A1."));
+                return null;
+            }
+            v = v[..3] + " " + v[3..];
         }
         else if (rule.Value.Normalize == "us_zip")
             v = Regex.Replace(v, @"\s+", "");

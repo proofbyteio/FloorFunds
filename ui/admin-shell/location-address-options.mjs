@@ -76,14 +76,14 @@ export function postalMaxLength(country, rule) {
   return FIELD_LIMITS.postal_code_us;
 }
 
-/** CA: uppercase and insert the space (A1A1A1 → A1A 1A1). */
+/** CA: strip spaces + uppercase; format A1A1A1 → A1A 1A1 only when exactly 6 chars (F1: never truncate). */
 export function normalizePostal(country, value, rule) {
   let v = String(value ?? "").trim();
   const mode = rule?.normalize || (country === "CA" ? "ca_postal" : country === "US" ? "us_zip" : "none");
   if (mode === "ca_postal") {
     v = v.toUpperCase().replace(/\s+/g, "");
-    if (v.length > 3) v = v.slice(0, 3) + " " + v.slice(3, 6);
-    return v;
+    if (v.length !== 6) return v; // leave untruncated; postalError / server reject
+    return v.slice(0, 3) + " " + v.slice(3);
   }
   if (mode === "us_zip") return v.replace(/\s+/g, "");
   return v;

@@ -357,10 +357,8 @@ export async function appendNorthAmericaAddressFields(form, address) {
     address.postal_code.required = true;
     address.postal_code.maxLength = postalMaxLength(code, rule);
     address.postal_code.placeholder = code === "CA" ? "A1A 1A1" : "12345 or 12345-6789";
+    // F1: normalize without truncating (CA formats only when exactly 6 alphanumerics).
     address.postal_code.value = normalizePostal(code, address.postal_code.value, rule);
-    if (address.postal_code.value.length > address.postal_code.maxLength) {
-      address.postal_code.value = address.postal_code.value.slice(0, address.postal_code.maxLength);
-    }
     // Phone region follows address country when US/CA (picker default +1).
     if (code === "US" || code === "CA") address.phone_country.value = code;
   }
@@ -368,6 +366,7 @@ export async function appendNorthAmericaAddressFields(form, address) {
   address.postal_code.addEventListener("blur", () => {
     const code = address.country.value;
     if (!code) return;
+    // F1: write-back formats CA only when exactly 6 chars; never slices extras away.
     address.postal_code.value = normalizePostal(code, address.postal_code.value, address._postalRule);
   });
   await applyCountry();
