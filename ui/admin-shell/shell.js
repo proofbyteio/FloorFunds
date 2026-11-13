@@ -33,8 +33,8 @@ const pages = {
   create: { label: "Create location", need: "create_location" },
   config: { label: "Sign-in config", need: "config" },
   catalog: { label: "Catalog", need: "catalog" },
-  clients: { label: "Clients", need: "create_client" },
-  // STEP 2 Partner form; STEP 5 renames nav labels to Create * Admin.
+  clients: { label: "Create Client Admin", need: "create_client" },
+  // STEP 2 Partner form; STEP 5 locks nav labels to Create * Admin.
   partners: { label: "Create Partner Admin", need: "create_partner" },
   "partner-edit": { label: "Edit partner", need: "create_partner" },
 };
@@ -667,12 +667,18 @@ async function showCatalog() {
 export async function showClients() {
   const res = await api("/api/screens/create-client");
   if (res.status === 403) return denied();
-  main.replaceChildren(h("h1", "Create client"));
-  if (res.body?.write === "held") {
-    main.append(banner("info", "Create is held", "The form is available for layout review. Saving a client stays refused until PQ-278 (API returns client_create_pending_pq278)."));
-  }
+  main.replaceChildren(h("h1", "Create Client Admin"));
   const form = document.createElement("form");
   form.className = "card";
+  const partner = document.createElement("select");
+  partner.className = "field__input";
+  partner.name = "partner_id";
+  partner.required = true;
+  const partnerField = h("label");
+  partnerField.className = "field";
+  partnerField.append(h("span", "Partner"), partner);
+  partnerField.querySelector("span").className = "field__label";
+  form.append(partnerField);
   const name = document.createElement("input");
   name.className = "field__input";
   name.id = "client-name";
@@ -690,14 +696,26 @@ export async function showClients() {
   const submit = primaryControl("button", "Create client");
   submit.type = "submit";
   form.append(submit);
+  const partners = await api("/api/orgs/partners");
+  fillSelect(partner, (partners.body?.partners ?? []).map((p) => ({
+    code: p.partner_id,
+    label: p.name + " (" + p.partner_id + ")",
+  })), { blankLabel: "Select a partner…" });
+  if (!(partners.body?.partners ?? []).length) {
+    partner.disabled = true;
+    submit.disabled = true;
+    form.prepend(banner("info", "No partners", "Create a partner before creating a client."));
+  }
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
+    if (!partner.value) { showValidationBanner(form, "Partner", "Select a partner."); return; }
     const nameMsg = entityNameError("client", name.value);
     if (nameMsg) { showValidationBanner(form, "Client name", nameMsg); return; }
     const lengthError = addressLengthError(address);
     if (lengthError) { showValidationBanner(form, lengthError.title, lengthError.detail); return; }
     submit.disabled = true;
     const body = {
+      partner_id: partner.value,
       name: name.value.trim(),
       address: addressPayload(address),
     };

@@ -56,6 +56,9 @@ public static class AdminApiHost
         app.MapPost("/api/orgs/partners", (Func<HttpContext, Task<IResult>>)(ctx => api.PostOrgPartnerAsync(ctx)));
         app.MapGet("/api/orgs/partners/{partner_id}", (HttpContext ctx, string partner_id) => api.GetOrgPartnerAsync(ctx, partner_id));
         app.MapPut("/api/orgs/partners/{partner_id}", (HttpContext ctx, string partner_id) => api.PutOrgPartnerAsync(ctx, partner_id));
+        app.MapGet("/api/orgs/clients", (Func<HttpContext, Task<IResult>>)(ctx => api.ListOrgClientsAsync(ctx)));
+        app.MapGet("/api/orgs/clients/{client_id}", (HttpContext ctx, string client_id) => api.GetOrgClientAsync(ctx, client_id));
+        app.MapPut("/api/orgs/clients/{client_id}", (HttpContext ctx, string client_id) => api.PutOrgClientAsync(ctx, client_id));
         app.MapGet("/api/nav", (Func<HttpContext, Task<IResult>>)(ctx => api.NavAsync(ctx)));
         app.MapGet("/api/screens/catalog", (Func<HttpContext, Task<IResult>>)(ctx => api.CatalogScreenAsync(ctx)));
         app.MapGet("/api/screens/create-client", (Func<HttpContext, Task<IResult>>)(ctx => api.CreateClientAsync(ctx)));

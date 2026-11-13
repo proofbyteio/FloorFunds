@@ -5051,3 +5051,60 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113192000_FfpClient') THEN
+
+    CREATE TABLE auth.client (
+      client_id uuid NOT NULL,
+      partner_id uuid NOT NULL,
+      name text NOT NULL,
+      address_line_1 text NOT NULL,
+      address_line_2 text NOT NULL DEFAULT '',
+      city text NOT NULL,
+      country char(2) NOT NULL,
+      region text NOT NULL,
+      postal_code text NOT NULL,
+      phone text NOT NULL,
+      email text NULL,
+      time_zone text NOT NULL,
+      CONSTRAINT client_pkey PRIMARY KEY (client_id),
+      CONSTRAINT client_partner_fk FOREIGN KEY (partner_id) REFERENCES auth.partner (partner_id),
+      CONSTRAINT client_country_fk FOREIGN KEY (country) REFERENCES auth.countries (iso_code),
+      CONSTRAINT client_region_fk FOREIGN KEY (country, region) REFERENCES auth.regions (country_iso, iso_3166_2),
+      CONSTRAINT client_phone_e164 CHECK (phone ~ '^\+[1-9][0-9]{1,14}$'),
+      CONSTRAINT client_name_len CHECK (char_length(name) BETWEEN 2 AND 100)
+    );
+    CREATE UNIQUE INDEX client_partner_name_ci_ux ON auth.client (partner_id, lower(name));
+
+    ALTER TABLE auth.client ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.client FORCE ROW LEVEL SECURITY;
+    CREATE POLICY client_owner_all ON auth.client FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+
+    DO $gr$
+    DECLARE
+      a text := current_database() || '_admin_api';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE format('GRANT SELECT, INSERT, UPDATE ON auth.client TO %I', a);
+        EXECUTE format('CREATE POLICY client_admin_select ON auth.client FOR SELECT TO %I USING (auth.actor_is_global())', a);
+        EXECUTE format('CREATE POLICY client_admin_insert ON auth.client FOR INSERT TO %I WITH CHECK (auth.actor_is_global())', a);
+        EXECUTE format('CREATE POLICY client_admin_update ON auth.client FOR UPDATE TO %I USING (auth.actor_is_global()) WITH CHECK (auth.actor_is_global())', a);
+      END IF;
+    END
+    $gr$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113192000_FfpClient') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113192000_FfpClient', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
