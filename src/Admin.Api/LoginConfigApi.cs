@@ -1143,15 +1143,17 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         var screens = new JsonArray();
         if (who.IsSuper)
         {
-            // DEC-264 / STEP 5: Super Admin nav grants for Create Partner/Client/Location Admin.
+            // DEC-264 / F7: SA gets entity create keys + distinct create_location_admin for the
+            // "Create Location Admin" nav label. create_location remains for the Locations list.
             screens.Add("create_partner");
             screens.Add("create_client");
             screens.Add("create_location");
+            screens.Add("create_location_admin");
             screens.Add("config");
         }
         else if (who.IsPartnerAdmin)
         {
-            // Leave Partner Admin nav as today (create_location + config).
+            // Same as main 5f7cec33: create_location + config (Locations CTA / LLC; not SA Admin labels).
             screens.Add("create_location");
             screens.Add("config");
         }

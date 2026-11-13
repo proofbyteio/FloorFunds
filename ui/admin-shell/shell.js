@@ -28,10 +28,10 @@ let leaving = false;
 const pages = {
   home: { label: "Home", need: null },
   locations: { label: "Locations", need: "create_location" },
-  // F-21. create_location and config come from GET /api/nav screens
-  // (LoginConfigApi.NavAsync for Super Admin and Partner Admin).
-  // DEC-264: Super Admin nav labels exact — Create Partner/Client/Location Admin.
-  create: { label: "Create Location Admin", need: "create_location" },
+  // F-21 / DEC-264 / F7: UI nav is driven only by server screen keys from NavAsync.
+  // create_location_admin is SA-only (nav label "Create Location Admin").
+  // create_location stays for Locations + PA "Create location" CTA / #/create route.
+  create: { label: "Create Location Admin", need: "create_location", navNeed: "create_location_admin" },
   "location-edit": { label: "Edit location", need: "create_location" },
   config: { label: "Sign-in config", need: "config" },
   catalog: { label: "Catalog", need: "catalog" },
@@ -41,7 +41,6 @@ const pages = {
 };
 
 let grant = [];
-let navRole = "";
 
 // FFP STEP 4 / PQ-329: location name is 2–100 after normalization (owner sentences via
 // entityNameError). Count by code points ([...value]), not UTF-16 .length — never HTML maxlength.
@@ -94,12 +93,11 @@ function renderNav(current) {
   navEl.replaceChildren();
   if (grant.length === 0) return;
   for (const [id, page] of Object.entries(pages)) {
-    // F-05. Sign-in config stays off nav labels. partner-edit is post-create only.
-    // DEC-264: Create Location Admin is a Super Admin nav item only; Partner Admin nav stays as today
-    // (Locations via create_location grant; Create location hash route still works, not a nav label).
+    // F-05. Sign-in config stays off nav labels. partner-edit / location-edit are post-create only.
+    // F7: gate on server keys only (navNeed ?? need) — never on the role label string.
     if (id === "config" || id === "partner-edit" || id === "location-edit") continue;
-    if (id === "create" && navRole !== "Super Admin") continue;
-    if (page.need && !grant.includes(page.need)) continue;
+    const gate = page.navNeed ?? page.need;
+    if (gate && !grant.includes(gate)) continue;
     const a = document.createElement("a");
     a.href = "#/" + id;
     a.textContent = page.label;
@@ -821,7 +819,6 @@ async function draw() {
     signedIn.textContent = who && role ? "Signed in as " + who + " · Role: " + role : "";
   }
   grant = me.status === 200 ? (me.body.screens ?? []) : [];
-  navRole = me.status === 200 && typeof me.body?.role === "string" ? me.body.role : "";
   const deep = orgsRoute();
   const name = route();
   renderNav(deep ? "locations" : name === "denied" ? "" : name);
