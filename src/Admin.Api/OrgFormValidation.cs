@@ -118,7 +118,18 @@ public static class OrgFormValidation
         }
         var region = await RegionAsync(Prop(address, "region"), country, regionOk, errors);
         var postal = await PostalAsync(Prop(address, "postal_code"), country, postalRule, errors);
-        var phone = PhoneNumber(Prop(address, "phone"), country, errors);
+        // F5: phone_country (US/CA from countries) defaults to address country; phone validated for that region.
+        var phoneRegion = country;
+        var phoneCountryRaw = Prop(address, "phone_country");
+        if (phoneCountryRaw is not null && phoneCountryRaw != "\u0000" && !string.IsNullOrWhiteSpace(phoneCountryRaw))
+        {
+            var pc = phoneCountryRaw.Trim().ToUpperInvariant();
+            if ((pc is not "US" and not "CA") || !await countryActive(pc))
+                errors.Add(new("phone_country", "Select a country."));
+            else
+                phoneRegion = pc;
+        }
+        var phone = PhoneNumber(Prop(address, "phone"), phoneRegion, errors);
         var email = Email(Prop(address, "email"), errors);
         var zone = await TimeZoneAsync(Prop(address, "time_zone"), country, timeZoneOk, errors);
 

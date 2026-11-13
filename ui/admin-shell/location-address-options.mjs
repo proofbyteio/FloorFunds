@@ -16,7 +16,8 @@ export const TIME_ZONES = [];
 export const FIELD_LIMITS = {
   postal_code_us: 10,
   postal_code_ca: 7,
-  phone: 20,
+  // F5: was 20 — too short for formatted numbers the server accepts (spaces/dashes/parens).
+  phone: 32,
   email: 100,
 };
 

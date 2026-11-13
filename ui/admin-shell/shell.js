@@ -382,6 +382,8 @@ export function addressPayload(address) {
     region: address.region.disabled ? "" : address.region.value.trim(),
     postal_code: postal,
     phone: address.phone.value.trim(),
+    // F5: picker value; server validates IsValidNumberForRegion against it (defaults to address country).
+    phone_country: address.phone_country?.value || address.country.value,
     email: address.email.value.trim(),
     time_zone: address.time_zone.value.trim(),
   };
