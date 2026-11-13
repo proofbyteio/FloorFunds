@@ -115,23 +115,37 @@ function Get-OwnerPsql {
 }
 $ownerPsql = Get-OwnerPsql
 
+function Escape-Arg([string]$a) {
+  # Windows ProcessStartInfo.Arguments quoting (needed: ArgumentList is null under some Windows hosts).
+  if ($a -notmatch '[\s"]') { return $a }
+  '"' + ($a -replace '"', '\"') + '"'
+}
 function Invoke-Psql([string]$sql, [string[]]$extra = @(), [switch]$Capture, [int]$FailCode = 0) {
   # Values go in as psql variables (argv holds only names, never the password);
   # SQL uses format(%I/%L) + \gexec. The script itself travels on stdin.
   $psi = [System.Diagnostics.ProcessStartInfo]::new($psqlCmd.Source)
+  $args = [System.Collections.Generic.List[string]]::new()
   foreach ($a in @('-X','-q','-v','ON_ERROR_STOP=1','-p',"$Port",'-U',$AdminUser,'-d','postgres',
-                   '-v',"db=$Db",'-v',"role=$Role") + $extra + @('-f','-')) { $psi.ArgumentList.Add($a) }
-  if ($AdminHost) { $psi.ArgumentList.Add('-h'); $psi.ArgumentList.Add($AdminHost) }
+                   '-v',"db=$Db",'-v',"role=$Role") + $extra + @('-f','-')) { $args.Add($a) }
+  if ($AdminHost) { $args.Add('-h'); $args.Add($AdminHost) }
+  $psi.UseShellExecute = $false
+  if ($null -ne $psi.ArgumentList) {
+    foreach ($a in $args) { [void]$psi.ArgumentList.Add($a) }
+  } else {
+    $psi.Arguments = (($args | ForEach-Object { Escape-Arg $_ }) -join ' ')
+  }
   if ($adminPw) { $psi.Environment['PGPASSWORD'] = $adminPw } else { [void]$psi.Environment.Remove('PGPASSWORD') }
   $psi.RedirectStandardInput = $true
   $psi.RedirectStandardOutput = [bool]$Capture
-  $psi.UseShellExecute = $false
+  $psi.RedirectStandardError = $true
   $p = [System.Diagnostics.Process]::Start($psi)
   $p.StandardInput.Write($sql)
   $p.StandardInput.Close()
   $out = if ($Capture) { $p.StandardOutput.ReadToEnd() } else { '' }
+  $err = $p.StandardError.ReadToEnd()
   $p.WaitForExit()
   if ($p.ExitCode -ne 0) {
+    if ($err) { [Console]::Error.WriteLine($err) }
     $code = if ($FailCode) { $FailCode } else { $p.ExitCode }
     Write-Error "psql failed (exit $($p.ExitCode)); see the psql error above" -ErrorAction Continue; exit $code
   }
@@ -141,8 +155,8 @@ function Get-KitSql([string]$name) { [System.IO.File]::ReadAllText((Join-Path $K
 
 # 0. K1 preflight: read-only, before anything is changed.
 Write-Host "Preflight (read-only): $Db, $Role, $AdminApiRole, $LoginRole, $IssuerRole..."
-# KF-E: split on LF only, so a line ending in CR (e.g. "END ...`r") does not match exactly, as in setup.sh.
-$pre = @((Invoke-Psql (Get-KitSql 'preflight.sql') @('-tA', '-v', "api_role=$AdminApiRole", '-v', "login_role=$LoginRole", '-v', "issuer_role=$IssuerRole") -Capture -FailCode 5) -split "`n" | Where-Object { $_ })
+# KF-E: split on LF only. Strip trailing CR so Windows psql (CRLF) still matches markers (Unix stays LF-only).
+$pre = @((Invoke-Psql (Get-KitSql 'preflight.sql') @('-tA', '-v', "api_role=$AdminApiRole", '-v', "login_role=$LoginRole", '-v', "issuer_role=$IssuerRole") -Capture -FailCode 5) -split "`n" | ForEach-Object { $_.TrimEnd("`r") } | Where-Object { $_ })
 # KF3: fail closed. The preflight always ends with this line; empty or truncated output is a refusal.
 if (-not $pre.Count -or $pre[-1] -cne 'END floorfunds-kit-preflight') {
   [Console]::Error.WriteLine('Refused: the preflight returned no end marker (empty or incomplete output), so the catalog could not be checked. Nothing was changed.'); exit 5
@@ -192,11 +206,17 @@ $apiPw = $null; $loginPw = $null; $issuerPw = $null
 # As the owner over TCP; the owner password goes in the child's env, never argv.
 function Invoke-OwnerPsql([string[]]$extra, [switch]$AllowFail) {
   $psi = [System.Diagnostics.ProcessStartInfo]::new($ownerPsql)
-  foreach ($a in @('-X','-q','-v','ON_ERROR_STOP=1','-h',$DbHost,'-p',"$Port",'-U',$Role,'-d',$Db) + $extra) { $psi.ArgumentList.Add($a) }
+  $args = [System.Collections.Generic.List[string]]::new()
+  foreach ($a in @('-X','-q','-v','ON_ERROR_STOP=1','-h',$DbHost,'-p',"$Port",'-U',$Role,'-d',$Db) + $extra) { $args.Add($a) }
+  $psi.UseShellExecute = $false
+  if ($null -ne $psi.ArgumentList) {
+    foreach ($a in $args) { [void]$psi.ArgumentList.Add($a) }
+  } else {
+    $psi.Arguments = (($args | ForEach-Object { Escape-Arg $_ }) -join ' ')
+  }
   $psi.Environment['PGPASSWORD'] = $pw
   # Hides the expected "__EFMigrationsHistory already exists" NOTICE on re-runs.
   $psi.Environment['PGOPTIONS'] = '-c client_min_messages=warning'
-  $psi.UseShellExecute = $false
   $psi.RedirectStandardInput = $true
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError = $true
@@ -241,12 +261,8 @@ if ($catalogReady) {
   Write-Host "Catalog definer owner: skipped, schema catalog is not installed yet."
 }
 function Set-TestSeedFileMode([string]$path) {
-  # Mode 0600 first. When this process was started with sudo -u postgres, the
-  # file is owned by postgres and the invoking user (SUDO_USER) cannot read it.
-  # That user is not root, so chown is EPERM. A named-user ACL grants SUDO_USER
-  # read. The mask lives in the group class, so stat shows 0640; the group
-  # object entry is empty, so the owning group cannot read, and other stays 0.
-  # The directory /tmp/ff-db is left at mode 1733.
+  # Unix: mode 0600 (+ optional SUDO_USER ACL). Windows: NTFS ACLs already limit the file to the creating user.
+  if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) { return }
   & chmod 0600 $path
   if ($LASTEXITCODE -ne 0) { Write-Error "chmod 0600 failed on the test seed file" -ErrorAction Continue; exit 4 }
   $sudoUser = $env:SUDO_USER
@@ -290,16 +306,18 @@ public static class FfSeedAcl {
   }
 }
 if ($Seed) {
-  New-Item -ItemType Directory -Force -Path /tmp/ff-db | Out-Null
-  & chmod 1733 /tmp/ff-db
-  $seedEnv = "/tmp/ff-db/${Db}_test_seed.env"
+  $isWin = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+  $ffDbDir = if ($isWin) { Join-Path $env:TEMP 'ff-db' } else { '/tmp/ff-db' }
+  New-Item -ItemType Directory -Force -Path $ffDbDir | Out-Null
+  if (-not $isWin) { & chmod 1733 $ffDbDir }
+  $seedEnv = Join-Path $ffDbDir "${Db}_test_seed.env"
   if (Test-Path -LiteralPath $seedEnv) {
     $seedPw = (Get-Content -LiteralPath $seedEnv | Where-Object { $_.StartsWith('TEST_SEED_PASSWORD=') } | Select-Object -First 1).Substring(19)
   } else {
     $seedPw = ([Convert]::ToHexString([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(24))).ToLowerInvariant()
     $tmp = "$seedEnv.tmp"
     [System.IO.File]::WriteAllText($tmp, "TEST_SEED_PASSWORD=$seedPw`n")
-    & chmod 0600 $tmp
+    if (-not $isWin) { & chmod 0600 $tmp }
     Move-Item -Force -LiteralPath $tmp -Destination $seedEnv
   }
   Set-TestSeedFileMode $seedEnv
@@ -308,12 +326,23 @@ if ($Seed) {
   foreach ($f in Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'seed') -Filter '*.sql' | Sort-Object Name) {
     Write-Host "Seed (TEST-ONLY): $($f.Name) as ${Db}_test_seed..."
     $psi = [System.Diagnostics.ProcessStartInfo]::new($psqlCmd.Source)
-    foreach ($a in @('-X','-q','-v','ON_ERROR_STOP=1','-h',$DbHost,'-p',"$Port",'-U',"${Db}_test_seed",'-d',$Db,'-f',$f.FullName)) { $psi.ArgumentList.Add($a) }
-    $psi.Environment['PGPASSWORD'] = $seedPw
+    $seedArgs = [System.Collections.Generic.List[string]]::new()
+    foreach ($a in @('-X','-q','-v','ON_ERROR_STOP=1','-h',$DbHost,'-p',"$Port",'-U',"${Db}_test_seed",'-d',$Db,'-f',$f.FullName)) { $seedArgs.Add($a) }
     $psi.UseShellExecute = $false
+    if ($null -ne $psi.ArgumentList) {
+      foreach ($a in $seedArgs) { [void]$psi.ArgumentList.Add($a) }
+    } else {
+      $psi.Arguments = (($seedArgs | ForEach-Object { Escape-Arg $_ }) -join ' ')
+    }
+    $psi.Environment['PGPASSWORD'] = $seedPw
+    $psi.RedirectStandardError = $true
     $p = [System.Diagnostics.Process]::Start($psi)
+    $seedErr = $p.StandardError.ReadToEnd()
     $p.WaitForExit()
-    if ($p.ExitCode -ne 0) { Write-Error "psql (test seed) failed (exit $($p.ExitCode)); see the error above" -ErrorAction Continue; exit 4 }
+    if ($p.ExitCode -ne 0) {
+      if ($seedErr) { [Console]::Error.WriteLine($seedErr) }
+      Write-Error "psql (test seed) failed (exit $($p.ExitCode)); see the error above" -ErrorAction Continue; exit 4
+    }
   }
   $seedPw = $null
 }

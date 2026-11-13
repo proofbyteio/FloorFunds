@@ -94,8 +94,15 @@ async function proxy(req, res, target, body, extra) {
   res.end(out);
 }
 
+function secretPath() {
+  if (process.env.ADMIN_DEV_SHELL_SECRET_PATH) return process.env.ADMIN_DEV_SHELL_SECRET_PATH;
+  // Match Login.StandIn Clients.DevShell: <temp>/ff-db/admin-dev-shell.secret (Unix /tmp, Windows %TEMP%).
+  const temp = process.platform === "win32" ? (process.env.TEMP || process.env.TMP || ".") : "/tmp";
+  return path.join(temp, "ff-db", "admin-dev-shell.secret");
+}
+
 async function exchange(code, verifier) {
-  const secret = fs.readFileSync("/tmp/ff-db/admin-dev-shell.secret", "utf8").trim();
+  const secret = fs.readFileSync(secretPath(), "utf8").trim();
   const basic = Buffer.from("admin_dev_shell:" + secret).toString("base64");
   const body = new URLSearchParams({
     grant_type: "authorization_code",

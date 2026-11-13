@@ -43,15 +43,21 @@ public static class Clients
         return d;
     }
 
-    // Dev-only client for the single-origin admin shell. The secret is written under /tmp and is not a fixture.
+    // Dev-only client for the single-origin admin shell. The secret is written under the stand-in temp root (not a fixture).
+    // Override with ADMIN_DEV_SHELL_SECRET_PATH (must stay under AllowedTempRoot). Default: <temp>/ff-db/admin-dev-shell.secret.
     static OAuthClient DevShell()
     {
         var redirect = Environment.GetEnvironmentVariable("ADMIN_DEV_SHELL_REDIRECT");
         if (redirect is null || !redirect.StartsWith("http://127.0.0.1:", StringComparison.Ordinal) || !redirect.EndsWith("/signin-oidc", StringComparison.Ordinal))
             throw new InvalidOperationException("ADMIN_DEV_SHELL_REDIRECT must be http://127.0.0.1:<port>/signin-oidc");
         var secret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-        var secretPath = "/tmp/ff-db/admin-dev-shell.secret";
-        Directory.CreateDirectory("/tmp/ff-db");
+        var secretPath = Environment.GetEnvironmentVariable("ADMIN_DEV_SHELL_SECRET_PATH");
+        if (string.IsNullOrWhiteSpace(secretPath))
+            secretPath = Path.Combine(StandInPaths.AllowedTempRoot, "ff-db", "admin-dev-shell.secret");
+        secretPath = Path.GetFullPath(secretPath);
+        if (!StandInPaths.IsUnderAllowedTemp(secretPath))
+            throw new InvalidOperationException("ADMIN_DEV_SHELL_SECRET_PATH must be under the stand-in temp directory");
+        Directory.CreateDirectory(Path.GetDirectoryName(secretPath)!);
         File.WriteAllText(secretPath, "");
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(secretPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         File.WriteAllText(secretPath, secret);
