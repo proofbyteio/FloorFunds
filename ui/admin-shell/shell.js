@@ -125,7 +125,9 @@ function banner(kind, title, text) {
   const b = h("div");
   b.className = "banner banner--" + kind;
   b.setAttribute("role", kind === "error" ? "alert" : "status");
-  b.append(h("span", title));
+  const heading = h("span", title);
+  heading.className = "banner__title";
+  b.append(heading);
   if (text) b.append(h("p", text));
   return b;
 }

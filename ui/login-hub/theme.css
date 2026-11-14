@@ -159,18 +159,25 @@ body.notes-hidden .tag, body.notes-hidden .annot { display: none !important; }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; border-right-color: currentColor; opacity: .5; } }
 
 /* ---------- Banner ---------- */
-.banner { display: flex; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); border: 1px solid;
-          margin-bottom: var(--space-4); font-size: var(--font-size-sm); }
+/* Soft banner fills are light; page --foreground is light on dark (DEC-227).
+   Set explicit on-banner text so title/body stay readable on every screen. */
+.banner { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); border: 1px solid;
+          margin-bottom: var(--space-4); font-size: var(--font-size-sm); color: var(--banner-body); }
 .banner__icon { flex: none; font-weight: 700; }
 .banner__title { font-weight: var(--font-weight-semibold); display: block; }
-.banner--error   { background: var(--color-danger-soft); border-color: var(--color-danger); }
-.banner--error .banner__icon { color: var(--color-danger); }
-.banner--info    { background: var(--color-info-soft); border-color: var(--color-info); }
-.banner--info .banner__icon { color: var(--color-info); }
-.banner--warning { background: var(--color-warning-soft); border-color: var(--warning-banner-text); }
-.banner--warning .banner__icon { color: var(--foreground); }
-.banner--success { background: var(--color-success-soft); border-color: var(--color-success); }
-.banner--success .banner__icon { color: var(--color-success); }
+.banner > p { margin: 0; color: var(--banner-body); }
+.banner--error   { background: var(--color-danger-soft); border-color: var(--error-banner-border); color: var(--error-banner-text); }
+.banner--error .banner__icon,
+.banner--error .banner__title { color: var(--error-banner-text); }
+.banner--info    { background: var(--color-info-soft); border-color: var(--info-banner-text); color: var(--info-banner-text); }
+.banner--info .banner__icon,
+.banner--info .banner__title { color: var(--info-banner-text); }
+.banner--warning { background: var(--color-warning-soft); border-color: var(--warning-banner-border); color: var(--warning-banner-text); }
+.banner--warning .banner__icon,
+.banner--warning .banner__title { color: var(--warning-banner-text); }
+.banner--success { background: var(--color-success-soft); border-color: var(--success-banner-border); color: var(--success-banner-text); }
+.banner--success .banner__icon,
+.banner--success .banner__title { color: var(--success-banner-text); }
 
 /* ---------- Signed-in shell: icon rail + top bar (matches reference) ---------- */
 .app-shell { display: grid; grid-template-columns: var(--rail-width) 1fr; min-height: calc(100vh - 110px); }
