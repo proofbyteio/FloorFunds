@@ -59,12 +59,14 @@ function readBody(req, limit = 65536) {
   });
 }
 
-// PQ-284 reversible default. The picker submits an id from the server list.
-// Swap this check together with the partner <select> in shell.js.
+// FFP location create posts client_id (partner is derived server-side).
+// Legacy PQ-284 bodies that still send partner_id are checked against the server list.
 async function enforceExistingPartner(token, body) {
   let parsed;
   try { parsed = JSON.parse(body.toString("utf8")); } catch { return null; }
-  if (!parsed || typeof parsed !== "object" || typeof parsed.partner_id !== "string") return { status: 422, error: "partner_not_in_list" };
+  if (!parsed || typeof parsed !== "object") return { status: 422, error: "partner_not_in_list" };
+  if (typeof parsed.client_id === "string" && parsed.client_id.length > 0) return null;
+  if (typeof parsed.partner_id !== "string") return { status: 422, error: "partner_not_in_list" };
   const listed = await fetch(apiOrigin + "/api/screens/location-partners", { headers: { authorization: "Bearer " + token } });
   if (!listed.ok) return { status: 403, error: "forbidden" };
   const ids = new Set((await listed.json()).partners ?? []);
