@@ -4819,3 +4819,557 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113190000_FfpSharedLookups') THEN
+
+    CREATE TABLE auth.countries (
+      iso_code char(2) NOT NULL,
+      name text NOT NULL,
+      active boolean NOT NULL DEFAULT true,
+      CONSTRAINT countries_pkey PRIMARY KEY (iso_code),
+      CONSTRAINT countries_iso_format CHECK (iso_code ~ '^[A-Z]{2}$')
+    );
+
+    CREATE TABLE auth.regions (
+      country_iso char(2) NOT NULL,
+      iso_3166_2 text NOT NULL,
+      name text NOT NULL,
+      CONSTRAINT regions_pkey PRIMARY KEY (country_iso, iso_3166_2),
+      CONSTRAINT regions_country_fk FOREIGN KEY (country_iso) REFERENCES auth.countries (iso_code),
+      CONSTRAINT regions_code_format CHECK (iso_3166_2 ~ '^[A-Z]{2}$')
+    );
+
+    CREATE TABLE auth.postal_rules (
+      country_iso char(2) NOT NULL,
+      pattern text NOT NULL,
+      max_length integer NOT NULL,
+      normalize text NOT NULL,
+      CONSTRAINT postal_rules_pkey PRIMARY KEY (country_iso),
+      CONSTRAINT postal_rules_country_fk FOREIGN KEY (country_iso) REFERENCES auth.countries (iso_code),
+      CONSTRAINT postal_rules_max_length CHECK (max_length BETWEEN 1 AND 32),
+      CONSTRAINT postal_rules_normalize CHECK (normalize IN ('none', 'us_zip', 'ca_postal'))
+    );
+
+    CREATE TABLE auth.time_zones (
+      country_iso char(2) NOT NULL,
+      iana_name text NOT NULL,
+      label text NOT NULL,
+      CONSTRAINT time_zones_pkey PRIMARY KEY (country_iso, iana_name),
+      CONSTRAINT time_zones_country_fk FOREIGN KEY (country_iso) REFERENCES auth.countries (iso_code)
+    );
+
+    INSERT INTO auth.countries (iso_code, name, active) VALUES
+      ('US', 'United States', true),
+      ('CA', 'Canada', true)
+    ON CONFLICT DO NOTHING;
+
+    INSERT INTO auth.postal_rules (country_iso, pattern, max_length, normalize) VALUES
+      ('US', '^\d{5}(-\d{4})?$', 10, 'us_zip'),
+      ('CA', '^[A-Z]\d[A-Z] \d[A-Z]\d$', 7, 'ca_postal')
+    ON CONFLICT DO NOTHING;
+
+-- FFP lookups seed (generated)
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','AL',$$Alabama$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','AK',$$Alaska$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','AZ',$$Arizona$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','AR',$$Arkansas$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','CA',$$California$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','CO',$$Colorado$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','CT',$$Connecticut$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','DE',$$Delaware$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','DC',$$District of Columbia$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','FL',$$Florida$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','GA',$$Georgia$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','HI',$$Hawaii$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','ID',$$Idaho$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','IL',$$Illinois$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','IN',$$Indiana$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','IA',$$Iowa$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','KS',$$Kansas$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','KY',$$Kentucky$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','LA',$$Louisiana$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','ME',$$Maine$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MD',$$Maryland$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MA',$$Massachusetts$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MI',$$Michigan$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MN',$$Minnesota$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MS',$$Mississippi$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MO',$$Missouri$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','MT',$$Montana$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NE',$$Nebraska$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NV',$$Nevada$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NH',$$New Hampshire$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NJ',$$New Jersey$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NM',$$New Mexico$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NY',$$New York$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','NC',$$North Carolina$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','ND',$$North Dakota$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','OH',$$Ohio$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','OK',$$Oklahoma$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','OR',$$Oregon$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','PA',$$Pennsylvania$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','RI',$$Rhode Island$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','SC',$$South Carolina$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','SD',$$South Dakota$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','TN',$$Tennessee$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','TX',$$Texas$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','UT',$$Utah$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','VT',$$Vermont$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','VA',$$Virginia$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','WA',$$Washington$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','WV',$$West Virginia$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','WI',$$Wisconsin$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('US','WY',$$Wyoming$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','AB',$$Alberta$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','BC',$$British Columbia$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','MB',$$Manitoba$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','NB',$$New Brunswick$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','NL',$$Newfoundland and Labrador$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','NS',$$Nova Scotia$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','NT',$$Northwest Territories$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','NU',$$Nunavut$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','ON',$$Ontario$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','PE',$$Prince Edward Island$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','QC',$$Quebec$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','SK',$$Saskatchewan$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.regions (country_iso, iso_3166_2, name) VALUES ('CA','YT',$$Yukon$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$America/Los_Angeles$$,$$Pacific$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$America/Denver$$,$$Mountain$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$America/Phoenix$$,$$Arizona$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$America/Chicago$$,$$Central$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$America/New_York$$,$$Eastern$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$America/Anchorage$$,$$Alaska$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('US',$$Pacific/Honolulu$$,$$Hawaii$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/Vancouver$$,$$Pacific$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/Edmonton$$,$$Mountain$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/Winnipeg$$,$$Central$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/Regina$$,$$Saskatchewan$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/Toronto$$,$$Eastern$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/Halifax$$,$$Atlantic$$) ON CONFLICT DO NOTHING;
+INSERT INTO auth.time_zones (country_iso, iana_name, label) VALUES ('CA',$$America/St_Johns$$,$$Newfoundland$$) ON CONFLICT DO NOTHING;
+
+    ALTER TABLE auth.countries ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.countries FORCE ROW LEVEL SECURITY;
+    ALTER TABLE auth.regions ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.regions FORCE ROW LEVEL SECURITY;
+    ALTER TABLE auth.postal_rules ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.postal_rules FORCE ROW LEVEL SECURITY;
+    ALTER TABLE auth.time_zones ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.time_zones FORCE ROW LEVEL SECURITY;
+
+    CREATE POLICY countries_read ON auth.countries FOR SELECT TO CURRENT_USER USING (true);
+    CREATE POLICY regions_read ON auth.regions FOR SELECT TO CURRENT_USER USING (true);
+    CREATE POLICY postal_rules_read ON auth.postal_rules FOR SELECT TO CURRENT_USER USING (true);
+    CREATE POLICY time_zones_read ON auth.time_zones FOR SELECT TO CURRENT_USER USING (true);
+
+    DO $gr$
+    DECLARE
+      a text := current_database() || '_admin_api';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE format('GRANT SELECT ON auth.countries, auth.regions, auth.postal_rules, auth.time_zones TO %I', a);
+        EXECUTE format('CREATE POLICY countries_admin ON auth.countries FOR SELECT TO %I USING (true)', a);
+        EXECUTE format('CREATE POLICY regions_admin ON auth.regions FOR SELECT TO %I USING (true)', a);
+        EXECUTE format('CREATE POLICY postal_rules_admin ON auth.postal_rules FOR SELECT TO %I USING (true)', a);
+        EXECUTE format('CREATE POLICY time_zones_admin ON auth.time_zones FOR SELECT TO %I USING (true)', a);
+      END IF;
+    END
+    $gr$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113190000_FfpSharedLookups') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113190000_FfpSharedLookups', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113191000_FfpPartner') THEN
+
+    CREATE TABLE auth.partner (
+      partner_id uuid NOT NULL,
+      name text NOT NULL,
+      address_line_1 text NOT NULL,
+      address_line_2 text NOT NULL DEFAULT '',
+      city text NOT NULL,
+      country char(2) NOT NULL,
+      region text NOT NULL,
+      postal_code text NOT NULL,
+      phone text NOT NULL,
+      email text NULL,
+      time_zone text NOT NULL,
+      CONSTRAINT partner_pkey PRIMARY KEY (partner_id),
+      CONSTRAINT partner_country_fk FOREIGN KEY (country) REFERENCES auth.countries (iso_code),
+      CONSTRAINT partner_region_fk FOREIGN KEY (country, region) REFERENCES auth.regions (country_iso, iso_3166_2),
+      CONSTRAINT partner_phone_e164 CHECK (phone ~ '^\+[1-9][0-9]{1,14}$'),
+      CONSTRAINT partner_name_len CHECK (char_length(name) BETWEEN 2 AND 100)
+    );
+    CREATE UNIQUE INDEX partner_name_ci_ux ON auth.partner (lower(name));
+
+    ALTER TABLE auth.partner ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.partner FORCE ROW LEVEL SECURITY;
+
+    CREATE POLICY partner_owner_select ON auth.partner FOR SELECT TO CURRENT_USER USING (true);
+    CREATE POLICY partner_owner_write ON auth.partner FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+
+    DO $gr$
+    DECLARE
+      a text := current_database() || '_admin_api';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE format('GRANT SELECT, INSERT, UPDATE ON auth.partner TO %I', a);
+        EXECUTE format(
+          'CREATE POLICY partner_admin_select ON auth.partner FOR SELECT TO %I USING (auth.actor_is_global())', a);
+        EXECUTE format(
+          'CREATE POLICY partner_admin_insert ON auth.partner FOR INSERT TO %I WITH CHECK (auth.actor_is_global())', a);
+        EXECUTE format(
+          'CREATE POLICY partner_admin_update ON auth.partner FOR UPDATE TO %I USING (auth.actor_is_global()) WITH CHECK (auth.actor_is_global())', a);
+      END IF;
+    END
+    $gr$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113191000_FfpPartner') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113191000_FfpPartner', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113192000_FfpClient') THEN
+
+    CREATE TABLE auth.client (
+      client_id uuid NOT NULL,
+      partner_id uuid NOT NULL,
+      name text NOT NULL,
+      address_line_1 text NOT NULL,
+      address_line_2 text NOT NULL DEFAULT '',
+      city text NOT NULL,
+      country char(2) NOT NULL,
+      region text NOT NULL,
+      postal_code text NOT NULL,
+      phone text NOT NULL,
+      email text NULL,
+      time_zone text NOT NULL,
+      CONSTRAINT client_pkey PRIMARY KEY (client_id),
+      CONSTRAINT client_partner_fk FOREIGN KEY (partner_id) REFERENCES auth.partner (partner_id),
+      CONSTRAINT client_country_fk FOREIGN KEY (country) REFERENCES auth.countries (iso_code),
+      CONSTRAINT client_region_fk FOREIGN KEY (country, region) REFERENCES auth.regions (country_iso, iso_3166_2),
+      CONSTRAINT client_phone_e164 CHECK (phone ~ '^\+[1-9][0-9]{1,14}$'),
+      CONSTRAINT client_name_len CHECK (char_length(name) BETWEEN 2 AND 100)
+    );
+    CREATE UNIQUE INDEX client_partner_name_ci_ux ON auth.client (partner_id, lower(name));
+
+    ALTER TABLE auth.client ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE auth.client FORCE ROW LEVEL SECURITY;
+    CREATE POLICY client_owner_all ON auth.client FOR ALL TO CURRENT_USER USING (true) WITH CHECK (true);
+
+    DO $gr$
+    DECLARE
+      a text := current_database() || '_admin_api';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE format('GRANT SELECT, INSERT, UPDATE ON auth.client TO %I', a);
+        EXECUTE format('CREATE POLICY client_admin_select ON auth.client FOR SELECT TO %I USING (auth.actor_is_global())', a);
+        EXECUTE format('CREATE POLICY client_admin_insert ON auth.client FOR INSERT TO %I WITH CHECK (auth.actor_is_global())', a);
+        EXECUTE format('CREATE POLICY client_admin_update ON auth.client FOR UPDATE TO %I USING (auth.actor_is_global()) WITH CHECK (auth.actor_is_global())', a);
+      END IF;
+    END
+    $gr$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113192000_FfpClient') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113192000_FfpClient', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113193000_FfpLocationClient') THEN
+
+    -- PQ-329 / DEC-241 option 1: nullable client_id; do not backfill or touch existing rows.
+    ALTER TABLE auth.location
+      ADD COLUMN IF NOT EXISTS client_id uuid NULL;
+
+    DO $fk$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'location_client_fk'
+      ) THEN
+        ALTER TABLE auth.location
+          ADD CONSTRAINT location_client_fk
+          FOREIGN KEY (client_id) REFERENCES auth.client (client_id);
+      END IF;
+    END
+    $fk$;
+
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_name_length;
+    ALTER TABLE auth.location
+      ADD CONSTRAINT location_name_length CHECK (char_length(name) BETWEEN 2 AND 100);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS location_client_name_ci_ux
+      ON auth.location (
+        client_id,
+        lower(regexp_replace(btrim(name), '\s+', ' ', 'g'))
+      )
+      WHERE client_id IS NOT NULL;
+
+    DO $gr$
+    DECLARE
+      a text := current_database() || '_admin_api';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE format(
+          'GRANT UPDATE (name, client_id, partner_id, address_line_1, address_line_2, city, country, region, postal_code, phone, email, time_zone) ON auth.location TO %I',
+          a);
+      END IF;
+    END
+    $gr$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113193000_FfpLocationClient') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113193000_FfpLocationClient', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113194000_FfpAddressChecks') THEN
+
+    -- F2 / SSE2: DB CHECKs matching OrgFormValidation address rules.
+    -- postal_code: length only (max 10). US ZIP / CA postal shape stay in the API
+    -- (per-country regex is not simple enough for a shared CHECK across US+CA).
+    -- time_zones already has PK (country_iso, iana_name); FK uses that composite key.
+
+    ALTER TABLE auth.partner
+      ADD CONSTRAINT partner_address_line_1_len CHECK (char_length(address_line_1) BETWEEN 1 AND 100),
+      ADD CONSTRAINT partner_address_line_2_len CHECK (char_length(address_line_2) BETWEEN 0 AND 40),
+      ADD CONSTRAINT partner_city_len CHECK (char_length(city) BETWEEN 2 AND 50),
+      ADD CONSTRAINT partner_postal_len CHECK (char_length(postal_code) BETWEEN 1 AND 10),
+      ADD CONSTRAINT partner_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email)));
+
+    ALTER TABLE auth.partner
+      ADD CONSTRAINT partner_time_zone_fk
+      FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name);
+
+    ALTER TABLE auth.client
+      ADD CONSTRAINT client_address_line_1_len CHECK (char_length(address_line_1) BETWEEN 1 AND 100),
+      ADD CONSTRAINT client_address_line_2_len CHECK (char_length(address_line_2) BETWEEN 0 AND 40),
+      ADD CONSTRAINT client_city_len CHECK (char_length(city) BETWEEN 2 AND 50),
+      ADD CONSTRAINT client_postal_len CHECK (char_length(postal_code) BETWEEN 1 AND 10),
+      ADD CONSTRAINT client_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email)));
+
+    ALTER TABLE auth.client
+      ADD CONSTRAINT client_time_zone_fk
+      FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name);
+
+    -- Legacy auth.location rows keep NULL addresses; CHECKs allow NULL.
+    ALTER TABLE auth.location
+      ADD CONSTRAINT location_address_line_1_len CHECK (address_line_1 IS NULL OR char_length(address_line_1) BETWEEN 1 AND 100),
+      ADD CONSTRAINT location_address_line_2_len CHECK (address_line_2 IS NULL OR char_length(address_line_2) BETWEEN 0 AND 40),
+      ADD CONSTRAINT location_city_len CHECK (city IS NULL OR char_length(city) BETWEEN 2 AND 50),
+      ADD CONSTRAINT location_postal_len CHECK (postal_code IS NULL OR char_length(postal_code) BETWEEN 1 AND 10),
+      ADD CONSTRAINT location_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email)));
+
+    DO $fk$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'location_time_zone_fk') THEN
+        ALTER TABLE auth.location
+          ADD CONSTRAINT location_time_zone_fk
+          FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name);
+      END IF;
+    END
+    $fk$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113194000_FfpAddressChecks') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113194000_FfpAddressChecks', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113195000_FfpClientPartnerRead') THEN
+
+    -- F9 / DEC-241: Partner Admin may SELECT clients of assigned partners (actor_can_partner).
+    -- Permissive policies OR with existing client_admin_select (actor_is_global) for Super Admin.
+    -- Does not grant INSERT/UPDATE to Partner Admin (create/edit stay Super Admin only).
+    DO $pol$
+    DECLARE
+      a text := current_database() || '_admin_api';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'client_admin_select_partner' AND polrelid = 'auth.client'::regclass) THEN
+          EXECUTE format(
+            'CREATE POLICY client_admin_select_partner ON auth.client FOR SELECT TO %I USING (auth.actor_can_partner(partner_id))',
+            a);
+        END IF;
+      END IF;
+    END
+    $pol$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113195000_FfpClientPartnerRead') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113195000_FfpClientPartnerRead', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113196000_FfpLocationPhoneE164') THEN
+
+    -- F5 info: match partner/client phone E.164 CHECK. NOT VALID for legacy rows
+    -- that may store NULL or non-E.164 values (never rewrite/delete them).
+    DO $ck$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'location_phone_e164') THEN
+        ALTER TABLE auth.location
+          ADD CONSTRAINT location_phone_e164
+          CHECK (phone IS NULL OR phone ~ '^\+[1-9][0-9]{1,14}$') NOT VALID;
+      END IF;
+    END
+    $ck$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113196000_FfpLocationPhoneE164') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113196000_FfpLocationPhoneE164', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113197000_FfpConvergeAddressNotValid') THEN
+
+    -- F10b: converge address/name CHECKs + time_zone FKs to NOT VALID.
+    -- Drop IF EXISTS and re-add with the same names/expressions as FfpAddressChecks
+    -- (and location_name_length from FfpLocationClient). Never rewrite/delete rows.
+
+    ALTER TABLE auth.partner DROP CONSTRAINT IF EXISTS partner_address_line_1_len;
+    ALTER TABLE auth.partner DROP CONSTRAINT IF EXISTS partner_address_line_2_len;
+    ALTER TABLE auth.partner DROP CONSTRAINT IF EXISTS partner_city_len;
+    ALTER TABLE auth.partner DROP CONSTRAINT IF EXISTS partner_postal_len;
+    ALTER TABLE auth.partner DROP CONSTRAINT IF EXISTS partner_email_len_lower;
+    ALTER TABLE auth.partner DROP CONSTRAINT IF EXISTS partner_time_zone_fk;
+
+    ALTER TABLE auth.partner
+      ADD CONSTRAINT partner_address_line_1_len CHECK (char_length(address_line_1) BETWEEN 1 AND 100) NOT VALID,
+      ADD CONSTRAINT partner_address_line_2_len CHECK (char_length(address_line_2) BETWEEN 0 AND 40) NOT VALID,
+      ADD CONSTRAINT partner_city_len CHECK (char_length(city) BETWEEN 2 AND 50) NOT VALID,
+      ADD CONSTRAINT partner_postal_len CHECK (char_length(postal_code) BETWEEN 1 AND 10) NOT VALID,
+      ADD CONSTRAINT partner_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email))) NOT VALID;
+
+    ALTER TABLE auth.partner
+      ADD CONSTRAINT partner_time_zone_fk
+      FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name) NOT VALID;
+
+    ALTER TABLE auth.client DROP CONSTRAINT IF EXISTS client_address_line_1_len;
+    ALTER TABLE auth.client DROP CONSTRAINT IF EXISTS client_address_line_2_len;
+    ALTER TABLE auth.client DROP CONSTRAINT IF EXISTS client_city_len;
+    ALTER TABLE auth.client DROP CONSTRAINT IF EXISTS client_postal_len;
+    ALTER TABLE auth.client DROP CONSTRAINT IF EXISTS client_email_len_lower;
+    ALTER TABLE auth.client DROP CONSTRAINT IF EXISTS client_time_zone_fk;
+
+    ALTER TABLE auth.client
+      ADD CONSTRAINT client_address_line_1_len CHECK (char_length(address_line_1) BETWEEN 1 AND 100) NOT VALID,
+      ADD CONSTRAINT client_address_line_2_len CHECK (char_length(address_line_2) BETWEEN 0 AND 40) NOT VALID,
+      ADD CONSTRAINT client_city_len CHECK (char_length(city) BETWEEN 2 AND 50) NOT VALID,
+      ADD CONSTRAINT client_postal_len CHECK (char_length(postal_code) BETWEEN 1 AND 10) NOT VALID,
+      ADD CONSTRAINT client_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email))) NOT VALID;
+
+    ALTER TABLE auth.client
+      ADD CONSTRAINT client_time_zone_fk
+      FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name) NOT VALID;
+
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_address_line_1_len;
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_address_line_2_len;
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_city_len;
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_postal_len;
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_email_len_lower;
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_time_zone_fk;
+    ALTER TABLE auth.location DROP CONSTRAINT IF EXISTS location_name_length;
+
+    ALTER TABLE auth.location
+      ADD CONSTRAINT location_address_line_1_len CHECK (address_line_1 IS NULL OR char_length(address_line_1) BETWEEN 1 AND 100) NOT VALID,
+      ADD CONSTRAINT location_address_line_2_len CHECK (address_line_2 IS NULL OR char_length(address_line_2) BETWEEN 0 AND 40) NOT VALID,
+      ADD CONSTRAINT location_city_len CHECK (city IS NULL OR char_length(city) BETWEEN 2 AND 50) NOT VALID,
+      ADD CONSTRAINT location_postal_len CHECK (postal_code IS NULL OR char_length(postal_code) BETWEEN 1 AND 10) NOT VALID,
+      ADD CONSTRAINT location_email_len_lower CHECK (email IS NULL OR (char_length(email) <= 100 AND email = lower(email))) NOT VALID;
+
+    ALTER TABLE auth.location
+      ADD CONSTRAINT location_time_zone_fk
+      FOREIGN KEY (country, time_zone) REFERENCES auth.time_zones (country_iso, iana_name) NOT VALID;
+
+    ALTER TABLE auth.location
+      ADD CONSTRAINT location_name_length CHECK (char_length(name) BETWEEN 2 AND 100) NOT VALID;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261113197000_FfpConvergeAddressNotValid') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261113197000_FfpConvergeAddressNotValid', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;

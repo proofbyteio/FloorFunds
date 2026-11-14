@@ -42,12 +42,25 @@ public static class AdminApiHost
         app.MapPut("/api/orgs/locations/{location_id}/login-config", (HttpContext ctx, string location_id) => api.PutAsync(ctx, location_id));
         app.MapGet("/api/orgs/locations/{location_id}/login-config/changes", (HttpContext ctx, string location_id) => api.ChangesAsync(ctx, location_id));
         app.MapPost("/api/orgs/locations", (Func<HttpContext, Task<IResult>>)(ctx => api.PostAsync(ctx)));
+        app.MapGet("/api/orgs/locations/{location_id}", (HttpContext ctx, string location_id) => api.GetOrgLocationAsync(ctx, location_id));
+        app.MapPut("/api/orgs/locations/{location_id}", (HttpContext ctx, string location_id) => api.PutOrgLocationAsync(ctx, location_id));
         app.MapGet("/api/orgs/login-config/limits", (Func<HttpContext, Task<IResult>>)(ctx => api.LimitsAsync(ctx))); // DEC-107 (TLD 16:32 Q2); ?partner_id= Slice A
         // Slice A (TLD 06:59 route, LD 12b1d9cd): per-partner reason-length bounds.
         app.MapGet("/api/orgs/partners/{partner_id}/login-config/reason-bounds", (HttpContext ctx, string partner_id) => api.GetReasonBoundsAsync(ctx, partner_id));
         app.MapPut("/api/orgs/partners/{partner_id}/login-config/reason-bounds", (HttpContext ctx, string partner_id) => api.PutReasonBoundsAsync(ctx, partner_id));
         app.MapGet("/api/orgs/locations", (Func<HttpContext, Task<IResult>>)(ctx => api.LocationsAsync(ctx)));
         app.MapGet("/api/screens/location-partners", (Func<HttpContext, Task<IResult>>)(ctx => api.PartnersAsync(ctx)));
+        app.MapGet("/api/lookups/countries", (Func<HttpContext, Task<IResult>>)(ctx => api.LookupCountriesAsync(ctx)));
+        app.MapGet("/api/lookups/regions", (Func<HttpContext, Task<IResult>>)(ctx => api.LookupRegionsAsync(ctx)));
+        app.MapGet("/api/lookups/time-zones", (Func<HttpContext, Task<IResult>>)(ctx => api.LookupTimeZonesAsync(ctx)));
+        app.MapGet("/api/lookups/postal-rule", (Func<HttpContext, Task<IResult>>)(ctx => api.LookupPostalRuleAsync(ctx)));
+        app.MapGet("/api/orgs/partners", (Func<HttpContext, Task<IResult>>)(ctx => api.ListOrgPartnersAsync(ctx)));
+        app.MapPost("/api/orgs/partners", (Func<HttpContext, Task<IResult>>)(ctx => api.PostOrgPartnerAsync(ctx)));
+        app.MapGet("/api/orgs/partners/{partner_id}", (HttpContext ctx, string partner_id) => api.GetOrgPartnerAsync(ctx, partner_id));
+        app.MapPut("/api/orgs/partners/{partner_id}", (HttpContext ctx, string partner_id) => api.PutOrgPartnerAsync(ctx, partner_id));
+        app.MapGet("/api/orgs/clients", (Func<HttpContext, Task<IResult>>)(ctx => api.ListOrgClientsAsync(ctx)));
+        app.MapGet("/api/orgs/clients/{client_id}", (HttpContext ctx, string client_id) => api.GetOrgClientAsync(ctx, client_id));
+        app.MapPut("/api/orgs/clients/{client_id}", (HttpContext ctx, string client_id) => api.PutOrgClientAsync(ctx, client_id));
         app.MapGet("/api/nav", (Func<HttpContext, Task<IResult>>)(ctx => api.NavAsync(ctx)));
         app.MapGet("/api/screens/catalog", (Func<HttpContext, Task<IResult>>)(ctx => api.CatalogScreenAsync(ctx)));
         app.MapGet("/api/screens/create-client", (Func<HttpContext, Task<IResult>>)(ctx => api.CreateClientAsync(ctx)));
