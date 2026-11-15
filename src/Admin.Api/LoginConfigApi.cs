@@ -943,13 +943,18 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
 
     public Task<IResult> ListOrgPartnersAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsSuper) throw Err(403, "forbidden");
+        // DEC-273: SA sees all; PA sees assigned partners only (Client form Partner dropdown / Location filter).
+        if (!who.IsAdmin) throw Err(403, "forbidden");
         await using var cmd = new NpgsqlCommand(
             "SELECT partner_id, name FROM auth.partner ORDER BY lower(name)", c, tx);
         var rows = new JsonArray();
         await using var r = await cmd.ExecuteReaderAsync();
         while (await r.ReadAsync())
-            rows.Add(new JsonObject { ["partner_id"] = r.GetGuid(0).ToString("D"), ["name"] = r.GetString(1) });
+        {
+            var id = r.GetGuid(0);
+            if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(id)) continue;
+            rows.Add(new JsonObject { ["partner_id"] = id.ToString("D"), ["name"] = r.GetString(1) });
+        }
         return Json(200, new JsonObject { ["partners"] = rows });
     });
 
@@ -1155,7 +1160,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         }
         else if (who.IsPartnerAdmin)
         {
-            // Same as main 5f7cec33: create_location + config (Locations CTA / LLC; not SA Admin labels).
+            // DEC-273: PA may create/edit Clients under assigned partners (readonly Partner UI).
+            screens.Add("create_client");
             screens.Add("create_location");
             screens.Add("config");
         }
@@ -1183,23 +1189,25 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         return Json(200, new JsonObject { ["screen"] = "catalog", ["write"] = "held" });
     });
 
-    /// <summary>Create Client screen probe (FFP STEP 3): Super Admin may open the form; write is implemented.</summary>
+    /// <summary>Create Client screen probe: Super Admin or Partner Admin (own partner scope).</summary>
     public Task<IResult> CreateClientAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         if (c.State != System.Data.ConnectionState.Open || tx.Connection is null) throw Err(403, "forbidden");
-        if (!who.IsSuper) throw Err(403, "forbidden");
+        if (!who.IsAdmin) throw Err(403, "forbidden");
         return Json(200, new JsonObject { ["screen"] = "create_client", ["write"] = "open" });
     });
 
-    /// <summary>POST create client (FFP STEP 3). Lifts the prior client_create_pending_pq278 hold. Super Admin only.</summary>
+    /// <summary>POST create client. SA any partner; PA only assigned partners (DEC-273 role rules).</summary>
     public Task<IResult> CreateClientWriteAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsSuper) throw Err(403, "forbidden");
+        if (!who.IsAdmin) throw Err(403, "forbidden");
         var read = await ReadBodyAsync(ctx);
         if (read.TimedOut) throw BodyTimeout(ctx, who);
         if (read.TooLarge) throw Err(413, "payload_too_large");
         if (ParseObject(read.Bytes) is not { } o) throw Err(400, "malformed_body");
         var (partnerId, name, address) = await ParseClientBodyAsync(c, tx, o, excludeClientId: null);
+        if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId))
+            throw Err(404, "not_found");
         var id = Guid.NewGuid();
         await InsertClientAsync(c, tx, id, partnerId, name, address);
         await tx.CommitAsync();
@@ -1248,14 +1256,22 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
 
     public Task<IResult> PutOrgClientAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsSuper) throw Err(403, "forbidden");
+        // DEC-273: SA any; PA only clients under assigned partners. Partner change on edit is not offered in UI.
+        if (!who.IsAdmin) throw Err(403, "forbidden");
         if (ParseId(id) is not { } clientId || clientId == Guid.Empty) throw Err(404, "not_found");
-        if (await LoadClientAsync(c, tx, clientId) is null) throw Err(404, "not_found");
+        var existing = await LoadClientAsync(c, tx, clientId) ?? throw Err(404, "not_found");
+        if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(existing.PartnerId))
+            throw Err(404, "not_found");
         var read = await ReadBodyAsync(ctx);
         if (read.TimedOut) throw BodyTimeout(ctx, who);
         if (read.TooLarge) throw Err(413, "payload_too_large");
         if (ParseObject(read.Bytes) is not { } o) throw Err(400, "malformed_body");
         var (partnerId, name, address) = await ParseClientBodyAsync(c, tx, o, excludeClientId: clientId);
+        if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId))
+            throw Err(404, "not_found");
+        // Keep partner stable on edit unless SA explicitly sends a different existing partner (UI keeps readonly).
+        if (who.IsPartnerAdmin && partnerId != existing.PartnerId)
+            throw Err(404, "not_found");
         await UpdateClientAsync(c, tx, clientId, partnerId, name, address);
         await tx.CommitAsync();
         return Json(200, ClientView((clientId, partnerId, name, address)));
