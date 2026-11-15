@@ -845,6 +845,7 @@ async function draw() {
   if (me.status === 401) return;
   const productName = productNameFromConfig(me.body);
   applyProductName(document.querySelector(".admin-lockup__name"), productName);
+  applyProductName(document.querySelector(".mobile-lockup__name"), productName);
   if (productName) document.title = productName;
   const signedIn = document.querySelector("#signed-in");
   if (signedIn) {

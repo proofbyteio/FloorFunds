@@ -1,9 +1,87 @@
-.shell { display: grid; grid-template-columns: var(--sidebar-width) 1fr; min-height: 100vh; }
-.shell__nav { background: var(--color-surface); border-right: 1px solid var(--color-border); padding: var(--space-4); }
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  min-height: 100vh;
+}
+.shell__nav {
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  padding: var(--space-4);
+}
 .shell__brand { font-weight: var(--font-weight-semibold); margin-bottom: var(--space-4); }
-.shell__nav a { display: block; padding: var(--space-2) var(--space-3); margin-bottom: var(--space-1); border-radius: var(--radius-sm); text-decoration: none; color: var(--color-text); }
-.shell__nav a[aria-current="page"] { background: var(--nav-active-bg); box-shadow: inset 3px 0 0 var(--nav-active-edge); }
-.shell__main { padding: var(--space-6); }
+.shell__nav a {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-1);
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  color: var(--color-text);
+}
+.shell__nav a[aria-current="page"] {
+  background: var(--nav-active-bg);
+  box-shadow: inset 3px 0 0 var(--nav-active-edge);
+}
+.shell__content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 100vh;
+}
+.shell__top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 60px;
+  min-height: 60px;
+  padding: 0 24px;
+  box-sizing: border-box;
+  background: var(--header-bg, var(--color-surface));
+  border-bottom: 1px solid var(--hairline, var(--color-border));
+}
+.shell__signed-in {
+  margin: 0;
+  margin-left: auto;
+  font-size: var(--font-size-sm, 0.875rem);
+  color: var(--text-muted, var(--color-text-muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.shell__signout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-control, var(--primary, #d1b26f));
+  background: transparent;
+  color: var(--foreground, var(--color-text));
+  font-size: var(--font-size-sm, 0.875rem);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  flex: none;
+}
+.mobile-lockup {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: var(--foreground, var(--color-text));
+  flex: none;
+}
+.mobile-lockup__mark {
+  width: 28px;
+  height: 28px;
+  display: block;
+}
+.mobile-lockup__name {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.shell__main { padding: var(--space-6); flex: 1; min-width: 0; }
 .shell__table { width: 100%; border-collapse: collapse; background: var(--color-surface); }
 .shell__table th, .shell__table td { text-align: left; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-border); }
 .shell__actions { display: flex; gap: var(--space-3); margin-top: var(--space-4); }
@@ -12,9 +90,46 @@ select.field__input {
   color: var(--foreground);
   border-radius: var(--radius-control);
 }
-@media (max-width: 720px) {
-  .shell { grid-template-columns: 1fr; }
-  .shell__nav { border-right: 0; border-bottom: 1px solid var(--color-border); }
+/* C8: single column below 64rem. Nav visibility for mobile is finalized in C9 (B3). */
+@media (max-width: 63.99rem) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+  .shell__nav {
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .mobile-lockup { display: inline-flex; }
+  .shell__crumbs { display: none; }
+  .partner-form .field--partner { max-width: 28rem; }
+  .partner-form .field--country { max-width: 16rem; }
+  .partner-form .field--line1 { max-width: 28rem; }
+  .partner-form .field--line2 { max-width: 18rem; }
+  .partner-form .field--city { max-width: 16rem; }
+  .partner-form .field--state { max-width: 16rem; }
+  .partner-form .field--zip { max-width: 9.5rem; }
+  .partner-form .field--phone { max-width: 18rem; }
+  .partner-form .field--email { max-width: 22rem; }
+  .partner-form .field--tz { max-width: 24rem; }
+  .partner-form .grid {
+    grid-template-columns: 1fr;
+  }
+  .partner-form .span-8,
+  .partner-form .span-7,
+  .partner-form .span-6,
+  .partner-form .span-5,
+  .partner-form .span-4,
+  .partner-form .span-3,
+  .partner-form .span-2,
+  .partner-form .field--line2,
+  .partner-form .field--city {
+    grid-column: 1 / -1;
+  }
+  .partner-form .hint-zip,
+  .partner-form .error-zip {
+    text-align: left;
+    white-space: normal;
+  }
 }
 
 /* —— C7: Partner compact form (scoped; Client/Location unchanged) —— */
