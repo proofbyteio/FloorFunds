@@ -414,7 +414,7 @@ export function renderClientErrors(form, fields) {
   }
   summary.append(ul);
   form.prepend(summary);
-  for (const hint of form.querySelectorAll(".hint, .hint-zip")) {
+  for (const hint of qsa(form, ".hint, .hint-zip")) {
     hint.hidden = true;
   }
 }
