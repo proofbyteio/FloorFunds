@@ -1,7 +1,7 @@
 From 0ffd842ff97d55b5f2471f7b061d4f21ed1fbc76 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sun, 15 Nov 2026 17:21:49 +0000
-Subject: [PATCH 01/12] BUG-001: admin-shell banner and disabled-CTA contrast
+Subject: [PATCH 01/13] BUG-001: admin-shell banner and disabled-CTA contrast
  (tree-equal to 1b963b5e's theme.css change)
 
 Co-authored-by: proofbyteio <proofbyteio@users.noreply.github.com>

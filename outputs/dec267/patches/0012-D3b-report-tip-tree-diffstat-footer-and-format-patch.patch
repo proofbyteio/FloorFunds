@@ -1,7 +1,7 @@
 From fe9995dcec52918fe414e1fb4427c14120d070b8 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sun, 15 Nov 2026 18:10:56 +0000
-Subject: [PATCH 12/12] D3b: report tip/tree/diffstat footer and format-patch
+Subject: [PATCH 12/13] D3b: report tip/tree/diffstat footer and format-patch
  through D3
 
 Co-authored-by: proofbyteio <proofbyteio@users.noreply.github.com>

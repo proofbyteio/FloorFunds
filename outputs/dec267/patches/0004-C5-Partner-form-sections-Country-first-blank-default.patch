@@ -1,7 +1,7 @@
 From 033ceb10ed843ea97a3350523d2d2d576576599e Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sun, 15 Nov 2026 17:24:08 +0000
-Subject: [PATCH 04/12] C5: Partner form sections, Country-first blank default,
+Subject: [PATCH 04/13] C5: Partner form sections, Country-first blank default,
  mockup labels/hints, +1 phone, Cancel
 
 Co-authored-by: proofbyteio <proofbyteio@users.noreply.github.com>

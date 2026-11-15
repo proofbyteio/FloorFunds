@@ -2,8 +2,8 @@
 
 **Branch:** `dec267-partner-admin` (local only; not pushed)  
 **Base:** `682ab67183adfde9b52c3b300674a075efd454d5` (tree `6d28db4ee366573fe83fad5437f90c7557f41a1e` = `origin/main`)  
-**Tip:** `fe9995dcec52918fe414e1fb4427c14120d070b8`  
-**Tip tree:** `fb4094e7bae67e51c62107cc403875b5775294bd`  
+**Tip:** `f0ce4c25a70dd9c5f6610fe2b950024f512bd9ba`  
+**Tip tree:** `2fdfa85da113242770122f78d1f36ad673a0a513`  
 
 Owner (relayed): DEC-267 9:03 AM PT — complete Partner Admin screen; DEC-268 9:04 AM PT — integrate UX mockup.  
 Steer: PM 9:25 AM PT confirmed C9 interims as **PM DEC-241 defaults, not owner decisions**.  
@@ -48,7 +48,7 @@ C4 skipped (not built). C9 is separately revertible and holds B1/B2/B3/B4/B6 as 
 ## `git diff --stat 682ab671..tip`
 
 ```
-outputs/dec267/DEC267-PARTNER-ADMIN-REPORT.md      |   216 +
+outputs/dec267/DEC267-PARTNER-ADMIN-REPORT.md      |   218 +
  outputs/dec267/DEC267-PARTNER-ADMIN-REPORT.sha256  |     1 +
  ...in-shell-banner-and-disabled-CTA-contrast.patch |   109 +
  ...plyCountry-on-Partner-Location-edit-clear.patch |   134 +
@@ -60,7 +60,8 @@ outputs/dec267/DEC267-PARTNER-ADMIN-REPORT.md      |   216 +
  ...0008-DEC-268-interims-pending-PM-B1-B3-B4.patch |   103 +
  ...tray-outputs-dec267-questions.md-from-the.patch |    32 +
  ...ckup-error-rhythm-ZIP-error-row-summary-i.patch |   246 +
- ...ore-after-shots-compare.html-report-and-p.patch | 27482 +++++++++++++++++++
+ ...ore-after-shots-compare.html-report-and-p.patch | 27482 ++++++++++++++++++
+ ...tip-tree-diffstat-footer-and-format-patch.patch | 27746 +++++++++++++++++++
  outputs/dec267/shots/after/LIVE.txt                |     3 +
  outputs/dec267/shots/after/SHA256SUMS.txt          |     7 +
  .../shots/after/partner-admin-ca-1440x900.png      |   Bin 0 -> 92611 bytes
@@ -91,7 +92,7 @@ outputs/dec267/DEC267-PARTNER-ADMIN-REPORT.md      |   216 +
  ui/admin-shell/shell.css                           |   436 +-
  ui/admin-shell/shell.js                            |   104 +-
  ui/admin-shell/theme.css                           |    34 +-
- 43 files changed, 30305 insertions(+), 62 deletions(-)
+ 44 files changed, 58053 insertions(+), 62 deletions(-)
 ```
 
 Patches regenerated: `outputs/dec267/patches/` via `git format-patch 682ab671..<tip>`.
@@ -213,6 +214,6 @@ Also: **PQ-NEW-10** not built (no admin user account). Libphonenumber validation
 
 ## Footer (filled after D3 commit)
 
-- **Tip:** `fe9995dcec52918fe414e1fb4427c14120d070b8`
-- **Tip tree:** `fb4094e7bae67e51c62107cc403875b5775294bd`
+- **Tip:** `f0ce4c25a70dd9c5f6610fe2b950024f512bd9ba`
+- **Tip tree:** `2fdfa85da113242770122f78d1f36ad673a0a513`
 - **Report sha256:** recorded in `DEC267-PARTNER-ADMIN-REPORT.sha256`
