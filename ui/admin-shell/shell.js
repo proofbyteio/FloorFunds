@@ -936,20 +936,7 @@ export async function showClients(editId) {
       address.email.value = a.email ?? "";
       if (a.country === "US" || a.country === "CA") address.phone_country.value = a.country;
     }
-    // Re-render Partner as read-only on edit (DEC-273 gap blocker).
-    const partnerField = form.querySelector("#field-partner");
-    if (partnerField && !form.querySelector("#partner-readonly")) {
-      partner.hidden = true;
-      const labelText = partnerRows.find((p) => p.partner_id === partner.value)?.name || partner.value;
-      const ro = document.createElement("div");
-      ro.className = "readonly-select";
-      ro.id = "partner-readonly";
-      ro.setAttribute("role", "combobox");
-      ro.setAttribute("aria-readonly", "true");
-      ro.setAttribute("aria-disabled", "true");
-      ro.textContent = labelText;
-      partnerField.append(ro);
-    }
+    // Partner stays editable on edit until DEC-241 default commit (NOTES TO CONFIRM).
   }
 
   form.addEventListener("submit", async (ev) => {
