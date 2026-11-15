@@ -943,7 +943,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
 
     public Task<IResult> ListOrgPartnersAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        // DEC-273: SA sees all; PA sees assigned partners only (Client form Partner dropdown / Location filter).
+        // DEC-273: SA sees all; PA sees assigned partners only (Client/Location Partner dropdown).
+        // Defense in depth with AssignedPartners; RLS partner_admin_select_assigned scopes via actor_can_partner.
         if (!who.IsAdmin) throw Err(403, "forbidden");
         await using var cmd = new NpgsqlCommand(
             "SELECT partner_id, name FROM auth.partner ORDER BY lower(name)", c, tx);
@@ -960,8 +961,12 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
 
     public Task<IResult> GetOrgPartnerAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsSuper) throw Err(403, "forbidden");
+        // DEC-273: SA any; PA only assigned partners (same 404 shape as GetOrgClient). RLS also
+        // scopes SELECT via partner_admin_select_assigned / actor_can_partner.
+        if (!who.IsAdmin) throw Err(403, "forbidden");
         if (ParseId(id) is not { } partnerId || partnerId == Guid.Empty) throw Err(404, "not_found");
+        if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId))
+            throw Err(404, "not_found");
         var row = await LoadPartnerAsync(c, tx, partnerId) ?? throw Err(404, "not_found");
         return Json(200, PartnerView(row));
     });
