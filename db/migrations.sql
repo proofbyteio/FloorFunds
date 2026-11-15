@@ -5448,3 +5448,237 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261115220000_FfpClientAdminLocation') THEN
+
+    -- DEC-275: Client Admin scoped to assigned client(s).
+    -- Smallest assignment-model extension: nullable client_id + scope_kind='client'
+    -- (admin_assignment had role_id client_admin but no client scope column).
+    -- Location already has client_id FK (PQ-329) — do not STOP.
+
+    ALTER TABLE auth.admin_assignment
+      ADD COLUMN IF NOT EXISTS client_id uuid NULL;
+
+    DO $fk$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'admin_assignment_client_fk'
+      ) THEN
+        ALTER TABLE auth.admin_assignment
+          ADD CONSTRAINT admin_assignment_client_fk
+          FOREIGN KEY (client_id) REFERENCES auth.client (client_id);
+      END IF;
+    END
+    $fk$;
+
+    ALTER TABLE auth.admin_assignment DROP CONSTRAINT IF EXISTS admin_assignment_scope_kind;
+    ALTER TABLE auth.admin_assignment
+      ADD CONSTRAINT admin_assignment_scope_kind
+      CHECK (scope_kind IN ('global', 'partner', 'location', 'client'));
+
+    ALTER TABLE auth.admin_assignment DROP CONSTRAINT IF EXISTS admin_assignment_scope_shape;
+    ALTER TABLE auth.admin_assignment
+      ADD CONSTRAINT admin_assignment_scope_shape CHECK (
+        (scope_kind = 'global' AND partner_id IS NULL AND location_id IS NULL AND client_id IS NULL)
+        OR (scope_kind = 'partner' AND partner_id IS NOT NULL AND location_id IS NULL AND client_id IS NULL)
+        OR (scope_kind = 'location' AND location_id IS NOT NULL AND partner_id IS NULL AND client_id IS NULL)
+        OR (scope_kind = 'client' AND client_id IS NOT NULL AND partner_id IS NULL AND location_id IS NULL)
+      );
+
+    ALTER TABLE auth.admin_assignment DROP CONSTRAINT IF EXISTS admin_assignment_super;
+    ALTER TABLE auth.admin_assignment
+      ADD CONSTRAINT admin_assignment_super CHECK (
+        role_id <> 'super_admin'
+        OR (scope_kind = 'global' AND partner_id IS NULL AND location_id IS NULL AND client_id IS NULL));
+
+    ALTER TABLE auth.admin_assignment DROP CONSTRAINT IF EXISTS admin_assignment_partner_admin;
+    ALTER TABLE auth.admin_assignment
+      ADD CONSTRAINT admin_assignment_partner_admin CHECK (
+        role_id <> 'partner_admin'
+        OR (scope_kind = 'partner' AND partner_id IS NOT NULL AND location_id IS NULL AND client_id IS NULL));
+
+    ALTER TABLE auth.admin_assignment DROP CONSTRAINT IF EXISTS admin_assignment_client_admin;
+    ALTER TABLE auth.admin_assignment
+      ADD CONSTRAINT admin_assignment_client_admin CHECK (
+        role_id <> 'client_admin'
+        OR (scope_kind = 'client' AND client_id IS NOT NULL AND partner_id IS NULL AND location_id IS NULL));
+
+    CREATE OR REPLACE FUNCTION auth.actor_can_client(p_client uuid) RETURNS boolean
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT auth.actor_is_global() OR EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = auth._request_user()
+           AND a.role_id = 'client_admin' AND a.scope_kind = 'client'
+           AND a.client_id = p_client
+           AND a.status = 'active' AND a.revoked_at IS NULL)
+    $fn$;
+
+    REVOKE ALL ON FUNCTION auth.actor_can_client(uuid) FROM PUBLIC;
+    ALTER FUNCTION auth.actor_can_client(uuid) PARALLEL RESTRICTED;
+
+    -- resolve_grant: add client_ids; prefer client_admin when no SA/PA.
+    DROP FUNCTION IF EXISTS auth.resolve_grant(text, uuid);
+    CREATE FUNCTION auth.resolve_grant(p_issuer text, p_subject uuid)
+      RETURNS TABLE (
+        outcome text,
+        user_id uuid,
+        role_wire text,
+        global_admin boolean,
+        partner_ids uuid[],
+        location_ids uuid[],
+        perm_version bigint,
+        client_ids uuid[])
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_user uuid;
+      v_global boolean;
+      v_partners uuid[];
+      v_locations uuid[];
+      v_clients uuid[];
+      v_version bigint;
+      v_role text;
+    BEGIN
+      PERFORM p_issuer, p_subject;
+      PERFORM nextval('auth.resolver_read_seq');
+      v_user := auth._request_user();
+      IF v_user IS NULL THEN
+        outcome := 'deny'; user_id := NULL; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[];
+        client_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+      SELECT coalesce(bool_or(a.role_id = 'super_admin' AND a.scope_kind = 'global'), false),
+             coalesce(array_agg(DISTINCT a.partner_id) FILTER (
+               WHERE a.scope_kind = 'partner' AND a.role_id = 'partner_admin' AND a.partner_id IS NOT NULL
+             ), ARRAY[]::uuid[]),
+             coalesce(array_agg(DISTINCT a.location_id) FILTER (
+               WHERE a.scope_kind = 'location' AND a.location_id IS NOT NULL
+             ), ARRAY[]::uuid[]),
+             coalesce(array_agg(DISTINCT a.client_id) FILTER (
+               WHERE a.scope_kind = 'client' AND a.role_id = 'client_admin' AND a.client_id IS NOT NULL
+             ), ARRAY[]::uuid[]),
+             coalesce(max(a.version), 0)
+        INTO v_global, v_partners, v_locations, v_clients, v_version
+        FROM auth.admin_assignment a
+       WHERE a.user_id = v_user
+         AND a.status = 'active'
+         AND a.revoked_at IS NULL;
+      IF v_version = 0 AND NOT v_global
+         AND v_partners = ARRAY[]::uuid[] AND v_locations = ARRAY[]::uuid[]
+         AND v_clients = ARRAY[]::uuid[] THEN
+        outcome := 'deny'; user_id := v_user; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[];
+        client_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+      IF v_global THEN
+        v_role := 'super_admin';
+      ELSIF EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+           AND a.role_id = 'partner_admin' AND a.scope_kind = 'partner' AND a.partner_id IS NOT NULL
+      ) THEN
+        v_role := 'partner_admin';
+      ELSIF EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+           AND a.role_id = 'client_admin' AND a.scope_kind = 'client' AND a.client_id IS NOT NULL
+      ) THEN
+        v_role := 'client_admin';
+      ELSE
+        SELECT a.role_id INTO v_role
+          FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+         ORDER BY a.role_id
+         LIMIT 1;
+        v_role := coalesce(v_role, 'none');
+      END IF;
+      outcome := 'grant';
+      user_id := v_user;
+      role_wire := v_role;
+      global_admin := v_global;
+      partner_ids := v_partners;
+      location_ids := v_locations;
+      client_ids := v_clients;
+      perm_version := v_version;
+      RETURN NEXT;
+    END
+    $fn$;
+
+    REVOKE ALL ON FUNCTION auth.resolve_grant(text, uuid) FROM PUBLIC;
+
+    DO $gr$
+    DECLARE
+      a text := current_database() || '_admin_api';
+      r text := current_database() || '_auth_definer';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.actor_can_client(uuid) TO %I', a);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid) TO %I', a);
+
+        -- Location SELECT/INSERT/UPDATE for Client Admin under assigned client only.
+        IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'location_admin_select_client' AND polrelid = 'auth.location'::regclass) THEN
+          EXECUTE format(
+            'CREATE POLICY location_admin_select_client ON auth.location FOR SELECT TO %I USING (client_id IS NOT NULL AND auth.actor_can_client(client_id))',
+            a);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'location_admin_insert_client' AND polrelid = 'auth.location'::regclass) THEN
+          EXECUTE format(
+            'CREATE POLICY location_admin_insert_client ON auth.location FOR INSERT TO %I WITH CHECK (client_id IS NOT NULL AND auth.actor_can_client(client_id))',
+            a);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'location_admin_update_client' AND polrelid = 'auth.location'::regclass) THEN
+          EXECUTE format(
+            'CREATE POLICY location_admin_update_client ON auth.location FOR UPDATE TO %I USING (client_id IS NOT NULL AND auth.actor_can_client(client_id)) WITH CHECK (client_id IS NOT NULL AND auth.actor_can_client(client_id))',
+            a);
+        END IF;
+
+        -- Own-client SELECT for locked Client field (no INSERT/UPDATE for CA).
+        IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'client_admin_select_own' AND polrelid = 'auth.client'::regclass) THEN
+          EXECUTE format(
+            'CREATE POLICY client_admin_select_own ON auth.client FOR SELECT TO %I USING (auth.actor_can_client(client_id))',
+            a);
+        END IF;
+
+        -- Partner of own client (locked Partner field only).
+        IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'partner_admin_select_client' AND polrelid = 'auth.partner'::regclass) THEN
+          EXECUTE format(
+            $p$CREATE POLICY partner_admin_select_client ON auth.partner FOR SELECT TO %I USING (
+              EXISTS (
+                SELECT 1 FROM auth.client c
+                 WHERE c.partner_id = partner.partner_id
+                   AND auth.actor_can_client(c.client_id)
+              )
+            )$p$, a);
+        END IF;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid) TO %I', r);
+      END IF;
+    END
+    $gr$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261115220000_FfpClientAdminLocation') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261115220000_FfpClientAdminLocation', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
