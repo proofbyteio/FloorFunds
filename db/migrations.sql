@@ -5682,3 +5682,58 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261115230000_FfpClientAdminLocationPartnerMatch') THEN
+
+    -- F10 / DEC-275 M1: Client Admin location INSERT/UPDATE WITH CHECK must also
+    -- require location.partner_id = the partner_id of that location's client (auth.client).
+    -- UPDATE USING keeps the existing client scope. Does not change SA/PA/LA policies.
+    DO $pol$
+    DECLARE
+      a text := current_database() || '_admin_api';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE 'DROP POLICY IF EXISTS location_admin_insert_client ON auth.location';
+        EXECUTE format(
+          $p$CREATE POLICY location_admin_insert_client ON auth.location FOR INSERT TO %I WITH CHECK (
+            client_id IS NOT NULL
+            AND auth.actor_can_client(client_id)
+            AND EXISTS (
+              SELECT 1 FROM auth.client c
+               WHERE c.client_id = client_id
+                 AND c.partner_id = partner_id
+            )
+          )$p$, a);
+
+        EXECUTE 'DROP POLICY IF EXISTS location_admin_update_client ON auth.location';
+        EXECUTE format(
+          $p$CREATE POLICY location_admin_update_client ON auth.location FOR UPDATE TO %I
+            USING (client_id IS NOT NULL AND auth.actor_can_client(client_id))
+            WITH CHECK (
+              client_id IS NOT NULL
+              AND auth.actor_can_client(client_id)
+              AND EXISTS (
+                SELECT 1 FROM auth.client c
+                 WHERE c.client_id = client_id
+                   AND c.partner_id = partner_id
+              )
+            )$p$, a);
+      END IF;
+    END
+    $pol$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261115230000_FfpClientAdminLocationPartnerMatch') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261115230000_FfpClientAdminLocationPartnerMatch', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
