@@ -296,7 +296,15 @@ export function renderPartnerErrors(form, fields) {
 
   form.classList.add("partner-form--errors");
   const summary = el("div", { className: "error-summary", role: "alert", id: "error-summary" });
-  const heading = el("h2", {}, "There is a problem");
+  // D2(c): mock HTML L682–L688 — "!" icon before "There is a problem"
+  const heading = el("h2");
+  heading.innerHTML =
+    '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">' +
+    '<circle cx="9" cy="9" r="8" stroke="#e44236" stroke-width="1.5"/>' +
+    '<path d="M9 5v5.5" stroke="#e44236" stroke-width="1.5" stroke-linecap="round"/>' +
+    '<circle cx="9" cy="13" r="0.9" fill="#e44236"/>' +
+    "</svg>";
+  heading.append(document.createTextNode("There is a problem"));
   summary.append(heading);
   const ul = el("ul");
   const seen = new Set();
@@ -326,11 +334,15 @@ export function renderPartnerErrors(form, fields) {
         id: errId,
       }, sentence);
       if (id === "zip") {
+        // D2(b): append as grid sibling (with hint-zip), not inside the 2-col ZIP field.
         const grid = control.closest(".grid");
-        if (grid) grid.append(err);
-        else fieldEl?.append(err);
-      } else if (id === "phone") {
-        fieldEl?.append(err);
+        const hint = form.querySelector("#zip-hint");
+        if (grid) {
+          if (hint && hint.parentNode === grid) grid.insertBefore(err, hint.nextSibling);
+          else grid.append(err);
+        } else {
+          fieldEl?.append(err);
+        }
       } else {
         fieldEl?.append(err);
       }
