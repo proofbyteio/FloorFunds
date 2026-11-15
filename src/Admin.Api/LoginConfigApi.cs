@@ -1201,8 +1201,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         }
         else if (who.IsClientAdmin)
         {
-            // DEC-275: location create/edit under own client. Client/Partner screens omitted
-            // in the following DEC-241 default commit (create_location only).
+            // PM DEC-241 default: Client Admin — Locations only. No create_client / create_partner /
+            // config nav. Own-client read stays on GET /api/orgs/clients for the locked Location field.
             screens.Add("create_location");
         }
         if (CatalogNav.Includes(who.Id.UserId, who.Grant)) screens.Add("catalog");

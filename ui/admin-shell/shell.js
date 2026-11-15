@@ -862,10 +862,17 @@ async function showCatalog() {
 }
 
 export async function showClients(editId) {
+  // PM DEC-241 default: Client Admin has no Client screen or nav — only scoped
+  // own-client read for the locked Location field (via /api/orgs/clients).
+  const navProbe = await api("/api/nav");
+  if ((navProbe.body?.role === "Client Admin")
+      || !(navProbe.body?.screens ?? []).includes("create_client")) {
+    return denied();
+  }
   const res = await api("/api/screens/create-client");
   if (res.status === 403) return denied();
   const editing = Boolean(editId);
-  const navMe = await api("/api/nav");
+  const navMe = navProbe;
   const role = typeof navMe.body?.role === "string" ? navMe.body.role : "";
   const isPartnerAdmin = role === "Partner Admin";
 
