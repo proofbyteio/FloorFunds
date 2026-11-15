@@ -1584,17 +1584,20 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             || !Guid.TryParseExact(cid.GetString(), "D", out clientId) || clientId == Guid.Empty)
             errs.Add(new("client_id", "Select a client."));
 
+        // DEC-275: CA scope check before load — foreign client_id must not leak as a field error.
+        // G1 404 not_found (no DenyAsync: audit Denied requires a target partner).
+        if (clientId != Guid.Empty && who.IsClientAdmin && !who.Grant.AssignedClients.Contains(clientId))
+            throw Err(404, "not_found");
         var client = clientId == Guid.Empty ? null : await LoadClientAsync(c, tx, clientId);
         if (clientId != Guid.Empty && client is null)
+        {
+            // G1: missing and out-of-scope (RLS) both 404 for PA/CA; SA still gets the field error.
+            if (who.IsPartnerAdmin || who.IsClientAdmin)
+                throw Err(404, "not_found");
             errs.Add(new("client_id", "Select a client."));
+        }
         var partnerId = client?.PartnerId ?? Guid.Empty;
         if (client is not null && who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId))
-        {
-            await DenyAsync(who, "forbidden_scope", partnerId, null, ["client_id"]);
-            throw Err(404, "not_found");
-        }
-        // DEC-275: CA may only place locations under AssignedClients (G1 404 not_found).
-        if (client is not null && who.IsClientAdmin && !who.Grant.AssignedClients.Contains(client.Value.Id))
         {
             await DenyAsync(who, "forbidden_scope", partnerId, null, ["client_id"]);
             throw Err(404, "not_found");
