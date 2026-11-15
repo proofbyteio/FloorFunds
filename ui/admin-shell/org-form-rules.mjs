@@ -103,7 +103,9 @@ export function emailError(value) {
   if (!v) return "";
   if (scalarLen(v) > 100) return "Email must be 100 characters or fewer.";
   const at = v.indexOf("@");
-  if (at <= 0 || at !== v.lastIndexOf("@") || v.includes(" ") || !v.slice(at + 1).includes(".")) {
+  // Match OrgFormValidation.Email: one @, domain has a dot, no spaces, not @-first/last, no trailing dot.
+  if (at <= 0 || at !== v.lastIndexOf("@") || v.includes(" ") || !v.slice(at + 1).includes(".")
+      || v.startsWith("@") || v.endsWith("@") || v.endsWith(".")) {
     return "Enter a valid email address, like name@example.com.";
   }
   return "";

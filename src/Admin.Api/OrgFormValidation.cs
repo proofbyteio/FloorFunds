@@ -252,12 +252,14 @@ public static class OrgFormValidation
     /// <summary>Strip spaces - . ( ); reject letters/extensions; IsValidNumberForRegion; return E.164.</summary>
     public static string? PhoneNumber(string? raw, string? region, List<FieldError> errors)
     {
-        if (region is null) return null;
+        // Rules L16: phone is required on its own. Emit "Enter a phone number." even when country is blank.
+        // Do not run format / IsValidNumberForRegion without a region.
         if (raw == "\u0000" || string.IsNullOrWhiteSpace(raw))
         {
             errors.Add(new("phone", "Enter a phone number."));
             return null;
         }
+        if (region is null) return null;
         var sb = new StringBuilder(raw.Length);
         foreach (var ch in raw)
         {
