@@ -1,7 +1,7 @@
 From 8ecc214a78f727fca97e1cc5669bc73471b1c240 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sun, 15 Nov 2026 17:26:17 +0000
-Subject: [PATCH 08/10] DEC-268 interims pending PM (B1/B3/B4)
+Subject: [PATCH 08/11] DEC-268 interims pending PM (B1/B3/B4)
 
 PM DEC-241 defaults (9:25 AM PT), not owner decisions: B1 h1/lead, B3 nav stacked, B4 Cancel #/home, B6 keep lookup labels; B2 no Partner list.
 
