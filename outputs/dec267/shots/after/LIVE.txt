@@ -1,3 +1,0 @@
-captured=2026-11-15T18:04:32.303Z
-tag=after
-shell=http://127.0.0.1:5191

@@ -1,3 +1,0 @@
-captured=2026-11-15T18:07:23.364Z
-tag=before
-shell=http://127.0.0.1:5190
