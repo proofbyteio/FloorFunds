@@ -573,10 +573,15 @@ async function showPartners(editId) {
   if (probe.status === 401) return;
   if (!(probe.body?.screens ?? []).includes("create_partner")) return denied();
   const editing = Boolean(editId);
-  // C5: page head title kept as Create Partner Admin until C9 interim (B1).
+  // B1 (PM DEC-241 default): nav stays "Create Partner Admin"; h1 "Create partner" + lead; no breadcrumb parent.
   const pageHead = h("div");
   pageHead.className = "page-head";
-  pageHead.append(h("h1", editing ? "Edit partner" : "Create Partner Admin"));
+  pageHead.append(h("h1", editing ? "Edit partner" : "Create partner"));
+  if (!editing) {
+    const lead = h("p", "Add a partner organization.");
+    lead.className = "page-lead";
+    pageHead.append(lead);
+  }
   main.replaceChildren(pageHead);
   if (flash) {
     main.append(banner(flash.kind, flash.title, flash.text));
@@ -595,8 +600,8 @@ async function showPartners(editId) {
   const cancel = document.createElement("a");
   cancel.className = "button button--secondary btn-secondary";
   cancel.textContent = "Cancel";
-  // Destination set in C9 (B4 interim).
-  cancel.href = "#";
+  // B4 (PM DEC-241 default): Cancel goes to #/home (mock #partners has no list — B2).
+  cancel.href = "#/home";
   actions.append(submit, cancel);
   form.append(actions);
   if (editing) {

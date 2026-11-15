@@ -90,17 +90,29 @@ select.field__input {
   color: var(--foreground);
   border-radius: var(--radius-control);
 }
-/* C8: single column below 64rem. Nav visibility for mobile is finalized in C9 (B3). */
+/*
+ * B3 (PM DEC-241 default, not owner): no menu button; nav stays visible, stacked under the
+ * header below 64rem (mock hides the sidebar with an undrawn drawer).
+ * B6 (PM DEC-241 default): lookup option labels stay main's API text (no C4 rename).
+ */
 @media (max-width: 63.99rem) {
   .shell {
     grid-template-columns: 1fr;
   }
+  .shell__content {
+    display: contents;
+  }
+  .shell__top { order: 1; }
   .shell__nav {
+    order: 2;
     border-right: 0;
     border-bottom: 1px solid var(--color-border);
+    display: block;
   }
+  .shell__main { order: 3; }
   .mobile-lockup { display: inline-flex; }
   .shell__crumbs { display: none; }
+  /* No menu button (B3). */
   .partner-form .field--partner { max-width: 28rem; }
   .partner-form .field--country { max-width: 16rem; }
   .partner-form .field--line1 { max-width: 28rem; }
