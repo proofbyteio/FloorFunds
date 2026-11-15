@@ -20,7 +20,7 @@ import {
   entityNameError,
   fieldsBannerDetail,
 } from "./org-form-rules.mjs";
-import { appendPartnerFields } from "./partner-form.mjs";
+import { appendPartnerFields, clearPartnerErrors, renderPartnerErrors } from "./partner-form.mjs";
 
 const main = document.querySelector("#main");
 const navEl = document.querySelector("#nav");
@@ -625,10 +625,15 @@ async function showPartners(editId) {
   }
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
+    clearPartnerErrors(form);
+    const clientFields = [];
     const nameMsg = entityNameError("partner", name.value);
-    if (nameMsg) { showValidationBanner(form, "Partner name", nameMsg); return; }
-    const addrErr = addressLengthError(address);
-    if (addrErr) { showValidationBanner(form, addrErr.title, addrErr.detail); return; }
+    if (nameMsg) clientFields.push({ field: "name", code: nameMsg });
+    for (const f of addressFieldErrors(address)) clientFields.push(f);
+    if (clientFields.length) {
+      renderPartnerErrors(form, clientFields);
+      return;
+    }
     submit.disabled = true;
     const body = { name: name.value.trim(), address: addressPayload(address) };
     const path = editing ? "/api/orgs/partners/" + editId : "/api/orgs/partners";
@@ -647,10 +652,12 @@ async function showPartners(editId) {
       return;
     }
     if (res.status >= 400) {
-      const detail = res.status === 422 && Array.isArray(res.body?.fields)
-        ? fieldsBannerDetail(res.body.fields)
-        : (res.body?.error || "The server refused the request.");
-      showValidationBanner(form, "Could not save the partner", detail);
+      if (res.status === 422 && Array.isArray(res.body?.fields) && res.body.fields.length) {
+        renderPartnerErrors(form, res.body.fields);
+      } else {
+        const detail = res.body?.error || "The server refused the request.";
+        showValidationBanner(form, "Could not save the partner", detail);
+      }
       submit.disabled = false;
       return;
     }

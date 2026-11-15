@@ -247,3 +247,106 @@ export async function appendPartnerFields(form, address, apiGet, opts) {
   fillSelect(country, countries, "Select a country");
   await applyCountry();
 }
+
+/** Map API / client field keys onto Partner form control ids. */
+export function partnerControlId(field) {
+  switch (field) {
+    case "name": return "partner-name";
+    case "address_line_1":
+    case "address": return "line1";
+    case "address_line_2": return "line2";
+    case "city": return "city";
+    case "country":
+    case "phone_country": return "country";
+    case "region": return "state";
+    case "postal_code": return "zip";
+    case "phone": return "phone";
+    case "email": return "email";
+    case "time_zone": return "timezone";
+    default: return null;
+  }
+}
+
+export function clearPartnerErrors(form) {
+  form.querySelector(".error-summary")?.remove();
+  form.classList.remove("partner-form--errors");
+  for (const field of form.querySelectorAll(".field.has-error")) {
+    field.classList.remove("has-error");
+  }
+  for (const err of form.querySelectorAll(".error-text, .error-zip")) {
+    err.remove();
+  }
+  for (const control of form.querySelectorAll("[aria-invalid]")) {
+    control.removeAttribute("aria-invalid");
+  }
+  for (const hint of form.querySelectorAll(".hint, .hint-zip")) {
+    hint.hidden = hint.classList.contains("hint-zip") && !form.querySelector("#country")?.value;
+  }
+}
+
+/**
+ * Render inline errors + summary ("There is a problem") for Partner create/edit.
+ * @param {HTMLFormElement} form
+ * @param {{field:string, code:string}[]} fields
+ */
+export function renderPartnerErrors(form, fields) {
+  clearPartnerErrors(form);
+  const list = Array.isArray(fields) ? fields.filter((f) => f && f.code) : [];
+  if (!list.length) return;
+
+  form.classList.add("partner-form--errors");
+  const summary = el("div", { className: "error-summary", role: "alert", id: "error-summary" });
+  const heading = el("h2", {}, "There is a problem");
+  summary.append(heading);
+  const ul = el("ul");
+  const seen = new Set();
+  for (const item of list) {
+    const id = partnerControlId(item.field);
+    const sentence = item.code;
+    if (!sentence) continue;
+    const key = (id || item.field) + "|" + sentence;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const li = el("li");
+    const a = el("a", { href: id ? "#" + id : "#error-summary" }, sentence);
+    li.append(a);
+    ul.append(li);
+
+    if (!id) continue;
+    const control = form.querySelector("#" + id);
+    if (!control) continue;
+    const fieldEl = control.closest(".field") || control.parentElement;
+    if (fieldEl) fieldEl.classList.add("has-error");
+    control.setAttribute("aria-invalid", "true");
+    const errId = id + "-error";
+    let err = form.querySelector("#" + errId);
+    if (!err) {
+      err = el("p", {
+        className: id === "zip" ? "error-zip" : "error-text",
+        id: errId,
+      }, sentence);
+      if (id === "zip") {
+        const grid = control.closest(".grid");
+        if (grid) grid.append(err);
+        else fieldEl?.append(err);
+      } else if (id === "phone") {
+        fieldEl?.append(err);
+      } else {
+        fieldEl?.append(err);
+      }
+    } else {
+      err.textContent = sentence;
+    }
+    const described = (control.getAttribute("aria-describedby") || "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter((x) => x !== errId && !x.endsWith("-hint"));
+    described.push(errId);
+    control.setAttribute("aria-describedby", described.join(" "));
+  }
+  summary.append(ul);
+  form.prepend(summary);
+  for (const hint of form.querySelectorAll(".hint, .hint-zip")) {
+    hint.hidden = true;
+  }
+}
