@@ -5408,3 +5408,43 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261115210000_FfpClientPartnerWrite') THEN
+
+    -- H1 / DEC-273: Partner Admin may INSERT/UPDATE clients of assigned partners
+    -- (actor_can_partner). WITH CHECK blocks rewriting partner_id to a foreign partner.
+    -- Permissive OR with client_admin_insert/update (actor_is_global) for Super Admin.
+    DO $pol$
+    DECLARE
+      a text := current_database() || '_admin_api';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'client_admin_insert_partner' AND polrelid = 'auth.client'::regclass) THEN
+          EXECUTE format(
+            'CREATE POLICY client_admin_insert_partner ON auth.client FOR INSERT TO %I WITH CHECK (auth.actor_can_partner(partner_id))',
+            a);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'client_admin_update_partner' AND polrelid = 'auth.client'::regclass) THEN
+          EXECUTE format(
+            'CREATE POLICY client_admin_update_partner ON auth.client FOR UPDATE TO %I USING (auth.actor_can_partner(partner_id)) WITH CHECK (auth.actor_can_partner(partner_id))',
+            a);
+        END IF;
+      END IF;
+    END
+    $pol$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261115210000_FfpClientPartnerWrite') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261115210000_FfpClientPartnerWrite', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
