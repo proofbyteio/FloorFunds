@@ -936,7 +936,25 @@ export async function showClients(editId) {
       address.email.value = a.email ?? "";
       if (a.country === "US" || a.country === "CA") address.phone_country.value = a.country;
     }
-    // Partner stays editable on edit until DEC-241 default commit (NOTES TO CONFIRM).
+    // DEC-241 default (NOTES TO CONFIRM): Partner read-only on Client edit — no Partner change offered.
+    // Main 2efdc97c had no Client edit route; this is not product-from-rules.
+    const partnerField = form.querySelector("#field-partner");
+    if (partnerField && !form.querySelector("#partner-readonly")) {
+      partner.hidden = true;
+      const labelText = partnerRows.find((p) => p.partner_id === partner.value)?.name || partner.value;
+      const ro = document.createElement("div");
+      ro.className = "readonly-value readonly-select";
+      ro.id = "partner-readonly";
+      ro.setAttribute("role", "combobox");
+      ro.setAttribute("aria-readonly", "true");
+      ro.setAttribute("aria-disabled", "true");
+      ro.setAttribute("aria-labelledby", "partner-label");
+      const text = document.createElement("span");
+      text.id = "partner-readonly-text";
+      text.textContent = labelText;
+      ro.append(text);
+      partnerField.append(ro);
+    }
   }
 
   form.addEventListener("submit", async (ev) => {
