@@ -1,7 +1,7 @@
 From 484e1130621715c3ef307a2e28f14113a7ec9b48 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sun, 15 Nov 2026 17:24:39 +0000
-Subject: [PATCH 05/13] C6: Partner inline errors and error summary; map all
+Subject: [PATCH 05/14] C6: Partner inline errors and error summary; map all
  client and 422 fields
 
 Co-authored-by: proofbyteio <proofbyteio@users.noreply.github.com>

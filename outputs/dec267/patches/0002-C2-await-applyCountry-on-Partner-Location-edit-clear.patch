@@ -1,7 +1,7 @@
 From 99a0f149bd5befe84dc5ddab72fca33a9a02ad11 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sun, 15 Nov 2026 17:22:38 +0000
-Subject: [PATCH 02/13] C2: await applyCountry on Partner/Location edit; clear
+Subject: [PATCH 02/14] C2: await applyCountry on Partner/Location edit; clear
  postal on country change; flash banner
 
 Co-authored-by: proofbyteio <proofbyteio@users.noreply.github.com>
