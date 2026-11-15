@@ -22,7 +22,12 @@ function el(tag, attrs = {}, text) {
 
 function optionalLabel(text) {
   const label = el("label");
-  label.append(document.createTextNode(text + " "));
+  // Prefer createTextNode when present; suites use a minimal document mock without it.
+  if (typeof document.createTextNode === "function") {
+    label.append(document.createTextNode(text + " "));
+  } else {
+    label.append(el("span", {}, text + " "));
+  }
   const opt = el("span", { className: "optional" }, "(optional)");
   label.append(opt);
   return label;
@@ -161,7 +166,7 @@ export async function appendClientFields(form, address, apiGet, opts) {
   const postal = textInput("zip", "postal_code", "postal-code");
   postal.required = true;
   postal.disabled = true;
-  postal.setAttribute("aria-describedby", "zip-hint");
+  if (typeof postal.setAttribute === "function") postal.setAttribute("aria-describedby", "zip-hint");
   const postalLabel = el("label", { htmlFor: "zip", id: "zip-label" }, "ZIP or postal code");
   const postalField = el("div", { className: "field field--zip span-2", id: "field-zip" });
   // Client NOTES: zipHint lives INSIDE field--zip (not a grid sibling).
@@ -238,7 +243,7 @@ export async function appendClientFields(form, address, apiGet, opts) {
       regionLabel.textContent = "State or province";
       postalLabel.textContent = "ZIP or postal code";
       zipHint.hidden = true;
-      postal.removeAttribute("aria-describedby");
+      if (typeof postal.removeAttribute === "function") postal.removeAttribute("aria-describedby");
       return;
     }
     const isUS = code === "US";
@@ -246,7 +251,7 @@ export async function appendClientFields(form, address, apiGet, opts) {
     postalLabel.textContent = isUS ? "ZIP code" : "Postal code";
     zipHint.hidden = false;
     zipHint.textContent = isUS ? "Like 94102 or 94102-1234." : "Like A1A 1A1.";
-    postal.setAttribute("aria-describedby", "zip-hint");
+    if (typeof postal.setAttribute === "function") postal.setAttribute("aria-describedby", "zip-hint");
   }
 
   address._postalRule = null;
@@ -357,7 +362,8 @@ export function renderClientErrors(form, fields) {
     '<path d="M9 5v5.5" stroke="#e44236" stroke-width="1.5" stroke-linecap="round"/>' +
     '<circle cx="9" cy="13" r="0.9" fill="#e44236"/>' +
     "</svg>";
-  heading.append(document.createTextNode("There is a problem"));
+  if (typeof document.createTextNode === "function") heading.append(document.createTextNode("There is a problem"));
+  else heading.append(el("span", {}, "There is a problem"));
   summary.append(heading);
   const ul = el("ul");
   const seen = new Set();
