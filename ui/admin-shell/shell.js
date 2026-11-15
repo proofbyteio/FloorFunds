@@ -20,10 +20,13 @@ import {
   entityNameError,
   fieldsBannerDetail,
 } from "./org-form-rules.mjs";
+import { appendPartnerFields, clearPartnerErrors, renderPartnerErrors } from "./partner-form.mjs";
 
 const main = document.querySelector("#main");
 const navEl = document.querySelector("#nav");
 let leaving = false;
+/** Survives hashchange → draw() so Created/Saved banners are not dropped after redirect. */
+let flash = null;
 
 const pages = {
   home: { label: "Home", need: null },
@@ -328,7 +331,8 @@ export async function appendNorthAmericaAddressFields(form, address) {
   const countries = await loadCountries(api);
   fillSelect(address.country, countries, { blankLabel: "Select a country…", selected: DEFAULT_COUNTRY });
   address._postalRule = null;
-  async function applyCountry() {
+  async function applyCountry(opts = {}) {
+    const { clearDependent = false } = opts;
     const code = address.country.value;
     address.region.disabled = !code;
     address.time_zone.disabled = !code;
@@ -355,12 +359,20 @@ export async function appendNorthAmericaAddressFields(form, address) {
     address.postal_code.required = true;
     address.postal_code.maxLength = postalMaxLength(code, rule);
     address.postal_code.placeholder = code === "CA" ? "A1A 1A1" : "12345 or 12345-6789";
-    // F1: normalize without truncating (CA formats only when exactly 6 alphanumerics).
-    address.postal_code.value = normalizePostal(code, address.postal_code.value, rule);
+    if (clearDependent) {
+      // Rules L13 / mock: changing country clears region, postal and tz. Do not re-normalize the old postal.
+      address.region.value = "";
+      address.time_zone.value = "";
+      address.postal_code.value = "";
+    } else {
+      // F1: normalize without truncating (CA formats only when exactly 6 alphanumerics).
+      address.postal_code.value = normalizePostal(code, address.postal_code.value, rule);
+    }
     // Phone region follows address country when US/CA (picker default +1).
-    if (code === "US" || code === "CA") address.phone_country.value = code;
+    if (address.phone_country && (code === "US" || code === "CA")) address.phone_country.value = code;
   }
-  address.country.addEventListener("change", () => { void applyCountry(); });
+  address._applyCountry = applyCountry;
+  address.country.addEventListener("change", () => { void applyCountry({ clearDependent: true }); });
   address.postal_code.addEventListener("blur", () => {
     const code = address.country.value;
     if (!code) return;
@@ -477,8 +489,7 @@ export async function showCreate(state, editId) {
     address.city.value = a.city ?? "";
     if (a.country) {
       address.country.value = a.country;
-      address.country.dispatchEvent(new Event("change"));
-      await new Promise((r) => setTimeout(r, 50));
+      await address._applyCountry();
       address.region.value = a.region ?? "";
       address.postal_code.value = a.postal_code ?? "";
       address.time_zone.value = a.time_zone ?? "";
@@ -505,13 +516,15 @@ export async function showCreate(state, editId) {
       address.city.value = a.city ?? "";
       if (a.country) {
         address.country.value = a.country;
-        address.country.dispatchEvent(new Event("change"));
-        await new Promise((r) => setTimeout(r, 50));
+        await address._applyCountry();
         address.region.value = a.region ?? "";
         address.postal_code.value = a.postal_code ?? "";
         address.time_zone.value = a.time_zone ?? "";
         address.phone.value = a.phone ?? "";
         address.email.value = a.email ?? "";
+        if (address.phone_country && (a.country === "US" || a.country === "CA")) {
+          address.phone_country.value = a.country;
+        }
       }
     }
   }
@@ -560,23 +573,37 @@ async function showPartners(editId) {
   if (probe.status === 401) return;
   if (!(probe.body?.screens ?? []).includes("create_partner")) return denied();
   const editing = Boolean(editId);
-  main.replaceChildren(h("h1", editing ? "Edit partner" : "Create Partner Admin"));
+  // B1 (PM DEC-241 default): nav stays "Create Partner Admin"; h1 "Create partner" + lead; no breadcrumb parent.
+  const pageHead = h("div");
+  pageHead.className = "page-head";
+  pageHead.append(h("h1", editing ? "Edit partner" : "Create partner"));
+  if (!editing) {
+    const lead = h("p", "Add a partner organization.");
+    lead.className = "page-lead";
+    pageHead.append(lead);
+  }
+  main.replaceChildren(pageHead);
+  if (flash) {
+    main.append(banner(flash.kind, flash.title, flash.text));
+    flash = null;
+  }
   const form = document.createElement("form");
-  form.className = "card";
+  form.className = "card partner-form";
+  form.noValidate = true;
   const name = document.createElement("input");
-  name.className = "field__input";
-  name.name = "name";
-  name.required = true;
-  const nameField = h("label");
-  nameField.className = "field";
-  nameField.append(h("span", "Partner name"), name);
-  nameField.querySelector("span").className = "field__label";
-  form.append(nameField);
   const address = {};
-  await appendNorthAmericaAddressFields(form, address);
+  await appendPartnerFields(form, address, api, { nameInput: name });
+  const actions = document.createElement("div");
+  actions.className = "actions";
   const submit = primaryControl("button", editing ? "Save partner" : "Create partner");
   submit.type = "submit";
-  form.append(submit);
+  const cancel = document.createElement("a");
+  cancel.className = "button button--secondary btn-secondary";
+  cancel.textContent = "Cancel";
+  // B4 (PM DEC-241 default): Cancel goes to #/home (mock #partners has no list — B2).
+  cancel.href = "#/home";
+  actions.append(submit, cancel);
+  form.append(actions);
   if (editing) {
     const got = await api("/api/orgs/partners/" + editId);
     if (got.status !== 200) {
@@ -590,22 +617,28 @@ async function showPartners(editId) {
     address.city.value = a.city ?? "";
     if (a.country) {
       address.country.value = a.country;
-      await address.country.dispatchEvent(new Event("change"));
-      // allow applyCountry to settle
-      await new Promise((r) => setTimeout(r, 0));
+      await address._applyCountry();
       address.region.value = a.region ?? "";
       address.postal_code.value = a.postal_code ?? "";
       address.time_zone.value = a.time_zone ?? "";
       address.phone.value = a.phone ?? "";
       address.email.value = a.email ?? "";
+      if (a.country === "US" || a.country === "CA") {
+        address.phone_country.value = a.country;
+      }
     }
   }
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
+    clearPartnerErrors(form);
+    const clientFields = [];
     const nameMsg = entityNameError("partner", name.value);
-    if (nameMsg) { showValidationBanner(form, "Partner name", nameMsg); return; }
-    const addrErr = addressLengthError(address);
-    if (addrErr) { showValidationBanner(form, addrErr.title, addrErr.detail); return; }
+    if (nameMsg) clientFields.push({ field: "name", code: nameMsg });
+    for (const f of addressFieldErrors(address)) clientFields.push(f);
+    if (clientFields.length) {
+      renderPartnerErrors(form, clientFields);
+      return;
+    }
     submit.disabled = true;
     const body = { name: name.value.trim(), address: addressPayload(address) };
     const path = editing ? "/api/orgs/partners/" + editId : "/api/orgs/partners";
@@ -624,16 +657,22 @@ async function showPartners(editId) {
       return;
     }
     if (res.status >= 400) {
-      const detail = res.status === 422 && Array.isArray(res.body?.fields)
-        ? fieldsBannerDetail(res.body.fields)
-        : (res.body?.error || "The server refused the request.");
-      showValidationBanner(form, "Could not save the partner", detail);
+      if (res.status === 422 && Array.isArray(res.body?.fields) && res.body.fields.length) {
+        renderPartnerErrors(form, res.body.fields);
+      } else {
+        const detail = res.body?.error || "The server refused the request.";
+        showValidationBanner(form, "Could not save the partner", detail);
+      }
       submit.disabled = false;
       return;
     }
     const id = res.body?.partner_id || editId;
+    flash = {
+      kind: "info",
+      title: editing ? "Saved" : "Created",
+      text: "Partner " + (res.body?.name || "") + " was accepted.",
+    };
     location.hash = "#/partner-edit?id=" + encodeURIComponent(id);
-    form.prepend(banner("info", editing ? "Saved" : "Created", "Partner " + (res.body?.name || "") + " was accepted."));
     submit.disabled = false;
   });
   main.append(form);
@@ -811,6 +850,7 @@ async function draw() {
   if (me.status === 401) return;
   const productName = productNameFromConfig(me.body);
   applyProductName(document.querySelector(".admin-lockup__name"), productName);
+  applyProductName(document.querySelector(".mobile-lockup__name"), productName);
   if (productName) document.title = productName;
   const signedIn = document.querySelector("#signed-in");
   if (signedIn) {

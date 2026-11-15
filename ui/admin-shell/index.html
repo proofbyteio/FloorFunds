@@ -13,10 +13,6 @@
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
-  <header class="shell__top">
-    <p class="shell__signed-in" id="signed-in"></p>
-    <a class="shell__signout" href="/standin/connect/endsession">Sign out</a>
-  </header>
   <div class="shell">
     <nav class="shell__nav" aria-label="Admin">
       <div class="shell__brand">
@@ -27,7 +23,18 @@
       </div>
       <div id="nav"></div>
     </nav>
-    <main class="shell__main" id="main"></main>
+    <div class="shell__content">
+      <header class="shell__top">
+        <a class="mobile-lockup" href="#/home">
+          <img class="mobile-lockup__mark" src="/theme/logo-1.svg" alt="">
+          <span class="mobile-lockup__name"></span>
+        </a>
+        <div class="shell__crumbs" id="shell-crumbs" hidden></div>
+        <p class="shell__signed-in" id="signed-in"></p>
+        <a class="shell__signout" href="/standin/connect/endsession">Sign out</a>
+      </header>
+      <main class="shell__main" id="main"></main>
+    </div>
   </div>
   <script type="module" src="/shell.js"></script>
 </body>
