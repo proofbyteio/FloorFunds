@@ -146,12 +146,12 @@ select.field__input {
   /* No menu button (B3). Partner stacking overrides live at file end (E4). */
 }
 
-/* —— C7: Partner compact form (scoped; Client/Location unchanged) —— */
+/* —— C7 / DEC-274: Partner compact-tight form (scoped; Client/Location unchanged) —— */
 .partner-form {
-  /* D2(a)/E2: card + grid rhythm from mock HTML L40–L42, L327–L353 */
+  /* DEC-274 APPROVED tighter layout: 12px rows, 16px groups (same as Client/Location). */
   --partner-card-width: 720px;
   --partner-grid-gap-x: 12px;
-  --partner-grid-gap-y: 16px;
+  --partner-grid-gap-y: 12px;
   --error-summary-bg: #1c1010;
   --error-summary-border: #e44236;
   --partner-error: #e44236;
@@ -168,10 +168,10 @@ select.field__input {
   /* theme.css .card adds space-5 padding + shadow — cancel for Partner card */
   box-shadow: none;
 }
-.partner-form .section { margin: 0 0 22px; }
-.partner-form .section:last-of-type { margin-bottom: 20px; }
+.partner-form .section { margin: 0 0 16px; }
+.partner-form .section:last-of-type { margin-bottom: 16px; }
 .partner-form .section-title {
-  margin: 0 0 12px;
+  margin: 0 0 10px;
   font-size: 11px;
   font-weight: 600;
   line-height: 1.3;
@@ -194,7 +194,9 @@ select.field__input {
 .partner-form .span-4 { grid-column: span 4; }
 .partner-form .span-3 { grid-column: span 3; }
 .partner-form .span-2 { grid-column: span 2; }
-.partner-form .field--line2 { grid-column: 1 / span 4; }
+/* APPROVED tighter layout: Line 1 (5) + Line 2 (3) share one row. */
+.partner-form .field--line1 { grid-column: 1 / span 5; }
+.partner-form .field--line2 { grid-column: 6 / span 3; }
 .partner-form .field--city { grid-column: 1 / span 3; }
 .partner-form .field {
   display: flex;
@@ -263,19 +265,17 @@ select.field__input {
   line-height: 1.35;
   color: var(--text-muted, var(--color-text-muted));
 }
-/* D2(b): ZIP hint/error are grid children (HTML L364–L374), right-aligned under ZIP, inside the card. */
+/* DEC-274: ZIP hint/error inside .field--zip; wrap within the ZIP column. */
 .partner-form .hint-zip,
 .partner-form .error-zip {
-  grid-column: 1 / -1;
-  margin: -6px 0 0;
+  margin: 5px 0 0;
   font-size: var(--text-xs);
   line-height: 1.35;
-  text-align: right;
-  white-space: nowrap;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
   max-width: 100%;
   box-sizing: border-box;
-  overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 0;
 }
 .partner-form .hint-zip { color: var(--text-muted, var(--color-text-muted)); }
@@ -364,12 +364,20 @@ select.field__input {
   min-width: 0;
   padding: 0 12px;
 }
+/* Sticky card footer (APPROVED tighter layout). */
 .partner-form .actions {
   display: flex;
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
-  padding-top: 4px;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 8px -32px -24px;
+  padding: 14px 32px 16px;
+  background: var(--surface, var(--color-surface));
+  border-top: 1px solid var(--hairline, var(--color-border));
+  border-radius: 0 0 1rem 1rem;
 }
 .partner-form .btn-secondary,
 .partner-form a.button--secondary {
@@ -400,8 +408,11 @@ select.field__input {
 .partner-form.partner-form--errors .error-summary { margin: 0 0 12px; padding: 8px 12px; }
 .partner-form.partner-form--errors .error-summary h2 { margin-bottom: 2px; }
 .partner-form.partner-form--errors .error-summary li { margin-bottom: 1px; }
-.partner-form.partner-form--errors .actions { padding-top: 2px; }
-.partner-form.partner-form--errors .error-zip { margin-top: -2px; }
+.partner-form.partner-form--errors .actions {
+  margin: 6px -28px -14px;
+  padding: 12px 28px 14px;
+}
+.partner-form.partner-form--errors .error-zip { margin-top: 4px; }
 .partner-form.partner-form--errors .field label,
 .partner-form.partner-form--errors .field .label { margin-bottom: 4px; }
 
@@ -443,7 +454,8 @@ select.field__input {
   .partner-form .field--line2 { max-width: 18rem; }
   .partner-form .field--city { max-width: 16rem; }
   .partner-form .field--state { max-width: 16rem; }
-  .partner-form .field--zip { max-width: 9.5rem; }
+  .partner-form .field--zip { max-width: 14rem; }
+  .partner-form .field--zip input { max-width: 9.5rem; }
   .partner-form .field--phone { max-width: 18rem; }
   .partner-form .field--email { max-width: 22rem; }
   .partner-form .field--tz { max-width: 24rem; }
@@ -458,9 +470,15 @@ select.field__input {
   .partner-form .span-4,
   .partner-form .span-3,
   .partner-form .span-2,
+  .partner-form .field--line1,
   .partner-form .field--line2,
   .partner-form .field--city {
     grid-column: 1 / -1;
+  }
+  .partner-form .actions {
+    position: static;
+    margin: 8px -16px -20px;
+    padding: 14px 16px 16px;
   }
   .partner-form .hint-zip,
   .partner-form .error-zip {
