@@ -1350,6 +1350,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         try { await cmd.ExecuteNonQueryAsync(); }
         catch (PostgresException ex) when (IsNameUniqueViolation(ex, "client_partner_name_ci_ux"))
         { throw Validation([new("name", "A client with this name already exists for this partner.")]); }
+        // H1: RLS 42501 must not surface as 500 — same not_found shape as foreign-partner scope.
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
+        { throw Err(404, "not_found"); }
     }
 
     static async Task UpdateClientAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid id, Guid partnerId, string name, OrgAddress a)
@@ -1362,9 +1365,16 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
              WHERE client_id=$1
             """, c, tx);
         BindClient(cmd, id, partnerId, name, a);
-        try { await cmd.ExecuteNonQueryAsync(); }
+        try
+        {
+            // H1: RLS can yield 0 rows; never return the unsaved body as success.
+            var n = await cmd.ExecuteNonQueryAsync();
+            if (n == 0) throw Err(404, "not_found");
+        }
         catch (PostgresException ex) when (IsNameUniqueViolation(ex, "client_partner_name_ci_ux"))
         { throw Validation([new("name", "A client with this name already exists for this partner.")]); }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
+        { throw Err(404, "not_found"); }
     }
 
     static void BindClient(NpgsqlCommand cmd, Guid id, Guid partnerId, string name, OrgAddress a)
@@ -1470,6 +1480,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             try { await ins.ExecuteNonQueryAsync(); }
             catch (PostgresException ex) when (IsNameUniqueViolation(ex, "location_client_name_ci_ux"))
             { throw Validation([new("name", "A location with this name already exists for this client.")]); }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
+            { throw Err(404, "not_found"); }
         }
         if (cfg is null)
         {
@@ -1671,9 +1683,17 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         cmd.Parameters.Add(new() { Value = a.PhoneE164 });
         cmd.Parameters.Add(new() { Value = (object?)a.Email ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = a.TimeZone });
-        try { await cmd.ExecuteNonQueryAsync(); }
+        try
+        {
+            // Same row-count guard as UpdateClientAsync (H1). Location RLS already scopes via
+            // actor_can_location → actor_can_partner; this still refuses a silent 0-row update.
+            var n = await cmd.ExecuteNonQueryAsync();
+            if (n == 0) throw Err(404, "not_found");
+        }
         catch (PostgresException ex) when (IsNameUniqueViolation(ex, "location_client_name_ci_ux"))
         { throw Validation([new("name", "A location with this name already exists for this client.")]); }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
+        { throw Err(404, "not_found"); }
     }
 }
 
