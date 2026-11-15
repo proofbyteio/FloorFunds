@@ -1,0 +1,175 @@
+From 484e1130621715c3ef307a2e28f14113a7ec9b48 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sun, 15 Nov 2026 17:24:39 +0000
+Subject: [PATCH 05/10] C6: Partner inline errors and error summary; map all
+ client and 422 fields
+
+Co-authored-by: proofbyteio <proofbyteio@users.noreply.github.com>
+---
+ ui/admin-shell/partner-form.mjs | 103 ++++++++++++++++++++++++++++++++
+ ui/admin-shell/shell.js         |  23 ++++---
+ 2 files changed, 118 insertions(+), 8 deletions(-)
+
+diff --git a/ui/admin-shell/partner-form.mjs b/ui/admin-shell/partner-form.mjs
+index 3fbf767..d2cc25a 100644
+--- a/ui/admin-shell/partner-form.mjs
++++ b/ui/admin-shell/partner-form.mjs
+@@ -247,3 +247,106 @@ export async function appendPartnerFields(form, address, apiGet, opts) {
+   fillSelect(country, countries, "Select a country");
+   await applyCountry();
+ }
++
++/** Map API / client field keys onto Partner form control ids. */
++export function partnerControlId(field) {
++  switch (field) {
++    case "name": return "partner-name";
++    case "address_line_1":
++    case "address": return "line1";
++    case "address_line_2": return "line2";
++    case "city": return "city";
++    case "country":
++    case "phone_country": return "country";
++    case "region": return "state";
++    case "postal_code": return "zip";
++    case "phone": return "phone";
++    case "email": return "email";
++    case "time_zone": return "timezone";
++    default: return null;
++  }
++}
++
++export function clearPartnerErrors(form) {
++  form.querySelector(".error-summary")?.remove();
++  form.classList.remove("partner-form--errors");
++  for (const field of form.querySelectorAll(".field.has-error")) {
++    field.classList.remove("has-error");
++  }
++  for (const err of form.querySelectorAll(".error-text, .error-zip")) {
++    err.remove();
++  }
++  for (const control of form.querySelectorAll("[aria-invalid]")) {
++    control.removeAttribute("aria-invalid");
++  }
++  for (const hint of form.querySelectorAll(".hint, .hint-zip")) {
++    hint.hidden = hint.classList.contains("hint-zip") && !form.querySelector("#country")?.value;
++  }
++}
++
++/**
++ * Render inline errors + summary ("There is a problem") for Partner create/edit.
++ * @param {HTMLFormElement} form
++ * @param {{field:string, code:string}[]} fields
++ */
++export function renderPartnerErrors(form, fields) {
++  clearPartnerErrors(form);
++  const list = Array.isArray(fields) ? fields.filter((f) => f && f.code) : [];
++  if (!list.length) return;
++
++  form.classList.add("partner-form--errors");
++  const summary = el("div", { className: "error-summary", role: "alert", id: "error-summary" });
++  const heading = el("h2", {}, "There is a problem");
++  summary.append(heading);
++  const ul = el("ul");
++  const seen = new Set();
++  for (const item of list) {
++    const id = partnerControlId(item.field);
++    const sentence = item.code;
++    if (!sentence) continue;
++    const key = (id || item.field) + "|" + sentence;
++    if (seen.has(key)) continue;
++    seen.add(key);
++    const li = el("li");
++    const a = el("a", { href: id ? "#" + id : "#error-summary" }, sentence);
++    li.append(a);
++    ul.append(li);
++
++    if (!id) continue;
++    const control = form.querySelector("#" + id);
++    if (!control) continue;
++    const fieldEl = control.closest(".field") || control.parentElement;
++    if (fieldEl) fieldEl.classList.add("has-error");
++    control.setAttribute("aria-invalid", "true");
++    const errId = id + "-error";
++    let err = form.querySelector("#" + errId);
++    if (!err) {
++      err = el("p", {
++        className: id === "zip" ? "error-zip" : "error-text",
++        id: errId,
++      }, sentence);
++      if (id === "zip") {
++        const grid = control.closest(".grid");
++        if (grid) grid.append(err);
++        else fieldEl?.append(err);
++      } else if (id === "phone") {
++        fieldEl?.append(err);
++      } else {
++        fieldEl?.append(err);
++      }
++    } else {
++      err.textContent = sentence;
++    }
++    const described = (control.getAttribute("aria-describedby") || "")
++      .split(/\s+/)
++      .filter(Boolean)
++      .filter((x) => x !== errId && !x.endsWith("-hint"));
++    described.push(errId);
++    control.setAttribute("aria-describedby", described.join(" "));
++  }
++  summary.append(ul);
++  form.prepend(summary);
++  for (const hint of form.querySelectorAll(".hint, .hint-zip")) {
++    hint.hidden = true;
++  }
++}
+diff --git a/ui/admin-shell/shell.js b/ui/admin-shell/shell.js
+index 556bcac..f1a27f3 100644
+--- a/ui/admin-shell/shell.js
++++ b/ui/admin-shell/shell.js
+@@ -20,7 +20,7 @@ import {
+   entityNameError,
+   fieldsBannerDetail,
+ } from "./org-form-rules.mjs";
+-import { appendPartnerFields } from "./partner-form.mjs";
++import { appendPartnerFields, clearPartnerErrors, renderPartnerErrors } from "./partner-form.mjs";
+ 
+ const main = document.querySelector("#main");
+ const navEl = document.querySelector("#nav");
+@@ -625,10 +625,15 @@ async function showPartners(editId) {
+   }
+   form.addEventListener("submit", async (ev) => {
+     ev.preventDefault();
++    clearPartnerErrors(form);
++    const clientFields = [];
+     const nameMsg = entityNameError("partner", name.value);
+-    if (nameMsg) { showValidationBanner(form, "Partner name", nameMsg); return; }
+-    const addrErr = addressLengthError(address);
+-    if (addrErr) { showValidationBanner(form, addrErr.title, addrErr.detail); return; }
++    if (nameMsg) clientFields.push({ field: "name", code: nameMsg });
++    for (const f of addressFieldErrors(address)) clientFields.push(f);
++    if (clientFields.length) {
++      renderPartnerErrors(form, clientFields);
++      return;
++    }
+     submit.disabled = true;
+     const body = { name: name.value.trim(), address: addressPayload(address) };
+     const path = editing ? "/api/orgs/partners/" + editId : "/api/orgs/partners";
+@@ -647,10 +652,12 @@ async function showPartners(editId) {
+       return;
+     }
+     if (res.status >= 400) {
+-      const detail = res.status === 422 && Array.isArray(res.body?.fields)
+-        ? fieldsBannerDetail(res.body.fields)
+-        : (res.body?.error || "The server refused the request.");
+-      showValidationBanner(form, "Could not save the partner", detail);
++      if (res.status === 422 && Array.isArray(res.body?.fields) && res.body.fields.length) {
++        renderPartnerErrors(form, res.body.fields);
++      } else {
++        const detail = res.body?.error || "The server refused the request.";
++        showValidationBanner(form, "Could not save the partner", detail);
++      }
+       submit.disabled = false;
+       return;
+     }
+-- 
+2.43.0
+

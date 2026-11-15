@@ -1,0 +1,50 @@
+From 4ef030cb2f7dbc9cf82381601e8b650a300e2f74 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sun, 15 Nov 2026 17:22:48 +0000
+Subject: [PATCH 03/10] C3: Enter a phone number when country is null; email
+ @-edges and trailing-dot parity
+
+Co-authored-by: proofbyteio <proofbyteio@users.noreply.github.com>
+---
+ src/Admin.Api/OrgFormValidation.cs | 4 +++-
+ ui/admin-shell/org-form-rules.mjs  | 4 +++-
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/Admin.Api/OrgFormValidation.cs b/src/Admin.Api/OrgFormValidation.cs
+index 3fb1156..4ff6aa4 100644
+--- a/src/Admin.Api/OrgFormValidation.cs
++++ b/src/Admin.Api/OrgFormValidation.cs
+@@ -252,12 +252,14 @@ public static class OrgFormValidation
+     /// <summary>Strip spaces - . ( ); reject letters/extensions; IsValidNumberForRegion; return E.164.</summary>
+     public static string? PhoneNumber(string? raw, string? region, List<FieldError> errors)
+     {
+-        if (region is null) return null;
++        // Rules L16: phone is required on its own. Emit "Enter a phone number." even when country is blank.
++        // Do not run format / IsValidNumberForRegion without a region.
+         if (raw == "\u0000" || string.IsNullOrWhiteSpace(raw))
+         {
+             errors.Add(new("phone", "Enter a phone number."));
+             return null;
+         }
++        if (region is null) return null;
+         var sb = new StringBuilder(raw.Length);
+         foreach (var ch in raw)
+         {
+diff --git a/ui/admin-shell/org-form-rules.mjs b/ui/admin-shell/org-form-rules.mjs
+index f8fd53f..842ed06 100644
+--- a/ui/admin-shell/org-form-rules.mjs
++++ b/ui/admin-shell/org-form-rules.mjs
+@@ -103,7 +103,9 @@ export function emailError(value) {
+   if (!v) return "";
+   if (scalarLen(v) > 100) return "Email must be 100 characters or fewer.";
+   const at = v.indexOf("@");
+-  if (at <= 0 || at !== v.lastIndexOf("@") || v.includes(" ") || !v.slice(at + 1).includes(".")) {
++  // Match OrgFormValidation.Email: one @, domain has a dot, no spaces, not @-first/last, no trailing dot.
++  if (at <= 0 || at !== v.lastIndexOf("@") || v.includes(" ") || !v.slice(at + 1).includes(".")
++      || v.startsWith("@") || v.endsWith("@") || v.endsWith(".")) {
+     return "Enter a valid email address, like name@example.com.";
+   }
+   return "";
+-- 
+2.43.0
+
