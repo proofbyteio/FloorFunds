@@ -721,27 +721,30 @@ select.field__input {
   font-weight: 500;
   white-space: nowrap;
 }
-/* Read-only Partner dropdown chrome (owner t173u / Location-aligned). */
-.client-form .readonly-select {
+/* Read-only Partner dropdown chrome (Client NOTES APPROVED: solid #6b6458, chevron #9ca3af, #101010, rx6, 36px). */
+.client-form .readonly-value {
   display: flex;
   align-items: center;
   height: 36px;
   min-height: 36px;
-  padding: 0 32px 0 12px;
+  padding: 0 12px;
   border: 1px solid #6b6458;
-  border-radius: 0.375rem;
+  border-radius: 6px;
   background-color: #101010;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1.5 1.75L6 6.25L10.5 1.75' stroke='%239ca3af' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-  background-size: 12px 8px;
   color: var(--foreground, var(--color-text));
   font-size: var(--text-sm, 0.875rem);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: not-allowed;
   box-sizing: border-box;
+}
+.client-form .readonly-select {
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1.5 1.75L6 6.25L10.5 1.75' stroke='%239ca3af' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px 8px;
+  cursor: not-allowed;
 }
 .client-form.client-form--errors .hint,
 .client-form.client-form--errors .hint-zip,
@@ -1062,27 +1065,30 @@ select.field__input {
   font-weight: 500;
   white-space: nowrap;
 }
-/* Read-only Partner/Client dropdown chrome (owner t173u). */
-.location-form .readonly-select {
+/* Read-only Partner/Client dropdown chrome (Location NOTES / Client NOTES APPROVED). */
+.location-form .readonly-value {
   display: flex;
   align-items: center;
   height: 36px;
   min-height: 36px;
-  padding: 0 32px 0 12px;
+  padding: 0 12px;
   border: 1px solid #6b6458;
-  border-radius: 0.375rem;
+  border-radius: 6px;
   background-color: #101010;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1.5 1.75L6 6.25L10.5 1.75' stroke='%239ca3af' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-  background-size: 12px 8px;
   color: var(--foreground, var(--color-text));
   font-size: var(--text-sm, 0.875rem);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: not-allowed;
   box-sizing: border-box;
+}
+.location-form .readonly-select {
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1.5 1.75L6 6.25L10.5 1.75' stroke='%239ca3af' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px 8px;
+  cursor: not-allowed;
 }
 /* Shell-wired pull-address row (button not built here). */
 .location-form .pull-row {

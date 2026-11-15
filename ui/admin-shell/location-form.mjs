@@ -89,7 +89,7 @@ export async function appendLocationFields(form, address, apiGet, opts) {
       || partnerSelect.value
       || "";
     const ro = el("div", {
-      className: "readonly-select",
+      className: "readonly-value readonly-select",
       id: "partner-readonly",
       role: "combobox",
       "aria-readonly": "true",
@@ -129,7 +129,7 @@ export async function appendLocationFields(form, address, apiGet, opts) {
       || clientSelect.value
       || "";
     const ro = el("div", {
-      className: "readonly-select",
+      className: "readonly-value readonly-select",
       id: "client-readonly",
       role: "combobox",
       "aria-readonly": "true",

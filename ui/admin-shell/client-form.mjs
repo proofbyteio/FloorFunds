@@ -80,7 +80,7 @@ export async function appendClientFields(form, address, apiGet, opts) {
       || partnerSelect.value
       || "";
     const ro = el("div", {
-      className: "readonly-select",
+      className: "readonly-value readonly-select",
       id: "partner-readonly",
       role: "combobox",
       "aria-readonly": "true",
