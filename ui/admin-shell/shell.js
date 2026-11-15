@@ -21,6 +21,7 @@ import {
   fieldsBannerDetail,
 } from "./org-form-rules.mjs";
 import { appendPartnerFields, clearPartnerErrors, renderPartnerErrors } from "./partner-form.mjs";
+import { appendClientFields, clearClientErrors, renderClientErrors } from "./client-form.mjs";
 
 const main = document.querySelector("#main");
 const navEl = document.querySelector("#nav");
@@ -39,6 +40,7 @@ const pages = {
   config: { label: "Sign-in config", need: "config" },
   catalog: { label: "Catalog", need: "catalog" },
   clients: { label: "Create Client Admin", need: "create_client" },
+  "client-edit": { label: "Edit client", need: "create_client" },
   partners: { label: "Create Partner Admin", need: "create_partner" },
   "partner-edit": { label: "Edit partner", need: "create_partner" },
 };
@@ -98,7 +100,7 @@ function renderNav(current) {
   for (const [id, page] of Object.entries(pages)) {
     // F-05. Sign-in config stays off nav labels. partner-edit / location-edit are post-create only.
     // F7: gate on server keys only (navNeed ?? need) — never on the role label string.
-    if (id === "config" || id === "partner-edit" || id === "location-edit") continue;
+    if (id === "config" || id === "partner-edit" || id === "location-edit" || id === "client-edit") continue;
     const gate = page.navNeed ?? page.need;
     if (gate && !grant.includes(gate)) continue;
     const a = document.createElement("a");
@@ -763,83 +765,162 @@ async function showCatalog() {
   main.append(ul);
 }
 
-export async function showClients() {
+export async function showClients(editId) {
   const res = await api("/api/screens/create-client");
   if (res.status === 403) return denied();
-  main.replaceChildren(h("h1", "Create Client Admin"));
+  const editing = Boolean(editId);
+  const navMe = await api("/api/nav");
+  const role = typeof navMe.body?.role === "string" ? navMe.body.role : "";
+  const isPartnerAdmin = role === "Partner Admin";
+
+  const pageHead = h("div");
+  pageHead.className = "page-head";
+  pageHead.append(h("h1", editing ? "Edit client" : "Create client"));
+  if (!editing) {
+    const lead = h("p", "Add a client under a partner.");
+    lead.className = "page-lead";
+    pageHead.append(lead);
+  }
+  main.replaceChildren(pageHead);
+  if (flash) {
+    main.append(banner(flash.kind, flash.title, flash.text));
+    flash = null;
+  }
+
   const form = document.createElement("form");
-  form.className = "card";
+  form.className = "card client-form";
+  form.noValidate = true;
   const partner = document.createElement("select");
-  partner.className = "field__input";
-  partner.name = "partner_id";
-  partner.required = true;
-  const partnerField = h("label");
-  partnerField.className = "field";
-  partnerField.append(h("span", "Partner"), partner);
-  partnerField.querySelector("span").className = "field__label";
-  form.append(partnerField);
   const name = document.createElement("input");
-  name.className = "field__input";
-  name.id = "client-name";
-  name.name = "name";
-  name.required = true;
-  const nameField = h("label");
-  nameField.className = "field";
-  nameField.htmlFor = "client-name";
-  const nameLabel = h("span", "Client name");
-  nameLabel.className = "field__label";
-  nameField.append(nameLabel, name);
-  form.append(nameField);
   const address = {};
-  await appendNorthAmericaAddressFields(form, address);
-  const submit = primaryControl("button", "Create client");
-  submit.type = "submit";
-  form.append(submit);
-  const partners = await api("/api/orgs/partners");
-  fillSelect(partner, (partners.body?.partners ?? []).map((p) => ({
+
+  const partnersRes = await api("/api/orgs/partners");
+  const partnerRows = partnersRes.body?.partners ?? [];
+  fillSelect(partner, partnerRows.map((p) => ({
     code: p.partner_id,
-    label: p.name + " (" + p.partner_id + ")",
-  })), { blankLabel: "Select a partner…" });
-  if (!(partners.body?.partners ?? []).length) {
+    label: p.name,
+  })), { blankLabel: "Select a partner" });
+
+  // PA: Partner read-only when a single assigned partner (owner role rules). Multi → select among own.
+  const partnerReadOnly = isPartnerAdmin && partnerRows.length === 1;
+  if (partnerReadOnly) {
+    partner.value = partnerRows[0].partner_id;
+  }
+
+  await appendClientFields(form, address, api, {
+    nameInput: name,
+    partnerSelect: partner,
+    partnerReadOnly,
+    partnerLabel: partnerReadOnly ? partnerRows[0].name : "",
+    partnerHint: partnerReadOnly ? "Clients you create belong to your partner." : "",
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const submit = primaryControl("button", editing ? "Save client" : "Create client");
+  submit.type = "submit";
+  const cancel = document.createElement("a");
+  cancel.className = "button button--secondary btn-secondary";
+  cancel.textContent = "Cancel";
+  cancel.href = "#/home";
+  actions.append(submit, cancel);
+  form.append(actions);
+
+  if (!partnerRows.length) {
     partner.disabled = true;
     submit.disabled = true;
     form.prepend(banner("info", "No partners", "Create a partner before creating a client."));
   }
+
+  if (editing) {
+    const got = await api("/api/orgs/clients/" + editId);
+    if (got.status !== 200) {
+      main.append(banner("error", "Not found", "That client is not available."));
+      return;
+    }
+    // Edit: Partner stays on the existing partner (blocker: no Partner change on edit).
+    partner.value = got.body.partner_id ?? "";
+    name.value = got.body.name ?? "";
+    const a = got.body.address ?? {};
+    address.address_line_1.value = a.address_line_1 ?? "";
+    address.address_line_2.value = a.address_line_2 ?? "";
+    address.city.value = a.city ?? "";
+    if (a.country) {
+      address.country.value = a.country;
+      await address._applyCountry();
+      address.region.value = a.region ?? "";
+      address.postal_code.value = a.postal_code ?? "";
+      address.time_zone.value = a.time_zone ?? "";
+      address.phone.value = a.phone ?? "";
+      address.email.value = a.email ?? "";
+      if (a.country === "US" || a.country === "CA") address.phone_country.value = a.country;
+    }
+    // Re-render Partner as read-only on edit (DEC-273 gap blocker).
+    const partnerField = form.querySelector("#field-partner");
+    if (partnerField && !form.querySelector("#partner-readonly")) {
+      partner.hidden = true;
+      const labelText = partnerRows.find((p) => p.partner_id === partner.value)?.name || partner.value;
+      const ro = document.createElement("div");
+      ro.className = "readonly-select";
+      ro.id = "partner-readonly";
+      ro.setAttribute("role", "combobox");
+      ro.setAttribute("aria-readonly", "true");
+      ro.setAttribute("aria-disabled", "true");
+      ro.textContent = labelText;
+      partnerField.append(ro);
+    }
+  }
+
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    if (!partner.value) { showValidationBanner(form, "Partner", "Select a partner."); return; }
+    clearClientErrors(form);
+    const clientFields = [];
+    if (!partner.value) clientFields.push({ field: "partner_id", code: "Select a partner." });
     const nameMsg = entityNameError("client", name.value);
-    if (nameMsg) { showValidationBanner(form, "Client name", nameMsg); return; }
-    const lengthError = addressLengthError(address);
-    if (lengthError) { showValidationBanner(form, lengthError.title, lengthError.detail); return; }
+    if (nameMsg) clientFields.push({ field: "name", code: nameMsg });
+    for (const f of addressFieldErrors(address)) clientFields.push(f);
+    if (clientFields.length) {
+      renderClientErrors(form, clientFields);
+      return;
+    }
     submit.disabled = true;
     const body = {
       partner_id: partner.value,
       name: name.value.trim(),
       address: addressPayload(address),
     };
+    const path = editing ? "/api/orgs/clients/" + editId : "/api/screens/create-client";
+    const method = editing ? "PUT" : "POST";
     let write;
     try {
-      write = await api("/api/screens/create-client", {
-        method: "POST",
+      write = await api(path, {
+        method,
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(12000),
       });
     } catch {
-      form.prepend(banner("warning", "Timed out", "The request did not finish. Nothing was confirmed."));
+      showValidationBanner(form, "Timed out", "The request did not finish. Nothing was confirmed.");
       submit.disabled = false;
       return;
     }
     if (write.status >= 400) {
-      const detail = write.status === 422 && Array.isArray(write.body?.fields)
-        ? fieldsBannerDetail(write.body.fields)
-        : (write.body?.error || "The server refused the request.");
-      showValidationBanner(form, "Could not create the client", detail);
+      if (write.status === 422 && Array.isArray(write.body?.fields) && write.body.fields.length) {
+        renderClientErrors(form, write.body.fields);
+      } else {
+        const detail = write.body?.error || "The server refused the request.";
+        showValidationBanner(form, editing ? "Could not save the client" : "Could not create the client", detail);
+      }
       submit.disabled = false;
       return;
     }
-    form.prepend(banner("info", "Created", "The client was accepted."));
+    const id = write.body?.client_id || editId;
+    flash = {
+      kind: "info",
+      title: editing ? "Saved" : "Created",
+      text: "Client " + (write.body?.name || "") + " was accepted.",
+    };
+    location.hash = "#/client-edit?id=" + encodeURIComponent(id);
     submit.disabled = false;
   });
   main.append(form);
@@ -876,6 +957,10 @@ async function draw() {
   if (name === "config") return showConfig();
   if (name === "catalog") return showCatalog();
   if (name === "clients") return showClients();
+  if (name === "client-edit") {
+    const id = new URLSearchParams((location.hash.split("?")[1] || "")).get("id");
+    return showClients(id || "");
+  }
   if (name === "partners") return showPartners();
   if (name === "partner-edit") {
     const id = new URLSearchParams((location.hash.split("?")[1] || "")).get("id");
