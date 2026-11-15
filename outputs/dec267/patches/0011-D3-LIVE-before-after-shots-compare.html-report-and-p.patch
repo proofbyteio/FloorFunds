@@ -1,7 +1,7 @@
 From cdf8a4f98abe279f881572d2f1fbf6ec9ef2ffb2 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sun, 15 Nov 2026 18:10:01 +0000
-Subject: [PATCH 11/11] D3: LIVE before/after shots, compare.html, report and
+Subject: [PATCH 11/12] D3: LIVE before/after shots, compare.html, report and
  patches refresh
 
 Co-authored-by: proofbyteio <proofbyteio@users.noreply.github.com>

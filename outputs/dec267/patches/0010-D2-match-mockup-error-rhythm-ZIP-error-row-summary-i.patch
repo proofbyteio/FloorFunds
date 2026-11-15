@@ -1,7 +1,7 @@
 From 7a05f090fb725c367858bb9a5278c5fbad89bc2a Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sun, 15 Nov 2026 17:59:06 +0000
-Subject: [PATCH 10/11] D2: match mockup error rhythm, ZIP error row, summary
+Subject: [PATCH 10/12] D2: match mockup error rhythm, ZIP error row, summary
  icon, sidebar lockup
 
 Co-authored-by: proofbyteio <proofbyteio@users.noreply.github.com>

@@ -1,7 +1,7 @@
 From 76ff5f8ecb18b7cf121b231d7da10a06334990a4 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sun, 15 Nov 2026 17:25:45 +0000
-Subject: [PATCH 07/11] C8: 60px header bar, Sign out pill, mobile lockup,
+Subject: [PATCH 07/12] C8: 60px header bar, Sign out pill, mobile lockup,
  single column below 64rem
 
 Co-authored-by: proofbyteio <proofbyteio@users.noreply.github.com>

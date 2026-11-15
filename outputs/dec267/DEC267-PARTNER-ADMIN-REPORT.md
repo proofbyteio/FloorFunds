@@ -2,8 +2,8 @@
 
 **Branch:** `dec267-partner-admin` (local only; not pushed)  
 **Base:** `682ab67183adfde9b52c3b300674a075efd454d5` (tree `6d28db4ee366573fe83fad5437f90c7557f41a1e` = `origin/main`)  
-**Tip:** `cdf8a4f98abe279f881572d2f1fbf6ec9ef2ffb2`  
-**Tip tree:** `7a7d0526970954c705805e062c99cffc7a16be9a`  
+**Tip:** `fe9995dcec52918fe414e1fb4427c14120d070b8`  
+**Tip tree:** `fb4094e7bae67e51c62107cc403875b5775294bd`  
 
 Owner (relayed): DEC-267 9:03 AM PT — complete Partner Admin screen; DEC-268 9:04 AM PT — integrate UX mockup.  
 Steer: PM 9:25 AM PT confirmed C9 interims as **PM DEC-241 defaults, not owner decisions**.  
@@ -29,6 +29,7 @@ Inputs: `uploads/dec267-inputs.tar.gz` (sha256 `7915aa75dbecbb6b96cd405942880fd9
 | C9 | `8ecc214a78f727fca97e1cc5669bc73471b1c240` | `76ff5f8e…` | `59c9cd27c6aab6717f4c917c25b58a43d6355ecf` | DEC-268 interims pending PM (B1/B3/B4) |
 | D1 | `534507bc6c1ba52ab80142032e45a2bd356ac383` | `8ecc214a…` | `d5b7923716b30a3d06bb75a454fa8b35df8ed6e9` | D1: remove stray `outputs/dec267/questions.md` (keep questions in report only) |
 | D2 | `7a05f090fb725c367858bb9a5278c5fbad89bc2a` | `534507bc…` | `36769195b65336d096109b86d25987d79c680a29` | D2: match mockup error rhythm, ZIP error row, summary icon, sidebar lockup |
+| D3b | `fe9995dcec52918fe414e1fb4427c14120d070b8` | `cdf8a4f9…` | `fb4094e7bae67e51c62107cc403875b5775294bd` | D3b: report tip/tree/diffstat footer and format-patch through D3 |
 | D3 | `cdf8a4f98abe279f881572d2f1fbf6ec9ef2ffb2` | `7a05f090…` | `7a7d0526970954c705805e062c99cffc7a16be9a` | D3: LIVE shots, compare.html, report + patches refresh |
 
 C4 skipped (not built). C9 is separately revertible and holds B1/B2/B3/B4/B6 as PM DEC-241 defaults (9:25 AM PT).
@@ -47,49 +48,50 @@ C4 skipped (not built). C9 is separately revertible and holds B1/B2/B3/B4/B6 as 
 ## `git diff --stat 682ab671..tip`
 
 ```
-outputs/dec267/DEC267-PARTNER-ADMIN-REPORT.md      | 183 +++++++++
- outputs/dec267/DEC267-PARTNER-ADMIN-REPORT.sha256  |   1 +
- ...in-shell-banner-and-disabled-CTA-contrast.patch | 109 ++++++
- ...plyCountry-on-Partner-Location-edit-clear.patch | 134 +++++++
- ...phone-number-when-country-is-null-email-e.patch |  50 +++
- ...form-sections-Country-first-blank-default.patch | 337 ++++++++++++++++
- ...inline-errors-and-error-summary-map-all-c.patch | 175 +++++++++
- ...compact-CSS-720px-card-8-col-grid-dark-er.patch | 267 +++++++++++++
- ...der-bar-Sign-out-pill-mobile-lockup-singl.patch | 210 ++++++++++
- ...0008-DEC-268-interims-pending-PM-B1-B3-B4.patch | 103 +++++
- ...tray-outputs-dec267-questions.md-from-the.patch |  32 ++
- ...ckup-error-rhythm-ZIP-error-row-summary-i.patch | 246 ++++++++++++
- outputs/dec267/shots/after/LIVE.txt                |   3 +
- outputs/dec267/shots/after/SHA256SUMS.txt          |   7 +
- .../shots/after/partner-admin-ca-1440x900.png      | Bin 0 -> 92611 bytes
- .../shots/after/partner-admin-edit-1440x900.png    | Bin 0 -> 83962 bytes
- .../shots/after/partner-admin-empty-1440x900.png   | Bin 0 -> 65014 bytes
- .../shots/after/partner-admin-error-1440x900.png   | Bin 0 -> 89625 bytes
- .../after/partner-admin-filled-us-1440x900.png     | Bin 0 -> 74948 bytes
- .../shots/after/partner-admin-mobile-390.png       | Bin 0 -> 49708 bytes
- .../after/partner-admin-server-422-1440x900.png    | Bin 0 -> 78106 bytes
- outputs/dec267/shots/before/LIVE.txt               |   3 +
- outputs/dec267/shots/before/SHA256SUMS.txt         |   7 +
- .../shots/before/partner-admin-ca-1440x900.png     | Bin 0 -> 77069 bytes
- .../shots/before/partner-admin-edit-1440x900.png   | Bin 0 -> 80775 bytes
- .../shots/before/partner-admin-empty-1440x900.png  | Bin 0 -> 75757 bytes
- .../shots/before/partner-admin-error-1440x900.png  | Bin 0 -> 72540 bytes
- .../before/partner-admin-filled-us-1440x900.png    | Bin 0 -> 82666 bytes
- .../shots/before/partner-admin-mobile-390.png      | Bin 0 -> 88229 bytes
- .../before/partner-admin-server-422-1440x900.png   | Bin 0 -> 80775 bytes
- outputs/dec267/shots/compare.html                  |  22 ++
- .../shots/mock/partner-admin-empty-1440x900.png    | Bin 0 -> 73153 bytes
- .../shots/mock/partner-admin-error-1440x900.png    | Bin 0 -> 99085 bytes
- .../mock/partner-admin-filled-us-1440x900.png      | Bin 0 -> 85731 bytes
- .../dec267/shots/mock/partner-admin-mobile-390.png | Bin 0 -> 74019 bytes
- src/Admin.Api/OrgFormValidation.cs                 |   4 +-
- ui/admin-shell/index.html                          |  17 +-
- ui/admin-shell/org-form-rules.mjs                  |   4 +-
- ui/admin-shell/partner-form.mjs                    | 364 +++++++++++++++++
- ui/admin-shell/shell.css                           | 436 ++++++++++++++++++++-
- ui/admin-shell/shell.js                            | 104 +++--
- ui/admin-shell/theme.css                           |  34 +-
- 42 files changed, 2790 insertions(+), 62 deletions(-)
+outputs/dec267/DEC267-PARTNER-ADMIN-REPORT.md      |   216 +
+ outputs/dec267/DEC267-PARTNER-ADMIN-REPORT.sha256  |     1 +
+ ...in-shell-banner-and-disabled-CTA-contrast.patch |   109 +
+ ...plyCountry-on-Partner-Location-edit-clear.patch |   134 +
+ ...phone-number-when-country-is-null-email-e.patch |    50 +
+ ...form-sections-Country-first-blank-default.patch |   337 +
+ ...inline-errors-and-error-summary-map-all-c.patch |   175 +
+ ...compact-CSS-720px-card-8-col-grid-dark-er.patch |   267 +
+ ...der-bar-Sign-out-pill-mobile-lockup-singl.patch |   210 +
+ ...0008-DEC-268-interims-pending-PM-B1-B3-B4.patch |   103 +
+ ...tray-outputs-dec267-questions.md-from-the.patch |    32 +
+ ...ckup-error-rhythm-ZIP-error-row-summary-i.patch |   246 +
+ ...ore-after-shots-compare.html-report-and-p.patch | 27482 +++++++++++++++++++
+ outputs/dec267/shots/after/LIVE.txt                |     3 +
+ outputs/dec267/shots/after/SHA256SUMS.txt          |     7 +
+ .../shots/after/partner-admin-ca-1440x900.png      |   Bin 0 -> 92611 bytes
+ .../shots/after/partner-admin-edit-1440x900.png    |   Bin 0 -> 83962 bytes
+ .../shots/after/partner-admin-empty-1440x900.png   |   Bin 0 -> 65014 bytes
+ .../shots/after/partner-admin-error-1440x900.png   |   Bin 0 -> 89625 bytes
+ .../after/partner-admin-filled-us-1440x900.png     |   Bin 0 -> 74948 bytes
+ .../shots/after/partner-admin-mobile-390.png       |   Bin 0 -> 49708 bytes
+ .../after/partner-admin-server-422-1440x900.png    |   Bin 0 -> 78106 bytes
+ outputs/dec267/shots/before/LIVE.txt               |     3 +
+ outputs/dec267/shots/before/SHA256SUMS.txt         |     7 +
+ .../shots/before/partner-admin-ca-1440x900.png     |   Bin 0 -> 77069 bytes
+ .../shots/before/partner-admin-edit-1440x900.png   |   Bin 0 -> 80775 bytes
+ .../shots/before/partner-admin-empty-1440x900.png  |   Bin 0 -> 75757 bytes
+ .../shots/before/partner-admin-error-1440x900.png  |   Bin 0 -> 72540 bytes
+ .../before/partner-admin-filled-us-1440x900.png    |   Bin 0 -> 82666 bytes
+ .../shots/before/partner-admin-mobile-390.png      |   Bin 0 -> 88229 bytes
+ .../before/partner-admin-server-422-1440x900.png   |   Bin 0 -> 80775 bytes
+ outputs/dec267/shots/compare.html                  |    22 +
+ .../shots/mock/partner-admin-empty-1440x900.png    |   Bin 0 -> 73153 bytes
+ .../shots/mock/partner-admin-error-1440x900.png    |   Bin 0 -> 99085 bytes
+ .../mock/partner-admin-filled-us-1440x900.png      |   Bin 0 -> 85731 bytes
+ .../dec267/shots/mock/partner-admin-mobile-390.png |   Bin 0 -> 74019 bytes
+ src/Admin.Api/OrgFormValidation.cs                 |     4 +-
+ ui/admin-shell/index.html                          |    17 +-
+ ui/admin-shell/org-form-rules.mjs                  |     4 +-
+ ui/admin-shell/partner-form.mjs                    |   364 +
+ ui/admin-shell/shell.css                           |   436 +-
+ ui/admin-shell/shell.js                            |   104 +-
+ ui/admin-shell/theme.css                           |    34 +-
+ 43 files changed, 30305 insertions(+), 62 deletions(-)
 ```
 
 Patches regenerated: `outputs/dec267/patches/` via `git format-patch 682ab671..<tip>`.
@@ -211,6 +213,6 @@ Also: **PQ-NEW-10** not built (no admin user account). Libphonenumber validation
 
 ## Footer (filled after D3 commit)
 
-- **Tip:** `cdf8a4f98abe279f881572d2f1fbf6ec9ef2ffb2`
-- **Tip tree:** `7a7d0526970954c705805e062c99cffc7a16be9a`
+- **Tip:** `fe9995dcec52918fe414e1fb4427c14120d070b8`
+- **Tip tree:** `fb4094e7bae67e51c62107cc403875b5775294bd`
 - **Report sha256:** recorded in `DEC267-PARTNER-ADMIN-REPORT.sha256`
