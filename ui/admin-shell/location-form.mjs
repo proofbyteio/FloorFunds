@@ -398,19 +398,19 @@ export function locationControlId(field) {
 }
 
 export function clearLocationErrors(form) {
-  form.querySelector(".error-summary")?.remove();
-  form.classList.remove("location-form--errors");
+  form.querySelector(".error-summary")?.remove?.();
+  form.classList?.remove?.("location-form--errors");
   for (const field of form.querySelectorAll(".field.has-error")) {
-    field.classList.remove("has-error");
+    field.classList?.remove?.("has-error");
   }
   for (const err of form.querySelectorAll(".error-text, .error-zip")) {
-    err.remove();
+    err.remove?.();
   }
   for (const control of form.querySelectorAll("[aria-invalid]")) {
-    control.removeAttribute("aria-invalid");
+    control.removeAttribute?.("aria-invalid");
   }
   for (const hint of form.querySelectorAll(".hint, .hint-zip")) {
-    hint.hidden = hint.classList.contains("hint-zip") && !form.querySelector("#country")?.value;
+    hint.hidden = !!(hint.classList?.contains?.("hint-zip") && !form.querySelector("#country")?.value);
   }
 }
 
@@ -425,7 +425,7 @@ export function renderLocationErrors(form, fields) {
   const list = Array.isArray(fields) ? fields.filter((f) => f && f.code) : [];
   if (!list.length) return;
 
-  form.classList.add("location-form--errors");
+  form.classList?.add?.("location-form--errors");
   const summary = el("div", { className: "error-summary", role: "alert", id: "error-summary" });
   const heading = el("h2");
   heading.innerHTML =
@@ -455,8 +455,8 @@ export function renderLocationErrors(form, fields) {
     const control = form.querySelector("#" + id);
     if (!control) continue;
     const fieldEl = control.closest(".field") || control.parentElement;
-    if (fieldEl) fieldEl.classList.add("has-error");
-    control.setAttribute("aria-invalid", "true");
+    if (fieldEl) fieldEl.classList?.add?.("has-error");
+    control.setAttribute?.("aria-invalid", "true");
     const errId = id + "-error";
     let err = form.querySelector("#" + errId);
     if (!err) {
