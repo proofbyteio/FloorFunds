@@ -24,6 +24,7 @@ import { appendPartnerFields, clearPartnerErrors, renderPartnerErrors } from "./
 import { appendClientFields, clearClientErrors, renderClientErrors } from "./client-form.mjs";
 import { appendLocationFields, clearLocationErrors, renderLocationErrors } from "./location-form.mjs";
 import {
+  CA_LOCATION_ROLE_HINT,
   CLIENT_PAGE_LEAD,
   LOCATION_PAGE_LEAD,
   PA_CLIENT_PARTNER_HINT,
@@ -435,6 +436,7 @@ export async function showCreate(state, editId) {
   const navMe = await api("/api/nav");
   const role = typeof navMe.body?.role === "string" ? navMe.body.role : "";
   const isPartnerAdmin = role === "Partner Admin";
+  const isClientAdmin = role === "Client Admin";
 
   const pageHead = h("div");
   pageHead.className = "page-head";
@@ -468,7 +470,8 @@ export async function showCreate(state, editId) {
     label: p.name,
   })), { blankLabel: "Select a partner" });
 
-  const partnerReadOnly = isPartnerAdmin && partnerRows.length === 1;
+  // DEC-275: CA locks Partner + Client to own; PA locks Partner only.
+  const partnerReadOnly = (isPartnerAdmin || isClientAdmin) && partnerRows.length === 1;
   if (partnerReadOnly) partner.value = partnerRows[0].partner_id;
 
   async function loadClientsForPartner(partnerId, selectedClientId) {
@@ -487,13 +490,24 @@ export async function showCreate(state, editId) {
     return rows;
   }
 
+  let clientRows = [];
+  if (partner.value) clientRows = await loadClientsForPartner(partner.value);
+  const clientReadOnly = isClientAdmin && clientRows.length === 1;
+  if (clientReadOnly) client.value = clientRows[0].client_id;
+
+  const roleHint = isClientAdmin && partnerReadOnly && clientReadOnly
+    ? CA_LOCATION_ROLE_HINT
+    : (partnerReadOnly && !isClientAdmin ? PA_LOCATION_ROLE_HINT : "");
+
   await appendLocationFields(form, address, api, {
     nameInput: name,
     partnerSelect: partner,
     clientSelect: client,
     partnerReadOnly,
+    clientReadOnly,
     partnerLabel: partnerReadOnly ? partnerRows[0].name : "",
-    roleHint: partnerReadOnly ? PA_LOCATION_ROLE_HINT : "",
+    clientLabel: clientReadOnly ? clientRows[0].name : "",
+    roleHint,
     onPartnerChange: (partnerId) => { void loadClientsForPartner(partnerId); },
   });
 
@@ -527,10 +541,11 @@ export async function showCreate(state, editId) {
   actions.append(submit, cancel);
   form.append(actions);
 
-  if (partner.value) await loadClientsForPartner(partner.value);
-  else {
+  if (!partner.value) {
     fillSelect(client, [], { blankLabel: "Select a partner first" });
     client.disabled = true;
+  } else if (!clientRows.length) {
+    clientRows = await loadClientsForPartner(partner.value);
   }
 
   if (!partnerRows.length) {
