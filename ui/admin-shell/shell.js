@@ -22,6 +22,15 @@ import {
 } from "./org-form-rules.mjs";
 import { appendPartnerFields, clearPartnerErrors, renderPartnerErrors } from "./partner-form.mjs";
 import { appendClientFields, clearClientErrors, renderClientErrors } from "./client-form.mjs";
+import { appendLocationFields, clearLocationErrors, renderLocationErrors } from "./location-form.mjs";
+import {
+  CLIENT_PAGE_LEAD,
+  LOCATION_PAGE_LEAD,
+  PA_CLIENT_PARTNER_HINT,
+  PA_LOCATION_ROLE_HINT,
+  SELECT_A_CLIENT,
+  SELECT_A_PARTNER,
+} from "./dec241-defaults.mjs";
 
 const main = document.querySelector("#main");
 const navEl = document.querySelector("#nav");
@@ -423,64 +432,114 @@ export async function showCreate(state, editId) {
   const probe = await api("/api/orgs/locations");
   if (probe.status === 403) return denied();
   const editing = Boolean(editId);
-  main.replaceChildren(h("h1", editing ? "Edit location" : "Create Location Admin"));
-  if (state === "timeout") main.append(banner("warning", "Timed out", "The request did not finish. Nothing was confirmed."));
+  const navMe = await api("/api/nav");
+  const role = typeof navMe.body?.role === "string" ? navMe.body.role : "";
+  const isPartnerAdmin = role === "Partner Admin";
+
+  const pageHead = h("div");
+  pageHead.className = "page-head";
+  pageHead.append(h("h1", editing ? "Edit location" : "Create location"));
+  if (!editing) {
+    const lead = h("p", LOCATION_PAGE_LEAD);
+    lead.className = "page-lead";
+    pageHead.append(lead);
+  }
+  main.replaceChildren(pageHead);
+  if (state === "timeout") {
+    main.append(banner("warning", "Timed out", "The request did not finish. Nothing was confirmed."));
+  }
+  if (flash) {
+    main.append(banner(flash.kind, flash.title, flash.text));
+    flash = null;
+  }
+
   const form = document.createElement("form");
-  form.className = "card";
+  form.className = "card location-form";
+  form.noValidate = true;
+  const partner = document.createElement("select");
   const client = document.createElement("select");
-  client.className = "field__input";
-  client.name = "client_id";
-  client.required = true;
-  client.setAttribute("aria-describedby", "client-hint");
-  const clientField = h("label");
-  clientField.className = "field";
-  clientField.append(h("span", "Client"), client);
-  clientField.querySelector("span").className = "field__label";
-  form.append(clientField);
+  const name = document.createElement("input");
+  const address = {};
+
+  const partnersRes = await api("/api/orgs/partners");
+  const partnerRows = partnersRes.body?.partners ?? [];
+  fillSelect(partner, partnerRows.map((p) => ({
+    code: p.partner_id,
+    label: p.name,
+  })), { blankLabel: "Select a partner" });
+
+  const partnerReadOnly = isPartnerAdmin && partnerRows.length === 1;
+  if (partnerReadOnly) partner.value = partnerRows[0].partner_id;
+
+  async function loadClientsForPartner(partnerId, selectedClientId) {
+    if (!partnerId) {
+      fillSelect(client, [], { blankLabel: "Select a partner first" });
+      client.disabled = true;
+      return [];
+    }
+    const clientsRes = await api("/api/orgs/clients?partner_id=" + encodeURIComponent(partnerId));
+    const rows = clientsRes.body?.clients ?? [];
+    fillSelect(client, rows.map((row) => ({
+      code: row.client_id,
+      label: row.name,
+    })), { blankLabel: "Select a client", selected: selectedClientId || "" });
+    client.disabled = false;
+    return rows;
+  }
+
+  await appendLocationFields(form, address, api, {
+    nameInput: name,
+    partnerSelect: partner,
+    clientSelect: client,
+    partnerReadOnly,
+    partnerLabel: partnerReadOnly ? partnerRows[0].name : "",
+    roleHint: partnerReadOnly ? PA_LOCATION_ROLE_HINT : "",
+    onPartnerChange: (partnerId) => { void loadClientsForPartner(partnerId); },
+  });
+
+  // Pull address: address fields only — no phone, email, or time zone (DEC-145 / DEC-273).
+  const pullRow = document.createElement("div");
+  pullRow.className = "pull-row";
   const pull = document.createElement("button");
   pull.type = "button";
-  pull.className = "button";
+  pull.className = "button button--secondary btn-secondary";
   pull.textContent = "Pull address from client";
   pull.setAttribute("aria-describedby", "pull-hint");
-  form.append(pull);
-  const pullHint = h("p", "One-time fill of the address fields from the selected client. Does not sync later, and does not copy phone, email, or time zone beyond filling those inputs once.");
+  const pullHint = h("p", "One-time fill of street, city, country, region, and postal code from the selected client. Does not copy phone, email, or time zone, and does not sync later.");
   pullHint.id = "pull-hint";
-  pullHint.className = "field__hint";
-  form.append(pullHint);
-  const name = document.createElement("input");
-  name.className = "field__input";
-  name.id = "location-name";
-  name.name = "name";
-  name.required = true;
-  // Do not set HTML maxlength: it counts UTF-16 units. JS + server use Unicode scalars (FFP 2–100).
-  const nameField = h("label");
-  nameField.className = "field";
-  nameField.htmlFor = "location-name";
-  const nameLabel = h("span", "Location name");
-  nameLabel.className = "field__label";
-  nameField.append(nameLabel, name);
-  form.append(nameField);
-  const address = {};
-  await appendNorthAmericaAddressFields(form, address);
+  pullHint.className = "field-hint";
+  pullRow.append(pull, pullHint);
+  const locSection = form.querySelector("#sec-location")?.closest("section");
+  if (locSection && locSection.nextSibling) {
+    form.insertBefore(pullRow, locSection.nextSibling);
+  } else {
+    form.append(pullRow);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
   const submit = primaryControl("button", editing ? "Save location" : "Create location");
   submit.type = "submit";
-  form.append(submit);
-  const hint = h("p", "Choose an existing client from the server list. A client id cannot be typed.");
-  hint.id = "client-hint";
-  hint.className = "field__hint";
-  form.insertBefore(hint, submit);
-  const clients = await api("/api/orgs/clients");
-  const clientRows = clients.body?.clients ?? [];
-  fillSelect(client, clientRows.map((row) => ({
-    code: row.client_id,
-    label: row.name + " (" + row.client_id + ")",
-  })), { blankLabel: "Select a client…" });
-  if (!clientRows.length) {
+  const cancel = document.createElement("a");
+  cancel.className = "button button--secondary btn-secondary";
+  cancel.textContent = "Cancel";
+  cancel.href = "#/home";
+  actions.append(submit, cancel);
+  form.append(actions);
+
+  if (partner.value) await loadClientsForPartner(partner.value);
+  else {
+    fillSelect(client, [], { blankLabel: "Select a partner first" });
     client.disabled = true;
+  }
+
+  if (!partnerRows.length) {
+    partner.disabled = true;
     submit.disabled = true;
     pull.disabled = true;
-    form.prepend(banner("info", "No clients", "Create a client before creating a location."));
+    form.prepend(banner("info", "No partners", "Create a partner and client before creating a location."));
   }
+
   async function fillAddressFromClient(clientId) {
     if (!clientId) return;
     const got = await api("/api/orgs/clients/" + clientId);
@@ -494,15 +553,12 @@ export async function showCreate(state, editId) {
       await address._applyCountry();
       address.region.value = a.region ?? "";
       address.postal_code.value = a.postal_code ?? "";
-      address.time_zone.value = a.time_zone ?? "";
-      address.phone.value = a.phone ?? "";
-      address.email.value = a.email ?? "";
-      if (address.phone_country && (a.country === "US" || a.country === "CA")) {
-        address.phone_country.value = a.country;
-      }
+      if (a.country === "US" || a.country === "CA") address.phone_country.value = a.country;
     }
+    // Intentionally do not copy phone, email, or time_zone.
   }
   pull.addEventListener("click", () => { void fillAddressFromClient(client.value); });
+
   if (editing) {
     const got = await api("/api/orgs/locations/" + editId);
     if (got.status !== 200) {
@@ -510,6 +566,16 @@ export async function showCreate(state, editId) {
       return;
     }
     name.value = got.body.name ?? "";
+    // Resolve partner from client when API returns client_id.
+    let partnerId = got.body.partner_id || "";
+    if (got.body.client_id && !partnerId) {
+      const cGot = await api("/api/orgs/clients/" + got.body.client_id);
+      if (cGot.status === 200) partnerId = cGot.body.partner_id || "";
+    }
+    if (partnerId) {
+      partner.value = partnerId;
+      await loadClientsForPartner(partnerId, got.body.client_id || "");
+    }
     if (got.body.client_id) client.value = got.body.client_id;
     const a = got.body.address;
     if (a) {
@@ -524,19 +590,24 @@ export async function showCreate(state, editId) {
         address.time_zone.value = a.time_zone ?? "";
         address.phone.value = a.phone ?? "";
         address.email.value = a.email ?? "";
-        if (address.phone_country && (a.country === "US" || a.country === "CA")) {
-          address.phone_country.value = a.country;
-        }
+        if (a.country === "US" || a.country === "CA") address.phone_country.value = a.country;
       }
     }
   }
+
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    if (!client.value) { showValidationBanner(form, "Client", "Select a client."); return; }
+    clearLocationErrors(form);
+    const fields = [];
+    if (!partner.value) fields.push({ field: "partner_id", code: SELECT_A_PARTNER });
+    if (!client.value) fields.push({ field: "client_id", code: SELECT_A_CLIENT });
     const nameMsg = locationNameClientError(name.value);
-    if (nameMsg) { showValidationBanner(form, "Location name", nameMsg); return; }
-    const lengthError = addressLengthError(address);
-    if (lengthError) { showValidationBanner(form, lengthError.title, lengthError.detail); return; }
+    if (nameMsg) fields.push({ field: "name", code: nameMsg });
+    for (const f of addressFieldErrors(address)) fields.push(f);
+    if (fields.length) {
+      renderLocationErrors(form, fields);
+      return;
+    }
     submit.disabled = true;
     const body = {
       client_id: client.value,
@@ -558,14 +629,24 @@ export async function showCreate(state, editId) {
     }
     if (res.status === 408) return showCreate("timeout", editId);
     if (res.status >= 400) {
-      const detail = res.status === 422 && Array.isArray(res.body?.fields)
-        ? fieldsBannerDetail(res.body.fields)
-        : (res.body?.error || "The server refused the request.");
-      showValidationBanner(form, editing ? "Could not save the location" : "Could not create the location", detail);
+      if (res.status === 422 && Array.isArray(res.body?.fields) && res.body.fields.length) {
+        renderLocationErrors(form, res.body.fields);
+      } else {
+        const detail = res.body?.error || "The server refused the request.";
+        showValidationBanner(form, editing ? "Could not save the location" : "Could not create the location", detail);
+      }
       submit.disabled = false;
       return;
     }
-    location.hash = "#/locations";
+    const id = res.body?.location_id || editId;
+    flash = {
+      kind: "info",
+      title: editing ? "Saved" : "Created",
+      text: "Location " + (res.body?.name || "") + " was accepted.",
+    };
+    // DEC-269: no list requirement for Cancel; after create go to edit (like Partner/Client).
+    location.hash = "#/location-edit?id=" + encodeURIComponent(id);
+    submit.disabled = false;
   });
   main.append(form);
 }
@@ -777,7 +858,7 @@ export async function showClients(editId) {
   pageHead.className = "page-head";
   pageHead.append(h("h1", editing ? "Edit client" : "Create client"));
   if (!editing) {
-    const lead = h("p", "Add a client under a partner.");
+    const lead = h("p", CLIENT_PAGE_LEAD);
     lead.className = "page-lead";
     pageHead.append(lead);
   }
@@ -812,7 +893,7 @@ export async function showClients(editId) {
     partnerSelect: partner,
     partnerReadOnly,
     partnerLabel: partnerReadOnly ? partnerRows[0].name : "",
-    partnerHint: partnerReadOnly ? "Clients you create belong to your partner." : "",
+    partnerHint: partnerReadOnly ? PA_CLIENT_PARTNER_HINT : "",
   });
 
   const actions = document.createElement("div");
@@ -875,7 +956,7 @@ export async function showClients(editId) {
     ev.preventDefault();
     clearClientErrors(form);
     const clientFields = [];
-    if (!partner.value) clientFields.push({ field: "partner_id", code: "Select a partner." });
+    if (!partner.value) clientFields.push({ field: "partner_id", code: SELECT_A_PARTNER });
     const nameMsg = entityNameError("client", name.value);
     if (nameMsg) clientFields.push({ field: "name", code: nameMsg });
     for (const f of addressFieldErrors(address)) clientFields.push(f);
