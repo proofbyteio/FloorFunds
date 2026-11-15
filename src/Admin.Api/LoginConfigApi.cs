@@ -12,7 +12,11 @@ public sealed record Caller(AdminIdentity Id, AdminGrant Grant, string RequestId
 {
     public bool IsSuper => Grant.Role == BuiltInRole.SuperAdmin;
     public bool IsPartnerAdmin => Grant.Role == BuiltInRole.PartnerAdmin;
+    public bool IsClientAdmin => Grant.Role == BuiltInRole.ClientAdmin;
+    /// <summary>Super Admin or Partner Admin. Client Admin is not included (no partner/client write).</summary>
     public bool IsAdmin => IsSuper || IsPartnerAdmin;
+    /// <summary>May create/edit/list locations (SA, PA, or CA under own client).</summary>
+    public bool MayManageLocations => IsAdmin || IsClientAdmin;
 }
 
 sealed record LlcRow(Guid LocationId, Guid PartnerId, string Slug, string Name, string ProviderKind, string DisplayName, Guid[] Tenants,
@@ -810,39 +814,52 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
     /// <summary>Locations the resolved grant can already read. An empty list is 200, not an error.</summary>
     public Task<IResult> LocationsAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsAdmin) throw Err(403, "forbidden");
+        if (!who.MayManageLocations) throw Err(403, "forbidden");
         await using var cmd = new NpgsqlCommand(
             "SELECT location_id, partner_id, client_id, name, slug FROM auth.location ORDER BY name", c, tx);
         var rows = new JsonArray();
         await using var r = await cmd.ExecuteReaderAsync();
         while (await r.ReadAsync())
+        {
+            var clientId = r.IsDBNull(2) ? (Guid?)null : r.GetGuid(2);
+            var partnerId = r.GetGuid(1);
+            // Defense in depth with Assigned* (RLS also scopes).
+            if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId)) continue;
+            if (who.IsClientAdmin && (clientId is null || !who.Grant.AssignedClients.Contains(clientId.Value))) continue;
             rows.Add(new JsonObject
             {
                 ["location_id"] = r.GetGuid(0).ToString("D"),
-                ["partner_id"] = r.GetGuid(1).ToString("D"),
-                ["client_id"] = r.IsDBNull(2) ? null : r.GetGuid(2).ToString("D"),
+                ["partner_id"] = partnerId.ToString("D"),
+                ["client_id"] = clientId?.ToString("D"),
                 ["name"] = r.GetString(3),
                 ["slug"] = r.GetString(4),
             });
+        }
         return Json(200, new JsonObject { ["locations"] = rows });
     });
 
     public Task<IResult> GetOrgLocationAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsAdmin) throw Err(403, "forbidden");
+        if (!who.MayManageLocations) throw Err(403, "forbidden");
         if (ParseId(id) is not { } loc || loc == Guid.Empty) throw Err(404, "not_found");
         var row = await LoadOrgLocationAsync(c, tx, loc) ?? throw Err(404, "not_found");
+        // G1 404 not_found for out-of-scope (same shape as PA foreign partner).
         if (!who.IsSuper && who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(row.PartnerId))
+            throw Err(404, "not_found");
+        if (who.IsClientAdmin && (row.ClientId is null || !who.Grant.AssignedClients.Contains(row.ClientId.Value)))
             throw Err(404, "not_found");
         return Json(200, OrgLocationView(row));
     });
 
     public Task<IResult> PutOrgLocationAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsAdmin || !who.Grant.LoginMethodWrite || !who.Grant.OrgCreateEdit) throw Err(403, "forbidden");
+        // Org location edit: MayManageLocations + OrgCreateEdit. LoginMethodWrite is for login-config only.
+        if (!who.MayManageLocations || !who.Grant.OrgCreateEdit) throw Err(403, "forbidden");
         if (ParseId(id) is not { } loc || loc == Guid.Empty) throw Err(404, "not_found");
         var existing = await LoadOrgLocationAsync(c, tx, loc) ?? throw Err(404, "not_found");
         if (!who.IsSuper && who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(existing.PartnerId))
+            throw Err(404, "not_found");
+        if (who.IsClientAdmin && (existing.ClientId is null || !who.Grant.AssignedClients.Contains(existing.ClientId.Value)))
             throw Err(404, "not_found");
         var read = await ReadBodyAsync(ctx);
         if (read.TimedOut) throw BodyTimeout(ctx, who);
@@ -863,7 +880,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
     /// </summary>
     public Task<IResult> PartnersAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsAdmin) throw Err(403, "forbidden");
+        if (!who.MayManageLocations) throw Err(403, "forbidden");
         await using var cmd = new NpgsqlCommand("SELECT partner_id FROM auth.list_existing_partners()", c, tx);
         var ids = new JsonArray();
         await using var r = await cmd.ExecuteReaderAsync();
@@ -874,7 +891,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
     /// <summary>FFP shared lookups (DEC-258/260): active countries for address dropdowns.</summary>
     public Task<IResult> LookupCountriesAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsAdmin) throw Err(403, "forbidden");
+        if (!who.MayManageLocations) throw Err(403, "forbidden");
         await using var cmd = new NpgsqlCommand(
             "SELECT iso_code, name FROM auth.countries WHERE active ORDER BY name", c, tx);
         var rows = new JsonArray();
@@ -890,7 +907,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
     /// <summary>Regions for a country ISO code (?country=US|CA).</summary>
     public Task<IResult> LookupRegionsAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsAdmin) throw Err(403, "forbidden");
+        if (!who.MayManageLocations) throw Err(403, "forbidden");
         var country = (ctx.Request.Query["country"].ToString() ?? "").Trim().ToUpperInvariant();
         if (country.Length != 2) throw Validation([new("country", "required")]);
         await using var cmd = new NpgsqlCommand(
@@ -906,7 +923,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
     /// <summary>IANA time zones for a country (?country=US|CA).</summary>
     public Task<IResult> LookupTimeZonesAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsAdmin) throw Err(403, "forbidden");
+        if (!who.MayManageLocations) throw Err(403, "forbidden");
         var country = (ctx.Request.Query["country"].ToString() ?? "").Trim().ToUpperInvariant();
         if (country.Length != 2) throw Validation([new("country", "required")]);
         await using var cmd = new NpgsqlCommand(
@@ -922,7 +939,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
     /// <summary>Postal-rule metadata for a country (?country=US|CA).</summary>
     public Task<IResult> LookupPostalRuleAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsAdmin) throw Err(403, "forbidden");
+        if (!who.MayManageLocations) throw Err(403, "forbidden");
         var country = (ctx.Request.Query["country"].ToString() ?? "").Trim().ToUpperInvariant();
         if (country.Length != 2) throw Validation([new("country", "required")]);
         await using var cmd = new NpgsqlCommand(
@@ -943,21 +960,44 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
 
     public Task<IResult> ListOrgPartnersAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsSuper) throw Err(403, "forbidden");
+        // DEC-273: SA sees all; PA sees assigned partners only (Client/Location Partner dropdown).
+        // DEC-275: CA sees only the partner of their assigned client (locked Partner field).
+        // Defense in depth with Assigned*; RLS scopes via actor_can_partner / partner_admin_select_client.
+        if (!who.MayManageLocations) throw Err(403, "forbidden");
         await using var cmd = new NpgsqlCommand(
             "SELECT partner_id, name FROM auth.partner ORDER BY lower(name)", c, tx);
         var rows = new JsonArray();
         await using var r = await cmd.ExecuteReaderAsync();
         while (await r.ReadAsync())
-            rows.Add(new JsonObject { ["partner_id"] = r.GetGuid(0).ToString("D"), ["name"] = r.GetString(1) });
+        {
+            var id = r.GetGuid(0);
+            if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(id)) continue;
+            // CA: RLS returns only partner(s) of own client; no AssignedPartners set.
+            rows.Add(new JsonObject { ["partner_id"] = id.ToString("D"), ["name"] = r.GetString(1) });
+        }
         return Json(200, new JsonObject { ["partners"] = rows });
     });
 
     public Task<IResult> GetOrgPartnerAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsSuper) throw Err(403, "forbidden");
+        // DEC-273: SA any; PA only assigned partners (same 404 shape as GetOrgClient). RLS also
+        // scopes SELECT via partner_admin_select_assigned / actor_can_partner.
+        // DEC-275: CA may GET partner of own client only (locked Partner); foreign → 404.
+        if (!who.MayManageLocations) throw Err(403, "forbidden");
         if (ParseId(id) is not { } partnerId || partnerId == Guid.Empty) throw Err(404, "not_found");
+        if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId))
+            throw Err(404, "not_found");
         var row = await LoadPartnerAsync(c, tx, partnerId) ?? throw Err(404, "not_found");
+        if (who.IsClientAdmin)
+        {
+            // Confirm at least one assigned client sits under this partner (RLS already filters).
+            await using var chk = new NpgsqlCommand(
+                "SELECT 1 FROM auth.client WHERE partner_id = $1 AND client_id = ANY($2) LIMIT 1", c, tx);
+            chk.Parameters.Add(new() { Value = partnerId });
+            chk.Parameters.Add(new() { Value = who.Grant.AssignedClients.ToArray() });
+            await using var cr = await chk.ExecuteReaderAsync();
+            if (!await cr.ReadAsync()) throw Err(404, "not_found");
+        }
         return Json(200, PartnerView(row));
     });
 
@@ -1155,9 +1195,16 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         }
         else if (who.IsPartnerAdmin)
         {
-            // Same as main 5f7cec33: create_location + config (Locations CTA / LLC; not SA Admin labels).
+            // DEC-273: PA may create/edit Clients under assigned partners (readonly Partner UI).
+            screens.Add("create_client");
             screens.Add("create_location");
             screens.Add("config");
+        }
+        else if (who.IsClientAdmin)
+        {
+            // PM DEC-241 default: Client Admin — Locations only. No create_client / create_partner /
+            // config nav. Own-client read stays on GET /api/orgs/clients for the locked Location field.
+            screens.Add("create_location");
         }
         if (CatalogNav.Includes(who.Id.UserId, who.Grant)) screens.Add("catalog");
         string signedInAs = "";
@@ -1183,23 +1230,25 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         return Json(200, new JsonObject { ["screen"] = "catalog", ["write"] = "held" });
     });
 
-    /// <summary>Create Client screen probe (FFP STEP 3): Super Admin may open the form; write is implemented.</summary>
+    /// <summary>Create Client screen probe: Super Admin or Partner Admin (own partner scope).</summary>
     public Task<IResult> CreateClientAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         if (c.State != System.Data.ConnectionState.Open || tx.Connection is null) throw Err(403, "forbidden");
-        if (!who.IsSuper) throw Err(403, "forbidden");
+        if (!who.IsAdmin) throw Err(403, "forbidden");
         return Json(200, new JsonObject { ["screen"] = "create_client", ["write"] = "open" });
     });
 
-    /// <summary>POST create client (FFP STEP 3). Lifts the prior client_create_pending_pq278 hold. Super Admin only.</summary>
+    /// <summary>POST create client. SA any partner; PA only assigned partners (DEC-273 role rules).</summary>
     public Task<IResult> CreateClientWriteAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsSuper) throw Err(403, "forbidden");
+        if (!who.IsAdmin) throw Err(403, "forbidden");
         var read = await ReadBodyAsync(ctx);
         if (read.TimedOut) throw BodyTimeout(ctx, who);
         if (read.TooLarge) throw Err(413, "payload_too_large");
         if (ParseObject(read.Bytes) is not { } o) throw Err(400, "malformed_body");
         var (partnerId, name, address) = await ParseClientBodyAsync(c, tx, o, excludeClientId: null);
+        if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId))
+            throw Err(404, "not_found");
         var id = Guid.NewGuid();
         await InsertClientAsync(c, tx, id, partnerId, name, address);
         await tx.CommitAsync();
@@ -1208,8 +1257,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
 
     public Task<IResult> ListOrgClientsAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        // F9 / DEC-241: SA sees all; PA reads clients of assigned partner(s) only (create/edit stay SA-only).
-        if (!who.IsAdmin) throw Err(403, "forbidden");
+        // F9 / DEC-241: SA sees all; PA reads clients of assigned partner(s) only.
+        // DEC-275: CA reads only assigned own client(s) for the locked Location Client field (no Client screen).
+        if (!who.MayManageLocations) throw Err(403, "forbidden");
         var partnerFilter = (ctx.Request.Query["partner_id"].ToString() ?? "").Trim();
         Guid? onlyPartner = ParseId(partnerFilter);
         if (onlyPartner is { } want && who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(want))
@@ -1222,7 +1272,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         await using var r = await cmd.ExecuteReaderAsync();
         while (await r.ReadAsync())
         {
+            var clientId = r.GetGuid(0);
             var partnerId = r.GetGuid(1);
+            if (who.IsClientAdmin && !who.Grant.AssignedClients.Contains(clientId)) continue;
             // Defense in depth with AssignedPartners (RLS also scopes via actor_can_partner).
             if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId)) continue;
             rows.Add(new JsonObject
@@ -1238,24 +1290,35 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
     public Task<IResult> GetOrgClientAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         // F9: PA may GET own-partner clients (pull-address); foreign partner → 404 not_found (same as POST scope).
-        if (!who.IsAdmin) throw Err(403, "forbidden");
+        // DEC-275: CA may GET own assigned client only (locked Client / pull-address); no Client screen.
+        if (!who.MayManageLocations) throw Err(403, "forbidden");
         if (ParseId(id) is not { } clientId || clientId == Guid.Empty) throw Err(404, "not_found");
         var row = await LoadClientAsync(c, tx, clientId) ?? throw Err(404, "not_found");
         if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(row.PartnerId))
+            throw Err(404, "not_found");
+        if (who.IsClientAdmin && !who.Grant.AssignedClients.Contains(clientId))
             throw Err(404, "not_found");
         return Json(200, ClientView(row));
     });
 
     public Task<IResult> PutOrgClientAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsSuper) throw Err(403, "forbidden");
+        // DEC-273: SA any; PA only clients under assigned partners. Partner change on edit is not offered in UI.
+        if (!who.IsAdmin) throw Err(403, "forbidden");
         if (ParseId(id) is not { } clientId || clientId == Guid.Empty) throw Err(404, "not_found");
-        if (await LoadClientAsync(c, tx, clientId) is null) throw Err(404, "not_found");
+        var existing = await LoadClientAsync(c, tx, clientId) ?? throw Err(404, "not_found");
+        if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(existing.PartnerId))
+            throw Err(404, "not_found");
         var read = await ReadBodyAsync(ctx);
         if (read.TimedOut) throw BodyTimeout(ctx, who);
         if (read.TooLarge) throw Err(413, "payload_too_large");
         if (ParseObject(read.Bytes) is not { } o) throw Err(400, "malformed_body");
         var (partnerId, name, address) = await ParseClientBodyAsync(c, tx, o, excludeClientId: clientId);
+        if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId))
+            throw Err(404, "not_found");
+        // Keep partner stable on edit unless SA explicitly sends a different existing partner (UI keeps readonly).
+        if (who.IsPartnerAdmin && partnerId != existing.PartnerId)
+            throw Err(404, "not_found");
         await UpdateClientAsync(c, tx, clientId, partnerId, name, address);
         await tx.CommitAsync();
         return Json(200, ClientView((clientId, partnerId, name, address)));
@@ -1329,6 +1392,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         try { await cmd.ExecuteNonQueryAsync(); }
         catch (PostgresException ex) when (IsNameUniqueViolation(ex, "client_partner_name_ci_ux"))
         { throw Validation([new("name", "A client with this name already exists for this partner.")]); }
+        // H1: RLS 42501 must not surface as 500 — same not_found shape as foreign-partner scope.
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
+        { throw Err(404, "not_found"); }
     }
 
     static async Task UpdateClientAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid id, Guid partnerId, string name, OrgAddress a)
@@ -1341,9 +1407,16 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
              WHERE client_id=$1
             """, c, tx);
         BindClient(cmd, id, partnerId, name, a);
-        try { await cmd.ExecuteNonQueryAsync(); }
+        try
+        {
+            // H1: RLS can yield 0 rows; never return the unsaved body as success.
+            var n = await cmd.ExecuteNonQueryAsync();
+            if (n == 0) throw Err(404, "not_found");
+        }
         catch (PostgresException ex) when (IsNameUniqueViolation(ex, "client_partner_name_ci_ux"))
         { throw Validation([new("name", "A client with this name already exists for this partner.")]); }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
+        { throw Err(404, "not_found"); }
     }
 
     static void BindClient(NpgsqlCommand cmd, Guid id, Guid partnerId, string name, OrgAddress a)
@@ -1389,7 +1462,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         // Step 2, decided before the body is read [TLD 2026-11-04 9:04, OQ-P3-8]: a 403 never depends on the body (never 400/413).
         // The refused create is still audited [TLD 2026-11-04 9:04, OQ-P3-2]: location_id null, target partner = the body's partner_id
         // when the body yields a valid one, else target.id / scope.partner_id absent (OQ-P3-10).
-        if (!who.IsAdmin || !who.Grant.LoginMethodWrite || !who.Grant.OrgCreateEdit)
+        // Org location create: MayManageLocations + OrgCreateEdit. LoginMethodWrite is not required
+        // for the location row (DEC-275 CA has OrgCreateEdit only). login_config still needs LoginMethodWrite.
+        if (!who.MayManageLocations || !who.Grant.OrgCreateEdit)
         {
             var b0 = ParseObject(await TryReadBodyAsync(ctx));
             var lc0 = b0 is { } o0 && o0.TryGetProperty("login_config", out var l0) ? l0 : (JsonElement?)null;
@@ -1411,6 +1486,12 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         Guid[] bound = [];
         if (o.TryGetProperty("login_config", out var lcEl))
         {
+            // login_config on create is a LoginMethodWrite surface (SA/PA), not Client Admin.
+            if (!who.Grant.LoginMethodWrite)
+            {
+                await DenyAsync(who, "not_admin", parsed.PartnerId, null, ["login_config"]);
+                throw Err(403, "forbidden");
+            }
             if (lcEl.ValueKind != JsonValueKind.Object) errs.Add(new("login_config", "type"));
             else cfg = LoginConfigValidator.ValidateWrite(lcEl, "login_config/", null, bounds, errs, out bound);
         }
@@ -1449,6 +1530,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             try { await ins.ExecuteNonQueryAsync(); }
             catch (PostgresException ex) when (IsNameUniqueViolation(ex, "location_client_name_ci_ux"))
             { throw Validation([new("name", "A location with this name already exists for this client.")]); }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
+            { throw Err(404, "not_found"); }
         }
         if (cfg is null)
         {
@@ -1509,9 +1592,18 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             || !Guid.TryParseExact(cid.GetString(), "D", out clientId) || clientId == Guid.Empty)
             errs.Add(new("client_id", "Select a client."));
 
+        // DEC-275: CA scope check before load — foreign client_id must not leak as a field error.
+        // G1 404 not_found (no DenyAsync: audit Denied requires a target partner).
+        if (clientId != Guid.Empty && who.IsClientAdmin && !who.Grant.AssignedClients.Contains(clientId))
+            throw Err(404, "not_found");
         var client = clientId == Guid.Empty ? null : await LoadClientAsync(c, tx, clientId);
         if (clientId != Guid.Empty && client is null)
+        {
+            // G1: missing and out-of-scope (RLS) both 404 for PA/CA; SA still gets the field error.
+            if (who.IsPartnerAdmin || who.IsClientAdmin)
+                throw Err(404, "not_found");
             errs.Add(new("client_id", "Select a client."));
+        }
         var partnerId = client?.PartnerId ?? Guid.Empty;
         if (client is not null && who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId))
         {
@@ -1650,9 +1742,17 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         cmd.Parameters.Add(new() { Value = a.PhoneE164 });
         cmd.Parameters.Add(new() { Value = (object?)a.Email ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = a.TimeZone });
-        try { await cmd.ExecuteNonQueryAsync(); }
+        try
+        {
+            // Same row-count guard as UpdateClientAsync (H1). Location RLS already scopes via
+            // actor_can_location → actor_can_partner; this still refuses a silent 0-row update.
+            var n = await cmd.ExecuteNonQueryAsync();
+            if (n == 0) throw Err(404, "not_found");
+        }
         catch (PostgresException ex) when (IsNameUniqueViolation(ex, "location_client_name_ci_ux"))
         { throw Validation([new("name", "A location with this name already exists for this client.")]); }
+        catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.InsufficientPrivilege)
+        { throw Err(404, "not_found"); }
     }
 }
 

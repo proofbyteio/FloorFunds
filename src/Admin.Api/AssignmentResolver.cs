@@ -12,7 +12,7 @@ public sealed class DbAdminDirectory : IAdminDirectory
     public async Task<AdminGrant> ResolveAsync(AdminIdentity id, NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken ct)
     {
         await using var cmd = new NpgsqlCommand(
-            "SELECT outcome, role_wire, global_admin, partner_ids, location_ids, perm_version FROM auth.resolve_grant($1, $2)",
+            "SELECT outcome, role_wire, global_admin, partner_ids, location_ids, perm_version, client_ids FROM auth.resolve_grant($1, $2)",
             connection, transaction);
         cmd.Parameters.Add(new() { Value = id.Issuer });
         cmd.Parameters.Add(new() { Value = id.UserId });
@@ -24,12 +24,20 @@ public sealed class DbAdminDirectory : IAdminDirectory
         var partners = reader.IsDBNull(3) ? Array.Empty<Guid>() : reader.GetFieldValue<Guid[]>(3);
         var locations = reader.IsDBNull(4) ? Array.Empty<Guid>() : reader.GetFieldValue<Guid[]>(4);
         var version = reader.GetInt64(5);
+        var clients = reader.IsDBNull(6) ? Array.Empty<Guid>() : reader.GetFieldValue<Guid[]>(6);
         if (global && roleWire == "super_admin")
             return new AdminGrant(BuiltInRole.SuperAdmin, true, true, new HashSet<Guid>(), true,
                 new HashSet<Guid>(partners), new HashSet<Guid>(locations), version);
         if (roleWire == "partner_admin" && partners.Length > 0)
             return new AdminGrant(BuiltInRole.PartnerAdmin, true, true, new HashSet<Guid>(), true,
                 new HashSet<Guid>(partners), new HashSet<Guid>(locations), version);
+        // DEC-275: Client Admin — location create/edit under AssignedClients only.
+        // OrgCreateEdit opens the org-location write path; LoginMethodWrite is NOT granted
+        // (sign-in config stays closed). Partner/client writes stay IsAdmin-gated.
+        if (roleWire == "client_admin" && clients.Length > 0)
+            return new AdminGrant(BuiltInRole.ClientAdmin, false, true, new HashSet<Guid>(), false,
+                PartnerIds: null, LocationIds: new HashSet<Guid>(locations), PermVersion: version,
+                ClientIds: new HashSet<Guid>(clients));
         return AdminGrant.Nothing;
     }
 }
@@ -46,6 +54,9 @@ public static class AssignmentPrincipal
             return CatalogPrincipalFactory.Management(userId, CatalogRole.SuperAdmin, null);
         if (grant.Role == BuiltInRole.PartnerAdmin && grant.AssignedPartners.Count == 1)
             return CatalogPrincipalFactory.Management(userId, CatalogRole.PartnerAdmin, grant.AssignedPartners.First());
+        // CatalogPrincipal has no client id slot; CA is not a catalog reader via this fold.
+        if (grant.Role == BuiltInRole.ClientAdmin && grant.AssignedClients.Count == 1)
+            return CatalogPrincipalFactory.Management(userId, CatalogRole.ClientAdmin, null);
         return null;
     }
 }
