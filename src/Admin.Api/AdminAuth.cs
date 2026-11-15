@@ -10,11 +10,11 @@ namespace Admin.Api;
 /// </summary>
 public sealed record AdminIdentity(Guid UserId, string AdminType, Guid? PartnerId, string Issuer = "");
 
-public enum BuiltInRole { None, SuperAdmin, PartnerAdmin }
+public enum BuiltInRole { None, SuperAdmin, PartnerAdmin, ClientAdmin }
 
 /// <summary>
-/// What the caller holds after the assignment lookup. PartnerIds and LocationIds are the union of active
-/// assignments (DEC-199). OrgViewLocations is the injected org:V reader set used by the existing checks.
+/// What the caller holds after the assignment lookup. PartnerIds, LocationIds, and ClientIds are the union of active
+/// assignments (DEC-199 / DEC-275). OrgViewLocations is the injected org:V reader set used by the existing checks.
 /// PartnerReasonBoundsWrite is org:partner_reason_bounds:write: Super Admin and ANY Partner Admin, for ANY partner.
 /// </summary>
 public sealed record AdminGrant(
@@ -25,11 +25,13 @@ public sealed record AdminGrant(
     bool PartnerReasonBoundsWrite = false,
     IReadOnlySet<Guid>? PartnerIds = null,
     IReadOnlySet<Guid>? LocationIds = null,
-    long PermVersion = 0)
+    long PermVersion = 0,
+    IReadOnlySet<Guid>? ClientIds = null)
 {
     public static readonly AdminGrant Nothing = new(BuiltInRole.None, false, false, new HashSet<Guid>());
     public IReadOnlySet<Guid> AssignedPartners => PartnerIds ?? Empty;
     public IReadOnlySet<Guid> AssignedLocations => LocationIds ?? Empty;
+    public IReadOnlySet<Guid> AssignedClients => ClientIds ?? Empty;
     static readonly HashSet<Guid> Empty = [];
 }
 
