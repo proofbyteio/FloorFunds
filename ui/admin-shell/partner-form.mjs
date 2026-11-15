@@ -81,12 +81,13 @@ export async function appendPartnerFields(form, address, apiGet, opts) {
 
   const line1 = textInput("line1", "address_line_1", "address-line1");
   line1.required = true;
-  const line1Field = el("div", { className: "field field--line1 span-7" });
+  // DEC-274: Line 1 (5) + Line 2 (3) share one row (APPROVED tighter layout).
+  const line1Field = el("div", { className: "field field--line1 span-5" });
   line1Field.append(el("label", { htmlFor: "line1" }, "Street address line 1"), line1);
   address.address_line_1 = line1;
 
   const line2 = textInput("line2", "address_line_2", "address-line2");
-  const line2Field = el("div", { className: "field field--line2 span-4" });
+  const line2Field = el("div", { className: "field field--line2 span-3" });
   const line2Label = optionalLabel("Street address line 2");
   line2Label.htmlFor = "line2";
   line2Field.append(line2Label, line2);
@@ -112,11 +113,12 @@ export async function appendPartnerFields(form, address, apiGet, opts) {
   postal.setAttribute("aria-describedby", "zip-hint");
   const postalLabel = el("label", { htmlFor: "zip", id: "zip-label" }, "ZIP or postal code");
   const postalField = el("div", { className: "field field--zip span-2", id: "field-zip" });
-  postalField.append(postalLabel, postal);
-  address.postal_code = postal;
+  // DEC-274 / tight NOTES: ZIP hint lives INSIDE field--zip (not a grid sibling).
   const zipHint = el("p", { className: "hint-zip", id: "zip-hint", hidden: true }, "Like 94102 or 94102-1234.");
+  postalField.append(postalLabel, postal, zipHint);
+  address.postal_code = postal;
 
-  gridAddress.append(countryField, line1Field, line2Field, cityField, regionField, postalField, zipHint);
+  gridAddress.append(countryField, line1Field, line2Field, cityField, regionField, postalField);
   secAddress.append(gridAddress);
   form.append(secAddress);
 
@@ -333,19 +335,8 @@ export function renderPartnerErrors(form, fields) {
         className: id === "zip" ? "error-zip" : "error-text",
         id: errId,
       }, sentence);
-      if (id === "zip") {
-        // D2(b): append as grid sibling (with hint-zip), not inside the 2-col ZIP field.
-        const grid = control.closest(".grid");
-        const hint = form.querySelector("#zip-hint");
-        if (grid) {
-          if (hint && hint.parentNode === grid) grid.insertBefore(err, hint.nextSibling);
-          else grid.append(err);
-        } else {
-          fieldEl?.append(err);
-        }
-      } else {
-        fieldEl?.append(err);
-      }
+      // DEC-274: ZIP hint/error stay inside field--zip (tight pack / Client parity).
+      fieldEl?.append(err);
     } else {
       err.textContent = sentence;
     }
