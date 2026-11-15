@@ -20,6 +20,7 @@ import {
   entityNameError,
   fieldsBannerDetail,
 } from "./org-form-rules.mjs";
+import { appendPartnerFields } from "./partner-form.mjs";
 
 const main = document.querySelector("#main");
 const navEl = document.querySelector("#nav");
@@ -572,27 +573,32 @@ async function showPartners(editId) {
   if (probe.status === 401) return;
   if (!(probe.body?.screens ?? []).includes("create_partner")) return denied();
   const editing = Boolean(editId);
-  main.replaceChildren(h("h1", editing ? "Edit partner" : "Create Partner Admin"));
+  // C5: page head title kept as Create Partner Admin until C9 interim (B1).
+  const pageHead = h("div");
+  pageHead.className = "page-head";
+  pageHead.append(h("h1", editing ? "Edit partner" : "Create Partner Admin"));
+  main.replaceChildren(pageHead);
   if (flash) {
     main.append(banner(flash.kind, flash.title, flash.text));
     flash = null;
   }
   const form = document.createElement("form");
-  form.className = "card";
+  form.className = "card partner-form";
+  form.noValidate = true;
   const name = document.createElement("input");
-  name.className = "field__input";
-  name.name = "name";
-  name.required = true;
-  const nameField = h("label");
-  nameField.className = "field";
-  nameField.append(h("span", "Partner name"), name);
-  nameField.querySelector("span").className = "field__label";
-  form.append(nameField);
   const address = {};
-  await appendNorthAmericaAddressFields(form, address);
+  await appendPartnerFields(form, address, api, { nameInput: name });
+  const actions = document.createElement("div");
+  actions.className = "actions";
   const submit = primaryControl("button", editing ? "Save partner" : "Create partner");
   submit.type = "submit";
-  form.append(submit);
+  const cancel = document.createElement("a");
+  cancel.className = "button button--secondary btn-secondary";
+  cancel.textContent = "Cancel";
+  // Destination set in C9 (B4 interim).
+  cancel.href = "#";
+  actions.append(submit, cancel);
+  form.append(actions);
   if (editing) {
     const got = await api("/api/orgs/partners/" + editId);
     if (got.status !== 200) {
@@ -612,7 +618,7 @@ async function showPartners(editId) {
       address.time_zone.value = a.time_zone ?? "";
       address.phone.value = a.phone ?? "";
       address.email.value = a.email ?? "";
-      if (address.phone_country && (a.country === "US" || a.country === "CA")) {
+      if (a.country === "US" || a.country === "CA") {
         address.phone_country.value = a.country;
       }
     }
