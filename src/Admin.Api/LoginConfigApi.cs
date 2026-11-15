@@ -853,7 +853,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
 
     public Task<IResult> PutOrgLocationAsync(HttpContext ctx, string id) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.MayManageLocations || !who.Grant.LoginMethodWrite || !who.Grant.OrgCreateEdit) throw Err(403, "forbidden");
+        // Org location edit: MayManageLocations + OrgCreateEdit. LoginMethodWrite is for login-config only.
+        if (!who.MayManageLocations || !who.Grant.OrgCreateEdit) throw Err(403, "forbidden");
         if (ParseId(id) is not { } loc || loc == Guid.Empty) throw Err(404, "not_found");
         var existing = await LoadOrgLocationAsync(c, tx, loc) ?? throw Err(404, "not_found");
         if (!who.IsSuper && who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(existing.PartnerId))
@@ -1461,8 +1462,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         // Step 2, decided before the body is read [TLD 2026-11-04 9:04, OQ-P3-8]: a 403 never depends on the body (never 400/413).
         // The refused create is still audited [TLD 2026-11-04 9:04, OQ-P3-2]: location_id null, target partner = the body's partner_id
         // when the body yields a valid one, else target.id / scope.partner_id absent (OQ-P3-10).
-        // DEC-275: Client Admin may create locations under AssignedClients (MayManageLocations).
-        if (!who.MayManageLocations || !who.Grant.LoginMethodWrite || !who.Grant.OrgCreateEdit)
+        // Org location create: MayManageLocations + OrgCreateEdit. LoginMethodWrite is not required
+        // for the location row (DEC-275 CA has OrgCreateEdit only). login_config still needs LoginMethodWrite.
+        if (!who.MayManageLocations || !who.Grant.OrgCreateEdit)
         {
             var b0 = ParseObject(await TryReadBodyAsync(ctx));
             var lc0 = b0 is { } o0 && o0.TryGetProperty("login_config", out var l0) ? l0 : (JsonElement?)null;
@@ -1484,6 +1486,12 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         Guid[] bound = [];
         if (o.TryGetProperty("login_config", out var lcEl))
         {
+            // login_config on create is a LoginMethodWrite surface (SA/PA), not Client Admin.
+            if (!who.Grant.LoginMethodWrite)
+            {
+                await DenyAsync(who, "not_admin", parsed.PartnerId, null, ["login_config"]);
+                throw Err(403, "forbidden");
+            }
             if (lcEl.ValueKind != JsonValueKind.Object) errs.Add(new("login_config", "type"));
             else cfg = LoginConfigValidator.ValidateWrite(lcEl, "login_config/", null, bounds, errs, out bound);
         }

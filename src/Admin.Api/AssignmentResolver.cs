@@ -32,9 +32,10 @@ public sealed class DbAdminDirectory : IAdminDirectory
             return new AdminGrant(BuiltInRole.PartnerAdmin, true, true, new HashSet<Guid>(), true,
                 new HashSet<Guid>(partners), new HashSet<Guid>(locations), version);
         // DEC-275: Client Admin — location create/edit under AssignedClients only.
-        // OrgCreateEdit + LoginMethodWrite open the location write path; partner/client writes stay IsAdmin-gated.
+        // OrgCreateEdit opens the org-location write path; LoginMethodWrite is NOT granted
+        // (sign-in config stays closed). Partner/client writes stay IsAdmin-gated.
         if (roleWire == "client_admin" && clients.Length > 0)
-            return new AdminGrant(BuiltInRole.ClientAdmin, true, true, new HashSet<Guid>(), false,
+            return new AdminGrant(BuiltInRole.ClientAdmin, false, true, new HashSet<Guid>(), false,
                 PartnerIds: null, LocationIds: new HashSet<Guid>(locations), PermVersion: version,
                 ClientIds: new HashSet<Guid>(clients));
         return AdminGrant.Nothing;
