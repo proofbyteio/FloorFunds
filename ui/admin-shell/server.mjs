@@ -59,13 +59,21 @@ function readBody(req, limit = 65536) {
   });
 }
 
-// PQ-284 reversible default. The picker submits an id from the server list.
-// Swap this check together with the partner <select> in shell.js.
+// Location create: FFP body uses client_id (partner derived on the API). Legacy partner_id
+// path kept for older callers. Server remains authoritative for scope.
 async function enforceExistingPartner(token, body) {
   let parsed;
   try { parsed = JSON.parse(body.toString("utf8")); } catch { return null; }
-  if (!parsed || typeof parsed !== "object" || typeof parsed.partner_id !== "string") return { status: 422, error: "partner_not_in_list" };
-  const listed = await fetch(apiOrigin + "/api/screens/location-partners", { headers: { authorization: "Bearer " + token } });
+  if (!parsed || typeof parsed !== "object") return { status: 422, error: "partner_not_in_list" };
+  const headers = { authorization: "Bearer " + token };
+  if (typeof parsed.client_id === "string" && parsed.client_id) {
+    const got = await fetch(apiOrigin + "/api/orgs/clients/" + encodeURIComponent(parsed.client_id), { headers });
+    if (got.status === 404) return { status: 422, error: "Select a client." };
+    if (!got.ok) return { status: 403, error: "forbidden" };
+    return null;
+  }
+  if (typeof parsed.partner_id !== "string") return { status: 422, error: "partner_not_in_list" };
+  const listed = await fetch(apiOrigin + "/api/screens/location-partners", { headers });
   if (!listed.ok) return { status: 403, error: "forbidden" };
   const ids = new Set((await listed.json()).partners ?? []);
   if (!ids.has(parsed.partner_id)) return { status: 422, error: "partner_not_in_list" };
