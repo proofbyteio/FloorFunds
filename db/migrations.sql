@@ -5737,3 +5737,59 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261115240000_FfpClientAdminLocationPartnerMatchFix') THEN
+
+    -- F11 / DEC-275: qualify location columns in Client Admin location WITH CHECK.
+    -- Migration 20261115230000 kept its original (unqualified) body; databases that
+    -- already applied it must pick up the fix via this new id. UPDATE USING stays
+    -- client-scoped. Does not change SA/PA/LA policies.
+    DO $pol$
+    DECLARE
+      a text := current_database() || '_admin_api';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE 'DROP POLICY IF EXISTS location_admin_insert_client ON auth.location';
+        EXECUTE format(
+          $p$CREATE POLICY location_admin_insert_client ON auth.location FOR INSERT TO %I WITH CHECK (
+            client_id IS NOT NULL
+            AND auth.actor_can_client(client_id)
+            AND EXISTS (
+              SELECT 1 FROM auth.client c
+               WHERE c.client_id = location.client_id
+                 AND c.partner_id = location.partner_id
+            )
+          )$p$, a);
+
+        EXECUTE 'DROP POLICY IF EXISTS location_admin_update_client ON auth.location';
+        EXECUTE format(
+          $p$CREATE POLICY location_admin_update_client ON auth.location FOR UPDATE TO %I
+            USING (client_id IS NOT NULL AND auth.actor_can_client(client_id))
+            WITH CHECK (
+              client_id IS NOT NULL
+              AND auth.actor_can_client(client_id)
+              AND EXISTS (
+                SELECT 1 FROM auth.client c
+                 WHERE c.client_id = location.client_id
+                   AND c.partner_id = location.partner_id
+              )
+            )$p$, a);
+      END IF;
+    END
+    $pol$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261115240000_FfpClientAdminLocationPartnerMatchFix') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261115240000_FfpClientAdminLocationPartnerMatchFix', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
