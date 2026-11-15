@@ -397,19 +397,27 @@ export function locationControlId(field) {
   }
 }
 
+function qsa(root, sel) {
+  try {
+    return Array.from(root?.querySelectorAll?.(sel) || []);
+  } catch {
+    return [];
+  }
+}
+
 export function clearLocationErrors(form) {
   form.querySelector(".error-summary")?.remove?.();
   form.classList?.remove?.("location-form--errors");
-  for (const field of form.querySelectorAll(".field.has-error")) {
+  for (const field of qsa(form, ".field.has-error")) {
     field.classList?.remove?.("has-error");
   }
-  for (const err of form.querySelectorAll(".error-text, .error-zip")) {
+  for (const err of qsa(form, ".error-text, .error-zip")) {
     err.remove?.();
   }
-  for (const control of form.querySelectorAll("[aria-invalid]")) {
+  for (const control of qsa(form, "[aria-invalid]")) {
     control.removeAttribute?.("aria-invalid");
   }
-  for (const hint of form.querySelectorAll(".hint, .hint-zip")) {
+  for (const hint of qsa(form, ".hint, .hint-zip")) {
     hint.hidden = !!(hint.classList?.contains?.("hint-zip") && !form.querySelector("#country")?.value);
   }
 }
