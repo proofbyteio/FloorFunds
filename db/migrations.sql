@@ -5704,8 +5704,8 @@ BEGIN
             AND auth.actor_can_client(client_id)
             AND EXISTS (
               SELECT 1 FROM auth.client c
-               WHERE c.client_id = client_id
-                 AND c.partner_id = partner_id
+               WHERE c.client_id = location.client_id
+                 AND c.partner_id = location.partner_id
             )
           )$p$, a);
 
@@ -5718,8 +5718,8 @@ BEGIN
               AND auth.actor_can_client(client_id)
               AND EXISTS (
                 SELECT 1 FROM auth.client c
-                 WHERE c.client_id = client_id
-                   AND c.partner_id = partner_id
+                 WHERE c.client_id = location.client_id
+                   AND c.partner_id = location.partner_id
               )
             )$p$, a);
       END IF;
