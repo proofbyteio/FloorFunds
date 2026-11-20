@@ -6671,7 +6671,50 @@ DO $EF$
 BEGIN
     IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261120130000_Req068AdminAssignmentPartnerFk') THEN
     -- REQ-068 / DEC-322: FK admin_assignment.partner_id → auth.partner (same style as admin_assignment_client_fk).
-    -- DEC-325 kit seed inserts the synthetic partner so orphans are 0 on --seed. Refuse if any remain.
+    -- DEC-325: DEFINER helper + synthetic partners so kit seed / Req064 suite assignments are not orphans.
+
+    CREATE OR REPLACE FUNCTION auth.seed_sse2_fake_partner(
+      p_partner_id uuid,
+      p_name text,
+      p_address_line_1 text,
+      p_address_line_2 text,
+      p_city text,
+      p_country text,
+      p_region text,
+      p_postal_code text,
+      p_phone text,
+      p_email text,
+      p_time_zone text,
+      p_status text)
+      RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $seedfn$
+    BEGIN
+      INSERT INTO auth.partner (
+        partner_id, name, address_line_1, address_line_2, city, country, region, postal_code, phone, email, time_zone, status)
+      VALUES (
+        p_partner_id, p_name, p_address_line_1, p_address_line_2, p_city, p_country, p_region, p_postal_code,
+        p_phone, p_email, p_time_zone, p_status)
+      ON CONFLICT (partner_id) DO NOTHING;
+    END
+    $seedfn$;
+    REVOKE ALL ON FUNCTION auth.seed_sse2_fake_partner(uuid, text, text, text, text, text, text, text, text, text, text, text) FROM PUBLIC;
+
+    -- SSE2-FAKE-TEST-ONLY / Req064 suite partners referenced by Admin.Api.Checks Seed() without partner rows.
+    PERFORM auth.seed_sse2_fake_partner(
+      '5f0c3e1a-0001-4000-8000-000000000001', 'SSE2 Fake Partner PCI', '100 Fake Street', '',
+      'Sampletown', 'US', 'NV', '89101', '+17025551001', 'sse2-fake-partner-pci@example.com',
+      'America/Los_Angeles', 'active');
+    PERFORM auth.seed_sse2_fake_partner(
+      '5f0c3e1a-0064-4000-8000-000000000011', 'SSE2 Fake Partner Req064 A', '101 Fake Street', '',
+      'Sampletown', 'US', 'NV', '89101', '+17025551011', 'sse2-fake-partner-req064-a@example.com',
+      'America/Los_Angeles', 'active');
+    PERFORM auth.seed_sse2_fake_partner(
+      '5f0c3e1a-0064-4000-8000-000000000012', 'SSE2 Fake Partner Req064 B', '102 Fake Street', '',
+      'Sampletown', 'US', 'NV', '89101', '+17025551012', 'sse2-fake-partner-req064-b@example.com',
+      'America/Los_Angeles', 'active');
 
     DO $orphan$
     DECLARE

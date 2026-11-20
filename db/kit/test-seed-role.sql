@@ -16,7 +16,7 @@ DECLARE
     'reason_code', 'id_document_type', 'currency', 'fee_type'
   ];
   auth_tables text[] := ARRAY[
-    'app_user', 'admin_assignment', 'user_issuer', 'partner', 'location', 'location_login_config',
+    'app_user', 'admin_assignment', 'user_issuer', 'location', 'location_login_config',
     'location_login_config_change', 'external_login', 'user_location', 'partner_reason_bounds'
   ];
 BEGIN
@@ -54,5 +54,12 @@ BEGIN
   EXECUTE format('REVOKE ALL ON TABLE catalog.history_pending FROM %I', s);
   EXECUTE 'DROP POLICY IF EXISTS history_pending_test_seed_select ON catalog.history_pending';
   EXECUTE format('REVOKE EXECUTE ON FUNCTION catalog.history_partner(uuid, uuid[], boolean) FROM %I', s);
+  -- DEC-325: seed inserts synthetic partners via DEFINER helper (no table INSERT on auth.partner;
+  -- helpers expected-grant list is fixed under DEC-263).
+  IF to_regprocedure('auth.seed_sse2_fake_partner(uuid, text, text, text, text, text, text, text, text, text, text, text)') IS NOT NULL THEN
+    EXECUTE format(
+      'GRANT EXECUTE ON FUNCTION auth.seed_sse2_fake_partner(uuid, text, text, text, text, text, text, text, text, text, text, text) TO %I',
+      s);
+  END IF;
 END
 $seed$;
