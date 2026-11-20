@@ -22,12 +22,27 @@ export const FIELD_LIMITS = {
 };
 
 /**
+ * UX-R7: API lookup labels append " (CODE)". Pack shows names without codes.
+ * @param {string} label
+ * @param {string} [codeOrValue]
+ */
+export function lookupDisplayLabel(label, codeOrValue) {
+  const raw = String(label ?? "").trim();
+  if (!raw) return codeOrValue ? String(codeOrValue) : "";
+  const stripped = raw.replace(/\s*\([^)]+\)\s*$/, "").trim();
+  return stripped || raw;
+}
+
+/**
  * @param {(path: string) => Promise<{status:number, body?: any}>} apiGet
  */
 export async function loadCountries(apiGet) {
   const res = await apiGet("/api/lookups/countries");
   if (res.status !== 200 || !Array.isArray(res.body?.countries)) return [];
-  return res.body.countries.map((c) => ({ code: c.code, label: c.label }));
+  return res.body.countries.map((c) => ({
+    code: c.code,
+    label: lookupDisplayLabel(c.label, c.code),
+  }));
 }
 
 /**
@@ -38,7 +53,10 @@ export async function loadRegions(apiGet, country) {
   if (!country) return [];
   const res = await apiGet("/api/lookups/regions?country=" + encodeURIComponent(country));
   if (res.status !== 200 || !Array.isArray(res.body?.regions)) return [];
-  return res.body.regions.map((r) => ({ code: r.code, label: r.label }));
+  return res.body.regions.map((r) => ({
+    code: r.code,
+    label: lookupDisplayLabel(r.label, r.code),
+  }));
 }
 
 /**
@@ -49,7 +67,10 @@ export async function loadTimeZones(apiGet, country) {
   if (!country) return [];
   const res = await apiGet("/api/lookups/time-zones?country=" + encodeURIComponent(country));
   if (res.status !== 200 || !Array.isArray(res.body?.time_zones)) return [];
-  return res.body.time_zones.map((z) => ({ value: z.value, label: z.label }));
+  return res.body.time_zones.map((z) => ({
+    value: z.value,
+    label: lookupDisplayLabel(z.label, z.value),
+  }));
 }
 
 /**

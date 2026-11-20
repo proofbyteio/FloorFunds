@@ -89,6 +89,63 @@ BEGIN
 END
 $own$;
 
+
+-- REQ-068: own status helpers + DML policies without shifting cite lines above.
+DO $req068_own$
+DECLARE
+  r text := current_database() || '_auth_definer';
+  fn text;
+  owner_name text;
+  names text[] := ARRAY[
+    'auth.actor_can_client(uuid)',
+    'auth.location_signin_allowed(uuid)',
+    'auth.assert_location_signin(uuid)',
+    'auth._org_audit(text, text, uuid, jsonb)',
+    'auth.deactivate_partner(uuid)',
+    'auth.deactivate_client(uuid)',
+    'auth.deactivate_location(uuid)',
+    'auth.activate_partner(uuid)',
+    'auth.activate_client(uuid)',
+    'auth.activate_location(uuid)',
+    'auth.partner_reject_inactive_business_upd()',
+    'auth.client_reject_inactive_business_upd()',
+    'auth.location_reject_inactive_business_upd()'
+  ];
+BEGIN
+  SELECT pg_get_userbyid(datdba)::text INTO owner_name
+    FROM pg_database WHERE datname = current_database();
+  FOREACH fn IN ARRAY names LOOP
+    IF to_regprocedure(fn) IS NULL THEN
+      CONTINUE;
+    END IF;
+    EXECUTE format('ALTER FUNCTION %s OWNER TO %I', fn, r);
+  END LOOP;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_database() || '_admin_api')
+     AND to_regprocedure('auth.deactivate_partner(uuid)') IS NOT NULL THEN
+    EXECUTE format(
+      'GRANT EXECUTE ON FUNCTION auth.deactivate_partner(uuid), auth.deactivate_client(uuid), auth.deactivate_location(uuid), auth.activate_partner(uuid), auth.activate_client(uuid), auth.activate_location(uuid), auth.location_signin_allowed(uuid), auth.assert_location_signin(uuid), auth.actor_can_client(uuid) TO %I',
+      current_database() || '_admin_api');
+  END IF;
+  IF to_regprocedure('auth.deactivate_partner(uuid)') IS NOT NULL THEN
+    EXECUTE format('GRANT SELECT, UPDATE ON auth.partner, auth.client TO %I', r);
+    EXECUTE format('GRANT SELECT, UPDATE ON auth.location TO %I', r);
+    EXECUTE format('GRANT INSERT ON auth.audit_outbox TO %I', r);
+    EXECUTE 'DROP POLICY IF EXISTS partner_definer_select ON auth.partner';
+    EXECUTE 'DROP POLICY IF EXISTS partner_definer_update ON auth.partner';
+    EXECUTE format('CREATE POLICY partner_definer_select ON auth.partner FOR SELECT TO %I USING (true)', r);
+    EXECUTE format('CREATE POLICY partner_definer_update ON auth.partner FOR UPDATE TO %I USING (true) WITH CHECK (true)', r);
+    EXECUTE 'DROP POLICY IF EXISTS client_definer_select ON auth.client';
+    EXECUTE 'DROP POLICY IF EXISTS client_definer_update ON auth.client';
+    EXECUTE format('CREATE POLICY client_definer_select ON auth.client FOR SELECT TO %I USING (true)', r);
+    EXECUTE format('CREATE POLICY client_definer_update ON auth.client FOR UPDATE TO %I USING (true) WITH CHECK (true)', r);
+    EXECUTE 'DROP POLICY IF EXISTS location_definer_update ON auth.location';
+    EXECUTE format('CREATE POLICY location_definer_update ON auth.location FOR UPDATE TO %I USING (true) WITH CHECK (true)', r);
+    EXECUTE 'DROP POLICY IF EXISTS audit_outbox_definer_insert ON auth.audit_outbox';
+    EXECUTE format('CREATE POLICY audit_outbox_definer_insert ON auth.audit_outbox FOR INSERT TO %I WITH CHECK (true)', r);
+  END IF;
+END
+$req068_own$;
+
 -- A2 plus the two TL overrides. <db>_auth_owner owns every auth table, schemas
 -- auth and public, auth.resolver_read_seq, and public.__EFMigrationsHistory.
 -- The migrator keeps SELECT on auth tables and DML (not TRUNCATE) on the history

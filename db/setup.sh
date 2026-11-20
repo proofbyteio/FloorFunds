@@ -19,8 +19,8 @@
 #   4. optional TEST-ONLY seed db/seed/*.sql (--seed; SSE2-FAKE-TEST-ONLY data)
 set -euo pipefail
 
-DB=floorfunds_dev
-ROLE=floorfunds_dev
+DB="${FF_DB_NAME:-floorfunds_dev}"
+ROLE="${FF_DB_ROLE:-${FF_DB_NAME:-floorfunds_dev}}"
 PASSWORD="${FF_DB_PASSWORD:-}"
 ADMIN_API_PASSWORD="${FF_ADMIN_API_PASSWORD:-}"
 LOGIN_PASSWORD="${FF_LOGIN_PASSWORD:-}"
@@ -29,8 +29,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MIGRATIONS="$HERE/migrations.sql"
 MIGRATE=1
 SEED=0
-HOST=127.0.0.1
-PORT=5432
+HOST="${FF_DB_HOST:-127.0.0.1}"
+PORT="${FF_DB_PORT:-5432}"
 ADMIN_HOST=""   # empty = local Unix socket (peer auth for sudo -u postgres)
 DROP=0
 FORCE=0
@@ -252,6 +252,13 @@ if [[ "$SEED" -eq 1 ]]; then
   echo "Test seed role: LOGIN, no memberships (superuser step, test mode only)..."
   { printf '\\set test_seed_password %s\n' "'$test_seed_password'"; printf '\\c %s\n' "$DB"; cat "$KIT/test-seed-role.sql"; } | run_psql -f - \
     || { echo "Test seed role step failed (see the psql error above)" >&2; exit 4; }
+  # DEC-327: SSE2 fake partners as DB owner (partner_owner_write). After migrations/FK,
+  # before db/seed/*.sql and before Admin.Api.Checks Seed() which references Pa/Pb.
+  if [[ -r "$KIT/sse2-fake-partners.sql" ]]; then
+    echo "SSE2 fake partners (TEST-ONLY) as $ROLE..."
+    owner_psql -f "$KIT/sse2-fake-partners.sql" \
+      || { echo "SSE2 fake partners step failed (see the psql error above)" >&2; exit 4; }
+  fi
   # A2: seed SQL runs as _test_seed. The migrator has no INSERT on these tables.
   seed_pw="$(sed -n 's/^TEST_SEED_PASSWORD=//p' "$seed_env")"
   for f in "$HERE"/seed/*.sql; do

@@ -1,2 +1,5 @@
 bin/
 obj/
+
+# Local laptop run (scripts/local) — secrets, PIDs, logs, stand-in state
+.local-run/

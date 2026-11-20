@@ -225,14 +225,18 @@
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  width: 100%;
+  /* UX-R1 / PO F-03: full gold pill — min-width ~9.5rem so Save/Activate do not collapse. */
+  width: auto;
+  min-width: 9.5rem;
   height: 100%;
+  padding: 0 20px;
   border-radius: inherit;
   color: inherit;
   background-color: var(--cta-fallback-fill);
   background-image: var(--cta-gradient);
   border: 1px solid var(--cta-border);
   box-shadow: var(--cta-glow);
+  white-space: nowrap;
   transform-origin: center;
   /* Source CTA: transition-transform with no duration-* class, so
      --default-transition-duration:.15s and

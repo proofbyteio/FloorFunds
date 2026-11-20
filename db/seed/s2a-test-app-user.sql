@@ -3,6 +3,8 @@
 -- partner_id: admin_type partner -> its partner_id; super -> NULL; location users -> the partner owning their
 -- location_slugs (SSE derivation, see src/S2A-BUILD-LOG.md). Run as the DB owner after db/migrations.sql. Idempotent.
 BEGIN;
+-- PCI fixture partner_id 5f0c3e1a-0001-4000-8000-000000000001 is planted by
+-- db/kit/sse2-fake-partners.sql (DEC-327, TEST-ONLY, as DB owner) before this file runs.
 INSERT INTO auth.app_user (user_id, partner_id, status, locked_until) VALUES
   ('5f0c3e1a-0003-4000-8000-000000000c01', '5f0c3e1a-0001-4000-8000-000000000001', 'active', NULL), -- cashier_db    (pci-main)    SSE2-FAKE-TEST-ONLY
   ('5f0c3e1a-0003-4000-8000-000000000c02', '5f0c3e1a-0001-4000-8000-000000000001', 'active', NULL), -- no_role_user  (pci-main)    SSE2-FAKE-TEST-ONLY
