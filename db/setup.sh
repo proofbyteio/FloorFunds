@@ -252,6 +252,13 @@ if [[ "$SEED" -eq 1 ]]; then
   echo "Test seed role: LOGIN, no memberships (superuser step, test mode only)..."
   { printf '\\set test_seed_password %s\n' "'$test_seed_password'"; printf '\\c %s\n' "$DB"; cat "$KIT/test-seed-role.sql"; } | run_psql -f - \
     || { echo "Test seed role step failed (see the psql error above)" >&2; exit 4; }
+  # DEC-327: SSE2 fake partners as DB owner (partner_owner_write). After migrations/FK,
+  # before db/seed/*.sql and before Admin.Api.Checks Seed() which references Pa/Pb.
+  if [[ -r "$KIT/sse2-fake-partners.sql" ]]; then
+    echo "SSE2 fake partners (TEST-ONLY) as $ROLE..."
+    owner_psql -f "$KIT/sse2-fake-partners.sql" \
+      || { echo "SSE2 fake partners step failed (see the psql error above)" >&2; exit 4; }
+  fi
   # A2: seed SQL runs as _test_seed. The migrator has no INSERT on these tables.
   seed_pw="$(sed -n 's/^TEST_SEED_PASSWORD=//p' "$seed_env")"
   for f in "$HERE"/seed/*.sql; do

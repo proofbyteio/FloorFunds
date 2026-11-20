@@ -3,34 +3,8 @@
 -- partner_id: admin_type partner -> its partner_id; super -> NULL; location users -> the partner owning their
 -- location_slugs (SSE derivation, see src/S2A-BUILD-LOG.md). Run as the DB owner after db/migrations.sql. Idempotent.
 BEGIN;
--- Synthetic partner for fixture partner_id 5f0c3e1a-0001-4000-8000-000000000001 (DEC-325). SSE2-FAKE-TEST-ONLY.
--- Column values (also applied by migration 20261120130000 via the same helper before the FK):
---   partner_id=5f0c3e1a-0001-4000-8000-000000000001
---   name=SSE2 Fake Partner PCI
---   address_line_1=100 Fake Street
---   address_line_2=
---   city=Sampletown
---   country=US
---   region=NV
---   postal_code=89101
---   phone=+17025551001
---   email=sse2-fake-partner-pci@example.com
---   time_zone=America/Los_Angeles
---   status=active
--- Insert goes through DEFINER helper: test_seed has no table INSERT on auth.partner (helpers grant allowlist).
-SELECT auth.seed_sse2_fake_partner(
-  '5f0c3e1a-0001-4000-8000-000000000001',
-  'SSE2 Fake Partner PCI',
-  '100 Fake Street',
-  '',
-  'Sampletown',
-  'US',
-  'NV',
-  '89101',
-  '+17025551001',
-  'sse2-fake-partner-pci@example.com',
-  'America/Los_Angeles',
-  'active');
+-- PCI fixture partner_id 5f0c3e1a-0001-4000-8000-000000000001 is planted by
+-- db/kit/sse2-fake-partners.sql (DEC-327, TEST-ONLY, as DB owner) before this file runs.
 INSERT INTO auth.app_user (user_id, partner_id, status, locked_until) VALUES
   ('5f0c3e1a-0003-4000-8000-000000000c01', '5f0c3e1a-0001-4000-8000-000000000001', 'active', NULL), -- cashier_db    (pci-main)    SSE2-FAKE-TEST-ONLY
   ('5f0c3e1a-0003-4000-8000-000000000c02', '5f0c3e1a-0001-4000-8000-000000000001', 'active', NULL), -- no_role_user  (pci-main)    SSE2-FAKE-TEST-ONLY
