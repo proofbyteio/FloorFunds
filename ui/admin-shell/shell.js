@@ -34,6 +34,7 @@ import {
 } from "./dec241-defaults.mjs";
 import { fetchAllOrgRows, showOrgList } from "./org-list.mjs";
 import { resolveMyOrgId, showOrgDetail } from "./org-detail.mjs";
+import { openLaLocationPicker } from "./la-location-picker.mjs";
 
 const main = document.querySelector("#main");
 const navEl = document.querySelector("#nav");
@@ -151,10 +152,61 @@ function parseRoute() {
   return { nav: kind, view: "list", entity, kind };
 }
 
+/** DEC-333 / PO F-01: SA→partners, PA→clients, CA→locations. */
+function landingHashForRole(role) {
+  if (role === "Super Admin") return "#/partners";
+  if (role === "Partner Admin") return "#/clients";
+  if (role === "Client Admin") return "#/locations";
+  // DEC-334: LA uses Home as the picker/detail landing entry.
+  if (role === "Location Admin") return "#/home";
+  return null;
+}
+
+/**
+ * DEC-334 Location Admin home.
+ * PM defaults (DEC-241): (a) one active location → detail, no popup;
+ * (b) picker lists ACTIVE rows from GET /api/orgs/locations?status=active (server-scoped);
+ * (c) zero → empty state (tip: LA cannot sign in with 0 locations — AssignmentResolver);
+ * (d) "Switch location" reopens picker; (e) Playerhub dialog chrome.
+ * DEC-335: LA never sees Create.
+ */
+async function landLocationAdmin({ forcePicker = false } = {}) {
+  const rows = await fetchAllOrgRows(api, "locations", { status: "active" });
+  if (rows.length === 0) {
+    return showOrgList({
+      main,
+      api,
+      grant,
+      role: navRole,
+      kind: "locations",
+      denied,
+      setCrumbs: (parts) => setCrumbs(parts),
+    });
+  }
+  if (rows.length === 1 && !forcePicker) {
+    const id = rows[0].location_id;
+    const dest = `#/locations/${id}`;
+    if ((location.hash || "") !== dest) history.replaceState(null, "", dest);
+    return showEntityDetail("location", id, false);
+  }
+  openLaLocationPicker({
+    locations: rows,
+    allowDismiss: forcePicker,
+    onPick: (id) => {
+      location.hash = `#/locations/${id}`;
+    },
+  });
+}
+
 function renderNav(currentNav) {
   navEl.replaceChildren();
   if (grant.length === 0) return;
+  const hideHome =
+    navRole === "Super Admin" || navRole === "Partner Admin" || navRole === "Client Admin";
   for (const item of NAV_DEFS) {
+    if (item.id === "home" && hideHome) continue;
+    // DEC-335: never surface create_* nav for Location Admin.
+    if (navRole === "Location Admin" && item.need && String(item.need).startsWith("create_")) continue;
     if (item.need && !grant.includes(item.need)) {
       // ASSUMPTION: old create_* keys temporarily map to list nav labels.
       if (!(item.legacyNeed && grant.includes(item.legacyNeed))) continue;
@@ -164,6 +216,16 @@ function renderNav(currentNav) {
     a.textContent = item.label;
     if (item.id === currentNav) a.setAttribute("aria-current", "page");
     navEl.append(a);
+  }
+  if (navRole === "Location Admin") {
+    const switchBtn = document.createElement("button");
+    switchBtn.type = "button";
+    switchBtn.className = "shell__nav-action";
+    switchBtn.textContent = "Switch location";
+    switchBtn.addEventListener("click", () => {
+      void landLocationAdmin({ forcePicker: true });
+    });
+    navEl.append(switchBtn);
   }
 }
 
@@ -487,8 +549,14 @@ function showValidationBanner(form, title, fieldsOrDetail) {
 
 export async function showCreate(state, editId) {
   const editing = Boolean(editId);
-  // Create requires create_location; edit requires list/create (SA/PA).
-  if (!editing && !grant.includes("create_location")) return denied();
+  // Create requires create_location; edit requires list/create AND SA/PA (SSE2 F2 / DEC-335).
+  // PutOrgLocation already 403s non-IsAdmin; shell must not paint the form for CA/LA.
+  if (editing) {
+    if (!(grant.includes("create_location") || grant.includes("list_locations"))) return denied();
+    if (navRole !== "Super Admin" && navRole !== "Partner Admin") return denied();
+  } else if (!grant.includes("create_location") || navRole === "Location Admin") {
+    return denied();
+  }
   const role = navRole;
   const isPartnerAdmin = role === "Partner Admin";
   const isClientAdmin = role === "Client Admin";
@@ -1190,13 +1258,24 @@ async function draw() {
   const signedIn = document.querySelector("#signed-in");
   navRole = typeof me.body?.role === "string" ? me.body.role : "";
   if (signedIn) {
-    const who = typeof me.body?.signed_in_as === "string" ? me.body.signed_in_as : "";
-    const role = navRole;
-    signedIn.textContent = who && role ? "Signed in as " + who + " · Role: " + role : "";
+    // UX-R11 ASSUMPTION: show role only (pack match). Drop "Signed in as UUID · Role:".
+    signedIn.textContent = navRole || "";
   }
   grant = me.status === 200 ? (me.body.screens ?? []) : [];
   const deep = orgsRoute();
-  const r = parseRoute();
+  let r = parseRoute();
+
+  // DEC-333: retire Home as landing for SA/PA/CA; replace hash so evidence shows the list URL.
+  // DEC-334: LA stays on #/home as the picker/detail entry.
+  if (!deep && r.view === "home") {
+    const dest = landingHashForRole(navRole);
+    if (dest && dest !== "#/home") {
+      const cur = location.hash || "#/home";
+      if (cur !== dest) history.replaceState(null, "", dest);
+      r = parseRoute();
+    }
+  }
+
   renderNav(deep ? "locations" : r.nav);
   setCrumbs([]);
   if (grant.length === 0) return noAssignment();
@@ -1204,7 +1283,11 @@ async function draw() {
   if (deep?.kind === "config") return showConfig(deep.locationId);
 
   if (r.view === "denied") return denied();
-  if (r.view === "home") return showHome();
+  // DEC-334: LA Home → picker / single-location detail. showHome kept for non-LA.
+  if (r.view === "home") {
+    if (navRole === "Location Admin") return landLocationAdmin();
+    return showHome();
+  }
   if (r.view === "config") return showConfig();
   if (r.view === "catalog") return showCatalog();
   if (r.view === "location-create-admin") return showCreate();
@@ -1262,7 +1345,26 @@ export function redraw() {
   started = draw();
   return started;
 }
+function wireMobileNav() {
+  const shell = document.querySelector(".shell");
+  const btn = document.querySelector("#shell-menu-btn");
+  if (!shell || !btn) return;
+  btn.addEventListener("click", () => {
+    const open = shell.classList.toggle("nav-open");
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    btn.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+  });
+  navEl?.addEventListener("click", (ev) => {
+    if (ev.target.closest("a") && shell.classList.contains("nav-open")) {
+      shell.classList.remove("nav-open");
+      btn.setAttribute("aria-expanded", "false");
+      btn.setAttribute("aria-label", "Open menu");
+    }
+  });
+}
+
 if (main) {
+  wireMobileNav();
   window.addEventListener("hashchange", () => { started = draw(); });
   started = draw();
 }

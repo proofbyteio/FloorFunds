@@ -217,8 +217,8 @@ export async function showOrgList(ctx) {
   if (!allowedSort.has(state.sort)) state.sort = "name";
 
   let scopeName = "";
-  if (role === "Partner Admin" || role === "Client Admin") {
-    // Scope name for list lead (DEC-301).
+  // DEC-331: CA cannot GET /api/orgs/partners — do not probe partners for CA.
+  if (role === "Partner Admin") {
     if (kind === "clients" || kind === "locations") {
       const partners = await fetchAllOrgRows(api, "partners", { status: "active" });
       if (!partners.length) {
@@ -228,14 +228,13 @@ export async function showOrgList(ctx) {
         scopeName = partners[0]?.name || "";
       }
     }
-    if (role === "Client Admin" && kind === "locations") {
-      const clients = await fetchAllOrgRows(api, "clients", { status: "active" });
-      if (!clients.length) {
-        const inactive = await fetchAllOrgRows(api, "clients", { status: "inactive" });
-        scopeName = inactive[0]?.name || scopeName;
-      } else {
-        scopeName = clients[0]?.name || scopeName;
-      }
+  } else if (role === "Client Admin" && kind === "locations") {
+    const clients = await fetchAllOrgRows(api, "clients", { status: "active" });
+    if (!clients.length) {
+      const inactive = await fetchAllOrgRows(api, "clients", { status: "inactive" });
+      scopeName = inactive[0]?.name || "";
+    } else {
+      scopeName = clients[0]?.name || "";
     }
   }
 
@@ -269,19 +268,36 @@ export async function showOrgList(ctx) {
     const { items, total } = listItemsFromBody(res.body, kind);
     const isDefaultFilters = !state.q.trim() && state.status === "active" && state.sort === "name" && state.dir === "asc";
 
-    // DEC-290/291: empty universe with default filters.
+    // PO F-10 / DEC-241 PM default (PQ-361 dismissed): empty only when scope has
+    // NO records at all (active or inactive). Only-inactive opens normally with
+    // the Inactive tab reachable. Only creators redirect to create.
     if (total === 0 && isDefaultFilters && state.page === 1) {
-      if (canCreate) {
-        location.hash = meta.createHash;
+      const inactiveQs = new URLSearchParams({
+        status: "inactive",
+        sort: "name",
+        dir: "asc",
+        page: "1",
+      });
+      const inactiveRes = await api(meta.api + "?" + inactiveQs.toString());
+      if (seq !== requestSeq) return;
+      const inactiveTotal =
+        inactiveRes.status === 200
+          ? listItemsFromBody(inactiveRes.body, kind).total
+          : 0;
+      const universeEmpty = inactiveTotal === 0;
+      if (universeEmpty) {
+        if (canCreate) {
+          location.hash = meta.createHash;
+          return;
+        }
+        main.replaceChildren();
+        const head = h("div");
+        head.className = "page-head";
+        head.append(h("h1", meta.title));
+        main.append(head, emptyCard(`No ${meta.noun} to show.`));
         return;
       }
-      // Approved empty copy (locations for LA/CA).
-      main.replaceChildren();
-      const head = h("div");
-      head.className = "page-head";
-      head.append(h("h1", meta.title));
-      main.append(head, emptyCard(`No ${meta.noun} to show.`));
-      return;
+      // Only inactive records: fall through to normal list frame (empty Active view).
     }
 
     renderFrame();
