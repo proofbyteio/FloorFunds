@@ -6371,3 +6371,97 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261120100000_Req068LocationStatusSaPaOnly') THEN
+    -- REQ-068: Location status is SA/PA only (DEC-286 / DEC-303). CREATE OR REPLACE
+    -- keeps current owner; kit definer-owner.sql reassigns to _auth_definer.
+
+    CREATE OR REPLACE FUNCTION auth.deactivate_location(p_location uuid) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_partner uuid;
+      v_client uuid;
+    BEGIN
+      SELECT partner_id, client_id INTO v_partner, v_client
+        FROM auth.location WHERE location_id = p_location;
+      IF v_partner IS NULL THEN
+        RAISE EXCEPTION 'location_not_found' USING ERRCODE = 'P0002';
+      END IF;
+      IF NOT (
+           auth.actor_is_global()
+        OR auth.actor_can_partner(v_partner)
+      ) THEN
+        RAISE EXCEPTION 'forbidden' USING ERRCODE = '42501';
+      END IF;
+
+      UPDATE auth.location SET status = 'inactive'
+       WHERE location_id = p_location AND status = 'active';
+
+      PERFORM auth._org_audit(
+        'org.location.deactivated', 'location', p_location,
+        jsonb_build_object(
+          'partner_id', v_partner::text,
+          'client_id', v_client::text));
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.activate_location(p_location uuid) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_partner uuid;
+      v_client uuid;
+      v_pstatus text;
+      v_cstatus text;
+    BEGIN
+      SELECT l.partner_id, l.client_id, p.status, c.status
+        INTO v_partner, v_client, v_pstatus, v_cstatus
+        FROM auth.location l
+        JOIN auth.partner p ON p.partner_id = l.partner_id
+        LEFT JOIN auth.client c ON c.client_id = l.client_id
+       WHERE l.location_id = p_location;
+      IF v_partner IS NULL THEN
+        RAISE EXCEPTION 'location_not_found' USING ERRCODE = 'P0002';
+      END IF;
+      IF NOT (
+           auth.actor_is_global()
+        OR auth.actor_can_partner(v_partner)
+      ) THEN
+        RAISE EXCEPTION 'forbidden' USING ERRCODE = '42501';
+      END IF;
+      IF v_client IS NOT NULL AND v_cstatus IS DISTINCT FROM 'active' THEN
+        RAISE EXCEPTION 'client_inactive' USING ERRCODE = '42501';
+      END IF;
+      IF v_pstatus <> 'active' THEN
+        RAISE EXCEPTION 'partner_inactive' USING ERRCODE = '42501';
+      END IF;
+      UPDATE auth.location SET status = 'active'
+       WHERE location_id = p_location AND status = 'inactive';
+      PERFORM auth._org_audit(
+        'org.location.activated', 'location', p_location,
+        jsonb_build_object(
+          'partner_id', v_partner::text,
+          'client_id', v_client::text));
+    END
+    $fn$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261120100000_Req068LocationStatusSaPaOnly') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261120100000_Req068LocationStatusSaPaOnly', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;

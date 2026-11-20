@@ -34,7 +34,21 @@ DECLARE
     'auth._last_sa_guard()',
     'auth._last_sa_truncate_guard()',
     'auth.location_partner(uuid)',
-    'auth.tenant_bound_elsewhere(uuid, uuid)'
+    'auth.tenant_bound_elsewhere(uuid, uuid)',
+    -- REQ-068 / DEC-286 org status + Client Admin scope helper
+    'auth.actor_can_client(uuid)',
+    'auth.location_signin_allowed(uuid)',
+    'auth.assert_location_signin(uuid)',
+    'auth._org_audit(text, text, uuid, jsonb)',
+    'auth.deactivate_partner(uuid)',
+    'auth.deactivate_client(uuid)',
+    'auth.deactivate_location(uuid)',
+    'auth.activate_partner(uuid)',
+    'auth.activate_client(uuid)',
+    'auth.activate_location(uuid)',
+    'auth.partner_reject_inactive_business_upd()',
+    'auth.client_reject_inactive_business_upd()',
+    'auth.location_reject_inactive_business_upd()'
   ];
 BEGIN
   IF NOT EXISTS (
@@ -44,6 +58,10 @@ BEGIN
     RAISE EXCEPTION 'auth definer role % must exist, NOLOGIN, NOINHERIT, and not a superuser', r;
   END IF;
   FOREACH fn IN ARRAY names LOOP
+    -- Skip names not yet present (older kits before REQ-068).
+    IF to_regprocedure(fn) IS NULL THEN
+      CONTINUE;
+    END IF;
     EXECUTE format('ALTER FUNCTION %s OWNER TO %I', fn, r);
   END LOOP;
   -- ALTER OWNER drops the migration user's implicit execute right. open_session stays
@@ -69,6 +87,30 @@ BEGIN
     EXECUTE format(
       'GRANT EXECUTE ON FUNCTION auth.location_partner(uuid), auth.tenant_bound_elsewhere(uuid, uuid) TO %I',
       current_database() || '_admin_api');
+    -- REQ-068: status helpers stay callable by admin_api after ALTER OWNER.
+    IF to_regprocedure('auth.deactivate_partner(uuid)') IS NOT NULL THEN
+      EXECUTE format(
+        'GRANT EXECUTE ON FUNCTION auth.deactivate_partner(uuid), auth.deactivate_client(uuid), auth.deactivate_location(uuid), auth.activate_partner(uuid), auth.activate_client(uuid), auth.activate_location(uuid), auth.location_signin_allowed(uuid), auth.assert_location_signin(uuid), auth.actor_can_client(uuid) TO %I',
+        current_database() || '_admin_api');
+    END IF;
+  END IF;
+  -- REQ-068 status mutations: definer needs DML on org tables + audit insert under FORCE RLS.
+  IF to_regprocedure('auth.deactivate_partner(uuid)') IS NOT NULL THEN
+    EXECUTE format('GRANT SELECT, UPDATE ON auth.partner, auth.client TO %I', r);
+    EXECUTE format('GRANT SELECT, UPDATE ON auth.location TO %I', r);
+    EXECUTE format('GRANT INSERT ON auth.audit_outbox TO %I', r);
+    EXECUTE 'DROP POLICY IF EXISTS partner_definer_select ON auth.partner';
+    EXECUTE 'DROP POLICY IF EXISTS partner_definer_update ON auth.partner';
+    EXECUTE format('CREATE POLICY partner_definer_select ON auth.partner FOR SELECT TO %I USING (true)', r);
+    EXECUTE format('CREATE POLICY partner_definer_update ON auth.partner FOR UPDATE TO %I USING (true) WITH CHECK (true)', r);
+    EXECUTE 'DROP POLICY IF EXISTS client_definer_select ON auth.client';
+    EXECUTE 'DROP POLICY IF EXISTS client_definer_update ON auth.client';
+    EXECUTE format('CREATE POLICY client_definer_select ON auth.client FOR SELECT TO %I USING (true)', r);
+    EXECUTE format('CREATE POLICY client_definer_update ON auth.client FOR UPDATE TO %I USING (true) WITH CHECK (true)', r);
+    EXECUTE 'DROP POLICY IF EXISTS location_definer_update ON auth.location';
+    EXECUTE format('CREATE POLICY location_definer_update ON auth.location FOR UPDATE TO %I USING (true) WITH CHECK (true)', r);
+    EXECUTE 'DROP POLICY IF EXISTS audit_outbox_definer_insert ON auth.audit_outbox';
+    EXECUTE format('CREATE POLICY audit_outbox_definer_insert ON auth.audit_outbox FOR INSERT TO %I WITH CHECK (true)', r);
   END IF;
   EXECUTE format('ALTER FUNCTION auth._login_cutoff_user_delete() OWNER TO %I', r);
   EXECUTE format('GRANT EXECUTE ON FUNCTION auth._login_cutoff_user_delete() TO %I', owner_name);
