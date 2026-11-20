@@ -5793,3 +5793,581 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261120090000_Req068OrgStatusRights') THEN
+
+    -- REQ-068 / DEC-286: org status (active|inactive) on partner/client/location;
+    -- Client Admin loses location INSERT/UPDATE RLS; status mutations via SECURITY DEFINER;
+    -- inactive orgs block floor login (login-role SELECT) and scoped admin grant resolution.
+
+    ALTER TABLE auth.partner
+      ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
+    ALTER TABLE auth.client
+      ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
+    ALTER TABLE auth.location
+      ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
+
+    DO $ck$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'partner_status_values') THEN
+        ALTER TABLE auth.partner
+          ADD CONSTRAINT partner_status_values CHECK (status IN ('active', 'inactive'));
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'client_status_values') THEN
+        ALTER TABLE auth.client
+          ADD CONSTRAINT client_status_values CHECK (status IN ('active', 'inactive'));
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'location_status_values') THEN
+        ALTER TABLE auth.location
+          ADD CONSTRAINT location_status_values CHECK (status IN ('active', 'inactive'));
+      END IF;
+    END
+    $ck$;
+
+    -- DEC-286: drop Client Admin location write policies; keep location_admin_select_client.
+    DROP POLICY IF EXISTS location_admin_insert_client ON auth.location;
+    DROP POLICY IF EXISTS location_admin_update_client ON auth.location;
+
+    CREATE OR REPLACE FUNCTION auth.location_signin_allowed(p_location uuid) RETURNS boolean
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT EXISTS (
+        SELECT 1
+          FROM auth.location l
+          JOIN auth.partner p ON p.partner_id = l.partner_id
+          LEFT JOIN auth.client c ON c.client_id = l.client_id
+         WHERE l.location_id = p_location
+           AND l.status = 'active'
+           AND p.status = 'active'
+           AND (l.client_id IS NULL OR c.status = 'active')
+      )
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.assert_location_signin(p_location uuid) RETURNS void
+      LANGUAGE plpgsql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    BEGIN
+      IF p_location IS NULL OR NOT auth.location_signin_allowed(p_location) THEN
+        RAISE EXCEPTION 'org_inactive' USING ERRCODE = '42501';
+      END IF;
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth._org_audit(
+      p_event_type text,
+      p_target_type text,
+      p_target_id uuid,
+      p_details jsonb
+    ) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_id uuid := gen_random_uuid();
+      v_at timestamptz := clock_timestamp();
+      v_actor uuid := auth._request_user();
+      v_env jsonb;
+    BEGIN
+      v_env := jsonb_build_object(
+        'event_id', v_id::text,
+        'event_type', p_event_type,
+        'occurred_at', to_char(v_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+        'outcome', 'success',
+        'actor', CASE WHEN v_actor IS NULL THEN jsonb_build_object()
+                      ELSE jsonb_build_object('user_id', v_actor::text) END,
+        'target', jsonb_build_object('type', p_target_type, 'id', p_target_id::text),
+        'action', CASE WHEN p_event_type LIKE '%.deactivated' THEN 'deactivate'
+                       WHEN p_event_type LIKE '%.activated' THEN 'activate'
+                       ELSE 'update' END,
+        'details', coalesce(p_details, '{}'::jsonb)
+      );
+      INSERT INTO auth.audit_outbox (event_id, occurred_at, event_type, envelope)
+      VALUES (v_id, v_at, p_event_type, v_env);
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.deactivate_partner(p_partner uuid,
+      OUT clients_cascaded integer, OUT locations_cascaded integer)
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    BEGIN
+      IF p_partner IS NULL OR NOT auth.actor_is_global() THEN
+        RAISE EXCEPTION 'forbidden' USING ERRCODE = '42501';
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM auth.partner WHERE partner_id = p_partner) THEN
+        RAISE EXCEPTION 'partner_not_found' USING ERRCODE = 'P0002';
+      END IF;
+
+      UPDATE auth.partner SET status = 'inactive' WHERE partner_id = p_partner AND status = 'active';
+
+      WITH c AS (
+        UPDATE auth.client
+           SET status = 'inactive'
+         WHERE partner_id = p_partner AND status = 'active'
+         RETURNING client_id
+      )
+      SELECT count(*)::integer INTO clients_cascaded FROM c;
+
+      WITH loc AS (
+        UPDATE auth.location
+           SET status = 'inactive'
+         WHERE partner_id = p_partner AND status = 'active'
+         RETURNING location_id
+      )
+      SELECT count(*)::integer INTO locations_cascaded FROM loc;
+
+      clients_cascaded := coalesce(clients_cascaded, 0);
+      locations_cascaded := coalesce(locations_cascaded, 0);
+
+      PERFORM auth._org_audit(
+        'org.partner.deactivated', 'partner', p_partner,
+        jsonb_build_object(
+          'clients_cascaded', clients_cascaded,
+          'locations_cascaded', locations_cascaded));
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.deactivate_client(p_client uuid, OUT locations_cascaded integer)
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_partner uuid;
+    BEGIN
+      SELECT partner_id INTO v_partner FROM auth.client WHERE client_id = p_client;
+      IF v_partner IS NULL THEN
+        RAISE EXCEPTION 'client_not_found' USING ERRCODE = 'P0002';
+      END IF;
+      IF NOT (auth.actor_is_global() OR auth.actor_can_partner(v_partner)) THEN
+        RAISE EXCEPTION 'forbidden' USING ERRCODE = '42501';
+      END IF;
+
+      UPDATE auth.client SET status = 'inactive' WHERE client_id = p_client AND status = 'active';
+
+      WITH loc AS (
+        UPDATE auth.location
+           SET status = 'inactive'
+         WHERE client_id = p_client AND status = 'active'
+         RETURNING location_id
+      )
+      SELECT count(*)::integer INTO locations_cascaded FROM loc;
+
+      locations_cascaded := coalesce(locations_cascaded, 0);
+
+      PERFORM auth._org_audit(
+        'org.client.deactivated', 'client', p_client,
+        jsonb_build_object('locations_cascaded', locations_cascaded, 'partner_id', v_partner::text));
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.deactivate_location(p_location uuid) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_partner uuid;
+      v_client uuid;
+    BEGIN
+      SELECT partner_id, client_id INTO v_partner, v_client
+        FROM auth.location WHERE location_id = p_location;
+      IF v_partner IS NULL THEN
+        RAISE EXCEPTION 'location_not_found' USING ERRCODE = 'P0002';
+      END IF;
+      IF NOT (
+           auth.actor_is_global()
+        OR auth.actor_can_partner(v_partner)
+        OR (v_client IS NOT NULL AND auth.actor_can_client(v_client))
+      ) THEN
+        RAISE EXCEPTION 'forbidden' USING ERRCODE = '42501';
+      END IF;
+
+      UPDATE auth.location SET status = 'inactive'
+       WHERE location_id = p_location AND status = 'active';
+
+      PERFORM auth._org_audit(
+        'org.location.deactivated', 'location', p_location,
+        jsonb_build_object(
+          'partner_id', v_partner::text,
+          'client_id', v_client::text));
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.activate_partner(p_partner uuid) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    BEGIN
+      IF p_partner IS NULL OR NOT auth.actor_is_global() THEN
+        RAISE EXCEPTION 'forbidden' USING ERRCODE = '42501';
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM auth.partner WHERE partner_id = p_partner) THEN
+        RAISE EXCEPTION 'partner_not_found' USING ERRCODE = 'P0002';
+      END IF;
+      UPDATE auth.partner SET status = 'active' WHERE partner_id = p_partner AND status = 'inactive';
+      PERFORM auth._org_audit('org.partner.activated', 'partner', p_partner, '{}'::jsonb);
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.activate_client(p_client uuid) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_partner uuid;
+      v_pstatus text;
+    BEGIN
+      SELECT c.partner_id, p.status INTO v_partner, v_pstatus
+        FROM auth.client c
+        JOIN auth.partner p ON p.partner_id = c.partner_id
+       WHERE c.client_id = p_client;
+      IF v_partner IS NULL THEN
+        RAISE EXCEPTION 'client_not_found' USING ERRCODE = 'P0002';
+      END IF;
+      IF NOT (auth.actor_is_global() OR auth.actor_can_partner(v_partner)) THEN
+        RAISE EXCEPTION 'forbidden' USING ERRCODE = '42501';
+      END IF;
+      IF v_pstatus <> 'active' THEN
+        RAISE EXCEPTION 'partner_inactive' USING ERRCODE = '42501';
+      END IF;
+      UPDATE auth.client SET status = 'active' WHERE client_id = p_client AND status = 'inactive';
+      PERFORM auth._org_audit(
+        'org.client.activated', 'client', p_client,
+        jsonb_build_object('partner_id', v_partner::text));
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.activate_location(p_location uuid) RETURNS void
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_partner uuid;
+      v_client uuid;
+      v_pstatus text;
+      v_cstatus text;
+    BEGIN
+      SELECT l.partner_id, l.client_id, p.status, c.status
+        INTO v_partner, v_client, v_pstatus, v_cstatus
+        FROM auth.location l
+        JOIN auth.partner p ON p.partner_id = l.partner_id
+        LEFT JOIN auth.client c ON c.client_id = l.client_id
+       WHERE l.location_id = p_location;
+      IF v_partner IS NULL THEN
+        RAISE EXCEPTION 'location_not_found' USING ERRCODE = 'P0002';
+      END IF;
+      IF NOT (
+           auth.actor_is_global()
+        OR auth.actor_can_partner(v_partner)
+        OR (v_client IS NOT NULL AND auth.actor_can_client(v_client))
+      ) THEN
+        RAISE EXCEPTION 'forbidden' USING ERRCODE = '42501';
+      END IF;
+      -- Nearest inactive ancestor: client before partner.
+      IF v_client IS NOT NULL AND v_cstatus IS DISTINCT FROM 'active' THEN
+        RAISE EXCEPTION 'client_inactive' USING ERRCODE = '42501';
+      END IF;
+      IF v_pstatus <> 'active' THEN
+        RAISE EXCEPTION 'partner_inactive' USING ERRCODE = '42501';
+      END IF;
+      UPDATE auth.location SET status = 'active'
+       WHERE location_id = p_location AND status = 'inactive';
+      PERFORM auth._org_audit(
+        'org.location.activated', 'location', p_location,
+        jsonb_build_object(
+          'partner_id', v_partner::text,
+          'client_id', v_client::text));
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.partner_reject_inactive_business_upd() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    BEGIN
+      IF OLD.status = 'inactive' THEN
+        IF ROW(NEW.partner_id, NEW.name, NEW.address_line_1, NEW.address_line_2, NEW.city,
+               NEW.country, NEW.region, NEW.postal_code, NEW.phone, NEW.email, NEW.time_zone)
+           IS DISTINCT FROM
+           ROW(OLD.partner_id, OLD.name, OLD.address_line_1, OLD.address_line_2, OLD.city,
+               OLD.country, OLD.region, OLD.postal_code, OLD.phone, OLD.email, OLD.time_zone)
+        THEN
+          RAISE EXCEPTION 'org_inactive_readonly' USING ERRCODE = '42501';
+        END IF;
+      END IF;
+      RETURN NEW;
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.client_reject_inactive_business_upd() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    BEGIN
+      IF NEW.partner_id IS DISTINCT FROM OLD.partner_id THEN
+        RAISE EXCEPTION 'client_partner_id_immutable' USING ERRCODE = '42501';
+      END IF;
+      IF OLD.status = 'inactive' THEN
+        IF ROW(NEW.client_id, NEW.name, NEW.address_line_1, NEW.address_line_2, NEW.city,
+               NEW.country, NEW.region, NEW.postal_code, NEW.phone, NEW.email, NEW.time_zone)
+           IS DISTINCT FROM
+           ROW(OLD.client_id, OLD.name, OLD.address_line_1, OLD.address_line_2, OLD.city,
+               OLD.country, OLD.region, OLD.postal_code, OLD.phone, OLD.email, OLD.time_zone)
+        THEN
+          RAISE EXCEPTION 'org_inactive_readonly' USING ERRCODE = '42501';
+        END IF;
+      END IF;
+      RETURN NEW;
+    END
+    $fn$;
+
+    CREATE OR REPLACE FUNCTION auth.location_reject_inactive_business_upd() RETURNS trigger
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    BEGIN
+      IF NEW.client_id IS DISTINCT FROM OLD.client_id THEN
+        RAISE EXCEPTION 'location_client_id_immutable' USING ERRCODE = '42501';
+      END IF;
+      IF OLD.status = 'inactive' THEN
+        IF ROW(NEW.location_id, NEW.partner_id, NEW.slug, NEW.name,
+               NEW.address_line_1, NEW.address_line_2, NEW.city, NEW.country, NEW.region,
+               NEW.postal_code, NEW.phone, NEW.email, NEW.time_zone)
+           IS DISTINCT FROM
+           ROW(OLD.location_id, OLD.partner_id, OLD.slug, OLD.name,
+               OLD.address_line_1, OLD.address_line_2, OLD.city, OLD.country, OLD.region,
+               OLD.postal_code, OLD.phone, OLD.email, OLD.time_zone)
+        THEN
+          RAISE EXCEPTION 'org_inactive_readonly' USING ERRCODE = '42501';
+        END IF;
+      END IF;
+      RETURN NEW;
+    END
+    $fn$;
+
+    DROP TRIGGER IF EXISTS partner_reject_inactive_business_upd ON auth.partner;
+    CREATE TRIGGER partner_reject_inactive_business_upd
+      BEFORE UPDATE ON auth.partner
+      FOR EACH ROW EXECUTE FUNCTION auth.partner_reject_inactive_business_upd();
+
+    DROP TRIGGER IF EXISTS client_reject_inactive_business_upd ON auth.client;
+    CREATE TRIGGER client_reject_inactive_business_upd
+      BEFORE UPDATE ON auth.client
+      FOR EACH ROW EXECUTE FUNCTION auth.client_reject_inactive_business_upd();
+
+    DROP TRIGGER IF EXISTS location_reject_inactive_business_upd ON auth.location;
+    CREATE TRIGGER location_reject_inactive_business_upd
+      BEFORE UPDATE ON auth.location
+      FOR EACH ROW EXECUTE FUNCTION auth.location_reject_inactive_business_upd();
+
+    -- resolve_grant: omit assignments whose scoped org (or parent) is inactive.
+    DROP FUNCTION IF EXISTS auth.resolve_grant(text, uuid);
+    CREATE FUNCTION auth.resolve_grant(p_issuer text, p_subject uuid)
+      RETURNS TABLE (
+        outcome text,
+        user_id uuid,
+        role_wire text,
+        global_admin boolean,
+        partner_ids uuid[],
+        location_ids uuid[],
+        perm_version bigint,
+        client_ids uuid[])
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_user uuid;
+      v_global boolean;
+      v_partners uuid[];
+      v_locations uuid[];
+      v_clients uuid[];
+      v_version bigint;
+      v_role text;
+    BEGIN
+      PERFORM p_issuer, p_subject;
+      PERFORM nextval('auth.resolver_read_seq');
+      v_user := auth._request_user();
+      IF v_user IS NULL THEN
+        outcome := 'deny'; user_id := NULL; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[];
+        client_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+      SELECT coalesce(bool_or(a.role_id = 'super_admin' AND a.scope_kind = 'global'), false),
+             coalesce(array_agg(DISTINCT a.partner_id) FILTER (
+               WHERE a.scope_kind = 'partner' AND a.role_id = 'partner_admin' AND a.partner_id IS NOT NULL
+                 AND EXISTS (
+                   SELECT 1 FROM auth.partner p
+                    WHERE p.partner_id = a.partner_id AND p.status = 'active')
+             ), ARRAY[]::uuid[]),
+             coalesce(array_agg(DISTINCT a.location_id) FILTER (
+               WHERE a.scope_kind = 'location' AND a.location_id IS NOT NULL
+                 AND auth.location_signin_allowed(a.location_id)
+             ), ARRAY[]::uuid[]),
+             coalesce(array_agg(DISTINCT a.client_id) FILTER (
+               WHERE a.scope_kind = 'client' AND a.role_id = 'client_admin' AND a.client_id IS NOT NULL
+                 AND EXISTS (
+                   SELECT 1 FROM auth.client c
+                   JOIN auth.partner p ON p.partner_id = c.partner_id
+                    WHERE c.client_id = a.client_id
+                      AND c.status = 'active' AND p.status = 'active')
+             ), ARRAY[]::uuid[]),
+             coalesce(max(a.version), 0)
+        INTO v_global, v_partners, v_locations, v_clients, v_version
+        FROM auth.admin_assignment a
+       WHERE a.user_id = v_user
+         AND a.status = 'active'
+         AND a.revoked_at IS NULL;
+      -- Inactive-only assignments must deny even when perm_version > 0.
+      IF NOT v_global
+         AND v_partners = ARRAY[]::uuid[] AND v_locations = ARRAY[]::uuid[]
+         AND v_clients = ARRAY[]::uuid[] THEN
+        outcome := 'deny'; user_id := v_user; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[];
+        client_ids := ARRAY[]::uuid[]; perm_version := coalesce(v_version, 0);
+        RETURN NEXT;
+        RETURN;
+      END IF;
+      IF v_global THEN
+        v_role := 'super_admin';
+      ELSIF EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+           AND a.role_id = 'partner_admin' AND a.scope_kind = 'partner' AND a.partner_id IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM auth.partner p
+              WHERE p.partner_id = a.partner_id AND p.status = 'active')
+      ) THEN
+        v_role := 'partner_admin';
+      ELSIF EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+           AND a.role_id = 'client_admin' AND a.scope_kind = 'client' AND a.client_id IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM auth.client c
+             JOIN auth.partner p ON p.partner_id = c.partner_id
+              WHERE c.client_id = a.client_id
+                AND c.status = 'active' AND p.status = 'active')
+      ) THEN
+        v_role := 'client_admin';
+      ELSE
+        SELECT a.role_id INTO v_role
+          FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+           AND (
+             (a.scope_kind = 'location' AND a.location_id IS NOT NULL
+                AND auth.location_signin_allowed(a.location_id))
+             OR (a.scope_kind = 'partner' AND a.partner_id IS NOT NULL
+                AND EXISTS (SELECT 1 FROM auth.partner p WHERE p.partner_id = a.partner_id AND p.status = 'active'))
+             OR (a.scope_kind = 'client' AND a.client_id IS NOT NULL
+                AND EXISTS (
+                  SELECT 1 FROM auth.client c
+                  JOIN auth.partner p ON p.partner_id = c.partner_id
+                   WHERE c.client_id = a.client_id AND c.status = 'active' AND p.status = 'active'))
+             OR (a.role_id = 'super_admin' AND a.scope_kind = 'global')
+           )
+         ORDER BY a.role_id
+         LIMIT 1;
+        v_role := coalesce(v_role, 'none');
+      END IF;
+      outcome := 'grant';
+      user_id := v_user;
+      role_wire := v_role;
+      global_admin := v_global;
+      partner_ids := v_partners;
+      location_ids := v_locations;
+      client_ids := v_clients;
+      perm_version := v_version;
+      RETURN NEXT;
+    END
+    $fn$;
+
+    REVOKE ALL ON FUNCTION auth.location_signin_allowed(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.assert_location_signin(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth._org_audit(text, text, uuid, jsonb) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.deactivate_partner(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.deactivate_client(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.deactivate_location(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.activate_partner(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.activate_client(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.activate_location(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.resolve_grant(text, uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.partner_reject_inactive_business_upd() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.client_reject_inactive_business_upd() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.location_reject_inactive_business_upd() FROM PUBLIC;
+
+    ALTER FUNCTION auth.location_signin_allowed(uuid) PARALLEL RESTRICTED;
+    ALTER FUNCTION auth.assert_location_signin(uuid) PARALLEL RESTRICTED;
+
+    DO $gr$
+    DECLARE
+      a text := current_database() || '_admin_api';
+      l text := current_database() || '_login';
+      r text := current_database() || '_auth_definer';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.deactivate_partner(uuid) TO %I', a);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.deactivate_client(uuid) TO %I', a);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.deactivate_location(uuid) TO %I', a);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.activate_partner(uuid) TO %I', a);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.activate_client(uuid) TO %I', a);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.activate_location(uuid) TO %I', a);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid) TO %I', a);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.location_signin_allowed(uuid) TO %I', a);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.assert_location_signin(uuid) TO %I', a);
+        -- status-only column grant for location (partner/client already have table UPDATE).
+        EXECUTE format('GRANT UPDATE (status) ON auth.location TO %I', a);
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = l) THEN
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.location_signin_allowed(uuid) TO %I', l);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.assert_location_signin(uuid) TO %I', l);
+        -- Floor login: hide inactive location (or inactive parent) from slug/config lookup.
+        EXECUTE 'DROP POLICY IF EXISTS location_login ON auth.location';
+        EXECUTE format(
+          $p$CREATE POLICY location_login ON auth.location FOR SELECT TO %I USING (auth.location_signin_allowed(location_id))$p$,
+          l);
+        EXECUTE 'DROP POLICY IF EXISTS llc_login ON auth.location_login_config';
+        EXECUTE format(
+          $p$CREATE POLICY llc_login ON auth.location_login_config FOR SELECT TO %I USING (auth.location_signin_allowed(location_id))$p$,
+          l);
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid) TO %I', r);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.location_signin_allowed(uuid) TO %I', r);
+      END IF;
+    END
+    $gr$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261120090000_Req068OrgStatusRights') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261120090000_Req068OrgStatusRights', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
