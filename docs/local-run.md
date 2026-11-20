@@ -30,7 +30,7 @@ Defaults (overridable):
 |---|---|---|
 | Host | `FF_DB_HOST` / `-DbHost` / `--host` | `127.0.0.1` |
 | Port | `FF_DB_PORT` / `-Port` / `--port` | `5432` (your laptop server — fine) |
-| Superuser | `FF_PG_SUPERUSER` / `-AdminUser` | `postgres` |
+| Superuser | `FF_PG_SUPERUSER` / `-Superuser` | `postgres` |
 | Superuser password | `PGPASSWORD` or peer auth | — |
 | Database + owner role | `FF_DB_NAME` / `-Db` | `floorfunds_local` |
 | Role | `FF_DB_ROLE` / `-Role` | same as db name |

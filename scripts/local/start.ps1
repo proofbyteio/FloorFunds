@@ -26,9 +26,10 @@ $env:ASPNETCORE_ENVIRONMENT = 'Development'
 
 $ShellPort = if ($env:FF_SHELL_PORT) { [int]$env:FF_SHELL_PORT } else { 5099 }
 $StandinPort = if ($env:FF_STANDIN_PORT) { [int]$env:FF_STANDIN_PORT } else { 18280 }
+$TokenPort = if ($env:FF_STANDIN_TOKEN_PORT) { [int]$env:FF_STANDIN_TOKEN_PORT } else { $StandinPort + 1 }
 $ApiPort = if ($env:FF_API_PORT) { [int]$env:FF_API_PORT } else { 18290 }
 $IssuerPort = if ($env:FF_ISSUER_PORT) { [int]$env:FF_ISSUER_PORT } else { 18291 }
-$TokenPort = $StandinPort + 1
+$ControlPort = $StandinPort + 2
 
 $env:ADMIN_DEV_SHELL = '1'
 $env:ADMIN_DEV_SHELL_REDIRECT = "http://127.0.0.1:${ShellPort}/signin-oidc"
@@ -40,6 +41,9 @@ $env:StandIn__Issuer = "http://127.0.0.1:${ShellPort}/standin"
 $env:StandIn__AllowlistJson = (Join-Path $LocalDir 'allowlist.json')
 $env:StandIn__Fixtures = (Join-Path $Root 'scripts\local\review-fixtures.json')
 $env:ADMIN_API_ORIGIN = "http://127.0.0.1:${ApiPort}"
+# Same as start.sh — server.mjs reads these (defaults 18080/18081 otherwise).
+$env:STANDIN_FRONT_ORIGIN = "http://127.0.0.1:${StandinPort}"
+$env:STANDIN_TOKEN_URL = "http://127.0.0.1:${TokenPort}/standin/connect/token"
 New-Item -ItemType Directory -Force -Path $env:STANDIN_STATE_DIR | Out-Null
 '{"entries":[{"value":"127.0.0.1/32"},{"value":"::1/128"}]}' | Set-Content -LiteralPath $env:StandIn__AllowlistJson -Encoding utf8
 
@@ -52,9 +56,14 @@ function Test-PortFree([int]$Port, [string]$Name) {
 }
 Test-PortFree $StandinPort 'stand-in'
 Test-PortFree $TokenPort 'stand-in token'
+Test-PortFree $ControlPort 'stand-in control'
 Test-PortFree $ApiPort 'admin API'
 Test-PortFree $IssuerPort 'issuer'
 Test-PortFree $ShellPort 'admin shell'
+# Re-export after port checks (mirrors start.sh).
+$env:STANDIN_FRONT_ORIGIN = "http://127.0.0.1:${StandinPort}"
+$env:STANDIN_TOKEN_URL = "http://127.0.0.1:${TokenPort}/standin/connect/token"
+$env:ADMIN_API_ORIGIN = "http://127.0.0.1:${ApiPort}"
 
 dotnet build src/Login.StandIn/Login.StandIn.csproj -p:IncludeStandIn=true -v q --nologo
 dotnet build src/Auth.Issuer/Auth.Issuer.csproj -v q --nologo
