@@ -18,7 +18,8 @@ export ASPNETCORE_ENVIRONMENT=Development
 
 SHELL_PORT="${FF_SHELL_PORT:-5099}"
 STANDIN_PORT="${FF_STANDIN_PORT:-18280}"
-STANDIN_TOKEN_PORT="${FF_STANDIN_TOKEN_PORT:-18281}"
+# Token port tracks the stand-in base (+1) unless explicitly overridden — Login.StandIn binds base/base+1/base+2.
+STANDIN_TOKEN_PORT="${FF_STANDIN_TOKEN_PORT:-$((STANDIN_PORT + 1))}"
 API_PORT="${FF_API_PORT:-18290}"
 ISSUER_PORT="${FF_ISSUER_PORT:-18291}"
 
