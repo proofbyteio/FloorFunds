@@ -6702,6 +6702,18 @@ BEGIN
     $seedfn$;
     REVOKE ALL ON FUNCTION auth.seed_sse2_fake_partner(uuid, text, text, text, text, text, text, text, text, text, text, text) FROM PUBLIC;
 
+    -- FORCE RLS applies to table owner; allow the DEFINER (db owner role) to insert seed partners.
+    DO $pol$
+    DECLARE
+      o text := current_database();
+    BEGIN
+      EXECUTE 'DROP POLICY IF EXISTS partner_seed_helper_insert ON auth.partner';
+      EXECUTE format(
+        'CREATE POLICY partner_seed_helper_insert ON auth.partner FOR INSERT TO %I WITH CHECK (true)',
+        o);
+    END
+    $pol$;
+
     -- SSE2-FAKE-TEST-ONLY / Req064 suite partners referenced by Admin.Api.Checks Seed() without partner rows.
     PERFORM auth.seed_sse2_fake_partner(
       '5f0c3e1a-0001-4000-8000-000000000001', 'SSE2 Fake Partner PCI', '100 Fake Street', '',
