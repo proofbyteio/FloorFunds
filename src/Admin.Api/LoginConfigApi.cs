@@ -832,13 +832,13 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
               FROM auth.location l
               LEFT JOIN auth.client c ON c.client_id = l.client_id
              WHERE l.status = $1
-               AND ($2::text IS NULL OR l.name ILIKE '%' || $2 || '%')
+               AND ($2::text IS NULL OR l.name ILIKE '%' || $2 || '%' ESCAPE E'\')
              ORDER BY {orderCol} {(q.DirDesc ? "DESC" : "ASC")}, l.location_id ASC
              LIMIT 10 OFFSET $3
             """;
         await using var cmd = new NpgsqlCommand(sql, c, tx);
         cmd.Parameters.Add(new() { Value = q.Status });
-        cmd.Parameters.Add(new() { Value = (object?)q.Q ?? DBNull.Value });
+        cmd.Parameters.Add(new() { Value = (object?)EscapeIlike(q.Q) ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = (q.Page - 1) * 10 });
         var rows = new JsonArray();
         await using var r = await cmd.ExecuteReaderAsync();
@@ -990,10 +990,10 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
 
     public Task<IResult> ListOrgPartnersAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        // DEC-273: SA sees all; PA sees assigned partners only (Client/Location Partner dropdown).
-        // DEC-275: CA sees only the partner of their assigned client (locked Partner field).
-        // Defense in depth with Assigned*; RLS scopes via actor_can_partner / partner_admin_select_client.
-        if (!who.MayManageLocations) throw Err(403, "forbidden");
+        // DEC-273 / DEC-323: SA sees all; PA sees assigned partners only.
+        // DEC-331: Client Admin (and Location Admin) get access denied on the partners list.
+        // GetOrgPartner remains available for CA locked-parent reads where still needed.
+        if (!(who.IsSuper || who.IsPartnerAdmin)) throw Err(403, "forbidden");
         var q = ParseListQuery(ctx, ["name", "status"]);
         var total = await CountScopedPartnersAsync(c, tx, who, q);
         var orderCol = q.Sort == "status" ? "status" : "name";
@@ -1001,13 +1001,13 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             SELECT partner_id, name, status
               FROM auth.partner
              WHERE status = $1
-               AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%')
+               AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' ESCAPE E'\')
              ORDER BY {orderCol} {(q.DirDesc ? "DESC" : "ASC")}, partner_id ASC
              LIMIT 10 OFFSET $3
             """;
         await using var cmd = new NpgsqlCommand(sql, c, tx);
         cmd.Parameters.Add(new() { Value = q.Status });
-        cmd.Parameters.Add(new() { Value = (object?)q.Q ?? DBNull.Value });
+        cmd.Parameters.Add(new() { Value = (object?)EscapeIlike(q.Q) ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = (q.Page - 1) * 10 });
         var rows = new JsonArray();
         await using var r = await cmd.ExecuteReaderAsync();
@@ -1050,7 +1050,8 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
 
     public Task<IResult> PostOrgPartnerAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsSuper) throw Err(403, "forbidden");
+        // DEC-335: Location Admin gets no Create option on any screen / endpoint.
+        if (who.IsLocationAdmin || !who.IsSuper) throw Err(403, "forbidden");
         var read = await ReadBodyAsync(ctx);
         if (read.TimedOut) throw BodyTimeout(ctx, who);
         if (read.TooLarge) throw Err(413, "payload_too_large");
@@ -1237,7 +1238,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         var screens = new JsonArray();
         if (who.IsSuper)
         {
-            // REQ-068: list screens + create_* for SA create buttons; create_location_admin for LA invite.
+            // REQ-068: list screens + create_* for SA create buttons; create_location_admin is SA nav key (opens location BUSINESS form today — DEC-336 paused).
             screens.Add("list_partners");
             screens.Add("list_clients");
             screens.Add("list_locations");
@@ -1296,14 +1297,16 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
     public Task<IResult> CreateClientAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
         if (c.State != System.Data.ConnectionState.Open || tx.Connection is null) throw Err(403, "forbidden");
-        if (!who.IsAdmin) throw Err(403, "forbidden");
+        // DEC-335: LA (and any non-IsAdmin) refused on create-client screen.
+        if (who.IsLocationAdmin || !who.IsAdmin) throw Err(403, "forbidden");
         return Json(200, new JsonObject { ["screen"] = "create_client", ["write"] = "open" });
     });
 
     /// <summary>POST create client. SA any partner; PA only assigned partners (DEC-273 role rules).</summary>
     public Task<IResult> CreateClientWriteAsync(HttpContext ctx) => Run(ctx, async (Caller who, NpgsqlConnection c, NpgsqlTransaction tx) =>
     {
-        if (!who.IsAdmin) throw Err(403, "forbidden");
+        // DEC-335: LA refused on create-client write.
+        if (who.IsLocationAdmin || !who.IsAdmin) throw Err(403, "forbidden");
         var read = await ReadBodyAsync(ctx);
         if (read.TimedOut) throw BodyTimeout(ctx, who);
         if (read.TooLarge) throw Err(413, "payload_too_large");
@@ -1340,14 +1343,14 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
               FROM auth.client c
               JOIN auth.partner p ON p.partner_id = c.partner_id
              WHERE c.status = $1
-               AND ($2::text IS NULL OR c.name ILIKE '%' || $2 || '%')
+               AND ($2::text IS NULL OR c.name ILIKE '%' || $2 || '%' ESCAPE E'\')
                AND ($3::uuid IS NULL OR c.partner_id = $3)
              ORDER BY {orderCol} {(q.DirDesc ? "DESC" : "ASC")}, c.client_id ASC
              LIMIT 10 OFFSET $4
             """;
         await using var cmd = new NpgsqlCommand(sql, c, tx);
         cmd.Parameters.Add(new() { Value = q.Status });
-        cmd.Parameters.Add(new() { Value = (object?)q.Q ?? DBNull.Value });
+        cmd.Parameters.Add(new() { Value = (object?)EscapeIlike(q.Q) ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = (object?)onlyPartner ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = (q.Page - 1) * 10 });
         var rows = new JsonArray();
@@ -1567,8 +1570,9 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         // The refused create is still audited [TLD 2026-11-04 9:04, OQ-P3-2]: location_id null, target partner = the body's partner_id
         // when the body yields a valid one, else target.id / scope.partner_id absent (OQ-P3-10).
         // REQ-068 / DEC-286: location create requires IsAdmin (SA/PA). CA/LA cannot POST.
+        // DEC-335: Location Admin gets no Create option (explicit before IsAdmin).
         // login_config on create still needs LoginMethodWrite (checked below).
-        if (!who.IsAdmin)
+        if (who.IsLocationAdmin || !who.IsAdmin)
         {
             var b0 = ParseObject(await TryReadBodyAsync(ctx));
             var lc0 = b0 is { } o0 && o0.TryGetProperty("login_config", out var l0) ? l0 : (JsonElement?)null;
@@ -1642,7 +1646,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             var clientName = await ClientNameAsync(c, tx, parsed.ClientId) ?? "";
             await tx.CommitAsync();
             ctx.Response.Headers.Location = $"/api/orgs/locations/{location:D}";
-            return Json(201, OrgLocationView((location, parsed.PartnerId, parsed.ClientId, clientName, slug, parsed.Name, parsed.Address, "active")));
+            return Json(201, OrgLocationView((location, parsed.PartnerId, parsed.ClientId, clientName, await PartnerNameAsync(c, tx, parsed.PartnerId), slug, parsed.Name, parsed.Address, "active")));
         }
         var entra = cfg.ProviderKind == "entra";
         await using (var ins = new NpgsqlCommand(
@@ -1767,16 +1771,17 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         return await r.ReadAsync();
     }
 
-    async Task<(Guid Id, Guid PartnerId, Guid? ClientId, string? ClientName, string Slug, string Name, OrgAddress? Address, string Status)?> LoadOrgLocationAsync(
+    async Task<(Guid Id, Guid PartnerId, Guid? ClientId, string? ClientName, string? PartnerName, string Slug, string Name, OrgAddress? Address, string Status)?> LoadOrgLocationAsync(
         NpgsqlConnection c, NpgsqlTransaction tx, Guid id)
     {
         await using var cmd = new NpgsqlCommand(
             """
             SELECT l.location_id, l.partner_id, l.client_id, l.slug, l.name,
                    l.address_line_1, l.address_line_2, l.city, l.country, l.region, l.postal_code, l.phone, l.email, l.time_zone,
-                   l.status, c.name AS client_name
+                   l.status, c.name AS client_name, p.name AS partner_name
               FROM auth.location l
               LEFT JOIN auth.client c ON c.client_id = l.client_id
+              LEFT JOIN auth.partner p ON p.partner_id = l.partner_id
              WHERE l.location_id = $1
             """, c, tx);
         cmd.Parameters.Add(new() { Value = id });
@@ -1791,10 +1796,12 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
                 r.GetString(11), r.IsDBNull(12) ? null : r.GetString(12), r.GetString(13));
         }
         return (r.GetGuid(0), r.GetGuid(1), r.IsDBNull(2) ? null : r.GetGuid(2),
-            r.IsDBNull(15) ? null : r.GetString(15), r.GetString(3), r.GetString(4), addr, r.GetString(14));
+            r.IsDBNull(15) ? null : r.GetString(15),
+            r.IsDBNull(16) ? null : r.GetString(16),
+            r.GetString(3), r.GetString(4), addr, r.GetString(14));
     }
 
-    static JsonObject OrgLocationView((Guid Id, Guid PartnerId, Guid? ClientId, string? ClientName, string Slug, string Name, OrgAddress? Address, string Status) row)
+    static JsonObject OrgLocationView((Guid Id, Guid PartnerId, Guid? ClientId, string? ClientName, string? PartnerName, string Slug, string Name, OrgAddress? Address, string Status) row)
     {
         var o = new JsonObject
         {
@@ -1802,6 +1809,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             ["partner_id"] = row.PartnerId.ToString("D"),
             ["client_id"] = row.ClientId is { } c ? c.ToString("D") : null,
             ["client_name"] = row.ClientName,
+            ["partner_name"] = row.PartnerName,
             ["slug"] = row.Slug,
             ["name"] = row.Name,
             ["status"] = row.Status,
@@ -1875,9 +1883,21 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
 
     sealed record ListQuery(string? Q, string Status, string Sort, bool DirDesc, int Page);
 
+    /// <summary>Escape \ % _ for ILIKE … ESCAPE '\' (SA L-7 / PO F-16).</summary>
+    static string? EscapeIlike(string? q)
+    {
+        if (q is null) return null;
+        return q.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("%", "\\%", StringComparison.Ordinal)
+            .Replace("_", "\\_", StringComparison.Ordinal);
+    }
+
+
     static ListQuery ParseListQuery(HttpContext ctx, string[] allowedSort)
     {
+        // SA L-7 / PO F-16: bound q length; escape ILIKE wildcards at call sites via EscapeIlike.
         var qRaw = (ctx.Request.Query["q"].ToString() ?? "").Trim();
+        if (qRaw.Length > 100) throw Err(400, "invalid_q");
         string? q = qRaw.Length == 0 ? null : qRaw;
         var statusRaw = (ctx.Request.Query["status"].ToString() ?? "").Trim().ToLowerInvariant();
         var status = statusRaw switch
@@ -1901,7 +1921,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         if (pageRaw.Length > 0)
         {
             if (!int.TryParse(pageRaw, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out page)
-                || page < 1)
+                || page < 1 || page > 100000)
                 throw Err(400, "invalid_page");
         }
         return new ListQuery(q, status, sort, dirDesc, page);
@@ -1935,11 +1955,11 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             """
             SELECT count(*)::bigint FROM auth.partner
              WHERE status = $1
-               AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%')
+               AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' ESCAPE E'\')
                AND ($3::uuid[] IS NULL OR partner_id = ANY($3))
             """, c, tx);
         cmd.Parameters.Add(new() { Value = q.Status });
-        cmd.Parameters.Add(new() { Value = (object?)q.Q ?? DBNull.Value });
+        cmd.Parameters.Add(new() { Value = (object?)EscapeIlike(q.Q) ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = who.IsPartnerAdmin ? who.Grant.AssignedPartners.ToArray() : (object)DBNull.Value });
         var v = await cmd.ExecuteScalarAsync();
         return v is long l ? l : 0;
@@ -1953,13 +1973,13 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             SELECT count(*)::bigint
               FROM auth.client c
              WHERE c.status = $1
-               AND ($2::text IS NULL OR c.name ILIKE '%' || $2 || '%')
+               AND ($2::text IS NULL OR c.name ILIKE '%' || $2 || '%' ESCAPE E'\')
                AND ($3::uuid IS NULL OR c.partner_id = $3)
                AND ($4::uuid[] IS NULL OR c.partner_id = ANY($4))
                AND ($5::uuid[] IS NULL OR c.client_id = ANY($5))
             """, c, tx);
         cmd.Parameters.Add(new() { Value = q.Status });
-        cmd.Parameters.Add(new() { Value = (object?)q.Q ?? DBNull.Value });
+        cmd.Parameters.Add(new() { Value = (object?)EscapeIlike(q.Q) ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = (object?)onlyPartner ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = who.IsPartnerAdmin ? who.Grant.AssignedPartners.ToArray() : (object)DBNull.Value });
         cmd.Parameters.Add(new() { Value = who.IsClientAdmin ? who.Grant.AssignedClients.ToArray() : (object)DBNull.Value });
@@ -1974,13 +1994,13 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             SELECT count(*)::bigint
               FROM auth.location l
              WHERE l.status = $1
-               AND ($2::text IS NULL OR l.name ILIKE '%' || $2 || '%')
+               AND ($2::text IS NULL OR l.name ILIKE '%' || $2 || '%' ESCAPE E'\')
                AND ($3::uuid[] IS NULL OR l.partner_id = ANY($3))
                AND ($4::uuid[] IS NULL OR l.client_id = ANY($4))
                AND ($5::uuid[] IS NULL OR l.location_id = ANY($5))
             """, c, tx);
         cmd.Parameters.Add(new() { Value = q.Status });
-        cmd.Parameters.Add(new() { Value = (object?)q.Q ?? DBNull.Value });
+        cmd.Parameters.Add(new() { Value = (object?)EscapeIlike(q.Q) ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = who.IsPartnerAdmin ? who.Grant.AssignedPartners.ToArray() : (object)DBNull.Value });
         cmd.Parameters.Add(new() { Value = who.IsClientAdmin ? who.Grant.AssignedClients.ToArray() : (object)DBNull.Value });
         cmd.Parameters.Add(new() { Value = who.IsLocationAdmin ? who.Grant.AssignedLocations.ToArray() : (object)DBNull.Value });
