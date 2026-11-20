@@ -6651,8 +6651,7 @@ BEGIN
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
         EXECUTE format('GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid) TO %I', r);
         EXECUTE format('GRANT EXECUTE ON FUNCTION auth.location_signin_allowed(uuid) TO %I', r);
-        EXECUTE format('ALTER FUNCTION auth.location_signin_allowed(uuid) OWNER TO %I', r);
-        EXECUTE format('ALTER FUNCTION auth.resolve_grant(text, uuid) OWNER TO %I', r);
+        -- OWNER stays migrator until db/kit/definer-owner.sql reassigns (NOCREATEROLE).
       END IF;
     END
     $gr$;
