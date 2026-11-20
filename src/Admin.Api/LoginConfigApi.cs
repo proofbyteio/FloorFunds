@@ -819,28 +819,28 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
     {
         if (!who.MayReadLocations) throw Err(403, "forbidden");
         var q = ParseListQuery(ctx, ["name", "status", "client_name"]);
-        var sql = """
-            SELECT l.location_id, l.partner_id, l.client_id, l.name, l.slug, l.status,
-                   c.name AS client_name, count(*) OVER() AS total
-              FROM auth.location l
-              LEFT JOIN auth.client c ON c.client_id = l.client_id
-             WHERE l.status = $1
-               AND ($2::text IS NULL OR l.name ILIKE '%' || $2 || '%')
-            """;
-        // Scope filters applied in SQL where possible; PA/CA/LA defense-in-depth after read.
+        var total = await CountScopedLocationsAsync(c, tx, who, q);
         var orderCol = q.Sort switch
         {
             "status" => "l.status",
             "client_name" => "c.name",
             _ => "l.name",
         };
-        sql += $" ORDER BY {orderCol} {(q.DirDesc ? "DESC" : "ASC")}, l.location_id ASC LIMIT 10 OFFSET $3";
+        var sql = $"""
+            SELECT l.location_id, l.partner_id, l.client_id, l.name, l.slug, l.status,
+                   c.name AS client_name
+              FROM auth.location l
+              LEFT JOIN auth.client c ON c.client_id = l.client_id
+             WHERE l.status = $1
+               AND ($2::text IS NULL OR l.name ILIKE '%' || $2 || '%')
+             ORDER BY {orderCol} {(q.DirDesc ? "DESC" : "ASC")}, l.location_id ASC
+             LIMIT 10 OFFSET $3
+            """;
         await using var cmd = new NpgsqlCommand(sql, c, tx);
         cmd.Parameters.Add(new() { Value = q.Status });
         cmd.Parameters.Add(new() { Value = (object?)q.Q ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = (q.Page - 1) * 10 });
         var rows = new JsonArray();
-        var total = 0L;
         await using var r = await cmd.ExecuteReaderAsync();
         while (await r.ReadAsync())
         {
@@ -850,7 +850,6 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId)) continue;
             if (who.IsClientAdmin && (clientId is null || !who.Grant.AssignedClients.Contains(clientId.Value))) continue;
             if (who.IsLocationAdmin && !who.Grant.AssignedLocations.Contains(locationId)) continue;
-            total = r.GetInt64(7);
             rows.Add(new JsonObject
             {
                 ["location_id"] = locationId.ToString("D"),
@@ -862,9 +861,6 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
                 ["status"] = r.GetString(5),
             });
         }
-        // When in-memory filters drop rows, recount for the caller's scope (small page).
-        if (who.IsPartnerAdmin || who.IsClientAdmin || who.IsLocationAdmin)
-            total = await CountScopedLocationsAsync(c, tx, who, q);
         return Json(200, ListPage(rows, total, q.Page));
     });
 
@@ -999,9 +995,10 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         // Defense in depth with Assigned*; RLS scopes via actor_can_partner / partner_admin_select_client.
         if (!who.MayManageLocations) throw Err(403, "forbidden");
         var q = ParseListQuery(ctx, ["name", "status"]);
+        var total = await CountScopedPartnersAsync(c, tx, who, q);
         var orderCol = q.Sort == "status" ? "status" : "name";
         var sql = $"""
-            SELECT partner_id, name, status, count(*) OVER() AS total
+            SELECT partner_id, name, status
               FROM auth.partner
              WHERE status = $1
                AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%')
@@ -1013,13 +1010,11 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         cmd.Parameters.Add(new() { Value = (object?)q.Q ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = (q.Page - 1) * 10 });
         var rows = new JsonArray();
-        var total = 0L;
         await using var r = await cmd.ExecuteReaderAsync();
         while (await r.ReadAsync())
         {
             var id = r.GetGuid(0);
             if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(id)) continue;
-            total = r.GetInt64(3);
             rows.Add(new JsonObject
             {
                 ["partner_id"] = id.ToString("D"),
@@ -1027,8 +1022,6 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
                 ["status"] = r.GetString(2),
             });
         }
-        if (who.IsPartnerAdmin || who.IsClientAdmin)
-            total = await CountScopedPartnersAsync(c, tx, who, q);
         return Json(200, ListPage(rows, total, q.Page));
     });
 
@@ -1335,6 +1328,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         Guid? onlyPartner = ParseId(partnerFilter);
         if (onlyPartner is { } want && who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(want))
             throw Err(404, "not_found");
+        var total = await CountScopedClientsAsync(c, tx, who, q, onlyPartner);
         var orderCol = q.Sort switch
         {
             "status" => "c.status",
@@ -1342,7 +1336,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             _ => "c.name",
         };
         var sql = $"""
-            SELECT c.client_id, c.partner_id, c.name, c.status, p.name AS partner_name, count(*) OVER() AS total
+            SELECT c.client_id, c.partner_id, c.name, c.status, p.name AS partner_name
               FROM auth.client c
               JOIN auth.partner p ON p.partner_id = c.partner_id
              WHERE c.status = $1
@@ -1357,7 +1351,6 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         cmd.Parameters.Add(new() { Value = (object?)onlyPartner ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = (q.Page - 1) * 10 });
         var rows = new JsonArray();
-        var total = 0L;
         await using var r = await cmd.ExecuteReaderAsync();
         while (await r.ReadAsync())
         {
@@ -1365,7 +1358,6 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             var partnerId = r.GetGuid(1);
             if (who.IsClientAdmin && !who.Grant.AssignedClients.Contains(clientId)) continue;
             if (who.IsPartnerAdmin && !who.Grant.AssignedPartners.Contains(partnerId)) continue;
-            total = r.GetInt64(5);
             rows.Add(new JsonObject
             {
                 ["client_id"] = clientId.ToString("D"),
@@ -1375,8 +1367,6 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
                 ["status"] = r.GetString(3),
             });
         }
-        if (who.IsPartnerAdmin || who.IsClientAdmin)
-            total = await CountScopedClientsAsync(c, tx, who, q, onlyPartner);
         return Json(200, ListPage(rows, total, q.Page));
     });
 
@@ -1946,29 +1936,13 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             SELECT count(*)::bigint FROM auth.partner
              WHERE status = $1
                AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%')
+               AND ($3::uuid[] IS NULL OR partner_id = ANY($3))
             """, c, tx);
         cmd.Parameters.Add(new() { Value = q.Status });
         cmd.Parameters.Add(new() { Value = (object?)q.Q ?? DBNull.Value });
-        var n = 0L;
-        await using var r = await cmd.ExecuteReaderAsync();
-        while (await r.ReadAsync()) n = r.GetInt64(0);
-        // RLS already scopes; for PA double-check AssignedPartners via a filtered count when needed.
-        if (who.IsPartnerAdmin)
-        {
-            await using var cmd2 = new NpgsqlCommand(
-                """
-                SELECT count(*)::bigint FROM auth.partner
-                 WHERE status = $1
-                   AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%')
-                   AND partner_id = ANY($3)
-                """, c, tx);
-            cmd2.Parameters.Add(new() { Value = q.Status });
-            cmd2.Parameters.Add(new() { Value = (object?)q.Q ?? DBNull.Value });
-            cmd2.Parameters.Add(new() { Value = who.Grant.AssignedPartners.ToArray() });
-            var v = await cmd2.ExecuteScalarAsync();
-            return v is long l ? l : 0;
-        }
-        return n;
+        cmd.Parameters.Add(new() { Value = who.IsPartnerAdmin ? who.Grant.AssignedPartners.ToArray() : (object)DBNull.Value });
+        var v = await cmd.ExecuteScalarAsync();
+        return v is long l ? l : 0;
     }
 
     static async Task<long> CountScopedClientsAsync(
