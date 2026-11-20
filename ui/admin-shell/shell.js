@@ -564,11 +564,10 @@ export async function showCreate(state, editId) {
   const pageHead = h("div");
   pageHead.className = "page-head";
   pageHead.append(h("h1", editing ? "Edit location" : "Create location"));
-  if (!editing) {
-    const lead = h("p", LOCATION_PAGE_LEAD);
-    lead.className = "page-lead";
-    pageHead.append(lead);
-  }
+  // UX-R13: declare lead outside create-only branch so Edit can set the record name.
+  const lead = h("p", editing ? "" : LOCATION_PAGE_LEAD);
+  lead.className = "page-lead";
+  if (!editing) pageHead.append(lead);
   main.replaceChildren(pageHead);
   setCrumbs(
     editing
@@ -730,6 +729,9 @@ export async function showCreate(state, editId) {
       return;
     }
     name.value = got.body.name ?? "";
+    // UX-R13: page lead under Edit title is the record name.
+    lead.textContent = got.body.name || "";
+    if (!lead.isConnected) pageHead.append(lead);
     // Resolve partner from client when API returns client_id.
     let partnerId = got.body.partner_id || "";
     if (got.body.client_id && !partnerId) {
@@ -854,11 +856,10 @@ async function showPartners(editId) {
   const pageHead = h("div");
   pageHead.className = "page-head";
   pageHead.append(h("h1", editing ? "Edit partner" : "Create partner"));
-  if (!editing) {
-    const lead = h("p", "Add a partner organization.");
-    lead.className = "page-lead";
-    pageHead.append(lead);
-  }
+  // UX-R13: declare lead outside create-only branch so Edit can set the record name.
+  const lead = h("p", editing ? "" : "Add a partner organization.");
+  lead.className = "page-lead";
+  if (!editing) pageHead.append(lead);
   main.replaceChildren(pageHead);
   setCrumbs(
     editing
@@ -896,6 +897,9 @@ async function showPartners(editId) {
       return;
     }
     name.value = got.body.name ?? "";
+    // UX-R13: page lead under Edit title is the record name.
+    lead.textContent = got.body.name || "";
+    if (!lead.isConnected) pageHead.append(lead);
     setCrumbs([
       { label: "Partners", href: "#/partners" },
       { label: got.body.name || "Partner", href: `#/partners/${editId}` },
@@ -1072,11 +1076,10 @@ export async function showClients(editId) {
   const pageHead = h("div");
   pageHead.className = "page-head";
   pageHead.append(h("h1", editing ? "Edit client" : "Create client"));
-  if (!editing) {
-    const lead = h("p", CLIENT_PAGE_LEAD);
-    lead.className = "page-lead";
-    pageHead.append(lead);
-  }
+  // UX-R13: declare lead outside create-only branch so Edit can set the record name.
+  const lead = h("p", editing ? "" : CLIENT_PAGE_LEAD);
+  lead.className = "page-lead";
+  if (!editing) pageHead.append(lead);
   main.replaceChildren(pageHead);
   setCrumbs(
     editing
@@ -1151,6 +1154,9 @@ export async function showClients(editId) {
     }
     partner.value = got.body.partner_id ?? "";
     name.value = got.body.name ?? "";
+    // UX-R13: page lead under Edit title is the record name.
+    lead.textContent = got.body.name || "";
+    if (!lead.isConnected) pageHead.append(lead);
     const partnerRo = form.querySelector("#partner-readonly");
     if (partnerRo) {
       partnerRo.textContent =

@@ -6907,7 +6907,7 @@ BEGIN
 
     CREATE OR REPLACE FUNCTION auth.partner_reject_inactive_business_upd() RETURNS trigger
       LANGUAGE plpgsql
-      SECURITY DEFINER
+      SECURITY INVOKER
       SET search_path = pg_catalog, auth
     AS $fn$
     BEGIN
@@ -6931,7 +6931,7 @@ BEGIN
 
     CREATE OR REPLACE FUNCTION auth.client_reject_inactive_business_upd() RETURNS trigger
       LANGUAGE plpgsql
-      SECURITY DEFINER
+      SECURITY INVOKER
       SET search_path = pg_catalog, auth
     AS $fn$
     BEGIN
@@ -6958,7 +6958,7 @@ BEGIN
 
     CREATE OR REPLACE FUNCTION auth.location_reject_inactive_business_upd() RETURNS trigger
       LANGUAGE plpgsql
-      SECURITY DEFINER
+      SECURITY INVOKER
       SET search_path = pg_catalog, auth
     AS $fn$
     BEGIN
@@ -7055,7 +7055,7 @@ BEGIN
 
     CREATE OR REPLACE FUNCTION auth.location_reject_inactive_business_upd() RETURNS trigger
       LANGUAGE plpgsql
-      SECURITY DEFINER
+      SECURITY INVOKER
       SET search_path = pg_catalog, auth
     AS $fn$
     BEGIN
@@ -7130,7 +7130,10 @@ START TRANSACTION;
 DO $EF$
 BEGIN
     IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261120160000_Req068OrgAuditAndActivate') THEN
-    -- REQ-068 R7 / SA M-3, L-1, L-2, L-3: contract-shaped auth.* audit envelopes
+    -- REQ-068 R7 / SA M-3, L-1, L-2, L-3:
+    -- I-1 note: 140000 revokes EXECUTE on assert_location_signin from login/admin_api.
+    -- db/kit/definer-owner.sql re-grants it to admin_api after migrate; login stays revoked.
+    -- Function remains unused in-repo (dead). contract-shaped auth.* audit envelopes
     -- (UUIDv7, schema/source/correlation_id), FOR SHARE on activate parents,
     -- audit only when the target row changed, cascaded child id arrays in details.
 
@@ -7144,7 +7147,9 @@ BEGIN
       uuid_bytes bytea;
     BEGIN
       unix_ts_ms := (extract(epoch FROM clock_timestamp()) * 1000)::bigint;
-      uuid_bytes := substring(int8send(unix_ts_ms) FROM 3 FOR 6) || gen_random_bytes(10);
+      -- PG17 has no uuidv7(); gen_random_bytes needs pgcrypto. Use core gen_random_uuid bytes.
+      uuid_bytes := substring(int8send(unix_ts_ms) FROM 3 FOR 6)
+                 || substring(uuid_send(gen_random_uuid()) FROM 7 FOR 10);
       -- version nibble 7 (bits 48..51)
       uuid_bytes := set_byte(uuid_bytes, 6, (get_byte(uuid_bytes, 6) & 15) | 112);
       -- RFC 4122 variant (bits 64..65 = 10)

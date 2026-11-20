@@ -6,6 +6,7 @@ import {
   openOrgStatusDialog,
 } from "./org-status-dialog.mjs";
 import { fetchAllOrgRows } from "./org-list.mjs";
+import { lookupDisplayLabel } from "./location-address-options.mjs";
 
 function h(tag, text) {
   const el = document.createElement(tag);
@@ -26,9 +27,11 @@ function dd(label, value, span = "span-4", extra) {
   cell.append(h("p", label));
   cell.firstChild.className = "dt";
   const val = h("p");
-  val.className = "dd" + (value ? "" : " none");
+  const hasValue = value !== null && value !== undefined && String(value).trim() !== "";
+  // UX-R9: italic muted only for empty ".dd.none".
+  val.className = "dd" + (hasValue ? "" : " none");
   if (typeof value === "string" || typeof value === "number") {
-    val.textContent = value ? String(value) : "None";
+    val.textContent = hasValue ? String(value) : "None";
   } else if (value) {
     val.append(value);
   } else {
@@ -37,6 +40,17 @@ function dd(label, value, span = "span-4", extra) {
   if (extra) val.append(extra);
   cell.append(val);
   return cell;
+}
+
+
+/** Set a dd text and drop .none when a real value arrives (async parent resolve). */
+function setDdValue(cell, text) {
+  const ddEl = cell.querySelector(".dd");
+  if (!ddEl) return;
+  const v = String(text ?? "").trim();
+  ddEl.textContent = v || "None";
+  if (v) ddEl.classList.remove("none");
+  else ddEl.classList.add("none");
 }
 
 function section(title, id, gridChildren) {
@@ -53,6 +67,22 @@ function section(title, id, gridChildren) {
   return sec;
 }
 
+
+/** UX-R8: pack phone "+1 702 555 0101" from FormatNational / e164 when US/CA. */
+function formatPhonePlusOne(phone, phoneE164, country) {
+  const raw = String(phoneE164 || phone || "").trim();
+  if (!raw) return "";
+  const digits = raw.replace(/\D/g, "");
+  let national = digits;
+  if (digits.length === 11 && digits.startsWith("1")) national = digits.slice(1);
+  else if (raw.startsWith("+") && digits.length > 10) national = digits.slice(-10);
+  if ((country === "US" || country === "CA" || !country) && national.length === 10) {
+    return `+1 ${national.slice(0, 3)} ${national.slice(3, 6)} ${national.slice(6)}`;
+  }
+  if (raw.startsWith("+")) return raw;
+  return phone || raw;
+}
+
 async function resolveAddressLabels(api, address) {
   const a = address || {};
   let countryLabel = a.country || "";
@@ -66,11 +96,11 @@ async function resolveAddressLabels(api, address) {
         api("/api/lookups/time-zones?country=" + encodeURIComponent(a.country)),
       ]);
       const c = (countries.body?.countries ?? []).find((x) => x.code === a.country);
-      if (c?.label) countryLabel = c.label;
+      if (c?.label) countryLabel = lookupDisplayLabel(c.label, c.code);
       const r = (regions.body?.regions ?? []).find((x) => x.code === a.region);
-      if (r?.label) regionLabel = r.label;
+      if (r?.label) regionLabel = lookupDisplayLabel(r.label, r.code);
       const z = (zones.body?.time_zones ?? []).find((x) => x.value === a.time_zone);
-      if (z?.label) tzLabel = z.label;
+      if (z?.label) tzLabel = lookupDisplayLabel(z.label, z.value);
     } catch {
       /* keep codes */
     }
@@ -83,7 +113,7 @@ async function resolveAddressLabels(api, address) {
     line2: a.address_line_2 || "",
     city: a.city || "",
     postal: a.postal_code || "",
-    phone: a.phone || "",
+    phone: formatPhonePlusOne(a.phone, a.phone_e164, a.country),
     email: a.email || "",
   };
 }
@@ -214,7 +244,7 @@ export async function showOrgDetail(ctx) {
   }
 
   const pageHead = h("div");
-  pageHead.className = "page-head with-action";
+  pageHead.className = "page-head with-action page-head--detail";
   pageHead.style.maxWidth = "var(--form-card-width)";
   const headTitle = h("div");
   headTitle.className = "head-title";
@@ -301,8 +331,7 @@ export async function showOrgDetail(ctx) {
     if (!row.partner_name && row.partner_id) {
       const pGot = await api("/api/orgs/partners/" + encodeURIComponent(row.partner_id));
       if (pGot.status === 200) {
-        const ddEl = partnerCell.querySelector(".dd");
-        if (ddEl) ddEl.textContent = pGot.body?.name || "";
+        setDdValue(partnerCell, pGot.body?.name || "");
       }
     }
     card.append(
@@ -314,6 +343,9 @@ export async function showOrgDetail(ctx) {
     );
   }
 
+  const regionIsUS = (row.address?.country || "") === "US";
+  const stateLabel = regionIsUS ? "State" : (row.address?.country === "CA" ? "Province" : "State");
+  const zipLabel = regionIsUS ? "ZIP code" : (row.address?.country === "CA" ? "Postal code" : "ZIP code");
   const addrSpacer = h("div");
   addrSpacer.className = "span-4";
   card.append(
@@ -323,8 +355,8 @@ export async function showOrgDetail(ctx) {
       dd("Street address line 1", labels.line1, "span-5"),
       dd("Street address line 2", labels.line2 || null, "span-3"),
       dd("City", labels.city, "span-3"),
-      dd("State", labels.regionLabel, "span-3"),
-      dd("ZIP code", labels.postal, "span-2"),
+      dd(stateLabel, labels.regionLabel, "span-3"),
+      dd(zipLabel, labels.postal, "span-2"),
     ]),
   );
 

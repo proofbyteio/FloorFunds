@@ -2,6 +2,7 @@
   display: grid;
   grid-template-columns: var(--sidebar-width) 1fr;
   min-height: 100vh;
+  --form-card-width: 720px;
 }
 .shell__nav {
   background: var(--color-surface);
@@ -1202,6 +1203,11 @@ select.field__input {
 }
 .page-head.with-action .btn-primary { text-decoration: none; }
 .page-head.with-action .btn-primary__press { min-width: 9.5rem; padding: 0 20px; }
+/* UX-R12: detail head-actions align to the 720px card, not full main. */
+.page-head.with-action.page-head--detail {
+  max-width: var(--form-card-width, 720px);
+  align-items: center;
+}
 .head-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .head-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
