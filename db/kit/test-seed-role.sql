@@ -16,7 +16,7 @@ DECLARE
     'reason_code', 'id_document_type', 'currency', 'fee_type'
   ];
   auth_tables text[] := ARRAY[
-    'app_user', 'admin_assignment', 'user_issuer', 'location', 'location_login_config',
+    'app_user', 'admin_assignment', 'user_issuer', 'partner', 'location', 'location_login_config',
     'location_login_config_change', 'external_login', 'user_location', 'partner_reason_bounds'
   ];
 BEGIN
