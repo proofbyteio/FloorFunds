@@ -1,0 +1,338 @@
+{
+  "_comment": "SI1 stand-in fixtures (standin-control \u00a74). FIXTURE (TL ruling A6, 9:00 PM): every slug, id, username, password, app_code and role name in this file (including 'cashier') is FIXTURE test data, NOT a product role name or a ruled value. SSE2 reads them from this file. Dev-only, not secrets.",
+  "apps": [
+    {
+      "app_code": "cash_advance",
+      "placeholder": true,
+      "_label": "FIXTURE"
+    },
+    {
+      "app_code": "back_office",
+      "placeholder": true,
+      "_label": "FIXTURE"
+    },
+    {
+      "app_code": "reports",
+      "placeholder": true,
+      "_label": "FIXTURE"
+    }
+  ],
+  "partners": [
+    {
+      "slug": "pci",
+      "partner_id": "5f0c3e1a-0001-4000-8000-000000000001",
+      "preset": "pci",
+      "locations": [
+        {
+          "slug": "pci-main",
+          "location_id": "5f0c3e1a-0001-4000-8000-0000000000a1",
+          "_label": "FIXTURE"
+        }
+      ],
+      "_label": "FIXTURE",
+      "cachd_client_id": "5f0c3e1a-0001-4000-8000-0000000000c1"
+    },
+    {
+      "slug": "nevada",
+      "partner_id": "5f0c3e1a-0002-4000-8000-000000000002",
+      "preset": "nevada_mics7",
+      "locations": [
+        {
+          "slug": "nevada-main",
+          "location_id": "5f0c3e1a-0002-4000-8000-0000000000b1",
+          "_label": "FIXTURE"
+        }
+      ],
+      "_label": "FIXTURE",
+      "cachd_client_id": "5f0c3e1a-0002-4000-8000-0000000000c2"
+    },
+    {
+      "slug": "local-review-a",
+      "partner_id": "aaaaaaaa-0068-4000-8000-000000000001",
+      "preset": "pci",
+      "locations": [
+        {
+          "slug": "local-review-a1",
+          "location_id": "cccccccc-0068-4000-8000-000000000001",
+          "_label": "LOCAL-REVIEW"
+        },
+        {
+          "slug": "local-review-a1b",
+          "location_id": "cccccccc-0068-4000-8000-000000000002",
+          "_label": "LOCAL-REVIEW"
+        },
+        {
+          "slug": "local-review-a1c",
+          "location_id": "cccccccc-0068-4000-8000-000000000003",
+          "_label": "LOCAL-REVIEW"
+        }
+      ],
+      "_label": "LOCAL-REVIEW",
+      "cachd_client_id": "aaaaaaaa-0068-4000-8000-0000000000c1"
+    },
+    {
+      "slug": "local-review-b",
+      "partner_id": "aaaaaaaa-0068-4000-8000-000000000002",
+      "preset": "pci",
+      "locations": [
+        {
+          "slug": "local-review-b1",
+          "location_id": "cccccccc-0068-4000-8000-000000000005",
+          "_label": "LOCAL-REVIEW"
+        }
+      ],
+      "_label": "LOCAL-REVIEW",
+      "cachd_client_id": "aaaaaaaa-0068-4000-8000-0000000000c2"
+    }
+  ],
+  "users": [
+    {
+      "username": "cashier_db",
+      "user_id": "5f0c3e1a-0003-4000-8000-000000000c01",
+      "password": "GENERATED",
+      "status": "active",
+      "location_slugs": [
+        "pci-main"
+      ],
+      "roles": [
+        {
+          "app_code": "cash_advance",
+          "role": "cashier",
+          "_label": "FIXTURE"
+        },
+        {
+          "app_code": "back_office",
+          "role": "clerk",
+          "_label": "FIXTURE"
+        }
+      ],
+      "_label": "FIXTURE",
+      "perm_version": 1
+    },
+    {
+      "username": "no_role_user",
+      "user_id": "5f0c3e1a-0003-4000-8000-000000000c02",
+      "password": "GENERATED",
+      "status": "active",
+      "location_slugs": [
+        "pci-main"
+      ],
+      "roles": [],
+      "_label": "FIXTURE",
+      "perm_version": 1
+    },
+    {
+      "username": "nevada_db",
+      "user_id": "5f0c3e1a-0003-4000-8000-000000000c03",
+      "password": "GENERATED",
+      "status": "active",
+      "location_slugs": [
+        "nevada-main"
+      ],
+      "recovery_codes_count": 2,
+      "roles": [
+        {
+          "app_code": "back_office",
+          "role": "clerk",
+          "_label": "FIXTURE"
+        }
+      ],
+      "perm_version": 1,
+      "_label": "FIXTURE"
+    },
+    {
+      "username": "partner_admin",
+      "user_id": "5f0c3e1a-0003-4000-8000-000000000c04",
+      "password": "GENERATED",
+      "status": "active",
+      "admin_type": "partner",
+      "partner_id": "5f0c3e1a-0001-4000-8000-000000000001",
+      "location_slugs": [],
+      "roles": [],
+      "recovery_codes_count": 2,
+      "perm_version": 1,
+      "_label": "FIXTURE"
+    },
+    {
+      "username": "super_admin",
+      "user_id": "5f0c3e1a-0003-4000-8000-000000000c0a",
+      "password": "GENERATED",
+      "status": "active",
+      "admin_type": "super",
+      "location_slugs": [],
+      "roles": [],
+      "perm_version": 1,
+      "_label": "FIXTURE"
+    },
+    {
+      "username": "cashier_pwd",
+      "user_id": "5f0c3e1a-0003-4000-8000-000000000c05",
+      "password": "GENERATED",
+      "status": "active",
+      "location_slugs": [
+        "pci-main"
+      ],
+      "roles": [
+        {
+          "app_code": "cash_advance",
+          "role": "cashier",
+          "_label": "FIXTURE"
+        },
+        {
+          "app_code": "back_office",
+          "role": "clerk",
+          "_label": "FIXTURE"
+        }
+      ],
+      "_label": "FIXTURE: session amr forced for rule-2 negative tests",
+      "perm_version": 1,
+      "fixture_amr": [
+        "pwd"
+      ]
+    },
+    {
+      "username": "cashier_wia",
+      "user_id": "5f0c3e1a-0003-4000-8000-000000000c06",
+      "password": "GENERATED",
+      "status": "active",
+      "location_slugs": [
+        "pci-main"
+      ],
+      "roles": [
+        {
+          "app_code": "cash_advance",
+          "role": "cashier",
+          "_label": "FIXTURE"
+        },
+        {
+          "app_code": "back_office",
+          "role": "clerk",
+          "_label": "FIXTURE"
+        }
+      ],
+      "_label": "FIXTURE: session amr forced for rule-2 negative tests",
+      "perm_version": 1,
+      "fixture_amr": [
+        "wiaormfa"
+      ]
+    },
+    {
+      "username": "local_sa",
+      "user_id": "5f0c3e1a-0068-4000-8000-0000000000a1",
+      "password": "GENERATED",
+      "status": "active",
+      "admin_type": "super",
+      "location_slugs": [],
+      "roles": [],
+      "perm_version": 1,
+      "_label": "LOCAL-REVIEW"
+    },
+    {
+      "username": "local_pa",
+      "user_id": "5f0c3e1a-0068-4000-8000-0000000000a2",
+      "password": "GENERATED",
+      "status": "active",
+      "admin_type": "partner",
+      "partner_id": "aaaaaaaa-0068-4000-8000-000000000001",
+      "location_slugs": [],
+      "roles": [],
+      "perm_version": 1,
+      "_label": "LOCAL-REVIEW"
+    },
+    {
+      "username": "local_ca",
+      "user_id": "5f0c3e1a-0068-4000-8000-0000000000a3",
+      "password": "GENERATED",
+      "status": "active",
+      "admin_type": "partner",
+      "partner_id": "aaaaaaaa-0068-4000-8000-000000000001",
+      "location_slugs": [],
+      "roles": [],
+      "perm_version": 1,
+      "_label": "LOCAL-REVIEW"
+    },
+    {
+      "username": "local_la",
+      "user_id": "5f0c3e1a-0068-4000-8000-0000000000a4",
+      "password": "GENERATED",
+      "status": "active",
+      "admin_type": "partner",
+      "partner_id": "aaaaaaaa-0068-4000-8000-000000000001",
+      "location_slugs": [],
+      "roles": [],
+      "perm_version": 1,
+      "_label": "LOCAL-REVIEW"
+    },
+    {
+      "username": "local_la_one",
+      "user_id": "5f0c3e1a-0068-4000-8000-0000000000a5",
+      "password": "GENERATED",
+      "status": "active",
+      "admin_type": "partner",
+      "partner_id": "aaaaaaaa-0068-4000-8000-000000000001",
+      "location_slugs": [],
+      "roles": [],
+      "perm_version": 1,
+      "_label": "LOCAL-REVIEW"
+    }
+  ],
+  "lockout_minutes": 30,
+  "_label": "FIXTURE",
+  "clients": [
+    {
+      "client_id": "cash_advance_bff",
+      "app_code": "cash_advance",
+      "api_scope": "cash_advance_api",
+      "aud": "cash-advance-api",
+      "cachd": true,
+      "org_claims": true,
+      "refresh": true,
+      "redirect_uris": [
+        "https://cash-advance.fixture.invalid/signin-oidc"
+      ],
+      "post_logout_redirect_uris": [
+        "https://cash-advance.fixture.invalid/signed-out"
+      ],
+      "secret": "GENERATED",
+      "_label": "FIXTURE",
+      "start_url": "https://cash-advance.fixture.invalid/",
+      "handoff": true
+    },
+    {
+      "client_id": "backoffice_stub",
+      "app_code": "back_office",
+      "api_scope": "backoffice_api",
+      "aud": "backoffice-api",
+      "cachd": false,
+      "org_claims": false,
+      "refresh": true,
+      "redirect_uris": [
+        "https://backoffice.fixture.invalid/signin-oidc"
+      ],
+      "post_logout_redirect_uris": [
+        "https://backoffice.fixture.invalid/signed-out"
+      ],
+      "secret": "GENERATED",
+      "_label": "FIXTURE"
+    },
+    {
+      "client_id": "hub",
+      "_label": "FIXTURE",
+      "_comment": "[TL Decision 9:26 PM, H1 revised] FIXTURE openid-only client: no access token; id_token aud = client_id. Not an app_code, no roles.",
+      "app_code": null,
+      "api_scope": null,
+      "aud": null,
+      "cachd": false,
+      "org_claims": false,
+      "refresh": false,
+      "redirect_uris": [
+        "https://hub.fixture.invalid/signin-oidc"
+      ],
+      "post_logout_redirect_uris": [
+        "https://hub.fixture.invalid/signout-callback-oidc"
+      ],
+      "secret": "GENERATED"
+    }
+  ],
+  "_clients_comment": "FIXTURE clients. Secrets are FIXTURE values for the local stand-in only. Client private keys are generated fresh at start/reset and written under /tmp only (TL Decision 9:16 PM, B2); none is in this file or in git."
+}
