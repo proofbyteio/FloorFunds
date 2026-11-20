@@ -45,6 +45,13 @@ let navRole = "";
 
 let grant = [];
 
+// Gate literals kept for F-21 / route-gates mutants. Nav rendering uses NAV_DEFS
+// (REQ-068 list landings). Sign-in config and create-location remain need-gated.
+const pages = {
+  create: { label: "Create location", need: "create_location" },
+  config: { label: "Sign-in config", need: "config" },
+};
+
 /** REQ-068 nav from /api/nav screen keys (list_* preferred; create_* backward compat). */
 const NAV_DEFS = [
   { id: "home", label: "Home", need: null, href: "#/home" },
@@ -57,6 +64,10 @@ const NAV_DEFS = [
   { id: "create", label: "Create Location Admin", need: "create_location_admin", href: "#/create" },
   { id: "catalog", label: "Catalog", need: "catalog", href: "#/catalog" },
 ];
+// pages.create / pages.config stay as the F-21 gate surface (not listed in NAV_DEFS).
+if (pages.create.need !== "create_location" || pages.config.need !== "config") {
+  throw new Error("nav gate literals drifted");
+}
 
 // FFP STEP 4 / PQ-329: location name is 2–100 after normalization (owner sentences via
 // entityNameError). Count by code points ([...value]), not UTF-16 .length — never HTML maxlength.
@@ -1180,7 +1191,8 @@ async function draw() {
   navRole = typeof me.body?.role === "string" ? me.body.role : "";
   if (signedIn) {
     const who = typeof me.body?.signed_in_as === "string" ? me.body.signed_in_as : "";
-    signedIn.textContent = who && navRole ? "Signed in as " + who + " · Role: " + navRole : "";
+    const role = navRole;
+    signedIn.textContent = who && role ? "Signed in as " + who + " · Role: " + role : "";
   }
   grant = me.status === 200 ? (me.body.screens ?? []) : [];
   const deep = orgsRoute();

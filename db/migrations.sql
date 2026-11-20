@@ -6465,3 +6465,206 @@ BEGIN
     END IF;
 END $EF$;
 COMMIT;
+
+START TRANSACTION;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261120120000_Req068ResolveGrantMissingOrgActive') THEN
+    -- REQ-068 r2: DEC-307/314 block sign-in only when an org row is explicitly inactive.
+    -- Missing partner/client rows (legacy suite seeds) stay grantable, matching pre-REQ-068
+    -- resolve_grant collection from assignments alone.
+
+    CREATE OR REPLACE FUNCTION auth.location_signin_allowed(p_location uuid) RETURNS boolean
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+      SELECT EXISTS (
+        SELECT 1
+          FROM auth.location l
+          LEFT JOIN auth.partner p ON p.partner_id = l.partner_id
+          LEFT JOIN auth.client c ON c.client_id = l.client_id
+         WHERE l.location_id = p_location
+           AND l.status = 'active'
+           AND (p.partner_id IS NULL OR p.status IS DISTINCT FROM 'inactive')
+           AND (l.client_id IS NULL OR c.client_id IS NULL OR c.status IS DISTINCT FROM 'inactive')
+      )
+    $fn$;
+
+    DROP FUNCTION IF EXISTS auth.resolve_grant(text, uuid);
+    CREATE FUNCTION auth.resolve_grant(p_issuer text, p_subject uuid)
+      RETURNS TABLE (
+        outcome text,
+        user_id uuid,
+        role_wire text,
+        global_admin boolean,
+        partner_ids uuid[],
+        location_ids uuid[],
+        perm_version bigint,
+        client_ids uuid[])
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+      SET search_path = pg_catalog, auth
+    AS $fn$
+    DECLARE
+      v_user uuid;
+      v_global boolean;
+      v_partners uuid[];
+      v_locations uuid[];
+      v_clients uuid[];
+      v_version bigint;
+      v_role text;
+    BEGIN
+      PERFORM p_issuer, p_subject;
+      PERFORM nextval('auth.resolver_read_seq');
+      v_user := auth._request_user();
+      IF v_user IS NULL THEN
+        outcome := 'deny'; user_id := NULL; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[];
+        client_ids := ARRAY[]::uuid[]; perm_version := 0;
+        RETURN NEXT;
+        RETURN;
+      END IF;
+      SELECT coalesce(bool_or(a.role_id = 'super_admin' AND a.scope_kind = 'global'), false),
+             coalesce(array_agg(DISTINCT a.partner_id) FILTER (
+               WHERE a.scope_kind = 'partner' AND a.role_id = 'partner_admin' AND a.partner_id IS NOT NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM auth.partner p
+                    WHERE p.partner_id = a.partner_id AND p.status = 'inactive')
+             ), ARRAY[]::uuid[]),
+             coalesce(array_agg(DISTINCT a.location_id) FILTER (
+               WHERE a.scope_kind = 'location' AND a.location_id IS NOT NULL
+                 AND auth.location_signin_allowed(a.location_id)
+             ), ARRAY[]::uuid[]),
+             coalesce(array_agg(DISTINCT a.client_id) FILTER (
+               WHERE a.scope_kind = 'client' AND a.role_id = 'client_admin' AND a.client_id IS NOT NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM auth.client c
+                    WHERE c.client_id = a.client_id AND c.status = 'inactive')
+                 AND NOT EXISTS (
+                   SELECT 1 FROM auth.client c
+                   JOIN auth.partner p ON p.partner_id = c.partner_id
+                    WHERE c.client_id = a.client_id AND p.status = 'inactive')
+             ), ARRAY[]::uuid[]),
+             coalesce(max(a.version), 0)
+        INTO v_global, v_partners, v_locations, v_clients, v_version
+        FROM auth.admin_assignment a
+       WHERE a.user_id = v_user
+         AND a.status = 'active'
+         AND a.revoked_at IS NULL;
+      IF NOT v_global
+         AND v_partners = ARRAY[]::uuid[] AND v_locations = ARRAY[]::uuid[]
+         AND v_clients = ARRAY[]::uuid[] THEN
+        outcome := 'deny'; user_id := v_user; role_wire := 'none'; global_admin := false;
+        partner_ids := ARRAY[]::uuid[]; location_ids := ARRAY[]::uuid[];
+        client_ids := ARRAY[]::uuid[]; perm_version := coalesce(v_version, 0);
+        RETURN NEXT;
+        RETURN;
+      END IF;
+      IF v_global THEN
+        v_role := 'super_admin';
+      ELSIF EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+           AND a.role_id = 'partner_admin' AND a.scope_kind = 'partner' AND a.partner_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM auth.partner p
+              WHERE p.partner_id = a.partner_id AND p.status = 'inactive')
+      ) THEN
+        v_role := 'partner_admin';
+      ELSIF EXISTS (
+        SELECT 1 FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+           AND a.role_id = 'client_admin' AND a.scope_kind = 'client' AND a.client_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM auth.client c
+              WHERE c.client_id = a.client_id AND c.status = 'inactive')
+           AND NOT EXISTS (
+             SELECT 1 FROM auth.client c
+             JOIN auth.partner p ON p.partner_id = c.partner_id
+              WHERE c.client_id = a.client_id AND p.status = 'inactive')
+      ) THEN
+        v_role := 'client_admin';
+      ELSE
+        SELECT a.role_id INTO v_role
+          FROM auth.admin_assignment a
+         WHERE a.user_id = v_user AND a.status = 'active' AND a.revoked_at IS NULL
+           AND (
+             (a.scope_kind = 'location' AND a.location_id IS NOT NULL
+                AND auth.location_signin_allowed(a.location_id))
+             OR (a.scope_kind = 'partner' AND a.partner_id IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM auth.partner p
+                   WHERE p.partner_id = a.partner_id AND p.status = 'inactive'))
+             OR (a.scope_kind = 'client' AND a.client_id IS NOT NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM auth.client c
+                   WHERE c.client_id = a.client_id AND c.status = 'inactive')
+                AND NOT EXISTS (
+                  SELECT 1 FROM auth.client c
+                  JOIN auth.partner p ON p.partner_id = c.partner_id
+                   WHERE c.client_id = a.client_id AND p.status = 'inactive'))
+             OR (a.role_id = 'super_admin' AND a.scope_kind = 'global')
+           )
+         ORDER BY a.role_id
+         LIMIT 1;
+        v_role := coalesce(v_role, 'none');
+      END IF;
+      outcome := 'grant';
+      user_id := v_user;
+      role_wire := v_role;
+      global_admin := v_global;
+      partner_ids := v_partners;
+      location_ids := v_locations;
+      client_ids := v_clients;
+      perm_version := v_version;
+      RETURN NEXT;
+    END
+    $fn$;
+
+    REVOKE ALL ON FUNCTION auth.location_signin_allowed(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION auth.resolve_grant(text, uuid) FROM PUBLIC;
+
+    DO $gr$
+    DECLARE
+      a text := current_database() || '_admin_api';
+      l text := current_database() || '_login';
+      r text := current_database() || '_auth_definer';
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = a) THEN
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid) TO %I', a);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.location_signin_allowed(uuid) TO %I', a);
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = l) THEN
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.location_signin_allowed(uuid) TO %I', l);
+        EXECUTE 'DROP POLICY IF EXISTS location_login ON auth.location';
+        EXECUTE format(
+          $p$CREATE POLICY location_login ON auth.location FOR SELECT TO %I USING (auth.location_signin_allowed(location_id))$p$,
+          l);
+        EXECUTE 'DROP POLICY IF EXISTS llc_login ON auth.location_login_config';
+        EXECUTE format(
+          $p$CREATE POLICY llc_login ON auth.location_login_config FOR SELECT TO %I USING (auth.location_signin_allowed(location_id))$p$,
+          l);
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.resolve_grant(text, uuid) TO %I', r);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION auth.location_signin_allowed(uuid) TO %I', r);
+        EXECUTE format('ALTER FUNCTION auth.location_signin_allowed(uuid) OWNER TO %I', r);
+        EXECUTE format('ALTER FUNCTION auth.resolve_grant(text, uuid) OWNER TO %I', r);
+      END IF;
+    END
+    $gr$;
+
+    END IF;
+END $EF$;
+
+DO $EF$
+BEGIN
+    IF NOT EXISTS(SELECT 1 FROM "__EFMigrationsHistory" WHERE "MigrationId" = '20261120120000_Req068ResolveGrantMissingOrgActive') THEN
+    INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
+    VALUES ('20261120120000_Req068ResolveGrantMissingOrgActive', '10.0.14');
+    END IF;
+END $EF$;
+COMMIT;
