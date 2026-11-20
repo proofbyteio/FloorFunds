@@ -1742,6 +1742,8 @@ static class Req064Suite
         var slug = "h" + loc.ToString("N")[..16];
         var actor = Guid.NewGuid();
         // A1.3: unique ids; no KitAdmin DELETE cleanup.
+        await Exec(owner, "INSERT INTO auth.partner (partner_id, name, address_line_1, city, country, region, postal_code, phone, time_zone) VALUES ($1, $2, '103 Fake Street', 'Sampletown', 'US', 'NV', '89101', '+17025551013', 'America/Los_Angeles')",
+            partner, "Req064 helper " + partner.ToString("N")[..16]);
         await using (var seed = await OpenTestSeed(owner))
         {
             await Exec(seed, "INSERT INTO auth.location (location_id, partner_id, slug, name) VALUES ($1, $2, $3, $4)",
