@@ -31,13 +31,17 @@ public sealed class DbAdminDirectory : IAdminDirectory
         if (roleWire == "partner_admin" && partners.Length > 0)
             return new AdminGrant(BuiltInRole.PartnerAdmin, true, true, new HashSet<Guid>(), true,
                 new HashSet<Guid>(partners), new HashSet<Guid>(locations), version);
-        // DEC-275: Client Admin — location create/edit under AssignedClients only.
-        // OrgCreateEdit opens the org-location write path; LoginMethodWrite is NOT granted
-        // (sign-in config stays closed). Partner/client writes stay IsAdmin-gated.
+        // DEC-286 / REQ-068: Client Admin — read locations under AssignedClients; no OrgCreateEdit
+        // (location POST/PUT are IsAdmin-only). LoginMethodWrite stays closed.
         if (roleWire == "client_admin" && clients.Length > 0)
-            return new AdminGrant(BuiltInRole.ClientAdmin, false, true, new HashSet<Guid>(), false,
+            return new AdminGrant(BuiltInRole.ClientAdmin, false, false, new HashSet<Guid>(), false,
                 PartnerIds: null, LocationIds: new HashSet<Guid>(locations), PermVersion: version,
                 ClientIds: new HashSet<Guid>(clients));
+        // DEC-303: location-scoped supervisor → LocationAdmin (list/get own locations only).
+        if (roleWire == "supervisor" && locations.Length > 0)
+            return new AdminGrant(BuiltInRole.LocationAdmin, false, false, new HashSet<Guid>(), false,
+                PartnerIds: null, LocationIds: new HashSet<Guid>(locations), PermVersion: version,
+                ClientIds: null);
         return AdminGrant.Nothing;
     }
 }

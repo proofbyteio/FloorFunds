@@ -10,7 +10,7 @@ namespace Admin.Api;
 /// </summary>
 public sealed record AdminIdentity(Guid UserId, string AdminType, Guid? PartnerId, string Issuer = "");
 
-public enum BuiltInRole { None, SuperAdmin, PartnerAdmin, ClientAdmin }
+public enum BuiltInRole { None, SuperAdmin, PartnerAdmin, ClientAdmin, LocationAdmin }
 
 /// <summary>
 /// What the caller holds after the assignment lookup. PartnerIds, LocationIds, and ClientIds are the union of active
