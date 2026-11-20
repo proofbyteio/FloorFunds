@@ -47,6 +47,7 @@ function optionalLabel(text) {
  *   partnerReadOnly?: boolean,
  *   partnerLabel?: string,
  *   partnerHint?: string,
+ *   parentFixedText?: boolean,
  * }} opts
  */
 export async function appendClientFields(form, address, apiGet, opts) {
@@ -56,6 +57,7 @@ export async function appendClientFields(form, address, apiGet, opts) {
     partnerReadOnly = false,
     partnerLabel = "",
     partnerHint = "",
+    parentFixedText = false,
   } = opts;
 
   const secClient = el("section", { className: "section", "aria-labelledby": "sec-client" });
@@ -79,20 +81,30 @@ export async function appendClientFields(form, address, apiGet, opts) {
       || partnerSelect.selectedOptions?.[0]?.textContent
       || partnerSelect.value
       || "";
-    const ro = el("div", {
-      className: "readonly-value readonly-select",
-      id: "partner-readonly",
-      role: "combobox",
-      "aria-readonly": "true",
-      "aria-disabled": "true",
-      "aria-labelledby": "partner-label",
-    });
-    ro.append(el("span", { id: "partner-readonly-text" }, roText));
-    partnerField.append(partnerLabelEl, partnerSelect, ro);
-    if (partnerHint) {
-      const hint = el("p", { className: "field-hint", id: "partner-ro-hint" }, partnerHint);
-      ro.setAttribute("aria-describedby", "partner-ro-hint");
-      partnerField.append(hint);
+    // DEC-306: Edit shows plain fixed text; Create keeps grey-arrow readonly-select.
+    if (parentFixedText) {
+      const ro = el("p", {
+        className: "fixed-value",
+        id: "partner-readonly",
+        "aria-labelledby": "partner-label",
+      }, roText);
+      partnerField.append(partnerLabelEl, partnerSelect, ro);
+    } else {
+      const ro = el("div", {
+        className: "readonly-value readonly-select",
+        id: "partner-readonly",
+        role: "combobox",
+        "aria-readonly": "true",
+        "aria-disabled": "true",
+        "aria-labelledby": "partner-label",
+      });
+      ro.append(el("span", { id: "partner-readonly-text" }, roText));
+      partnerField.append(partnerLabelEl, partnerSelect, ro);
+      if (partnerHint) {
+        const hint = el("p", { className: "field-hint", id: "partner-ro-hint" }, partnerHint);
+        ro.setAttribute("aria-describedby", "partner-ro-hint");
+        partnerField.append(hint);
+      }
     }
   } else {
     partnerLabelEl.htmlFor = "partner-id";

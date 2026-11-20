@@ -51,6 +51,7 @@ function optionalLabel(text) {
  *   partnerLabel?: string,
  *   clientLabel?: string,
  *   roleHint?: string,
+ *   parentFixedText?: boolean,
  *   onPartnerChange?: (partnerId: string) => void,
  * }} opts
  */
@@ -64,6 +65,7 @@ export async function appendLocationFields(form, address, apiGet, opts) {
     partnerLabel = "",
     clientLabel = "",
     roleHint = "",
+    parentFixedText = false,
     onPartnerChange,
   } = opts;
 
@@ -88,16 +90,25 @@ export async function appendLocationFields(form, address, apiGet, opts) {
       || partnerSelect.selectedOptions?.[0]?.textContent
       || partnerSelect.value
       || "";
-    const ro = el("div", {
-      className: "readonly-value readonly-select",
-      id: "partner-readonly",
-      role: "combobox",
-      "aria-readonly": "true",
-      "aria-disabled": "true",
-      "aria-labelledby": "partner-label",
-    });
-    ro.append(el("span", { id: "partner-readonly-text" }, roText));
-    partnerField.append(partnerLabelEl, partnerSelect, ro);
+    if (parentFixedText) {
+      const ro = el("p", {
+        className: "fixed-value",
+        id: "partner-readonly",
+        "aria-labelledby": "partner-label",
+      }, roText);
+      partnerField.append(partnerLabelEl, partnerSelect, ro);
+    } else {
+      const ro = el("div", {
+        className: "readonly-value readonly-select",
+        id: "partner-readonly",
+        role: "combobox",
+        "aria-readonly": "true",
+        "aria-disabled": "true",
+        "aria-labelledby": "partner-label",
+      });
+      ro.append(el("span", { id: "partner-readonly-text" }, roText));
+      partnerField.append(partnerLabelEl, partnerSelect, ro);
+    }
   } else {
     partnerLabelEl.htmlFor = "partner-id";
     partnerField.append(partnerLabelEl, partnerSelect);
@@ -128,16 +139,25 @@ export async function appendLocationFields(form, address, apiGet, opts) {
       || clientSelect.selectedOptions?.[0]?.textContent
       || clientSelect.value
       || "";
-    const ro = el("div", {
-      className: "readonly-value readonly-select",
-      id: "client-readonly",
-      role: "combobox",
-      "aria-readonly": "true",
-      "aria-disabled": "true",
-      "aria-labelledby": "client-label",
-    });
-    ro.append(el("span", { id: "client-readonly-text" }, roText));
-    clientField.append(clientLabelEl, clientSelect, ro);
+    if (parentFixedText) {
+      const ro = el("p", {
+        className: "fixed-value",
+        id: "client-readonly",
+        "aria-labelledby": "client-label",
+      }, roText);
+      clientField.append(clientLabelEl, clientSelect, ro);
+    } else {
+      const ro = el("div", {
+        className: "readonly-value readonly-select",
+        id: "client-readonly",
+        role: "combobox",
+        "aria-readonly": "true",
+        "aria-disabled": "true",
+        "aria-labelledby": "client-label",
+      });
+      ro.append(el("span", { id: "client-readonly-text" }, roText));
+      clientField.append(clientLabelEl, clientSelect, ro);
+    }
   } else {
     clientLabelEl.htmlFor = "client-id";
     clientField.append(clientLabelEl, clientSelect);

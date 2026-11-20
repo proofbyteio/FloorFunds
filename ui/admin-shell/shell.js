@@ -32,30 +32,31 @@ import {
   SELECT_A_CLIENT,
   SELECT_A_PARTNER,
 } from "./dec241-defaults.mjs";
+import { fetchAllOrgRows, showOrgList } from "./org-list.mjs";
+import { resolveMyOrgId, showOrgDetail } from "./org-detail.mjs";
 
 const main = document.querySelector("#main");
 const navEl = document.querySelector("#nav");
+const crumbsEl = document.querySelector("#shell-crumbs");
 let leaving = false;
 /** Survives hashchange → draw() so Created/Saved banners are not dropped after redirect. */
 let flash = null;
-
-const pages = {
-  home: { label: "Home", need: null },
-  locations: { label: "Locations", need: "create_location" },
-  // F-21 / DEC-264 / F7: UI nav is driven only by server screen keys from NavAsync.
-  // create_location_admin is SA-only (nav label "Create Location Admin").
-  // create_location stays for Locations + PA "Create location" CTA / #/create route.
-  create: { label: "Create Location Admin", need: "create_location", navNeed: "create_location_admin" },
-  "location-edit": { label: "Edit location", need: "create_location" },
-  config: { label: "Sign-in config", need: "config" },
-  catalog: { label: "Catalog", need: "catalog" },
-  clients: { label: "Create Client Admin", need: "create_client" },
-  "client-edit": { label: "Edit client", need: "create_client" },
-  partners: { label: "Create Partner Admin", need: "create_partner" },
-  "partner-edit": { label: "Edit partner", need: "create_partner" },
-};
+let navRole = "";
 
 let grant = [];
+
+/** REQ-068 nav from /api/nav screen keys (list_* preferred; create_* backward compat). */
+const NAV_DEFS = [
+  { id: "home", label: "Home", need: null, href: "#/home" },
+  { id: "partners", label: "Partners", need: "list_partners", legacyNeed: "create_partner", href: "#/partners" },
+  { id: "my-partner", label: "My partner", need: "my_partner", href: "#/my-partner" },
+  { id: "clients", label: "Clients", need: "list_clients", legacyNeed: "create_client", href: "#/clients" },
+  { id: "my-client", label: "My client", need: "my_client", href: "#/my-client" },
+  { id: "locations", label: "Locations", need: "list_locations", legacyNeed: "create_location", href: "#/locations" },
+  // F7: SA-only Create Location Admin (distinct from Locations list).
+  { id: "create", label: "Create Location Admin", need: "create_location_admin", href: "#/create" },
+  { id: "catalog", label: "Catalog", need: "catalog", href: "#/catalog" },
+];
 
 // FFP STEP 4 / PQ-329: location name is 2–100 after normalization (owner sentences via
 // entityNameError). Count by code points ([...value]), not UTF-16 .length — never HTML maxlength.
@@ -87,6 +88,9 @@ export async function api(path, opts) {
 const uuidRe = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
 const orgsNewRe = new RegExp("^/orgs/(" + uuidRe + ")/locations/new/?$");
 const orgsSignInRe = new RegExp("^/orgs/(" + uuidRe + ")/locations/(" + uuidRe + ")/sign-in/?$");
+const orgEntityRe = new RegExp(
+  "^(partners|clients|locations)(?:/(new)|/(" + uuidRe + ")(?:/(edit))?)?$",
+);
 
 function orgsRoute() {
   const path = location.pathname || "/";
@@ -97,28 +101,89 @@ function orgsRoute() {
   return null;
 }
 
-function route() {
-  if (orgsRoute()) return "orgs";
+/**
+ * Hash router for REQ-068.
+ * @returns {{ nav: string, view: string, kind?: string, id?: string, entity?: "partner"|"client"|"location" }}
+ */
+function parseRoute() {
+  if (orgsRoute()) return { nav: "locations", view: "orgs-path" };
   const raw = (location.hash || "#/home").slice(2) || "home";
-  const name = raw.split("?")[0] || "home";
-  return pages[name] ? name : "denied";
+  const [pathPart, queryPart] = raw.split("?");
+  const path = pathPart || "home";
+  const qs = new URLSearchParams(queryPart || "");
+
+  if (path === "home") return { nav: "home", view: "home" };
+  if (path === "config") return { nav: "config", view: "config" };
+  if (path === "catalog") return { nav: "catalog", view: "catalog" };
+  if (path === "create") return { nav: "create", view: "location-create-admin" };
+  if (path === "my-partner") return { nav: "my-partner", view: "my-partner" };
+  if (path === "my-client") return { nav: "my-client", view: "my-client" };
+
+  // Legacy edit hashes.
+  if (path === "partner-edit") {
+    return { nav: "partners", view: "edit", entity: "partner", id: qs.get("id") || "" };
+  }
+  if (path === "client-edit") {
+    return { nav: "clients", view: "edit", entity: "client", id: qs.get("id") || "" };
+  }
+  if (path === "location-edit") {
+    return { nav: "locations", view: "edit", entity: "location", id: qs.get("id") || "" };
+  }
+
+  const m = path.match(orgEntityRe);
+  if (!m) return { nav: "", view: "denied" };
+  const kind = m[1]; // partners|clients|locations
+  const entity = kind.slice(0, -1); // partner|client|location
+  if (m[2] === "new") return { nav: kind, view: "create", entity, kind };
+  if (m[3] && m[4] === "edit") return { nav: kind, view: "edit", entity, kind, id: m[3] };
+  if (m[3]) return { nav: kind, view: "detail", entity, kind, id: m[3] };
+  return { nav: kind, view: "list", entity, kind };
 }
 
-function renderNav(current) {
+function renderNav(currentNav) {
   navEl.replaceChildren();
   if (grant.length === 0) return;
-  for (const [id, page] of Object.entries(pages)) {
-    // F-05. Sign-in config stays off nav labels. partner-edit / location-edit are post-create only.
-    // F7: gate on server keys only (navNeed ?? need) — never on the role label string.
-    if (id === "config" || id === "partner-edit" || id === "location-edit" || id === "client-edit") continue;
-    const gate = page.navNeed ?? page.need;
-    if (gate && !grant.includes(gate)) continue;
+  for (const item of NAV_DEFS) {
+    if (item.need && !grant.includes(item.need)) {
+      // ASSUMPTION: old create_* keys temporarily map to list nav labels.
+      if (!(item.legacyNeed && grant.includes(item.legacyNeed))) continue;
+    }
     const a = document.createElement("a");
-    a.href = "#/" + id;
-    a.textContent = page.label;
-    if (id === current) a.setAttribute("aria-current", "page");
+    a.href = item.href;
+    a.textContent = item.label;
+    if (item.id === currentNav) a.setAttribute("aria-current", "page");
     navEl.append(a);
   }
+}
+
+function setCrumbs(parts) {
+  if (!crumbsEl) return;
+  crumbsEl.replaceChildren();
+  if (!parts || !parts.length) {
+    crumbsEl.hidden = true;
+    return;
+  }
+  crumbsEl.hidden = false;
+  parts.forEach((p, i) => {
+    if (i) {
+      const sep = h("span", "/");
+      sep.className = "crumbs-sep";
+      sep.setAttribute("aria-hidden", "true");
+      crumbsEl.append(sep);
+    }
+    const label = typeof p === "string" ? p : p.label;
+    const href = typeof p === "string" ? null : p.href;
+    if (i === parts.length - 1 || !href) {
+      const span = h("span", label);
+      span.className = "crumbs-current";
+      if (i === parts.length - 1) span.setAttribute("aria-current", "page");
+      crumbsEl.append(span);
+    } else {
+      const a = h("a", label);
+      a.href = href;
+      crumbsEl.append(a);
+    }
+  });
 }
 
 function h(tag, text) {
@@ -167,18 +232,20 @@ function noAssignment() {
 }
 
 async function showHome() {
-  const list = await api("/api/orgs/locations");
+  const list = await api("/api/orgs/locations?status=active&page=1&sort=name&dir=asc");
   if (list.status === 403) return noAssignment();
-  const rows = list.body?.locations ?? [];
+  const rows = list.body?.items ?? list.body?.locations ?? [];
+  const total = Number.isFinite(list.body?.total) ? Number(list.body.total) : rows.length;
   main.replaceChildren(h("h1", "Home"));
-  if (rows.length === 0) {
+  setCrumbs([{ label: "Home" }]);
+  if (total === 0) {
     main.append(h("h2", "Guided setup"));
     const steps = document.createElement("ol");
     steps.append(h("li", "1  Clients"), h("li", "2  Locations"), h("li", "3  Catalog and access"));
     main.append(steps);
     return;
   }
-  main.append(h("p", rows.length + (rows.length === 1 ? " location." : " locations.")));
+  main.append(h("p", total + (total === 1 ? " location." : " locations.")));
   const a = h("a", "View locations");
   a.href = "#/locations";
   a.className = "button button--secondary";
@@ -209,28 +276,6 @@ function table(rows) {
     t.append(tr);
   }
   return t;
-}
-
-async function createLocationControl() {
-  if (!grant.includes("create_location")) return null;
-  // Partner Admin sees this Locations CTA; keep prior wording. Super Admin also has the nav item.
-  const a = primaryControl("a", "Create location");
-  a.href = "#/create";
-  return a;
-}
-
-async function showLocations() {
-  const list = await api("/api/orgs/locations");
-  if (list.status === 403) return denied();
-  const rows = list.body?.locations ?? [];
-  const create = await createLocationControl();
-  if (rows.length === 0) {
-    main.replaceChildren(h("h1", "Locations"), banner("info", "No locations", "There are no locations for this grant yet."));
-    if (create) main.append(create);
-    return;
-  }
-  main.replaceChildren(h("h1", "Locations"), table(rows));
-  if (create) main.append(create);
 }
 
 async function fillPartners(select) {
@@ -430,11 +475,10 @@ function showValidationBanner(form, title, fieldsOrDetail) {
 }
 
 export async function showCreate(state, editId) {
-  const probe = await api("/api/orgs/locations");
-  if (probe.status === 403) return denied();
   const editing = Boolean(editId);
-  const navMe = await api("/api/nav");
-  const role = typeof navMe.body?.role === "string" ? navMe.body.role : "";
+  // Create requires create_location; edit requires list/create (SA/PA).
+  if (!editing && !grant.includes("create_location")) return denied();
+  const role = navRole;
   const isPartnerAdmin = role === "Partner Admin";
   const isClientAdmin = role === "Client Admin";
 
@@ -447,6 +491,11 @@ export async function showCreate(state, editId) {
     pageHead.append(lead);
   }
   main.replaceChildren(pageHead);
+  setCrumbs(
+    editing
+      ? [{ label: "Locations", href: "#/locations" }, { label: "Location", href: editId ? `#/locations/${editId}` : "#/locations" }, { label: "Edit" }]
+      : [{ label: "Locations", href: "#/locations" }, { label: "Create" }],
+  );
   if (state === "timeout") {
     main.append(banner("warning", "Timed out", "The request did not finish. Nothing was confirmed."));
   }
@@ -463,16 +512,16 @@ export async function showCreate(state, editId) {
   const name = document.createElement("input");
   const address = {};
 
-  const partnersRes = await api("/api/orgs/partners");
-  const partnerRows = partnersRes.body?.partners ?? [];
+  const partnerRows = await fetchAllOrgRows(api, "partners", { status: "active" });
   fillSelect(partner, partnerRows.map((p) => ({
     code: p.partner_id,
     label: p.name,
   })), { blankLabel: "Select a partner" });
 
   // DEC-275: CA locks Partner + Client to own; PA locks Partner only.
-  const partnerReadOnly = (isPartnerAdmin || isClientAdmin) && partnerRows.length === 1;
-  if (partnerReadOnly) partner.value = partnerRows[0].partner_id;
+  // On Edit, parents are always fixed plain text (DEC-304/306).
+  let partnerReadOnly = editing || ((isPartnerAdmin || isClientAdmin) && partnerRows.length === 1);
+  if (partnerReadOnly && partnerRows.length === 1) partner.value = partnerRows[0].partner_id;
 
   async function loadClientsForPartner(partnerId, selectedClientId) {
     if (!partnerId) {
@@ -480,24 +529,35 @@ export async function showCreate(state, editId) {
       client.disabled = true;
       return [];
     }
-    const clientsRes = await api("/api/orgs/clients?partner_id=" + encodeURIComponent(partnerId));
-    const rows = clientsRes.body?.clients ?? [];
-    fillSelect(client, rows.map((row) => ({
+    const rows = (await fetchAllOrgRows(api, "clients", { status: "active" }))
+      .filter((row) => !partnerId || row.partner_id === partnerId);
+    // Prefer scoped API when partner_id filter is supported (still works with list page shape).
+    const clientsRes = await api(
+      "/api/orgs/clients?partner_id=" + encodeURIComponent(partnerId) + "&status=active&page=1&sort=name&dir=asc",
+    );
+    const fromApi = clientsRes.status === 200
+      ? (clientsRes.body?.items ?? clientsRes.body?.clients ?? rows)
+      : rows;
+    // If page_size capped results, fall back to full fetch filtered by partner.
+    const list = fromApi.length >= 10
+      ? rows
+      : fromApi;
+    fillSelect(client, list.map((row) => ({
       code: row.client_id,
       label: row.name,
     })), { blankLabel: "Select a client", selected: selectedClientId || "" });
     client.disabled = false;
-    return rows;
+    return list;
   }
 
   let clientRows = [];
   if (partner.value) clientRows = await loadClientsForPartner(partner.value);
-  const clientReadOnly = isClientAdmin && clientRows.length === 1;
-  if (clientReadOnly) client.value = clientRows[0].client_id;
+  let clientReadOnly = editing || (isClientAdmin && clientRows.length === 1);
+  if (clientReadOnly && clientRows.length === 1) client.value = clientRows[0].client_id;
 
-  const roleHint = isClientAdmin && partnerReadOnly && clientReadOnly
+  const roleHint = !editing && isClientAdmin && partnerReadOnly && clientReadOnly
     ? CA_LOCATION_ROLE_HINT
-    : (partnerReadOnly && !isClientAdmin ? PA_LOCATION_ROLE_HINT : "");
+    : (!editing && partnerReadOnly && !isClientAdmin ? PA_LOCATION_ROLE_HINT : "");
 
   await appendLocationFields(form, address, api, {
     nameInput: name,
@@ -505,9 +565,14 @@ export async function showCreate(state, editId) {
     clientSelect: client,
     partnerReadOnly,
     clientReadOnly,
-    partnerLabel: partnerReadOnly ? partnerRows[0].name : "",
-    clientLabel: clientReadOnly ? clientRows[0].name : "",
+    partnerLabel: partnerReadOnly
+      ? (partnerRows.find((p) => p.partner_id === partner.value)?.name || partnerRows[0]?.name || "")
+      : "",
+    clientLabel: clientReadOnly
+      ? (clientRows.find((c) => c.client_id === client.value)?.name || clientRows[0]?.name || "")
+      : "",
     roleHint,
+    parentFixedText: editing,
     onPartnerChange: (partnerId) => { void loadClientsForPartner(partnerId); },
   });
 
@@ -532,12 +597,13 @@ export async function showCreate(state, editId) {
 
   const actions = document.createElement("div");
   actions.className = "actions";
-  const submit = primaryControl("button", editing ? "Save location" : "Create location");
+  // DEC-295: Edit save says "Save".
+  const submit = primaryControl("button", editing ? "Save" : "Create location");
   submit.type = "submit";
   const cancel = document.createElement("a");
   cancel.className = "button button--secondary btn-secondary";
   cancel.textContent = "Cancel";
-  cancel.href = "#/home";
+  cancel.href = editing && editId ? `#/locations/${editId}` : "#/locations";
   actions.append(submit, cancel);
   form.append(actions);
 
@@ -548,7 +614,7 @@ export async function showCreate(state, editId) {
     clientRows = await loadClientsForPartner(partner.value);
   }
 
-  if (!partnerRows.length) {
+  if (!partnerRows.length && !editing) {
     partner.disabled = true;
     submit.disabled = true;
     pull.disabled = true;
@@ -580,6 +646,10 @@ export async function showCreate(state, editId) {
       main.append(banner("error", "Not found", "That location is not available."));
       return;
     }
+    if (got.body.status === "inactive") {
+      location.hash = `#/locations/${editId}`;
+      return;
+    }
     name.value = got.body.name ?? "";
     // Resolve partner from client when API returns client_id.
     let partnerId = got.body.partner_id || "";
@@ -588,10 +658,38 @@ export async function showCreate(state, editId) {
       if (cGot.status === 200) partnerId = cGot.body.partner_id || "";
     }
     if (partnerId) {
+      // Ensure option exists even if not in active page.
+      if (![...partner.options].some((o) => o.value === partnerId)) {
+        const o = document.createElement("option");
+        o.value = partnerId;
+        o.textContent = got.body.partner_name || partnerId;
+        partner.append(o);
+      }
       partner.value = partnerId;
-      await loadClientsForPartner(partnerId, got.body.client_id || "");
+      clientRows = await loadClientsForPartner(partnerId, got.body.client_id || "");
     }
-    if (got.body.client_id) client.value = got.body.client_id;
+    if (got.body.client_id) {
+      if (![...client.options].some((o) => o.value === got.body.client_id)) {
+        const o = document.createElement("option");
+        o.value = got.body.client_id;
+        o.textContent = got.body.client_name || got.body.client_id;
+        client.append(o);
+      }
+      client.value = got.body.client_id;
+    }
+    // Refresh fixed-parent labels after values are known (DEC-306).
+    const partnerRo = form.querySelector("#partner-readonly");
+    if (partnerRo) {
+      partnerRo.textContent =
+        partner.selectedOptions?.[0]?.textContent || got.body.partner_name || partner.value;
+    }
+    const clientRo = form.querySelector("#client-readonly");
+    if (clientRo) {
+      clientRo.textContent =
+        client.selectedOptions?.[0]?.textContent || got.body.client_name || client.value;
+    }
+    // Hide pull-address on edit (parent fixed; address already loaded).
+    pullRow.hidden = true;
     const a = got.body.address;
     if (a) {
       address.address_line_1.value = a.address_line_1 ?? "";
@@ -608,6 +706,11 @@ export async function showCreate(state, editId) {
         if (a.country === "US" || a.country === "CA") address.phone_country.value = a.country;
       }
     }
+    setCrumbs([
+      { label: "Locations", href: "#/locations" },
+      { label: got.body.name || "Location", href: `#/locations/${editId}` },
+      { label: "Edit" },
+    ]);
   }
 
   form.addEventListener("submit", async (ev) => {
@@ -639,7 +742,7 @@ export async function showCreate(state, editId) {
       });
     } catch {
       if (editing) return showCreate("timeout", editId);
-      location.hash = "#/create";
+      location.hash = "#/locations/new";
       return showCreate("timeout");
     }
     if (res.status === 408) return showCreate("timeout", editId);
@@ -659,19 +762,16 @@ export async function showCreate(state, editId) {
       title: editing ? "Saved" : "Created",
       text: "Location " + (res.body?.name || "") + " was accepted.",
     };
-    // DEC-269: no list requirement for Cancel; after create go to edit (like Partner/Client).
-    location.hash = "#/location-edit?id=" + encodeURIComponent(id);
+    location.hash = "#/locations/" + encodeURIComponent(id);
     submit.disabled = false;
   });
   main.append(form);
 }
 
 async function showPartners(editId) {
-  const probe = await api("/api/nav");
-  if (probe.status === 401) return;
-  if (!(probe.body?.screens ?? []).includes("create_partner")) return denied();
   const editing = Boolean(editId);
-  // B1 (PM DEC-241 default): nav stays "Create Partner Admin"; h1 "Create partner" + lead; no breadcrumb parent.
+  if (!editing && !grant.includes("create_partner")) return denied();
+  if (editing && !grant.includes("create_partner") && !grant.includes("list_partners")) return denied();
   const pageHead = h("div");
   pageHead.className = "page-head";
   pageHead.append(h("h1", editing ? "Edit partner" : "Create partner"));
@@ -681,6 +781,11 @@ async function showPartners(editId) {
     pageHead.append(lead);
   }
   main.replaceChildren(pageHead);
+  setCrumbs(
+    editing
+      ? [{ label: "Partners", href: "#/partners" }, { label: "Partner", href: editId ? `#/partners/${editId}` : "#/partners" }, { label: "Edit" }]
+      : [{ label: "Partners", href: "#/partners" }, { label: "Create" }],
+  );
   if (flash) {
     main.append(banner(flash.kind, flash.title, flash.text));
     flash = null;
@@ -693,13 +798,12 @@ async function showPartners(editId) {
   await appendPartnerFields(form, address, api, { nameInput: name });
   const actions = document.createElement("div");
   actions.className = "actions";
-  const submit = primaryControl("button", editing ? "Save partner" : "Create partner");
+  const submit = primaryControl("button", editing ? "Save" : "Create partner");
   submit.type = "submit";
   const cancel = document.createElement("a");
   cancel.className = "button button--secondary btn-secondary";
   cancel.textContent = "Cancel";
-  // B4 (PM DEC-241 default): Cancel goes to #/home (mock #partners has no list — B2).
-  cancel.href = "#/home";
+  cancel.href = editing && editId ? `#/partners/${editId}` : "#/partners";
   actions.append(submit, cancel);
   form.append(actions);
   if (editing) {
@@ -708,7 +812,16 @@ async function showPartners(editId) {
       main.append(banner("error", "Not found", "That partner is not available."));
       return;
     }
+    if (got.body.status === "inactive") {
+      location.hash = `#/partners/${editId}`;
+      return;
+    }
     name.value = got.body.name ?? "";
+    setCrumbs([
+      { label: "Partners", href: "#/partners" },
+      { label: got.body.name || "Partner", href: `#/partners/${editId}` },
+      { label: "Edit" },
+    ]);
     const a = got.body.address ?? {};
     address.address_line_1.value = a.address_line_1 ?? "";
     address.address_line_2.value = a.address_line_2 ?? "";
@@ -770,17 +883,20 @@ async function showPartners(editId) {
       title: editing ? "Saved" : "Created",
       text: "Partner " + (res.body?.name || "") + " was accepted.",
     };
-    location.hash = "#/partner-edit?id=" + encodeURIComponent(id);
+    location.hash = "#/partners/" + encodeURIComponent(id);
     submit.disabled = false;
   });
   main.append(form);
 }
 
 async function showConfig(selectedLocationId) {
-  const list = await api("/api/orgs/locations");
-  if (list.status === 403) return denied();
+  // Config picker: load active locations across pages.
+  const rows = await fetchAllOrgRows(api, "locations", { status: "active" });
+  if (!grant.includes("config") && rows.length === 0) {
+    const probe = await api("/api/orgs/locations?status=active&page=1");
+    if (probe.status === 403) return denied();
+  }
   main.replaceChildren(h("h1", "Sign-in configuration"));
-  const rows = list.body?.locations ?? [];
   if (rows.length === 0) {
     main.append(banner("info", "No locations", "Create a location before configuring sign-in."));
     return;
@@ -862,18 +978,16 @@ async function showCatalog() {
 }
 
 export async function showClients(editId) {
-  // PM DEC-241 default: Client Admin has no Client screen or nav — only scoped
-  // own-client read for the locked Location field (via /api/orgs/clients).
-  const navProbe = await api("/api/nav");
-  if ((navProbe.body?.role === "Client Admin")
-      || !(navProbe.body?.screens ?? []).includes("create_client")) {
-    return denied();
-  }
-  const res = await api("/api/screens/create-client");
-  if (res.status === 403) return denied();
+  // DEC-303: CA has no client create/edit; my_client is read-only detail.
+  if (navRole === "Client Admin") return denied();
   const editing = Boolean(editId);
-  const navMe = navProbe;
-  const role = typeof navMe.body?.role === "string" ? navMe.body.role : "";
+  if (!editing && !grant.includes("create_client")) return denied();
+  if (editing && !(grant.includes("create_client") || grant.includes("list_clients"))) return denied();
+  if (!editing) {
+    const res = await api("/api/screens/create-client");
+    if (res.status === 403) return denied();
+  }
+  const role = navRole;
   const isPartnerAdmin = role === "Partner Admin";
 
   const pageHead = h("div");
@@ -885,6 +999,11 @@ export async function showClients(editId) {
     pageHead.append(lead);
   }
   main.replaceChildren(pageHead);
+  setCrumbs(
+    editing
+      ? [{ label: "Clients", href: "#/clients" }, { label: "Client", href: editId ? `#/clients/${editId}` : "#/clients" }, { label: "Edit" }]
+      : [{ label: "Clients", href: "#/clients" }, { label: "Create" }],
+  );
   if (flash) {
     main.append(banner(flash.kind, flash.title, flash.text));
     flash = null;
@@ -897,16 +1016,15 @@ export async function showClients(editId) {
   const name = document.createElement("input");
   const address = {};
 
-  const partnersRes = await api("/api/orgs/partners");
-  const partnerRows = partnersRes.body?.partners ?? [];
+  const partnerRows = await fetchAllOrgRows(api, "partners", { status: "active" });
   fillSelect(partner, partnerRows.map((p) => ({
     code: p.partner_id,
     label: p.name,
   })), { blankLabel: "Select a partner" });
 
-  // PA: Partner read-only when a single assigned partner (owner role rules). Multi → select among own.
-  const partnerReadOnly = isPartnerAdmin && partnerRows.length === 1;
-  if (partnerReadOnly) {
+  // Create: PA partner read-only when single. Edit: always fixed plain text (DEC-306).
+  const partnerReadOnly = editing || (isPartnerAdmin && partnerRows.length === 1);
+  if (partnerReadOnly && partnerRows.length === 1) {
     partner.value = partnerRows[0].partner_id;
   }
 
@@ -914,22 +1032,23 @@ export async function showClients(editId) {
     nameInput: name,
     partnerSelect: partner,
     partnerReadOnly,
-    partnerLabel: partnerReadOnly ? partnerRows[0].name : "",
-    partnerHint: partnerReadOnly ? PA_CLIENT_PARTNER_HINT : "",
+    partnerLabel: partnerReadOnly ? (partnerRows[0]?.name || "") : "",
+    partnerHint: !editing && partnerReadOnly ? PA_CLIENT_PARTNER_HINT : "",
+    parentFixedText: editing,
   });
 
   const actions = document.createElement("div");
   actions.className = "actions";
-  const submit = primaryControl("button", editing ? "Save client" : "Create client");
+  const submit = primaryControl("button", editing ? "Save" : "Create client");
   submit.type = "submit";
   const cancel = document.createElement("a");
   cancel.className = "button button--secondary btn-secondary";
   cancel.textContent = "Cancel";
-  cancel.href = "#/home";
+  cancel.href = editing && editId ? `#/clients/${editId}` : "#/clients";
   actions.append(submit, cancel);
   form.append(actions);
 
-  if (!partnerRows.length) {
+  if (!partnerRows.length && !editing) {
     partner.disabled = true;
     submit.disabled = true;
     form.prepend(banner("info", "No partners", "Create a partner before creating a client."));
@@ -941,9 +1060,28 @@ export async function showClients(editId) {
       main.append(banner("error", "Not found", "That client is not available."));
       return;
     }
-    // Edit: Partner stays on the existing partner (blocker: no Partner change on edit).
+    if (got.body.status === "inactive") {
+      location.hash = `#/clients/${editId}`;
+      return;
+    }
+    if (got.body.partner_id && ![...partner.options].some((o) => o.value === got.body.partner_id)) {
+      const o = document.createElement("option");
+      o.value = got.body.partner_id;
+      o.textContent = got.body.partner_name || got.body.partner_id;
+      partner.append(o);
+    }
     partner.value = got.body.partner_id ?? "";
     name.value = got.body.name ?? "";
+    const partnerRo = form.querySelector("#partner-readonly");
+    if (partnerRo) {
+      partnerRo.textContent =
+        partner.selectedOptions?.[0]?.textContent || got.body.partner_name || partner.value;
+    }
+    setCrumbs([
+      { label: "Clients", href: "#/clients" },
+      { label: got.body.name || "Client", href: `#/clients/${editId}` },
+      { label: "Edit" },
+    ]);
     const a = got.body.address ?? {};
     address.address_line_1.value = a.address_line_1 ?? "";
     address.address_line_2.value = a.address_line_2 ?? "";
@@ -957,25 +1095,6 @@ export async function showClients(editId) {
       address.phone.value = a.phone ?? "";
       address.email.value = a.email ?? "";
       if (a.country === "US" || a.country === "CA") address.phone_country.value = a.country;
-    }
-    // DEC-241 default (NOTES TO CONFIRM): Partner read-only on Client edit — no Partner change offered.
-    // Main 2efdc97c had no Client edit route; this is not product-from-rules.
-    const partnerField = form.querySelector("#field-partner");
-    if (partnerField && !form.querySelector("#partner-readonly")) {
-      partner.hidden = true;
-      const labelText = partnerRows.find((p) => p.partner_id === partner.value)?.name || partner.value;
-      const ro = document.createElement("div");
-      ro.className = "readonly-value readonly-select";
-      ro.id = "partner-readonly";
-      ro.setAttribute("role", "combobox");
-      ro.setAttribute("aria-readonly", "true");
-      ro.setAttribute("aria-disabled", "true");
-      ro.setAttribute("aria-labelledby", "partner-label");
-      const text = document.createElement("span");
-      text.id = "partner-readonly-text";
-      text.textContent = labelText;
-      ro.append(text);
-      partnerField.append(ro);
     }
   }
 
@@ -1028,10 +1147,26 @@ export async function showClients(editId) {
       title: editing ? "Saved" : "Created",
       text: "Client " + (write.body?.name || "") + " was accepted.",
     };
-    location.hash = "#/client-edit?id=" + encodeURIComponent(id);
+    location.hash = "#/clients/" + encodeURIComponent(id);
     submit.disabled = false;
   });
   main.append(form);
+}
+
+async function showEntityDetail(entity, id, navSelf) {
+  return showOrgDetail({
+    main,
+    api,
+    role: navRole,
+    kind: entity,
+    id,
+    denied,
+    flash,
+    clearFlash: () => { flash = null; },
+    setCrumbs,
+    navSelf: Boolean(navSelf),
+    redraw,
+  });
 }
 
 async function draw() {
@@ -1042,37 +1177,71 @@ async function draw() {
   applyProductName(document.querySelector(".mobile-lockup__name"), productName);
   if (productName) document.title = productName;
   const signedIn = document.querySelector("#signed-in");
+  navRole = typeof me.body?.role === "string" ? me.body.role : "";
   if (signedIn) {
     const who = typeof me.body?.signed_in_as === "string" ? me.body.signed_in_as : "";
-    const role = typeof me.body?.role === "string" ? me.body.role : "";
-    signedIn.textContent = who && role ? "Signed in as " + who + " · Role: " + role : "";
+    signedIn.textContent = who && navRole ? "Signed in as " + who + " · Role: " + navRole : "";
   }
   grant = me.status === 200 ? (me.body.screens ?? []) : [];
   const deep = orgsRoute();
-  const name = route();
-  renderNav(deep ? "locations" : name === "denied" ? "" : name);
+  const r = parseRoute();
+  renderNav(deep ? "locations" : r.nav);
+  setCrumbs([]);
   if (grant.length === 0) return noAssignment();
   if (deep?.kind === "create") return showCreate();
   if (deep?.kind === "config") return showConfig(deep.locationId);
-  if (name === "denied") return denied();
-  if (name === "home") return showHome();
-  if (name === "locations") return showLocations();
-  if (name === "create") return showCreate();
-  if (name === "location-edit") {
-    const id = new URLSearchParams((location.hash.split("?")[1] || "")).get("id");
-    return showCreate(undefined, id || "");
+
+  if (r.view === "denied") return denied();
+  if (r.view === "home") return showHome();
+  if (r.view === "config") return showConfig();
+  if (r.view === "catalog") return showCatalog();
+  if (r.view === "location-create-admin") return showCreate();
+
+  if (r.view === "my-partner") {
+    if (!grant.includes("my_partner")) return denied();
+    const id = await resolveMyOrgId(api, "partner");
+    if (!id) {
+      main.replaceChildren(h("h1", "My partner"), h("p", "No partner is assigned."));
+      return;
+    }
+    return showEntityDetail("partner", id, true);
   }
-  if (name === "config") return showConfig();
-  if (name === "catalog") return showCatalog();
-  if (name === "clients") return showClients();
-  if (name === "client-edit") {
-    const id = new URLSearchParams((location.hash.split("?")[1] || "")).get("id");
-    return showClients(id || "");
+  if (r.view === "my-client") {
+    if (!grant.includes("my_client")) return denied();
+    const id = await resolveMyOrgId(api, "client");
+    if (!id) {
+      main.replaceChildren(h("h1", "My client"), h("p", "No client is assigned."));
+      return;
+    }
+    return showEntityDetail("client", id, true);
   }
-  if (name === "partners") return showPartners();
-  if (name === "partner-edit") {
-    const id = new URLSearchParams((location.hash.split("?")[1] || "")).get("id");
-    return showPartners(id || "");
+
+  if (r.view === "list") {
+    const kind = r.kind; // partners|clients|locations
+    return showOrgList({
+      main,
+      api,
+      grant,
+      role: navRole,
+      kind,
+      denied,
+      setCrumbs: (parts) => setCrumbs(parts),
+    });
+  }
+  if (r.view === "detail") {
+    if (!r.id) return denied();
+    return showEntityDetail(r.entity, r.id, false);
+  }
+  if (r.view === "create") {
+    if (r.entity === "partner") return showPartners();
+    if (r.entity === "client") return showClients();
+    if (r.entity === "location") return showCreate();
+  }
+  if (r.view === "edit") {
+    if (!r.id) return denied();
+    if (r.entity === "partner") return showPartners(r.id);
+    if (r.entity === "client") return showClients(r.id);
+    if (r.entity === "location") return showCreate(undefined, r.id);
   }
 }
 
