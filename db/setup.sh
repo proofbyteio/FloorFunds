@@ -19,8 +19,8 @@
 #   4. optional TEST-ONLY seed db/seed/*.sql (--seed; SSE2-FAKE-TEST-ONLY data)
 set -euo pipefail
 
-DB=floorfunds_dev
-ROLE=floorfunds_dev
+DB="${FF_DB_NAME:-floorfunds_dev}"
+ROLE="${FF_DB_ROLE:-${FF_DB_NAME:-floorfunds_dev}}"
 PASSWORD="${FF_DB_PASSWORD:-}"
 ADMIN_API_PASSWORD="${FF_ADMIN_API_PASSWORD:-}"
 LOGIN_PASSWORD="${FF_LOGIN_PASSWORD:-}"
@@ -29,8 +29,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MIGRATIONS="$HERE/migrations.sql"
 MIGRATE=1
 SEED=0
-HOST=127.0.0.1
-PORT=5432
+HOST="${FF_DB_HOST:-127.0.0.1}"
+PORT="${FF_DB_PORT:-5432}"
 ADMIN_HOST=""   # empty = local Unix socket (peer auth for sudo -u postgres)
 DROP=0
 FORCE=0

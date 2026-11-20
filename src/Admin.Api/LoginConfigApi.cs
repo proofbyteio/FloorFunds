@@ -832,7 +832,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
               FROM auth.location l
               LEFT JOIN auth.client c ON c.client_id = l.client_id
              WHERE l.status = $1
-               AND ($2::text IS NULL OR l.name ILIKE '%' || $2 || '%' ESCAPE E'\')
+               AND ($2::text IS NULL OR l.name ILIKE '%' || $2 || '%' ESCAPE E'\\')
              ORDER BY {orderCol} {(q.DirDesc ? "DESC" : "ASC")}, l.location_id ASC
              LIMIT 10 OFFSET $3
             """;
@@ -1001,7 +1001,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             SELECT partner_id, name, status
               FROM auth.partner
              WHERE status = $1
-               AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' ESCAPE E'\')
+               AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' ESCAPE E'\\')
              ORDER BY {orderCol} {(q.DirDesc ? "DESC" : "ASC")}, partner_id ASC
              LIMIT 10 OFFSET $3
             """;
@@ -1343,7 +1343,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
               FROM auth.client c
               JOIN auth.partner p ON p.partner_id = c.partner_id
              WHERE c.status = $1
-               AND ($2::text IS NULL OR c.name ILIKE '%' || $2 || '%' ESCAPE E'\')
+               AND ($2::text IS NULL OR c.name ILIKE '%' || $2 || '%' ESCAPE E'\\')
                AND ($3::uuid IS NULL OR c.partner_id = $3)
              ORDER BY {orderCol} {(q.DirDesc ? "DESC" : "ASC")}, c.client_id ASC
              LIMIT 10 OFFSET $4
@@ -1644,9 +1644,10 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         if (cfg is null)
         {
             var clientName = await ClientNameAsync(c, tx, parsed.ClientId) ?? "";
+            var partnerName = await PartnerNameAsync(c, tx, parsed.PartnerId);
             await tx.CommitAsync();
             ctx.Response.Headers.Location = $"/api/orgs/locations/{location:D}";
-            return Json(201, OrgLocationView((location, parsed.PartnerId, parsed.ClientId, clientName, await PartnerNameAsync(c, tx, parsed.PartnerId), slug, parsed.Name, parsed.Address, "active")));
+            return Json(201, OrgLocationView((location, parsed.PartnerId, parsed.ClientId, clientName, partnerName, slug, parsed.Name, parsed.Address, "active")));
         }
         var entra = cfg.ProviderKind == "entra";
         await using (var ins = new NpgsqlCommand(
@@ -1955,7 +1956,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             """
             SELECT count(*)::bigint FROM auth.partner
              WHERE status = $1
-               AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' ESCAPE E'\')
+               AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' ESCAPE E'\\')
                AND ($3::uuid[] IS NULL OR partner_id = ANY($3))
             """, c, tx);
         cmd.Parameters.Add(new() { Value = q.Status });
@@ -1973,7 +1974,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             SELECT count(*)::bigint
               FROM auth.client c
              WHERE c.status = $1
-               AND ($2::text IS NULL OR c.name ILIKE '%' || $2 || '%' ESCAPE E'\')
+               AND ($2::text IS NULL OR c.name ILIKE '%' || $2 || '%' ESCAPE E'\\')
                AND ($3::uuid IS NULL OR c.partner_id = $3)
                AND ($4::uuid[] IS NULL OR c.partner_id = ANY($4))
                AND ($5::uuid[] IS NULL OR c.client_id = ANY($5))
@@ -1994,7 +1995,7 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
             SELECT count(*)::bigint
               FROM auth.location l
              WHERE l.status = $1
-               AND ($2::text IS NULL OR l.name ILIKE '%' || $2 || '%' ESCAPE E'\')
+               AND ($2::text IS NULL OR l.name ILIKE '%' || $2 || '%' ESCAPE E'\\')
                AND ($3::uuid[] IS NULL OR l.partner_id = ANY($3))
                AND ($4::uuid[] IS NULL OR l.client_id = ANY($4))
                AND ($5::uuid[] IS NULL OR l.location_id = ANY($5))

@@ -31,14 +31,14 @@
 #>
 # No [CmdletBinding()]: its -Debug common parameter has alias "db", which clashes with -Db.
 param(
-  [string]$Db = 'floorfunds_dev',
-  [string]$Role = 'floorfunds_dev',
+  [string]$Db = $(if ($env:FF_DB_NAME) { $env:FF_DB_NAME } else { 'floorfunds_dev' }),
+  [string]$Role = $(if ($env:FF_DB_ROLE) { $env:FF_DB_ROLE } elseif ($env:FF_DB_NAME) { $env:FF_DB_NAME } else { 'floorfunds_dev' }),
   [SecureString]$Password,
   [SecureString]$AdminApiPassword,   # else env FF_ADMIN_API_PASSWORD, else prompt
   [SecureString]$LoginPassword,      # else env FF_LOGIN_PASSWORD, else prompt
   [SecureString]$IssuerPassword,     # else env FF_ISSUER_PASSWORD, else prompt. Issuer process only.
-  [Alias('Host')][string]$DbHost = '127.0.0.1',
-  [int]$Port = 5432,
+  [Alias('Host')][string]$DbHost = $(if ($env:FF_DB_HOST) { $env:FF_DB_HOST } else { '127.0.0.1' }),
+  [int]$Port = $(if ($env:FF_DB_PORT) { [int]$env:FF_DB_PORT } else { 5432 }),
   # Admin (superuser) connection. Windows default: psql -U postgres -h localhost.
   # Pass -AdminHost '' to use the local socket (Linux/macOS peer auth).
   [AllowEmptyString()][string]$AdminHost = 'localhost',
