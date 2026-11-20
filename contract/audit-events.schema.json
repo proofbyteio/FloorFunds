@@ -23,7 +23,13 @@
     { "$ref": "#/$defs/auth.mfa.recovery_codes_issued" },
     { "$ref": "#/$defs/auth.config.session_cap_changed" },
     { "$ref": "#/$defs/auth.config.change_denied" },
-    { "$ref": "#/$defs/auth.partner_reason_bounds.changed" }
+    { "$ref": "#/$defs/auth.partner_reason_bounds.changed" },
+    { "$ref": "#/$defs/auth.partner.deactivated" },
+    { "$ref": "#/$defs/auth.partner.activated" },
+    { "$ref": "#/$defs/auth.client.deactivated" },
+    { "$ref": "#/$defs/auth.client.activated" },
+    { "$ref": "#/$defs/auth.location.deactivated" },
+    { "$ref": "#/$defs/auth.location.activated" }
   ],
   "$defs": {
     "id": { "type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" },
@@ -598,6 +604,396 @@
           "then": { "required": ["scope"], "properties": { "scope": { "required": ["partner_id"]}}}
         }
       ]
+    },
+    "auth.partner.deactivated": {
+      "description": "REQ-068: partner deactivated via auth.deactivate_partner (cascade may include child id arrays).",
+      "required": [
+        "actor",
+        "target"
+      ],
+      "properties": {
+        "event_type": {
+          "const": "auth.partner.deactivated"
+        },
+        "outcome": {
+          "const": "success"
+        },
+        "actor": {
+          "required": [
+            "user_id"
+          ],
+          "properties": {
+            "user_id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/id"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "target": {
+          "required": [
+            "type",
+            "id"
+          ],
+          "properties": {
+            "type": {
+              "const": "partner"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        "action": {
+          "const": "deactivate"
+        },
+        "details": {
+          "type": "object",
+          "properties": {
+            "clients_cascaded": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "locations_cascaded": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "client_ids_cascaded": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              }
+            },
+            "location_ids_cascaded": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    "auth.partner.activated": {
+      "description": "REQ-068: partner activated via auth.activate_partner (that record only; children stay inactive).",
+      "required": [
+        "actor",
+        "target"
+      ],
+      "properties": {
+        "event_type": {
+          "const": "auth.partner.activated"
+        },
+        "outcome": {
+          "const": "success"
+        },
+        "actor": {
+          "required": [
+            "user_id"
+          ],
+          "properties": {
+            "user_id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/id"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "target": {
+          "required": [
+            "type",
+            "id"
+          ],
+          "properties": {
+            "type": {
+              "const": "partner"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        "action": {
+          "const": "activate"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "auth.client.deactivated": {
+      "description": "REQ-068: client deactivated via auth.deactivate_client (cascade may include location id arrays).",
+      "required": [
+        "actor",
+        "target"
+      ],
+      "properties": {
+        "event_type": {
+          "const": "auth.client.deactivated"
+        },
+        "outcome": {
+          "const": "success"
+        },
+        "actor": {
+          "required": [
+            "user_id"
+          ],
+          "properties": {
+            "user_id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/id"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "target": {
+          "required": [
+            "type",
+            "id"
+          ],
+          "properties": {
+            "type": {
+              "const": "client"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        "action": {
+          "const": "deactivate"
+        },
+        "details": {
+          "type": "object",
+          "properties": {
+            "partner_id": {
+              "$ref": "#/$defs/id"
+            },
+            "locations_cascaded": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "location_ids_cascaded": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    "auth.client.activated": {
+      "description": "REQ-068: client activated via auth.activate_client (requires active partner; locations stay inactive).",
+      "required": [
+        "actor",
+        "target"
+      ],
+      "properties": {
+        "event_type": {
+          "const": "auth.client.activated"
+        },
+        "outcome": {
+          "const": "success"
+        },
+        "actor": {
+          "required": [
+            "user_id"
+          ],
+          "properties": {
+            "user_id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/id"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "target": {
+          "required": [
+            "type",
+            "id"
+          ],
+          "properties": {
+            "type": {
+              "const": "client"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        "action": {
+          "const": "activate"
+        },
+        "details": {
+          "type": "object",
+          "properties": {
+            "partner_id": {
+              "$ref": "#/$defs/id"
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    "auth.location.deactivated": {
+      "description": "REQ-068: location deactivated via auth.deactivate_location (SA/PA only).",
+      "required": [
+        "actor",
+        "target"
+      ],
+      "properties": {
+        "event_type": {
+          "const": "auth.location.deactivated"
+        },
+        "outcome": {
+          "const": "success"
+        },
+        "actor": {
+          "required": [
+            "user_id"
+          ],
+          "properties": {
+            "user_id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/id"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "target": {
+          "required": [
+            "type",
+            "id"
+          ],
+          "properties": {
+            "type": {
+              "const": "location"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        "action": {
+          "const": "deactivate"
+        },
+        "details": {
+          "type": "object",
+          "properties": {
+            "partner_id": {
+              "$ref": "#/$defs/id"
+            },
+            "client_id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/id"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    "auth.location.activated": {
+      "description": "REQ-068: location activated via auth.activate_location (requires active partner and, when set, active client).",
+      "required": [
+        "actor",
+        "target"
+      ],
+      "properties": {
+        "event_type": {
+          "const": "auth.location.activated"
+        },
+        "outcome": {
+          "const": "success"
+        },
+        "actor": {
+          "required": [
+            "user_id"
+          ],
+          "properties": {
+            "user_id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/id"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "target": {
+          "required": [
+            "type",
+            "id"
+          ],
+          "properties": {
+            "type": {
+              "const": "location"
+            },
+            "id": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        "action": {
+          "const": "activate"
+        },
+        "details": {
+          "type": "object",
+          "properties": {
+            "partner_id": {
+              "$ref": "#/$defs/id"
+            },
+            "client_id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/id"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      }
     }
   }
 }
