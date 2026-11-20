@@ -323,19 +323,18 @@ export async function showOrgDetail(ctx) {
       dd("Street address line 1", labels.line1, "span-5"),
       dd("Street address line 2", labels.line2 || null, "span-3"),
       dd("City", labels.city, "span-3"),
-      dd("State / province", labels.regionLabel, "span-3"),
-      dd("ZIP / postal code", labels.postal, "span-2"),
+      dd("State", labels.regionLabel, "span-3"),
+      dd("ZIP code", labels.postal, "span-2"),
     ]),
   );
 
+  // UX-R3 / UX-R8: pack uses CONTACT & TIME ZONE; Phone number / Email / State / ZIP code.
   card.append(
-    section("Contact", "d-sec-contact", [
-      dd("Primary contact phone", labels.phone, "span-4"),
-      dd("Primary contact email", labels.email || null, "span-4"),
+    section("Contact & time zone", "d-sec-contact", [
+      dd("Phone number", labels.phone, "span-4"),
+      dd("Email", labels.email || null, "span-4"),
+      dd("Time zone", labels.tzLabel, "span-6"),
     ]),
-  );
-  card.append(
-    section("Time zone", "d-sec-tz", [dd("Time zone", labels.tzLabel, "span-6")]),
   );
 
   main.append(card);
