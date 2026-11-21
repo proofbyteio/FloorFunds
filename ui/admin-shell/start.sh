@@ -13,6 +13,8 @@ export ADMIN_DEV_SHELL=1
 export ADMIN_DEV_SHELL_REDIRECT="http://127.0.0.1:${PORT}/signin-oidc"
 export ADMIN_SHELL_PORT="$PORT"
 export STANDIN_ALLOW=1
+# Local kit: skip the /admin TOTP step after password. Production never sets this.
+export STANDIN_SKIP_ADMIN_MFA=1
 export STANDIN_PORT_BASE=18080
 export STANDIN_STATE_DIR=/tmp/ff-db/admin-shell-standin
 export StandIn__Issuer="http://127.0.0.1:${PORT}/standin"

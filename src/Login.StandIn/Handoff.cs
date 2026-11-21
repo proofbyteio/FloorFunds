@@ -173,6 +173,27 @@ public static class Handoff
                     if (u is not null) SignIn.CountFailure(st, u, SignIn.Limit(st, u, null), now, AdminScope(u), c.Connection.RemoteIpAddress?.ToString(), null);
                     return Admin(c, SignIn.Generic, 1, ret, reason);
                 }
+                // Local kit only: STANDIN_SKIP_ADMIN_MFA=1 (set by ui/admin-shell/start.ps1) completes /admin after password.
+                // Session amr still includes mfa so hand-off rule 2 and issuer checks stay satisfied.
+                if (Environment.GetEnvironmentVariable("STANDIN_SKIP_ADMIN_MFA") == "1")
+                {
+                    u.FailedPasswords = 0;
+                    var amr = new[] { "pwd", "otp", "mfa" };
+                    var s = new LoginSession { Sid = Guid.NewGuid().ToString(), UserId = u.UserId, Username = u.Username, Slug = "", LocationId = "", AuthTime = now, LastSeen = now,
+                        Amr = amr, Kind = "normal", AdminType = u.AdminType, PartnerId = u.PartnerId };
+                    var mev = Audit.Build(now, "auth.mfa.succeeded", "success", u.UserId, new JsonObject { ["method"] = "skipped_local" },
+                        SessionScope(st, s), Ip(c), null, s.Sid);
+                    mev["session_kind"] = "normal"; mev["admin_type"] = u.AdminType;
+                    var ev = Audit.Build(now, "auth.login.succeeded", "success", u.UserId, new JsonObject
+                    { ["provider_kind"] = "database", ["amr"] = new JsonArray(amr.Select(a => (JsonNode)a!).ToArray()), ["auth_time"] = now.ToUnixTimeSeconds() },
+                        SessionScope(st, s), Ip(c), null, s.Sid);
+                    ev["session_kind"] = "normal"; ev["admin_type"] = u.AdminType;
+                    if (st.OutboxFault == "fail") return Admin(c, SignIn.Generic, 1, ret, reason);
+                    st.Emit(mev); st.Emit(ev);
+                    st.Auth.Sessions[s.Sid] = s;
+                    Cookie(c, SignIn.SessionCookie, s.Sid);
+                    return ret is null ? SignIn.Hub(st, s) : Results.Redirect(ret);
+                }
                 var tx = new SignInTx { Id = TokenIssuer.NewHandle(), Slug = "", Purpose = "admin", Stage = "mfa", Username = u!.Username, NonceAt = st.Clock.Now, PreMfaAt = now, ReturnTo = ret };
                 st.Auth.Tx[tx.Id] = tx; Cookie(c, SignIn.TxCookie, tx.Id);
                 return Admin(c, null, 2);

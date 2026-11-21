@@ -43,6 +43,8 @@ $env:ADMIN_DEV_SHELL_REDIRECT = "http://127.0.0.1:${Port}/signin-oidc"
 $env:ADMIN_DEV_SHELL_SECRET_PATH = Join-Path $FfDb 'admin-dev-shell.secret'
 $env:ADMIN_SHELL_PORT = "$Port"
 $env:STANDIN_ALLOW = '1'
+# Laptop kit: skip the /admin TOTP step after password (STANDIN_SKIP_ADMIN_MFA). Production never sets this.
+$env:STANDIN_SKIP_ADMIN_MFA = '1'
 $env:STANDIN_PORT_BASE = "$StandinBase"
 $env:STANDIN_STATE_DIR = Join-Path $FfDb 'admin-shell-standin'
 $env:StandIn__Issuer = "http://127.0.0.1:${Port}/standin"
@@ -296,9 +298,9 @@ try {
 $controlPort = $StandinBase + 2
 $secretsPath = Join-Path $env:STANDIN_STATE_DIR "standin-${StandinBase}\fixture-secrets.json"
 Write-Host 'admin shell listeners are the stand-in, issuer, and API this script started'
-Write-Host "Open http://127.0.0.1:${Port}/ then Sign in as super_admin"
+Write-Host "Open http://127.0.0.1:${Port}/ then Sign in as super_admin (password only — STANDIN_SKIP_ADMIN_MFA=1)"
 Write-Host "After first start, seed assignments: `$env:REQ064_DEV_SEED=1; `$env:STANDIN_ISSUER='http://127.0.0.1:${Port}/standin'; pwsh -File ui/admin-shell/seed-dev-assignment.ps1"
-Write-Host "TOTP: Invoke-RestMethod http://127.0.0.1:${controlPort}/_standin/users/super_admin/totp"
 Write-Host "Password: (Get-Content '$secretsPath' | ConvertFrom-Json).passwords.super_admin"
+Write-Host "TOTP not required for this kit start (control still serves http://127.0.0.1:${controlPort}/_standin/users/super_admin/totp if needed)"
 
 node ui/admin-shell/server.mjs
