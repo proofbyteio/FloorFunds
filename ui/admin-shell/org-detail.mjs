@@ -245,7 +245,7 @@ export async function showOrgDetail(ctx) {
 
   const pageHead = h("div");
   pageHead.className = "page-head with-action page-head--detail";
-  pageHead.style.maxWidth = "var(--form-card-width)";
+  // DEC-341: width owned by CSS (full main content width); do not re-cap to 720px.
   const headTitle = h("div");
   headTitle.className = "head-title";
   headTitle.append(h("h1", name), statusBadge(status));

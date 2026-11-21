@@ -149,10 +149,33 @@ body.notes-hidden .tag, body.notes-hidden .annot { display: none !important; }
 }
 .button--secondary { background: var(--secondary-bg); color: var(--secondary-text); border-color: var(--border-control); }
 .button--block { width: 100%; }
+/* DEC-343 / UX-L4: press fills the block button so the halo hugs the visible pill. */
+.button--block.btn-primary .btn-primary__press { width: 100%; }
 /* DEC-233: halo behind a standalone Sign in button. The focus ring stays on the button. */
 .admin-cta { position: relative; display: block; }
 .admin-cta > .btn-primary-halo { position: absolute; inset: -0.25rem; border-radius: var(--radius-button); z-index: 0; }
-.admin-cta > .btn-primary { position: relative; z-index: 1; }
+.admin-cta > .btn-primary { position: relative; z-index: 1; width: 100%; }
+/* DEC-343 / UX-L2: gap + "or" divider between MFA Continue and the recovery form. */
+.auth-or {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-5) 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+.auth-or::before,
+.auth-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+.auth-or__lead {
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
 .button[disabled], .button[aria-disabled="true"] { opacity: 1; color: var(--disabled-text); cursor: not-allowed; }
 .spinner { width: 1em; height: 1em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

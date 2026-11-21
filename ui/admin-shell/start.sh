@@ -15,6 +15,8 @@ export ADMIN_SHELL_PORT="$PORT"
 export STANDIN_ALLOW=1
 export STANDIN_PORT_BASE=18080
 export STANDIN_STATE_DIR=/tmp/ff-db/admin-shell-standin
+# DEC-341: login-hub templates; ThemeRoot resolves to ui/theme.
+export STANDIN_UI_DIR="$ROOT/ui/login-hub"
 export StandIn__Issuer="http://127.0.0.1:${PORT}/standin"
 export StandIn__AllowlistJson=/tmp/ff-db/admin-shell-allowlist.json
 export ADMIN_API_ORIGIN=http://127.0.0.1:18090
