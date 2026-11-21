@@ -1238,14 +1238,14 @@ public sealed class LoginConfigApi(AdminApiOptions opt, NpgsqlDataSource db, Ses
         var screens = new JsonArray();
         if (who.IsSuper)
         {
-            // REQ-068: list screens + create_* for SA create buttons; create_location_admin is SA nav key (opens location BUSINESS form today — DEC-336 paused).
+            // REQ-068: list screens + create_* for SA create buttons.
+            // DEC-343: create_location_admin removed from /api/nav (shell NAV_DEFS entry already gone; no test asserts the key).
             screens.Add("list_partners");
             screens.Add("list_clients");
             screens.Add("list_locations");
             screens.Add("create_partner");
             screens.Add("create_client");
             screens.Add("create_location");
-            screens.Add("create_location_admin");
             screens.Add("config");
         }
         else if (who.IsPartnerAdmin)
