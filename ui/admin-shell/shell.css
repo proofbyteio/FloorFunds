@@ -91,6 +91,21 @@
   white-space: nowrap;
   flex: none;
 }
+/* DEC-341: hamburger is mobile-only; without this it stayed visible at 1024/1440. */
+.menu-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--border-control, var(--color-border));
+  border-radius: var(--radius-control, 8px);
+  background: transparent;
+  color: var(--foreground, var(--color-text));
+  cursor: pointer;
+}
 .mobile-lockup {
   display: none;
   align-items: center;
@@ -147,6 +162,9 @@ select.field__input {
   .menu-btn { display: inline-flex; }
   .shell__crumbs { display: none; }
   .shell__signed-in { display: none; }
+  /* DEC-341: when role text is hidden, keep Sign out pinned to the top-right
+     (margin-left:auto was only on .shell__signed-in, so Sign out sat mid-header). */
+  .shell__signout { margin-left: auto; }
   /* UX-R2 / DEC-312: collapse nav behind menu; single mobile logo; hide crumbs + signed-in. */
 }
 
@@ -1203,9 +1221,10 @@ select.field__input {
 }
 .page-head.with-action .btn-primary { text-decoration: none; }
 .page-head.with-action .btn-primary__press { min-width: 9.5rem; padding: 0 20px; }
-/* UX-R12: detail head-actions align to the 720px card, not full main. */
+/* DEC-341: detail head uses full main content width (overrides UX-R12 720px cap). */
 .page-head.with-action.page-head--detail {
-  max-width: var(--form-card-width, 720px);
+  max-width: none;
+  width: 100%;
   align-items: center;
 }
 .head-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -1392,10 +1411,14 @@ tr.no-results td {
   border: 1px solid var(--hairline, var(--color-border));
   border-radius: var(--radius-card, var(--radius-md));
   padding: 20px 32px 22px;
-  max-width: var(--form-card-width, 720px);
+  /* DEC-341: full main content width (was UX-R12 720px — looked ~half-width beside the sidebar). */
+  max-width: none;
+  width: 100%;
+  box-sizing: border-box;
 }
 .dl .dt { margin: 0 0 4px; font-size: 13px; font-weight: 500; color: var(--text-muted, var(--color-text-muted)); }
-.dl .dd { margin: 0; font-size: var(--text-sm, 0.875rem); color: var(--foreground, var(--color-text)); min-height: 20px; overflow-wrap: anywhere; }
+/* DEC-341: break-word (not anywhere) so ordinary names do not split mid-word; long tokens still wrap. */
+.dl .dd { margin: 0; font-size: var(--text-sm, 0.875rem); color: var(--foreground, var(--color-text)); min-height: 20px; overflow-wrap: break-word; word-break: normal; }
 .dl .dd.none { color: var(--text-muted, var(--color-text-muted)); font-style: italic; }
 .detail-card .grid { row-gap: 14px; }
 
@@ -1604,6 +1627,12 @@ tr.no-results td {
 .shell__nav-action:hover { text-decoration: underline; }
 
 /* UX-R3: detail section titles as gold small-caps */
+.detail-card .section {
+  margin: 0 0 16px;
+}
+.detail-card .section:last-child {
+  margin-bottom: 0;
+}
 .detail-card .section-title {
   margin: 0 0 10px;
   font-size: 11px;
@@ -1614,5 +1643,28 @@ tr.no-results td {
   color: var(--primary, #d1b26f);
 }
 .detail-card .dl .dt { margin: 0 0 4px; }
-.detail-card .dl .dd { margin: 0 0 12px; }
-.detail-card .grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 12px 16px; }
+.detail-card .dl .dd { margin: 0 0 12px; overflow-wrap: break-word; word-break: normal; }
+.detail-card .grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+/* DEC-341: span classes used by org-detail.mjs (were only defined under create/edit forms). */
+.detail-card .span-8 { grid-column: span 8; }
+.detail-card .span-7 { grid-column: span 7; }
+.detail-card .span-6 { grid-column: span 6; }
+.detail-card .span-5 { grid-column: span 5; }
+.detail-card .span-4 { grid-column: span 4; }
+.detail-card .span-3 { grid-column: span 3; }
+.detail-card .span-2 { grid-column: span 2; }
+
+@media (max-width: 63.99rem) {
+  .detail-card .grid { grid-template-columns: 1fr; }
+  .detail-card .span-8,
+  .detail-card .span-7,
+  .detail-card .span-6,
+  .detail-card .span-5,
+  .detail-card .span-4,
+  .detail-card .span-3,
+  .detail-card .span-2 { grid-column: 1 / -1; }
+}
