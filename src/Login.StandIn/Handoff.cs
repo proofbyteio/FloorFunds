@@ -122,23 +122,28 @@ public static class Handoff
             reason == "expired"
                 ? $"""<p class="card__subtitle" data-testid="session-expired-sentence">For security, {E(Ui.ProductName)} asks for your sign-in again.</p>"""
                 : "";
-        // DEC-341: reuse login-hub field markup (.field / stacked labels / pill buttons). Keep admin testids.
+        // DEC-341/343: reuse login-hub field markup (.field / stacked labels / pill buttons). Keep admin testids.
+        // No novalidate: browser required blocks empty submits so they never reach MFA lockout (SA F1).
         string Page(string? err, int step, string t, string? ret = null, string? reason = null) => $"""
 <div data-testid="error-area" role="alert"{(err is null ? " hidden" : "")}><div data-testid="error-admin-sign-in">{(err is null ? "" : E(err))}</div></div>
 """ + (step == 1 ? $"""
+<div class="card__header"><div><h1>Sign in</h1></div></div>
 {ExpirySentence(reason)}
-<form method="post" action="{issuerPath}/admin" novalidate><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
+<form method="post" action="{issuerPath}/admin"><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
 {RetField(ret)}
 {(reason == "expired" ? """<input type="hidden" name="reason" value="expired">""" : "")}
 <div class="field"><label class="field__label" for="admin-username">Username</label><input class="field__input" id="admin-username" data-testid="field-admin-username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required></div>
 <div class="field"><label class="field__label" for="admin-password">Password</label><input class="field__input" id="admin-password" data-testid="field-admin-password" name="password" type="password" autocomplete="current-password" required></div>
 <div class="admin-cta group"><button class="button button--primary button--block btn-primary" data-testid="admin-signin-submit" type="submit"><span class="btn-primary__press">Sign in</span></button><span class="btn-primary-halo" aria-hidden="true"></span></div></form>
 """ : $"""
-<form method="post" action="{issuerPath}/admin/mfa" novalidate><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
-<div class="field"><label class="field__label" for="admin-totp">6-digit code</label><input class="field__input" id="admin-totp" data-testid="field-admin-totp" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></div>
-<button class="button button--primary button--block btn-primary" data-testid="admin-totp-submit" type="submit"><span class="btn-primary__press">Continue</span></button></form>
-<form method="post" action="{issuerPath}/admin/mfa" novalidate><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
-<div class="field"><label class="field__label" for="admin-recovery">Use a recovery code instead</label><input class="field__input" id="admin-recovery" data-testid="field-admin-recovery-code" name="recovery_code" autocomplete="off" required></div>
+<div class="card__header"><div><h1>Enter your one-time code</h1></div></div>
+<form method="post" action="{issuerPath}/admin/mfa"><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
+<div class="field"><label class="field__label" for="admin-totp">6-digit code</label><input class="field__input" id="admin-totp" data-testid="field-admin-totp" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required aria-describedby="admin-totp-hint"><div class="field__hint" id="admin-totp-hint">From your authenticator app</div></div>
+<div class="admin-cta group"><button class="button button--primary button--block btn-primary" data-testid="admin-totp-submit" type="submit"><span class="btn-primary__press">Continue</span></button><span class="btn-primary-halo" aria-hidden="true"></span></div></form>
+<div class="auth-or" role="separator" aria-label="or"><span>or</span></div>
+<form method="post" action="{issuerPath}/admin/mfa"><input type="hidden" name="__RequestVerificationToken" value="{E(t)}">
+<p class="auth-or__lead">Use a recovery code instead</p>
+<div class="field"><label class="field__label" for="admin-recovery">Recovery code</label><input class="field__input" id="admin-recovery" data-testid="field-admin-recovery-code" name="recovery_code" autocomplete="off" required></div>
 <button class="button button--secondary button--block" data-testid="admin-recovery-submit" type="submit">Use recovery code</button></form>
 """);
         string? ReasonEnum(string? raw) => raw == "expired" ? "expired" : null;
