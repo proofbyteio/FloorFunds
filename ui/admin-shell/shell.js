@@ -61,8 +61,8 @@ const NAV_DEFS = [
   { id: "clients", label: "Clients", need: "list_clients", legacyNeed: "create_client", href: "#/clients" },
   { id: "my-client", label: "My client", need: "my_client", href: "#/my-client" },
   { id: "locations", label: "Locations", need: "list_locations", legacyNeed: "create_location", href: "#/locations" },
-  // F7: SA-only Create Location Admin (distinct from Locations list).
-  { id: "create", label: "Create Location Admin", need: "create_location_admin", href: "#/create" },
+  // DEC-341: "Create Location Admin" nav shortcut removed (it opened the location
+  // BUSINESS form via #/create). Keep the #/create route / showCreate() for deep links.
   { id: "catalog", label: "Catalog", need: "catalog", href: "#/catalog" },
 ];
 // pages.create / pages.config stay as the F-21 gate surface (not listed in NAV_DEFS).
