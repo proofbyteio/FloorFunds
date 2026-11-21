@@ -45,6 +45,8 @@ $env:ADMIN_SHELL_PORT = "$Port"
 $env:STANDIN_ALLOW = '1'
 $env:STANDIN_PORT_BASE = "$StandinBase"
 $env:STANDIN_STATE_DIR = Join-Path $FfDb 'admin-shell-standin'
+# DEC-341: login-hub templates; ThemeRoot resolves to ui/theme.
+$env:STANDIN_UI_DIR = Join-Path $Root 'ui\login-hub'
 $env:StandIn__Issuer = "http://127.0.0.1:${Port}/standin"
 $env:StandIn__AllowlistJson = Join-Path $FfDb 'admin-shell-allowlist.json'
 $env:ADMIN_API_ORIGIN = "http://127.0.0.1:${ApiPort}"
