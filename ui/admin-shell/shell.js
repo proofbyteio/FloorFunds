@@ -127,7 +127,8 @@ function parseRoute() {
   if (path === "home") return { nav: "home", view: "home" };
   if (path === "config") return { nav: "config", view: "config" };
   if (path === "catalog") return { nav: "catalog", view: "catalog" };
-  if (path === "create") return { nav: "create", view: "location-create-admin" };
+  // DEC-343: highlight Locations on #/create (NAV_DEFS create entry removed in DEC-341).
+  if (path === "create") return { nav: "locations", view: "location-create-admin" };
   if (path === "my-partner") return { nav: "my-partner", view: "my-partner" };
   if (path === "my-client") return { nav: "my-client", view: "my-client" };
 

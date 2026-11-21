@@ -1497,6 +1497,7 @@ tr.no-results td {
 .dialog-actions .btn-primary { text-decoration: none; }
 
 /* DEC-306: fixed parent on Edit = plain text (no control chrome) */
+/* DEC-343: same wrap rule as detail .dd — no mid-word breaks for normal words. */
 .fixed-value {
   margin: 0;
   min-height: var(--control-height-input, 40px);
@@ -1504,7 +1505,8 @@ tr.no-results td {
   align-items: center;
   font-size: var(--text-sm, 0.875rem);
   color: var(--foreground, var(--color-text));
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .shell__crumbs {
@@ -1667,4 +1669,6 @@ tr.no-results td {
   .detail-card .span-4,
   .detail-card .span-3,
   .detail-card .span-2 { grid-column: 1 / -1; }
+  /* DEC-343: hide Country spacer empty cell when stacked (SA F8 / UX-L6). */
+  .detail-card .grid > div:empty { display: none; }
 }
